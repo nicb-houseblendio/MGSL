@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { MultiSelectCombobox } from '@/components/MultiSelectCombobox';
-import { useFilterOptions } from '@/hooks/useFilterOptions';
 import { useNetSuite } from '@/context/NetSuiteContext';
 import { getBusinessConfig } from '@/config/businessConfig';
 import type { FilterState } from '@/types';
@@ -48,11 +47,14 @@ const FILTER_TO_API: Record<string, string> = {
   category: 'category',
 };
 
+export type FilterOptions = Record<string, { value: string; label: string }[]>;
+
 interface FilterPanelProps {
   filters: FilterState;
   onFiltersChange: (filters: FilterState) => void;
   onApply: () => void;
   onReset: () => void;
+  filterOptions?: FilterOptions;
 }
 
 export const FilterPanel = ({
@@ -60,8 +62,9 @@ export const FilterPanel = ({
   onFiltersChange,
   onApply,
   onReset,
+  filterOptions = {},
 }: FilterPanelProps) => {
-  const { subsidiaryId, subsidiaryName } = useNetSuite();
+  const { subsidiaryName } = useNetSuite();
   const config = getBusinessConfig(subsidiaryName);
   const [primaryOpen, setPrimaryOpen] = React.useState(true);
   const [attributesOpen, setAttributesOpen] = React.useState(false);
@@ -108,7 +111,7 @@ export const FilterPanel = ({
                 filterKey={key}
                 filters={filters}
                 updateFilter={updateFilter}
-                subsidiaryId={subsidiaryId}
+                options={filterOptions[FILTER_TO_API[key] || key] || filterOptions[key] || []}
               />
             ))}
             <div className="flex items-center space-x-2">
@@ -153,7 +156,7 @@ export const FilterPanel = ({
                   filterKey={key}
                   filters={filters}
                   updateFilter={updateFilter}
-                  subsidiaryId={subsidiaryId}
+                  options={filterOptions[FILTER_TO_API[key] || key] || filterOptions[key] || []}
                 />
               ))}
             </div>
@@ -168,18 +171,17 @@ interface FilterFieldProps {
   filterKey: FilterKey;
   filters: FilterState;
   updateFilter: (key: FilterKey, value: string[]) => void;
-  subsidiaryId: string;
+  options: { value: string; label: string }[];
 }
 
 const FilterField = ({
   filterKey,
   filters,
   updateFilter,
-  subsidiaryId,
+  options,
 }: FilterFieldProps) => {
   const apiKey = FILTER_TO_API[filterKey] || filterKey;
   const selected = ((filterKey === 'location' ? filters.reload || filters.location : filters[apiKey as keyof FilterState]) as string[]) || [];
-  const { options, loading } = useFilterOptions(apiKey, subsidiaryId, true);
 
   return (
     <div className="space-y-2">
@@ -190,7 +192,6 @@ const FilterField = ({
         onChange={(v) => updateFilter(filterKey, v)}
         placeholder={`Select ${FILTER_LABELS[filterKey] || filterKey}`}
         searchPlaceholder="Search..."
-        loading={loading}
       />
     </div>
   );

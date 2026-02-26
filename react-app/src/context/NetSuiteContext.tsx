@@ -17,12 +17,31 @@ const defaultContext: NSContextType = {
 
 const NetSuiteContext = createContext<NSContextType>(defaultContext);
 
+interface NSConfig {
+  restletUrl?: string;
+  userId?: string | number;
+  userName?: string;
+  userRole?: string;
+  accountId?: string;
+  subsidiary?: { id: string | number; name: string };
+}
+
 export const NetSuiteProvider = ({ children }: { children: ReactNode }) => {
   const value = useMemo(() => {
     const win = typeof window !== 'undefined' ? window : null;
-    const raw = (win as { __NS_CONTEXT__?: NSContextType })?.__NS_CONTEXT__;
-    if (raw && typeof raw === 'object' && raw.restletUrl) {
-      return raw as NSContextType;
+    const config = (win as { __NS_CONFIG__?: NSConfig })?.__NS_CONFIG__;
+    const legacy = (win as { __NS_CONTEXT__?: NSContextType })?.__NS_CONTEXT__;
+    const raw = config || legacy;
+    if (raw && typeof raw === 'object' && (raw.restletUrl || (raw as NSContextType).restletUrl)) {
+      const r = raw as NSConfig & NSContextType;
+      return {
+        userId: String(r.userId ?? ''),
+        userName: r.userName ?? '',
+        subsidiaryId: String(r.subsidiary?.id ?? r.subsidiaryId ?? ''),
+        subsidiaryName: r.subsidiary?.name ?? r.subsidiaryName ?? '',
+        accountId: String(r.accountId ?? ''),
+        restletUrl: r.restletUrl ?? '',
+      } as NSContextType;
     }
     return defaultContext;
   }, []);

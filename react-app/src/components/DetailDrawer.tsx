@@ -16,10 +16,7 @@ import {
 } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useDetailData } from '@/hooks/useDetailData';
-import type { PivotRow } from '@/lib/pivotTransform';
-import type { DetailRow } from '@/types';
-
-type DetailType = 'onHand' | 'committed' | 'outbound' | 'onOrder' | 'inTransit';
+import type { DetailType } from '@/hooks/useDetailData';
 
 interface DetailDrawerProps {
   open: boolean;
@@ -27,7 +24,6 @@ interface DetailDrawerProps {
   itemId: string;
   locationId: string;
   triggerType: DetailType;
-  row?: PivotRow;
 }
 
 const TAB_LABELS: Record<DetailType, string> = {
@@ -36,6 +32,56 @@ const TAB_LABELS: Record<DetailType, string> = {
   outbound: 'Outbound',
   onOrder: 'On Order',
   inTransit: 'In Transit',
+};
+
+const COLUMN_MAP: Record<DetailType, { id: string; label: string; link?: boolean }[]> = {
+  onHand: [
+    { id: 'docType', label: 'Doc. Type' },
+    { id: 'docNum', label: 'Doc. #', link: true },
+    { id: 'receiptDate', label: 'Receipt Date' },
+    { id: 'vendor', label: 'Vendor', link: true },
+    { id: 'lotNo', label: 'Lot #' },
+    { id: 'packQty', label: 'Quantity' },
+    { id: 'avgPrice', label: 'Avg Price' },
+  ],
+  committed: [
+    { id: 'docNum', label: 'SO #', link: true },
+    { id: 'customerName', label: 'Customer', link: true },
+    { id: 'tranDate', label: 'Trans. Date' },
+    { id: 'expectedShipDate', label: 'Expected Ship Date' },
+    { id: 'itemCode', label: 'Item Code', link: true },
+    { id: 'packCommitted', label: 'Pack Committed' },
+    { id: 'openPackQty', label: 'Open Pack Qty' },
+    { id: 'rate', label: 'Price/Pack' },
+  ],
+  outbound: [
+    { id: 'docNum', label: 'Doc. #', link: true },
+    { id: 'customerName', label: 'Customer', link: true },
+    { id: 'dueDate', label: 'Ship Date' },
+    { id: 'itemCode', label: 'Item Code', link: true },
+    { id: 'packQty', label: 'Quantity' },
+    { id: 'invoicedQty', label: 'Invoiced Qty' },
+    { id: 'remainingQty', label: 'Remaining Qty' },
+    { id: 'rate', label: 'Price' },
+  ],
+  onOrder: [
+    { id: 'docNum', label: 'PO #', link: true },
+    { id: 'vendorName', label: 'Vendor', link: true },
+    { id: 'shipDate', label: 'Expected Delivery' },
+    { id: 'itemCode', label: 'Item Code', link: true },
+    { id: 'packQty', label: 'Quantity' },
+    { id: 'openQty', label: 'Open Qty' },
+    { id: 'rate', label: 'Price' },
+  ],
+  inTransit: [
+    { id: 'docNum', label: 'Doc. #', link: true },
+    { id: 'tranDate', label: 'Trans. Date' },
+    { id: 'vendor', label: 'Vendor', link: true },
+    { id: 'itemCode', label: 'Item Code', link: true },
+    { id: 'packQty', label: 'Quantity' },
+    { id: 'inTransitAdditional', label: 'In Transit Additional' },
+    { id: 'rate', label: 'Price' },
+  ],
 };
 
 export const DetailDrawer = ({
@@ -47,12 +93,15 @@ export const DetailDrawer = ({
 }: DetailDrawerProps) => {
   const { data, loading, error, fetchDetail } = useDetailData();
   const [activeTab, setActiveTab] = React.useState<DetailType>(triggerType);
+  const fetchedRef = React.useRef(false);
 
   React.useEffect(() => {
-    if (open && itemId && locationId) {
-      fetchDetail(activeTab, itemId, locationId);
+    if (open && itemId && locationId && !fetchedRef.current) {
+      fetchedRef.current = true;
+      fetchDetail(itemId, locationId).catch(() => {});
     }
-  }, [open, itemId, locationId, activeTab, fetchDetail]);
+    if (!open) fetchedRef.current = false;
+  }, [open, itemId, locationId, fetchDetail]);
 
   React.useEffect(() => {
     if (open) setActiveTab(triggerType);
@@ -78,8 +127,11 @@ export const DetailDrawer = ({
                 <Skeleton className="h-64 w-full" />
               ) : error ? (
                 <p className="text-destructive">{error}</p>
-              ) : data ? (
-                <DetailTable rows={data.rows} columns={data.columns} />
+              ) : data?.[tab]?.length ? (
+                <DetailTable
+                  rows={data[tab] as Record<string, unknown>[]}
+                  columns={COLUMN_MAP[tab]}
+                />
               ) : (
                 <p className="text-muted-foreground">No data</p>
               )}
@@ -92,8 +144,8 @@ export const DetailDrawer = ({
 };
 
 interface DetailTableProps {
-  rows: DetailRow[];
-  columns: { id: string; label: string }[];
+  rows: Record<string, unknown>[];
+  columns: { id: string; label: string; link?: boolean }[];
 }
 
 const DetailTable = ({ rows, columns }: DetailTableProps) => (
@@ -108,22 +160,26 @@ const DetailTable = ({ rows, columns }: DetailTableProps) => (
     <TableBody>
       {rows.map((row, i) => (
         <TableRow key={i}>
-          {columns.map((col) => (
-            <TableCell key={col.id}>
-              {col.id === 'documentNumber' && row.documentLink ? (
-                <a
-                  href={row.documentLink}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary hover:underline"
-                >
-                  {row[col.id] as string}
-                </a>
-              ) : (
-                String(row[col.id] ?? '')
-              )}
-            </TableCell>
-          ))}
+          {columns.map((col) => {
+            const val = row[col.id];
+            const linkUrl = col.id === 'docNum' ? row.docUrl : col.id === 'vendor' || col.id === 'vendorName' ? row.vendorUrl : col.id === 'customerName' ? row.customerUrl : col.id === 'itemCode' ? row.itemUrl : undefined;
+            return (
+              <TableCell key={col.id}>
+                {col.link && linkUrl ? (
+                  <a
+                    href={String(linkUrl)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline"
+                  >
+                    {String(val ?? '')}
+                  </a>
+                ) : (
+                  String(val ?? '')
+                )}
+              </TableCell>
+            );
+          })}
         </TableRow>
       ))}
     </TableBody>
