@@ -8,6 +8,7 @@
     /* POC palette */
     --navy: #0F2641;
     --navy-mid: #1A3D63;
+    --navy-light: #254E7A;
     --green: #1E6B47;
     --gold: #C8A035;
     --background: #EEF1F6;
@@ -95,10 +96,26 @@
     font-family: 'IBM Plex Sans', system-ui, sans-serif;
     background-color: var(--background);
     color: var(--text);
+    margin: 0;
+    padding: 0;
   }
   .font-mono {
     font-family: 'IBM Plex Mono', ui-monospace, monospace;
   }
+}
+
+/* NetSuite embed: remove margin around react-root and fill viewport width when Suitelet form wraps content */
+#react-root {
+  display: block;
+  margin: 0 !important;
+  padding: 0 !important;
+  box-sizing: border-box;
+  width: 100vw !important;
+  max-width: 100vw !important;
+  margin-left: calc(-50vw + 50%) !important;
+  margin-right: calc(-50vw + 50%) !important;
+  position: relative;
+  left: 0;
 }
 
 @layer utilities {

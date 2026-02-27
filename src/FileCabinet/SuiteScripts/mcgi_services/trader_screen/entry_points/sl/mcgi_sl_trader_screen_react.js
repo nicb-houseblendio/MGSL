@@ -2,9 +2,15 @@
  * @NApiVersion 2.1
  * @NScriptType Suitelet
  * @description Serves React Trader Screen: HTML shell with bundle.js and bundle.css from File Cabinet. Injects MCGI_CONFIG.
+ *
+ * Data loading: The React app calls the RESTlet (RESTLET_SCRIPT_ID) for summary data. The RESTlet reads from
+ * cache key TS_SUMMARY, which is populated by the Map/Reduce script MCGI_MR_TraderScreenCache. If no data loads,
+ * (1) ensure the RESTlet script/deploy IDs below match your deployed RESTlet, and (2) run or schedule the
+ * Map/Reduce script to populate the cache.
  */
 define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/search', 'N/record'], (serverWidget, runtime, url, file, search, record) => {
 
+    // Must match the deployed RESTlet. If using mcgi_rl_trader_api.js, script id is often customscript_mcgi_rl_trader_api.
     const RESTLET_SCRIPT_ID = 'customscript_mcgi_rl_traderapi';
     const RESTLET_DEPLOY_ID = 'customdeploy_mcgi_rl_traderapi';
 
@@ -143,10 +149,12 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/search', 'N/reco
             accountId: runtime.accountId,
             subsidiary: { id: user.subsidiary, name: subsidiaryName },
         };
+        log.debug('Config Object', configObj)
         const configJson = JSON.stringify(configObj)
                 .replace(/</g, '\\u003c')
                 .replace(/>/g, '\\u003e');
 
+        const fullBleedScript = '<script>(function(){function fullWidth(el){el.style.setProperty("width","100%","important");el.style.setProperty("max-width","100%","important");el.style.setProperty("margin","0","important");el.style.setProperty("padding","0","important");el.style.setProperty("box-sizing","border-box","important");}function go(){var el=document.getElementById("react-root");if(!el)return;fullWidth(el);el.style.setProperty("margin-top","-65px","important");var p=el.parentElement;while(p){fullWidth(p);p=p.parentElement;}fullWidth(document.body);fullWidth(document.documentElement);document.body.style.setProperty("overflow-x","hidden","important");}function run(){go();setTimeout(go,50);setTimeout(go,200);}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",run);else run();})();<\/script>';
         return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
                 '<title>Trader Screen</title>' +
                 '<link rel="preconnect" href="https://fonts.googleapis.com">' +
@@ -154,6 +162,7 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/search', 'N/reco
                 '<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">' +
                 (reactCss ? '<style>' + reactCss + '</style>' : '') +
                 '</head><body><div id="react-root"></div>' +
+                fullBleedScript +
                 '<script>window.MCGI_CONFIG=' + configJson + ';window.__NS_CONFIG__=window.MCGI_CONFIG;</script>' +
                 getReactBundleScript() +
                 '</body></html>';

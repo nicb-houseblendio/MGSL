@@ -1,6 +1,6 @@
-import { Button } from '@/components/ui/button';
+import * as React from 'react';
 import { Checkbox } from '@/components/ui/checkbox';
-import { FileDown, RotateCcw, Filter } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import { MultiSelectCombobox } from '@/components/MultiSelectCombobox';
 import { useNetSuite } from '@/context/NetSuiteContext';
 import { getBusinessConfig } from '@/config/businessConfig';
@@ -74,92 +74,126 @@ export const FilterPanel = ({
     });
   };
 
-  const row1Filters = config.filters.slice(0, 5);
-  const row2Filters = config.filters.slice(5);
+  const allFilters = config.filters;
+  const [filtersOpen, setFiltersOpen] = React.useState(true);
+
+  const activeFilterCount = allFilters.filter((key) => {
+    const apiKey = FILTER_TO_API[key] || key;
+    const val = key === 'location' ? filters.reload || filters.location : filters[apiKey as keyof FilterState];
+    return Array.isArray(val) && val.length > 0;
+  }).length;
 
   return (
-    <div className="bg-background rounded-lg border border-border/60 p-4 space-y-3">
-      <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-foreground/60 mb-1">
-        <Filter className="h-3.5 w-3.5" />
-        Filtres
-      </div>
+    <div
+      className="rounded-lg border border-[#E2E8F0] overflow-hidden"
+      style={{ background: filtersOpen ? '#FFFFFF' : '#EEF1F6', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
+    >
+      <button
+        type="button"
+        onClick={() => setFiltersOpen((o) => !o)}
+        className="w-full flex items-center justify-between py-2 px-5 cursor-pointer select-none text-left"
+        style={{ background: filtersOpen ? 'transparent' : '#EEF1F6' }}
+      >
+        <div className="flex items-center gap-2.5">
+          <span className="text-[13px] font-semibold text-[#0F2641]">🔍 Filtres</span>
+          {activeFilterCount > 0 && (
+            <span
+              className="text-white text-[11px] font-bold px-2 py-0.5 rounded-full"
+              style={{ background: '#1E6B47' }}
+            >
+              {activeFilterCount} actif{activeFilterCount > 1 ? 's' : ''}
+            </span>
+          )}
+          {!filtersOpen && (
+            <span className="text-[#7A8FA3] text-xs">(cliquer pour développer)</span>
+          )}
+        </div>
+        <ChevronDown
+          className="w-4 h-4 text-[#7A8FA3] transition-transform"
+          style={{ transform: filtersOpen ? 'rotate(180deg)' : 'none' }}
+        />
+      </button>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        {row1Filters.map((key) => (
-          <FilterField
-            key={key}
-            filterKey={key}
-            filters={filters}
-            updateFilter={updateFilter}
-            options={filterOptions[FILTER_TO_API[key] || key] || filterOptions[key] || []}
-          />
-        ))}
-      </div>
-
-      {row2Filters.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          {row2Filters.map((key) => (
-            <FilterField
-              key={key}
-              filterKey={key}
-              filters={filters}
-              updateFilter={updateFilter}
-              options={filterOptions[FILTER_TO_API[key] || key] || filterOptions[key] || []}
-            />
-          ))}
+      {filtersOpen && (
+        <div className="px-5 pb-3.5 border-t border-[#E2E8F0]">
+          <div className="grid gap-x-3 gap-y-2 mb-3 pt-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(155px, 1fr))' }}>
+            {allFilters.map((key) => (
+              <FilterField
+                key={key}
+                filterKey={key}
+                filters={filters}
+                updateFilter={updateFilter}
+                options={filterOptions[FILTER_TO_API[key] || key] || filterOptions[key] || []}
+                comboboxClassName={COMBOBOX_POC_CLASS}
+              />
+            ))}
+          </div>
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="qty-toggle"
+                checked={filters.quantityGreaterThanZero !== false}
+                onCheckedChange={(checked) =>
+                  onFiltersChange({
+                    ...filters,
+                    quantityGreaterThanZero: checked !== false,
+                  })
+                }
+              />
+              <label htmlFor="qty-toggle" className="text-[13px] font-medium select-none cursor-pointer text-[#3D5166]">
+                Quantité &gt; 0 seulement
+              </label>
+            </div>
+            <div className="flex-1" />
+            <button
+              type="button"
+              onClick={onReset}
+              className="py-1.5 px-4 rounded-md text-xs font-semibold border border-[#CBD5E1] bg-transparent text-[#3D5166] hover:bg-[#F8FAFC]"
+            >
+              ↺ Réinitialiser
+            </button>
+            <button
+              type="button"
+              onClick={onApply}
+              className="py-1.5 px-5 rounded-md text-[13px] font-bold text-white border-0 shadow-md"
+              style={{ background: 'linear-gradient(135deg, #1E6B47, #237A52)', boxShadow: '0 2px 8px rgba(30,107,71,0.3)' }}
+            >
+              ▶ Appliquer les filtres
+            </button>
+            <button
+              type="button"
+              onClick={onExport}
+              disabled={exportDisabled}
+              className="py-1.5 px-3.5 rounded-md text-xs font-semibold border-2 bg-transparent hover:bg-[#FFFEF5] disabled:opacity-50"
+              style={{ borderColor: '#C8A035', color: '#C8A035' }}
+            >
+              ↓ Export Excel
+            </button>
+          </div>
         </div>
       )}
-
-      <div className="flex items-center justify-between pt-2 border-t border-border/40">
-        <div className="flex items-center space-x-2">
-          <Checkbox
-            id="qty-toggle"
-            checked={filters.quantityGreaterThanZero !== false}
-            onCheckedChange={(checked) =>
-              onFiltersChange({
-                ...filters,
-                quantityGreaterThanZero: checked !== false,
-              })
-            }
-          />
-          <label htmlFor="qty-toggle" className="text-xs font-medium select-none cursor-pointer">
-            Quantit&eacute; &gt; 0 seulement
-          </label>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={onReset} className="text-xs">
-            <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            R&eacute;initialiser
-          </Button>
-          <Button size="sm" onClick={onApply} className="bg-green text-white hover:bg-green/90 text-xs">
-            <Filter className="mr-1.5 h-3.5 w-3.5" />
-            Appliquer les filtres
-          </Button>
-          <Button variant="outline" size="sm" onClick={onExport} disabled={exportDisabled} className="text-xs">
-            <FileDown className="mr-1.5 h-3.5 w-3.5" />
-            Export Excel
-          </Button>
-        </div>
-      </div>
     </div>
   );
 };
+
+const COMBOBOX_POC_CLASS =
+  'bg-white border-[#CBD5E1] text-[#0D1F33] hover:bg-[#F8FAFC] hover:border-[#94A3B8]';
 
 interface FilterFieldProps {
   filterKey: FilterKey;
   filters: FilterState;
   updateFilter: (key: FilterKey, value: string[]) => void;
   options: { value: string; label: string }[];
+  comboboxClassName?: string;
 }
 
-const FilterField = ({ filterKey, filters, updateFilter, options }: FilterFieldProps) => {
+const FilterField = ({ filterKey, filters, updateFilter, options, comboboxClassName }: FilterFieldProps) => {
   const apiKey = FILTER_TO_API[filterKey] || filterKey;
   const selected = ((filterKey === 'location' ? filters.reload || filters.location : filters[apiKey as keyof FilterState]) as string[]) || [];
 
   return (
     <div className="space-y-1">
-      <label className="text-[10px] font-semibold uppercase tracking-wider text-foreground/50">
+      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#3D5166]">
         {FILTER_LABELS[filterKey] || filterKey}
       </label>
       <MultiSelectCombobox
@@ -168,6 +202,7 @@ const FilterField = ({ filterKey, filters, updateFilter, options }: FilterFieldP
         onChange={(v) => updateFilter(filterKey, v)}
         placeholder={FILTER_LABELS[filterKey] || filterKey}
         searchPlaceholder="Rechercher..."
+        className={comboboxClassName}
       />
     </div>
   );

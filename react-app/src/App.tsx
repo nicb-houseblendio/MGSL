@@ -5,7 +5,7 @@ import { FilterPanel } from '@/components/FilterPanel';
 import { InventoryTable, InventoryFooter } from '@/components/InventoryTable';
 import { DetailDrawer } from '@/components/DetailDrawer';
 import { Button } from '@/components/ui/button';
-import { Loader2, RefreshCw, ChevronDown, User, Plus } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { useSummaryData } from '@/hooks/useSummaryData';
 import { useRefreshState } from '@/hooks/useRefreshState';
 import { exportToExcel } from '@/lib/export';
@@ -13,15 +13,21 @@ import type { FilterState } from '@/types';
 import type { SummaryRow } from '@/lib/api';
 import type { DetailType } from '@/hooks/useDetailData';
 
-const CWP_VIEWS = ['CWP MTL', 'CWP IND', 'CWP ARCH'] as const;
+const CWP_VIEWS = ['CWP IND', 'CWP MTL', 'CWP ARCH'] as const;
 type CwpView = typeof CWP_VIEWS[number];
+
+const UOM_OPTIONS: Record<CwpView, string[]> = {
+  'CWP MTL': ['MBF', 'Packs', 'TL'],
+  'CWP IND': ['MBF', 'Packs'],
+  'CWP ARCH': ['MBF', 'Cubic meters (m³)', 'Packs'],
+};
 
 const defaultFilters: FilterState = {
   quantityGreaterThanZero: true,
 };
 
 function TraderScreenContent() {
-  const { subsidiaryId, userName } = useNetSuite();
+  const { subsidiaryId } = useNetSuite();
   const {
     allRows,
     meta,
@@ -39,8 +45,6 @@ function TraderScreenContent() {
     error: refreshError,
     doRefresh,
     dismissBanner,
-    formatLastUpdated,
-    getLastUpdatedBadgeState,
   } = useRefreshState({
     loadedCacheVersion: meta?.cacheVersion ?? null,
     lastUpdated: meta?.lastUpdated ?? null,
@@ -49,6 +53,7 @@ function TraderScreenContent() {
   });
 
   const [activeView, setActiveView] = React.useState<CwpView>('CWP IND');
+  const [uom, setUom] = React.useState('Packs');
   const [filters, setFilters] = React.useState<FilterState>(defaultFilters);
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [detailParams, setDetailParams] = React.useState<{
@@ -105,88 +110,104 @@ function TraderScreenContent() {
   }, [filteredRows, totals]);
 
   const displayError = error || refreshError;
-  const badgeState = getLastUpdatedBadgeState(meta?.lastUpdated ?? '');
+
+  const today = typeof window !== 'undefined' ? new Date().toLocaleDateString('fr-CA', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }) : '';
+  const uomOptions = UOM_OPTIONS[activeView] || ['MBF', 'Packs'];
 
   return (
-    <div className="min-h-screen flex flex-col bg-background text-foreground pb-10">
-      {/* Primary header — navy bar */}
-      <header className="sticky top-0 z-30 bg-navy text-white">
-        <div className="flex h-12 items-center justify-between px-4">
-          {/* Left: branding */}
-          <div className="flex items-center gap-3">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-white/50">MGSL Commodity Group</span>
-            <span className="text-sm font-semibold">Trader Screen</span>
-          </div>
-
-          {/* Center: CWP view tabs */}
-          <div className="flex items-center gap-1">
-            {CWP_VIEWS.map((view) => (
-              <button
-                key={view}
-                type="button"
-                onClick={() => setActiveView(view)}
-                className={`px-4 py-1.5 text-xs font-semibold rounded transition-colors ${
-                  activeView === view
-                    ? 'bg-green text-white'
-                    : 'bg-transparent text-white/70 hover:text-white hover:bg-white/10'
-                }`}
-              >
-                {view}
-              </button>
-            ))}
-          </div>
-
-          {/* Right: user, last updated, refresh */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 text-white/60 text-xs">
-              <User className="h-3.5 w-3.5" />
-              <span>{userName || 'User'}</span>
-              <ChevronDown className="h-3 w-3" />
+    <div className="min-h-screen flex flex-col text-foreground pb-10" style={{ background: 'var(--background)' }}>
+      {/* POC-style header: gradient 56px, MG logo, two-line branding, CWP pills, UoM + date */}
+      <header
+        className="sticky top-0 z-30 text-white flex-shrink-0 shadow-lg"
+        style={{
+          background: 'linear-gradient(135deg, var(--navy) 0%, var(--navy-mid) 60%, var(--navy-light) 100%)',
+          height: 56,
+          padding: '0 24px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16,
+        }}
+      >
+        <div className="flex items-center gap-4 flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div
+              className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 shadow-md"
+              style={{ background: 'linear-gradient(135deg, var(--green), #2A9060)' }}
+            >
+              <span className="text-white text-sm font-extrabold tracking-tight">MG</span>
             </div>
-            <span
-              className={`text-[10px] px-2 py-0.5 rounded ${
-                badgeState === 'ok'
-                  ? 'text-white/50'
-                  : badgeState === 'stale'
-                  ? 'text-amber-300 bg-amber-500/10'
-                  : 'bg-amber-500/30 text-amber-100'
-              }`}
-            >
-              {loading && !allRows
-                ? 'Loading…'
-                : meta?.lastUpdated
-                ? formatLastUpdated(meta.lastUpdated)
-                : '—'}
-            </span>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => void doRefresh()}
-              disabled={refreshState === 'checking' || refreshState === 'fetching'}
-              className="h-8 w-8 text-white/70 hover:text-white hover:bg-white/10"
-            >
-              <RefreshCw className={`h-4 w-4 ${(refreshState === 'checking' || refreshState === 'fetching') ? 'animate-spin' : ''}`} />
-            </Button>
+            <div>
+              <div className="text-white text-[15px] font-bold tracking-wide">MGSL</div>
+              <div className="text-white/50 text-[10px] uppercase tracking-widest">Commodity Group</div>
+            </div>
           </div>
+          <div className="w-px h-7 bg-white/15" />
+          <div className="text-white/85 text-[13px] font-medium">Trader Screen</div>
         </div>
 
-        {/* Secondary nav */}
-        <div className="flex items-center gap-1 px-4 pb-1.5 border-t border-white/10 pt-1.5">
-          <button
-            type="button"
-            className="px-3 py-1 text-xs font-medium rounded bg-white/10 text-white"
+        <div className="flex gap-1">
+          {CWP_VIEWS.map((view) => (
+            <button
+              key={view}
+              type="button"
+              onClick={() => setActiveView(view)}
+              className="px-3.5 py-1.5 rounded-full text-xs font-semibold tracking-wide transition-all"
+              style={{
+                background: activeView === view ? 'linear-gradient(135deg, var(--green), #237A52)' : 'rgba(255,255,255,0.1)',
+                color: activeView === view ? '#fff' : 'rgba(255,255,255,0.65)',
+                boxShadow: activeView === view ? '0 2px 8px rgba(0,0,0,0.25)' : 'none',
+              }}
+            >
+              {view}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-2.5 flex-shrink-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-white/45 text-[11px] uppercase tracking-wider">UoM</span>
+            <select
+              value={uomOptions.includes(uom) ? uom : uomOptions[0]}
+              onChange={(e) => setUom(e.target.value)}
+              className="py-1 px-2.5 rounded-md text-white text-xs cursor-pointer outline-none border border-white/25 bg-white/10"
+            >
+              {uomOptions.map((o) => (
+                <option key={o} value={o} className="bg-navy text-white">{o}</option>
+              ))}
+            </select>
+          </div>
+          <div className="w-px h-5 bg-white/15" />
+          <span className="text-white/40 text-[11px]">{today}</span>
+          <div className="w-px h-5 bg-white/15" />
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => void doRefresh()}
+            disabled={refreshState === 'checking' || refreshState === 'fetching'}
+            className="h-8 w-8 text-white/70 hover:text-white hover:bg-white/10"
           >
-            Inventaire
-          </button>
-          <button
-            type="button"
-            className="px-3 py-1 text-xs font-medium rounded text-white/50 hover:text-white/80 hover:bg-white/5 flex items-center gap-1"
-          >
-            <Plus className="h-3 w-3" />
-            Nouveau sauvegarder
-          </button>
+            <RefreshCw className={`h-4 w-4 ${(refreshState === 'checking' || refreshState === 'fetching') ? 'animate-spin' : ''}`} />
+          </Button>
         </div>
       </header>
+
+      {/* POC-style tabs: navyMid bg, Inventaire / Vues sauvegardées */}
+      <div className="flex gap-0.5 px-6 flex-shrink-0" style={{ background: 'var(--navy-mid)', paddingTop: 0, paddingBottom: 0 }}>
+        <button
+          type="button"
+          className="px-4 py-2 text-xs font-semibold rounded-t-md transition-all text-[var(--navy)]"
+          style={{ background: 'var(--background)' }}
+        >
+          📦  Inventaire
+        </button>
+        <button
+          type="button"
+          className="px-4 py-2 text-xs font-semibold rounded-t-md transition-all text-white/60 hover:text-white/80 hover:bg-white/5"
+        >
+          ⭐  Vues sauvegardées
+        </button>
+      </div>
 
       {/* New version banner */}
       {newVersionAvailable && (
@@ -223,12 +244,18 @@ function TraderScreenContent() {
         </div>
       )}
 
-      {/* Main table area */}
-      <main className="flex-1 px-4 pt-3 pb-2">
-        <div className="relative">
+      {/* Main table area — POC: bg #EEF1F6, loading "Chargement…" with circular spinner */}
+      <main className="flex-1 px-4 pt-3 pb-2 min-h-0">
+        <div className="relative flex-1">
           {loading && !allRows && (
-            <div className="absolute inset-0 bg-background/60 flex items-center justify-center z-10 rounded">
-              <Loader2 className="h-8 w-8 animate-spin text-green" />
+            <div
+              className="absolute inset-0 flex flex-col items-center justify-center z-10 rounded backdrop-blur-sm"
+              style={{ background: 'rgba(238,241,246,0.88)' }}
+            >
+              <div
+                className="w-11 h-11 rounded-full border-4 border-[#CBD5E1] border-t-[var(--green)] animate-spin"
+              />
+              <div className="mt-3 text-[13px] font-medium text-[#3D5166]">Chargement…</div>
             </div>
           )}
           {allRows ? (
@@ -237,7 +264,7 @@ function TraderScreenContent() {
               onDrillDown={handleDrillDown}
             />
           ) : !loading ? (
-            <p className="text-muted-foreground py-12 text-center text-sm">
+            <p className="py-12 text-center text-sm text-[#3D5166]">
               Chargement des donn&eacute;es d&apos;inventaire…
             </p>
           ) : null}

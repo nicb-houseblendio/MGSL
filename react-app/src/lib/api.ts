@@ -86,10 +86,11 @@ export const apiGet = async <T>(action: string, params: Record<string, unknown> 
   const response = await fetch(urlStr, { method: 'GET', credentials: 'include' });
   const data = await response.json();
   if (response.status === 503 || data?.error === 'CACHE_MISS' || data?.error === 'DETAIL_CACHE_MISS') {
-    throw new Error(data.message || data.error || 'Cache unavailable');
+    const msg = data?.message || data?.error || 'Cache unavailable';
+    throw new Error(msg + (data?.error === 'CACHE_MISS' ? ' Run or schedule the Trader Screen Map/Reduce script (MCGI_MR_TraderScreenCache) to populate data.' : ''));
   }
   if (!response.ok) {
-    throw new Error(data.error || data.message || `Request failed: ${response.status}`);
+    throw new Error(data?.error || data?.message || `Request failed: ${response.status}`);
   }
   return data as T;
 };
