@@ -21,6 +21,12 @@
     --expanded-bg: #F0F5FF;
     --qty-hover: #EDF4FF;
     --attr-hover: #E8F5EF;
+    /* Metric colors */
+    --metric-onhand: #1B5E20;
+    --metric-committed: #E65100;
+    --metric-outbound: #B22222;
+    --metric-onorder: #0D47A1;
+    --metric-intransit: #4A148C;
     /* ShadCN compatibility */
     --background-shadcn: 220 20% 96%;
     --foreground: 220 30% 10%;
@@ -54,6 +60,11 @@
     --row-hover: #1A3D63;
     --row-alt: #0F2641;
     --expanded-bg: #1A3D63;
+    --metric-onhand: #4CAF50;
+    --metric-committed: #FF9800;
+    --metric-outbound: #EF5350;
+    --metric-onorder: #42A5F5;
+    --metric-intransit: #AB47BC;
     --background-shadcn: 220 30% 8%;
     --foreground: 210 40% 98%;
     --card: 220 30% 12%;
@@ -88,4 +99,27 @@
   .font-mono {
     font-family: 'IBM Plex Mono', ui-monospace, monospace;
   }
+}
+
+@layer utilities {
+  .text-metric-onhand { color: var(--metric-onhand); }
+  .text-metric-committed { color: var(--metric-committed); }
+  .text-metric-outbound { color: var(--metric-outbound); }
+  .text-metric-onorder { color: var(--metric-onorder); }
+  .text-metric-intransit { color: var(--metric-intransit); }
+}
+
+.inventory-table-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.inventory-table-scroll::-webkit-scrollbar-track {
+  background: var(--background);
+}
+.inventory-table-scroll::-webkit-scrollbar-thumb {
+  background: var(--navy-mid);
+  border-radius: 4px;
+}
+.inventory-table-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--navy);
 }

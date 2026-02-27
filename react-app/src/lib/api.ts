@@ -2,9 +2,10 @@ import type { NetSuiteContext } from '@/types';
 
 const getRestletUrl = (): string => {
   const win = typeof window !== 'undefined' ? window : null;
-  const config = (win as { __NS_CONFIG__?: { restletUrl?: string } })?.__NS_CONFIG__;
-  const ctx = (win as { __NS_CONTEXT__?: NetSuiteContext })?.__NS_CONTEXT__;
-  return (config?.restletUrl ?? (ctx && typeof ctx === 'object' ? ctx.restletUrl : '')) || '';
+  const mcgi = (win as { MCGI_CONFIG?: { restletUrl?: string } })?.MCGI_CONFIG;
+  const legacyConfig = (win as { __NS_CONFIG__?: { restletUrl?: string } })?.__NS_CONFIG__;
+  const legacyCtx = (win as { __NS_CONTEXT__?: NetSuiteContext })?.__NS_CONTEXT__;
+  return (mcgi?.restletUrl ?? legacyConfig?.restletUrl ?? (legacyCtx && typeof legacyCtx === 'object' ? legacyCtx.restletUrl : '')) || '';
 };
 
 function resolveRestletUrl(baseUrl: string): string {

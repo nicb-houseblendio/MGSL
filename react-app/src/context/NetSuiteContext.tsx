@@ -29,9 +29,10 @@ interface NSConfig {
 export const NetSuiteProvider = ({ children }: { children: ReactNode }) => {
   const value = useMemo(() => {
     const win = typeof window !== 'undefined' ? window : null;
-    const config = (win as { __NS_CONFIG__?: NSConfig })?.__NS_CONFIG__;
-    const legacy = (win as { __NS_CONTEXT__?: NSContextType })?.__NS_CONTEXT__;
-    const raw = config || legacy;
+    const mcgi = (win as { MCGI_CONFIG?: NSConfig & NSContextType })?.MCGI_CONFIG;
+    const legacyConfig = (win as { __NS_CONFIG__?: NSConfig })?.__NS_CONFIG__;
+    const legacyCtx = (win as { __NS_CONTEXT__?: NSContextType })?.__NS_CONTEXT__;
+    const raw = mcgi ?? legacyConfig ?? legacyCtx;
     if (raw && typeof raw === 'object' && (raw.restletUrl || (raw as NSContextType).restletUrl)) {
       const r = raw as NSConfig & NSContextType;
       return {

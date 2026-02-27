@@ -1,14 +1,13 @@
 import path from 'path';
 import react from '@vitejs/plugin-react';
-import { viteSingleFile } from 'vite-plugin-singlefile';
 import { defineConfig } from 'vite';
 
 /**
- * Vite configuration for React suitelet bundle
- * Inlines all CSS/JS into a single HTML file for NetSuite File Cabinet (no external asset requests)
+ * Vite config for Trader Screen React app (Option A: bundle.js + bundle.css).
+ * Output goes to File Cabinet path for Suitelet to load via N/file.
  */
 export default defineConfig({
-  plugins: [react(), viteSingleFile()],
+  plugins: [react()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -16,17 +15,20 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
+      input: path.resolve(__dirname, 'index.html'),
       output: {
         format: 'iife',
         name: 'MCGIReactSuitelet',
         inlineDynamicImports: true,
+        entryFileNames: 'bundle.js',
+        assetFileNames: 'bundle.[ext]',
       },
     },
     target: 'es2015',
     minify: 'esbuild',
     sourcemap: false,
-    outDir: 'dist',
-    assetsInlineLimit: 100000000,
+    outDir: path.resolve(__dirname, '../src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/react-app/dist'),
+    assetsInlineLimit: 0,
     cssCodeSplit: false,
     chunkSizeWarningLimit: 1000,
   },
