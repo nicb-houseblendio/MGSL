@@ -7,8 +7,19 @@ const getRestletUrl = (): string => {
   return (config?.restletUrl ?? (ctx && typeof ctx === 'object' ? ctx.restletUrl : '')) || '';
 };
 
+function resolveRestletUrl(baseUrl: string): string {
+  if (!baseUrl || typeof baseUrl !== 'string') return '';
+  const trimmed = baseUrl.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin + (trimmed.startsWith('/') ? trimmed : '/' + trimmed);
+  }
+  return trimmed;
+}
+
 function buildUrl(action: string, params: Record<string, unknown> = {}): string {
-  const baseUrl = getRestletUrl();
+  const baseUrl = resolveRestletUrl(getRestletUrl());
   if (!baseUrl) return '';
   const url = new URL(baseUrl);
   url.searchParams.set('action', action);
@@ -73,7 +84,7 @@ export const apiGet = async <T>(action: string, params: Record<string, unknown> 
   }
   const response = await fetch(urlStr, { method: 'GET', credentials: 'include' });
   const data = await response.json();
-  if (response.status === 503) {
+  if (response.status === 503 || data?.error === 'CACHE_MISS' || data?.error === 'DETAIL_CACHE_MISS') {
     throw new Error(data.message || data.error || 'Cache unavailable');
   }
   if (!response.ok) {
@@ -86,7 +97,7 @@ export const apiRequest = async <T>(
   action: string,
   params: Record<string, unknown> = {}
 ): Promise<T> => {
-  const baseUrl = getRestletUrl();
+  const baseUrl = resolveRestletUrl(getRestletUrl());
   if (!baseUrl) {
     return Promise.reject(new Error('RESTlet URL not configured. Run from NetSuite.'));
   }
@@ -109,7 +120,7 @@ export const apiRequest = async <T>(
   });
 
   const data = await response.json();
-  if (response.status === 503) {
+  if (response.status === 503 || data?.error === 'CACHE_MISS' || data?.error === 'DETAIL_CACHE_MISS') {
     throw new Error(data.message || data.error || 'Cache unavailable');
   }
   if (!response.ok) {

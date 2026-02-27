@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "build:deploy": "npm run build",
+    "build:deploy": "npm run build && node scripts/copy-html.js",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -17,16 +17,16 @@
     "@radix-ui/react-popover": "^1.1.2",
     "@radix-ui/react-slot": "^1.1.0",
     "@radix-ui/react-tabs": "^1.1.1",
-    "cmdk": "^1.0.4",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
     "@tanstack/react-table": "^8.20.5",
     "@tanstack/react-virtual": "^3.13.2",
-    "lucide-react": "^0.460.0",
-    "xlsx": "^0.18.5",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
-    "tailwind-merge": "^2.5.4"
+    "cmdk": "^1.0.4",
+    "lucide-react": "^0.460.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.5.4",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
@@ -37,6 +37,7 @@
     "tailwindcss": "^3.4.15",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "~5.6.2",
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "vite-plugin-singlefile": "^2.3.0"
   }
 }
