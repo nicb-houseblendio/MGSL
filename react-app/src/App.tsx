@@ -13,12 +13,9 @@ import type { FilterState } from '@/types';
 import type { SummaryRow } from '@/lib/api';
 import type { DetailType } from '@/hooks/useDetailData';
 
-const CWP_VIEWS = ['CWP IND', 'CWP MTL', 'CWP ARCH'] as const;
-type CwpView = typeof CWP_VIEWS[number];
-
-const UOM_OPTIONS: Record<CwpView, string[]> = {
-  'CWP MTL': ['MBF', 'Packs', 'TL'],
+const DEFAULT_UOM_CONFIG: Record<string, string[]> = {
   'CWP IND': ['MBF', 'Packs'],
+  'CWP MTL': ['MBF', 'Packs', 'TL'],
   'CWP ARCH': ['MBF', 'Cubic meters (m³)', 'Packs'],
 };
 
@@ -27,7 +24,11 @@ const defaultFilters: FilterState = {
 };
 
 function TraderScreenContent() {
-  const { subsidiaryId } = useNetSuite();
+  const { subsidiaryId, uomConfig: contextUomConfig } = useNetSuite();
+  const uomConfig = contextUomConfig && Object.keys(contextUomConfig).length > 0
+    ? contextUomConfig
+    : DEFAULT_UOM_CONFIG;
+  const CWP_VIEWS = Object.keys(uomConfig);
   const {
     allRows,
     meta,
@@ -52,7 +53,7 @@ function TraderScreenContent() {
     onFetchComplete: () => {},
   });
 
-  const [activeView, setActiveView] = React.useState<CwpView>('CWP IND');
+  const [activeView, setActiveView] = React.useState(CWP_VIEWS[0] || 'CWP IND');
   const [uom, setUom] = React.useState('Packs');
   const [filters, setFilters] = React.useState<FilterState>(defaultFilters);
   const [detailOpen, setDetailOpen] = React.useState(false);
@@ -112,7 +113,7 @@ function TraderScreenContent() {
   const displayError = error || refreshError;
 
   const today = typeof window !== 'undefined' ? new Date().toLocaleDateString('fr-CA', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }) : '';
-  const uomOptions = UOM_OPTIONS[activeView] || ['MBF', 'Packs'];
+  const uomOptions = uomConfig[activeView] || ['MBF', 'Packs'];
 
   return (
     <div className="min-h-screen flex flex-col text-foreground pb-10" style={{ background: 'var(--background)' }}>
@@ -286,6 +287,7 @@ function TraderScreenContent() {
           itemId={detailParams.itemId}
           locationId={detailParams.locationId}
           triggerType={detailParams.type}
+          resetCacheVersion={meta?.cacheVersion ?? null}
         />
       )}
     </div>

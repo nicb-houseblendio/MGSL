@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { apiGet } from '@/lib/api';
 
 export type DetailType = 'onHand' | 'committed' | 'outbound' | 'onOrder' | 'inTransit';
@@ -11,13 +11,29 @@ export interface DetailPayload {
   inTransit?: Record<string, unknown>[];
 }
 
-export const useDetailData = () => {
+interface UseDetailDataOptions {
+  resetCacheVersion?: number | null;
+}
+
+export const useDetailData = (options?: UseDetailDataOptions) => {
   const [data, setData] = useState<DetailPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const cacheRef = useRef<Map<string, DetailPayload>>(new Map());
+
+  useEffect(() => {
+    cacheRef.current.clear();
+  }, [options?.resetCacheVersion]);
 
   const fetchDetail = useCallback(
     async (itemId: string, locationId: string, bucket?: DetailType) => {
+      const cacheKey = `${itemId}__${locationId}`;
+      const cached = cacheRef.current.get(cacheKey);
+      if (cached) {
+        setData(cached);
+        return cached;
+      }
+
       setLoading(true);
       setError(null);
       try {
@@ -28,6 +44,7 @@ export const useDetailData = () => {
         const payload = Array.isArray(raw)
           ? ({ [bucket || 'onHand']: raw } as DetailPayload)
           : (raw as DetailPayload);
+        cacheRef.current.set(cacheKey, payload);
         setData(payload);
         return payload;
       } catch (e) {

@@ -1,0 +1,22 @@
+<restlet scriptid="customscript_mcgi_rl_traderapi">
+  <description></description>
+  <isinactive>F</isinactive>
+  <name>MCGI RL Trader API</name>
+  <notifyadmins>F</notifyadmins>
+  <notifyemails></notifyemails>
+  <notifyowner>T</notifyowner>
+  <notifyuser>F</notifyuser>
+  <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/rl/mcgi_rl_trader_api.js]</scriptfile>
+  <scriptdeployments>
+    <scriptdeployment scriptid="customdeploy_mcgi_rl_traderapi">
+      <allemployees>T</allemployees>
+      <allpartners>F</allpartners>
+      <allroles>F</allroles>
+      <audslctrole></audslctrole>
+      <isdeployed>T</isdeployed>
+      <loglevel>ERROR</loglevel>
+      <status>RELEASED</status>
+      <title>MCGI RL Trader API</title>
+    </scriptdeployment>
+  </scriptdeployments>
+</restlet>

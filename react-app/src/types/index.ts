@@ -71,4 +71,5 @@ export interface NetSuiteContext {
   subsidiaryName: string;
   accountId: string;
   restletUrl: string;
+  uomConfig?: Record<string, string[]>;
 }

@@ -8,11 +8,14 @@
  * @param {boolean} custscript_ts_force_full_rebuild - Force full rebuild (default: false)
  * @param {number} custscript_ts_delta_fallback_threshold - Fall back to full rebuild if delta pairs > this (default: 500)
  */
-define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search, cache, url, log, runtime) {
-    const CACHE_NAME = 'MGSL_TRADERSCREEN_CACHE';
-    const CACHE_SCOPE = cache.Scope.PUBLIC;
-    const TTL_SUMMARY = 1800;
-    const TTL_LAST_RUN = 86400;
+define([
+    'N/search', 'N/cache', 'N/log', 'N/runtime',
+    '../../shared/cacheKeys',
+    '../../shared/cacheClient',
+    '../../shared/urlResolver',
+], (search, cache, log, runtime, CacheKeys, CacheClient, UrlResolver) => {
+    const { TTL_SUMMARY, TTL_LAST_RUN, buildDetailKey, buildDetailBucketKey, buildChunkKey } = CacheKeys;
+    const { getRecordUrl } = UrlResolver;
 
     const ITEM_DATA_SEARCH_ID = 'customsearch_suitelet_all_items_search';
     const ON_HAND_SEARCH_ID = 'customsearch_mgsl_trader_onhand_tran';
@@ -43,19 +46,6 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
         CustCred: 'creditmemo',
     };
 
-    const getRecordUrl = (recordId, recordType) => {
-        if (!recordId || !recordType) return '';
-        try {
-            return url.resolveRecord({
-                recordType: recordType,
-                recordId: String(recordId),
-                isEditMode: false,
-            });
-        } catch (e) {
-            return '';
-        }
-    };
-
     const roundToTwoDecimals = num => Math.round((parseFloat(num) || 0) * 100) / 100;
 
     const getScriptParam = (name, defaultValue) => {
@@ -67,6 +57,23 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
         } catch (e) {
             return defaultValue;
         }
+    };
+
+    /**
+     * Run a search with runPaged() and collect all results into an array.
+     * @param {search.Search} searchObj - loaded or created search
+     * @param {number} [pageSize=1000] - page size (5-1000)
+     * @returns {search.Result[]} all results
+     */
+    const runPagedAll = (searchObj, pageSize) => {
+        const results = [];
+        const paged = searchObj.runPaged({ pageSize: pageSize || 1000 });
+        paged.pageRanges.forEach((pageRange) => {
+            paged.fetch({ index: pageRange.index }).data.forEach((result) => {
+                results.push(result);
+            });
+        });
+        return results;
     };
 
     /**
@@ -148,7 +155,7 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
             averageCost: roundToTwoDecimals(
                     parseFloat(result.getValue({ name: 'locationaveragecost', summary: 'GROUP' })) || 0
             ),
-            detailKey: 'TS_DETAIL__' + itemInternalId + '__' + locationId,
+            detailKey: buildDetailKey(itemInternalId, locationId),
         };
 
         return row;
@@ -167,8 +174,8 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
             return [];
         }
 
-        const myCache = cache.getCache({ name: CACHE_NAME, scope: CACHE_SCOPE });
-        const lastRunStr = myCache.get({ key: 'TS_LAST_RUN_TIMESTAMP' });
+        const myCache = CacheClient.getCache();
+        const lastRunStr = myCache.get({ key: CacheKeys.TS_LAST_RUN_TIMESTAMP });
 
         const isFullMode = forceFull || !lastRunStr;
 
@@ -182,17 +189,32 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
             //const resultSet = mySearch.run();
             log.debug('MCGI_MR_TraderScreenCache', 'Running full search in full mode');
             const searchResultCount = mySearch.runPaged().count;
-            log.debug('searchResultCount', searchResultCount);
+            log.audit('MCGI_MR_TraderScreenCache', 'getInputData(full): searchResultCount=' + searchResultCount);
             const searchResultsPaged = mySearch.runPaged({ pageSize: 1000 });
+            let rowsProcessed = 0;
             if (searchResultsPaged && searchResultsPaged.count > 0 && searchResultsPaged.pageRanges) {
-                searchResultsPaged.pageRanges.forEach((pageRange) => {
+                log.audit('MCGI_MR_TraderScreenCache', 'getInputData(full): pageRanges=' + (searchResultsPaged.pageRanges ? searchResultsPaged.pageRanges.length : 0));
+                searchResultsPaged.pageRanges.forEach((pageRange, rangeIdx) => {
                     const searchPage = searchResultsPaged.fetch({ index: pageRange.index });
+                    const pageDataCount = searchPage.data ? searchPage.data.length : 0;
+                    if (rangeIdx === 0) {
+                        log.audit('MCGI_MR_TraderScreenCache', 'getInputData(full): first page data.length=' + pageDataCount);
+                    }
                     searchPage.data.forEach((result) => {
                         const row = buildSummaryRow(result, subsidiaryId);
                         const k = row.internalId + '__' + row.locationId;
                         fullInput[k] = JSON.stringify(row);
+                        rowsProcessed++;
                     });
                 });
+            } else {
+                log.audit('MCGI_MR_TraderScreenCache', 'getInputData(full): no pageRanges or empty; count=' + (searchResultsPaged ? searchResultsPaged.count : 'N/A'));
+            }
+            const inputKeysCount = Object.keys(fullInput).length;
+            log.audit('MCGI_MR_TraderScreenCache', 'getInputData(full): rowsProcessed=' + rowsProcessed + ', fullInputKeys=' + inputKeysCount + ', returnType=Object');
+            if (inputKeysCount > 0) {
+                const sampleKeys = Object.keys(fullInput).slice(0, 3);
+                log.audit('MCGI_MR_TraderScreenCache', 'getInputData(full): sampleKeys=' + JSON.stringify(sampleKeys));
             }
             return fullInput;
         }
@@ -206,23 +228,12 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
         }
         if (!lastRunDate) {
             const mySearch = search.load({ id: ITEM_DATA_SEARCH_ID });
-            //const filters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
-            //filters.push('AND', ['subsidiary', 'anyof', subsidiaryId]);
-            //mySearch.filterExpression = filters;
             const fullInput = {};
-            const resultSet = mySearch.run();
-            let startIdx = 0;
-            const batchSize = 1000;
-            let batch;
-            do {
-                batch = resultSet.getRange({ start: startIdx, end: startIdx + batchSize });
-                batch.forEach((result) => {
-                    const row = buildSummaryRow(result, subsidiaryId);
-                    const k = row.internalId + '__' + row.locationId;
-                    fullInput[k] = JSON.stringify(row);
-                });
-                startIdx += batchSize;
-            } while (batch.length >= batchSize);
+            runPagedAll(mySearch).forEach((result) => {
+                const row = buildSummaryRow(result, subsidiaryId);
+                const k = row.internalId + '__' + row.locationId;
+                fullInput[k] = JSON.stringify(row);
+            });
             return fullInput;
         }
 
@@ -252,7 +263,7 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
                         search.createColumn({ name: 'location' }),
                     ],
                 });
-                tranSearch.run().each((r) => {
+                runPagedAll(tranSearch).forEach((r) => {
                     const itemId = r.getValue({ name: 'item', join: 'item' });
                     const locId = r.getValue({ name: 'location' });
                     if (itemId && locId) {
@@ -262,7 +273,6 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
                             pairCount++;
                         }
                     }
-                    return true;
                 });
             } catch (e) {
                 log.debug('MCGI_MR_TraderScreenCache', 'Delta search error for type ' + tranType + ': ' + e.message);
@@ -271,23 +281,12 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
 
         if (pairCount > deltaThreshold || pairCount === 0) {
             const mySearch = search.load({ id: ITEM_DATA_SEARCH_ID });
-            //const filters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
-            //filters.push('AND', ['subsidiary', 'anyof', subsidiaryId]);
-            //mySearch.filterExpression = filters;
             const fullInput = {};
-            const resultSet = mySearch.run();
-            let startIdx = 0;
-            const batchSize = 1000;
-            let batch;
-            do {
-                batch = resultSet.getRange({ start: startIdx, end: startIdx + batchSize });
-                batch.forEach((result) => {
-                    const row = buildSummaryRow(result, subsidiaryId);
-                    const k = row.internalId + '__' + row.locationId;
-                    fullInput[k] = JSON.stringify(row);
-                });
-                startIdx += batchSize;
-            } while (batch.length >= batchSize);
+            runPagedAll(mySearch).forEach((result) => {
+                const row = buildSummaryRow(result, subsidiaryId);
+                const k = row.internalId + '__' + row.locationId;
+                fullInput[k] = JSON.stringify(row);
+            });
             return fullInput;
         }
 
@@ -305,11 +304,11 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
                 ['inventorylocation', 'anyof', p.locationId],
             ]);
             itemsSearch.filterExpression = rowFilters;
-            itemsSearch.run().each((result) => {
-                const row = buildSummaryRow(result, subsidiaryId);
+            const results = runPagedAll(itemsSearch, 5);
+            if (results.length > 0) {
+                const row = buildSummaryRow(results[0], subsidiaryId);
                 inputData[k] = JSON.stringify(row);
-                return false;
-            });
+            }
         });
 
         return inputData;
@@ -318,11 +317,18 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
     /**
      * map: Pass through key = itemId__locationId, value = summary row JSON.
      */
+    let mapInvokeCount = 0;
     const map = (context) => {
+        mapInvokeCount++;
         const key = context.key;
         const value = context.value;
+        if (mapInvokeCount <= 2 || mapInvokeCount % 200 === 0) {
+            log.audit('MCGI_MR_TraderScreenCache', 'map: invoke#' + mapInvokeCount + ' key=' + key + ' valueLen=' + (value ? String(value).length : 0));
+        }
         if (key && value) {
             context.write({ key: key, value: value });
+        } else {
+            log.audit('MCGI_MR_TraderScreenCache', 'map: SKIPPED (missing key or value) key=' + key + ', hasValue=' + !!value);
         }
     };
 
@@ -334,10 +340,9 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
                     search.createFilter({ name: 'item', operator: search.Operator.ANYOF, values: itemId }),
                     search.createFilter({ name: 'location', operator: search.Operator.ANYOF, values: locationId })
             );
-            s.run().each((r) => {
+            runPagedAll(s).forEach((r) => {
                 const row = rowBuilder(r);
                 if (row) rows.push(row);
-                return true;
             });
         } catch (e) {
             log.debug('MCGI_MR_TraderScreenCache', 'Detail search ' + searchId + ' error: ' + e.message);
@@ -478,8 +483,13 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
     /**
      * reduce: For each key, run 5 detail searches, write TS_DETAIL, append summary to chunk, write chunk.
      */
+    let reduceInvokeCount = 0;
     const reduce = (context) => {
+        reduceInvokeCount++;
         const key = context.key;
+        if (reduceInvokeCount <= 2 || reduceInvokeCount % 200 === 0) {
+            log.audit('MCGI_MR_TraderScreenCache', 'reduce: invoke#' + reduceInvokeCount + ' key=' + key + ' valuesCount=' + (context.values ? context.values.length : 0));
+        }
         const parts = key.split('__');
         const itemId = parts[0];
         const locationId = parts[1];
@@ -511,16 +521,35 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
             inTransit: inTransit,
         };
 
-        const myCache = cache.getCache({ name: CACHE_NAME, scope: CACHE_SCOPE });
-        const detailKey = 'TS_DETAIL__' + itemId + '__' + locationId;
+        const myCache = CacheClient.getCache();
+        const detailKey = buildDetailKey(itemId, locationId);
         const detailJson = JSON.stringify(detailPayload);
-        myCache.put({
-            key: detailKey,
-            value: detailJson,
-            ttl: TTL_SUMMARY,
-        });
+        const sizeBytes = detailJson.length;
 
-        const chunkKey = 'TS_SUMMARY_CHUNK__' + key;
+        if (sizeBytes > 450 * 1024) {
+            log.audit('MCGI_MR_TraderScreenCache', 'Detail payload >450KB for ' + detailKey + ': ' + sizeBytes + ' bytes');
+        }
+
+        if (sizeBytes > 500 * 1024) {
+            const buckets = ['onHand', 'committed', 'outbound', 'onOrder', 'inTransit'];
+            buckets.forEach((bucket) => {
+                if (detailPayload[bucket] && detailPayload[bucket].length > 0) {
+                    myCache.put({
+                        key: buildDetailBucketKey(itemId, locationId, bucket),
+                        value: JSON.stringify(detailPayload[bucket]),
+                        ttl: TTL_SUMMARY,
+                    });
+                }
+            });
+        } else {
+            myCache.put({
+                key: detailKey,
+                value: detailJson,
+                ttl: TTL_SUMMARY,
+            });
+        }
+
+        const chunkKey = buildChunkKey(key);
         myCache.put({
             key: chunkKey,
             value: JSON.stringify([summaryRow]),
@@ -533,10 +562,10 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
      */
     const summarize = (context) => {
         const startTime = Date.now();
-        const myCache = cache.getCache({ name: CACHE_NAME, scope: CACHE_SCOPE });
+        const myCache = CacheClient.getCache();
 
         const allRows = [];
-        const chunkPrefix = 'TS_SUMMARY_CHUNK__';
+        const chunkPrefix = CacheKeys.TS_SUMMARY_CHUNK_PREFIX;
         const keysToDelete = [];
 
         if (context.inputSummary.error) {
@@ -551,8 +580,10 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
             return true;
         });
 
+        let reduceKeysCount = 0;
         if (context.reduceSummary && context.reduceSummary.keys) {
             context.reduceSummary.keys.iterator().each((reduceKey) => {
+                reduceKeysCount++;
                 const chunkKey = chunkPrefix + reduceKey;
                 const val = myCache.get({ key: chunkKey });
                 if (val) {
@@ -563,13 +594,18 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
                     } catch (e) {
                         log.debug('MCGI_MR_TraderScreenCache', 'Chunk parse error: ' + e.message);
                     }
+                } else {
+                    log.audit('MCGI_MR_TraderScreenCache', 'summarize: chunk MISS for key=' + reduceKey);
                 }
+                return true;
             });
         }
+        log.audit('MCGI_MR_TraderScreenCache', 'summarize: reduceKeysCount=' + reduceKeysCount + ', allRows.length=' + allRows.length);
 
-        const existingSummary = myCache.get({ key: 'TS_SUMMARY' });
+        const existingSummary = myCache.get({ key: CacheKeys.TS_SUMMARY });
+        log.audit('MCGI_MR_TraderScreenCache', 'summarize: existingSummary present=' + !!existingSummary + ', existingSummaryLen=' + (existingSummary ? existingSummary.length : 0));
         let mergedRows = allRows;
-        const lastMeta = myCache.get({ key: 'TS_META' });
+        const lastMeta = myCache.get({ key: CacheKeys.TS_META });
         let cacheVersion = 1;
         let lastRunMode = 'FULL';
         if (lastMeta) {
@@ -583,6 +619,7 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
         if (existingSummary && allRows.length > 0) {
             try {
                 const existingRows = JSON.parse(existingSummary);
+                log.audit('MCGI_MR_TraderScreenCache', 'summarize: MERGE branch, existingRows.length=' + (Array.isArray(existingRows) ? existingRows.length : 'not-array'));
                 if (Array.isArray(existingRows)) {
                     const byKey = {};
                     existingRows.forEach((r) => {
@@ -597,11 +634,13 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
                     });
                     mergedRows = Object.values(byKey);
                     lastRunMode = 'DELTA';
+                    log.audit('MCGI_MR_TraderScreenCache', 'summarize: after merge byKey.size=' + Object.keys(byKey).length + ', mergedRows.length=' + mergedRows.length);
                 }
             } catch (e) {
                 log.debug('MCGI_MR_TraderScreenCache', 'Existing summary parse error: ' + e.message);
             }
         } else {
+            log.audit('MCGI_MR_TraderScreenCache', 'summarize: NO-MERGE branch (existingSummary=' + !!existingSummary + ', allRows.length=' + allRows.length + ')');
             const byKey = {};
             mergedRows.forEach((r) => {
                 if (r && r.internalId && r.locationId) {
@@ -609,13 +648,14 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
                 }
             });
             mergedRows = Object.values(byKey);
+            log.audit('MCGI_MR_TraderScreenCache', 'summarize: after dedupe byKey.size=' + Object.keys(byKey).length + ', mergedRows.length=' + mergedRows.length);
         }
 
         const now = new Date();
         const nowIso = now.toISOString();
 
         myCache.put({
-            key: 'TS_SUMMARY',
+            key: CacheKeys.TS_SUMMARY,
             value: JSON.stringify(mergedRows),
             ttl: TTL_SUMMARY,
         });
@@ -631,13 +671,13 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
             metaObj.deltaCount = allRows.length;
         }
         myCache.put({
-            key: 'TS_META',
+            key: CacheKeys.TS_META,
             value: JSON.stringify(metaObj),
             ttl: TTL_SUMMARY,
         });
 
         myCache.put({
-            key: 'TS_LAST_RUN_TIMESTAMP',
+            key: CacheKeys.TS_LAST_RUN_TIMESTAMP,
             value: nowIso,
             ttl: TTL_LAST_RUN,
         });
@@ -650,7 +690,7 @@ define(['N/search', 'N/cache', 'N/url', 'N/log', 'N/runtime'], function (search,
         });
 
         const duration = Date.now() - startTime;
-        log.audit('MCGI_MR_TraderScreenCache', 'Completed. rowCount=' + mergedRows.length + ', duration=' + duration + 'ms');
+        log.audit('MCGI_MR_TraderScreenCache', 'Completed. reduceKeysCount=' + reduceKeysCount + ', allRows=' + allRows.length + ', mergedRows=' + mergedRows.length + ', duration=' + duration + 'ms');
     };
 
     return {

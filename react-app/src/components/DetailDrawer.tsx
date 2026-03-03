@@ -24,6 +24,7 @@ interface DetailDrawerProps {
   itemId: string;
   locationId: string;
   triggerType: DetailType;
+  resetCacheVersion?: number | null;
 }
 
 const TAB_LABELS: Record<DetailType, string> = {
@@ -90,8 +91,9 @@ export const DetailDrawer = ({
   itemId,
   locationId,
   triggerType,
+  resetCacheVersion,
 }: DetailDrawerProps) => {
-  const { data, loading, error, fetchDetail } = useDetailData();
+  const { data, loading, error, fetchDetail } = useDetailData({ resetCacheVersion });
   const [activeTab, setActiveTab] = React.useState<DetailType>(triggerType);
   const fetchedRef = React.useRef(false);
 

@@ -8,7 +8,7 @@
  * (1) ensure the RESTlet script/deploy IDs below match your deployed RESTlet, and (2) run or schedule the
  * Map/Reduce script to populate the cache.
  */
-define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/search', 'N/record'], (serverWidget, runtime, url, file, search, record) => {
+define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record'], (serverWidget, runtime, url, file, record) => {
 
     // Must match the deployed RESTlet. If using mcgi_rl_trader_api.js, script id is often customscript_mcgi_rl_trader_api.
     const RESTLET_SCRIPT_ID = 'customscript_mcgi_rl_traderapi';
@@ -24,48 +24,7 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/search', 'N/reco
     });
 
     /**
-     * Find folder internal ID by name and optional parent folder id
-     * @param {string} folderName - Folder name
-     * @param {number} [parentId] - Parent folder internal id
-     * @returns {number|null} Folder internal id or null
-     */
-    const findFolderId = (folderName, parentId) => {
-        const filters = [['name', 'is', folderName]];
-        if (parentId) {
-            filters.push('and', ['parent', 'anyof', parentId]);
-        }
-        const s = search.create({
-            type: search.Type.FOLDER,
-            filters: filters,
-            columns: ['internalid'],
-        });
-        const results = s.run().getRange({ start: 0, end: 1 });
-        return results.length ? results[0].getValue({ name: 'internalid' }) : null;
-    };
-
-    /**
-     * Find file internal ID by name in folder
-     * @param {string} fileName - File name
-     * @param {number} folderId - Folder internal id
-     * @returns {number|null} File internal id or null
-     */
-    const findFileId = (fileName, folderId) => {
-        const s = search.create({
-            type: 'file',
-            filters: [
-                ['name', 'is', fileName],
-                'and',
-                ['folder', 'anyof', folderId],
-            ],
-            columns: ['internalid'],
-        });
-        const results = s.run().getRange({ start: 0, end: 1 });
-        return results.length ? results[0].getValue({ name: 'internalid' }) : null;
-    };
-
-    /**
-     * Load file content from File Cabinet.
-     * Tries CFA-style path first (file.load by path string); falls back to search by folder hierarchy.
+     * Load file content from File Cabinet by path. Zero searches.
      * @param {string} fileName - e.g. 'bundle.js' or 'bundle.css'
      * @returns {string} File contents or empty string
      */
@@ -73,21 +32,6 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/search', 'N/reco
         const pathByPath = '/SuiteScripts/mcgi_services/trader_screen/react-app/dist/' + fileName;
         try {
             const f = file.load({ id: pathByPath });
-            const content = f.getContents();
-            if (content && content.trim().length > 0) return content;
-        } catch (e) {
-            // Path load not supported or file missing; fall back to search by folder
-        }
-        try {
-            const traderFolderId = findFolderId('trader_screen');
-            if (!traderFolderId) return '';
-            const reactAppFolderId = findFolderId('react-app', traderFolderId);
-            if (!reactAppFolderId) return '';
-            const distFolderId = findFolderId('dist', reactAppFolderId);
-            if (!distFolderId) return '';
-            const fileId = findFileId(fileName, distFolderId);
-            if (!fileId) return '';
-            const f = file.load({ id: fileId });
             return f.getContents() || '';
         } catch (e) {
             return '';

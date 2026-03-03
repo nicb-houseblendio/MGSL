@@ -1,0 +1,25 @@
+<suitelet scriptid="customscriptmcgi_sl_trader_screen_react">
+  <description></description>
+  <isinactive>F</isinactive>
+  <name>MCGI SL Trader Screen React</name>
+  <notifyadmins>F</notifyadmins>
+  <notifyemails></notifyemails>
+  <notifyowner>T</notifyowner>
+  <notifyuser>F</notifyuser>
+  <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/sl/mcgi_sl_trader_screen_react.js]</scriptfile>
+  <scriptdeployments>
+    <scriptdeployment scriptid="customdeploymcgi_sl_trader_screen_react">
+      <allemployees>F</allemployees>
+      <allpartners>F</allpartners>
+      <allroles>F</allroles>
+      <audslctrole></audslctrole>
+      <eventtype></eventtype>
+      <isdeployed>T</isdeployed>
+      <isonline>F</isonline>
+      <loglevel>DEBUG</loglevel>
+      <runasrole></runasrole>
+      <status>TESTING</status>
+      <title>MCGI SL Trader Screen React</title>
+    </scriptdeployment>
+  </scriptdeployments>
+</suitelet>

@@ -24,6 +24,7 @@ interface NSConfig {
   userRole?: string;
   accountId?: string;
   subsidiary?: { id: string | number; name: string };
+  uomConfig?: Record<string, string[]>;
 }
 
 export const NetSuiteProvider = ({ children }: { children: ReactNode }) => {
@@ -42,6 +43,7 @@ export const NetSuiteProvider = ({ children }: { children: ReactNode }) => {
         subsidiaryName: r.subsidiary?.name ?? r.subsidiaryName ?? '',
         accountId: String(r.accountId ?? ''),
         restletUrl: r.restletUrl ?? '',
+        uomConfig: r.uomConfig,
       } as NSContextType;
     }
     return defaultContext;

@@ -4,9 +4,11 @@
  * @description Trader Screen service - handlers for meta, summary, detail, getContext, createOrder.
  * Logic moved from MCGI_RL_TraderAPI.js; used by thin RESTlet.
  */
-define(['N/cache', 'N/url', 'N/runtime', 'N/record', 'N/log'], (cache, url, runtime, record, log) => {
-    const CACHE_NAME = 'MGSL_TRADERSCREEN_CACHE';
-    const CACHE_SCOPE = cache.Scope.PUBLIC;
+define([
+    'N/url', 'N/runtime', 'N/record', 'N/log',
+    '../shared/cacheKeys',
+    '../shared/cacheClient',
+], (url, runtime, record, log, CacheKeys, CacheClient) => {
 
     const toIdArray = value => {
         if (!value) return [];
@@ -28,7 +30,7 @@ define(['N/cache', 'N/url', 'N/runtime', 'N/record', 'N/log'], (cache, url, runt
         }).filter(Boolean);
     };
 
-    const getMyCache = () => cache.getCache({ name: CACHE_NAME, scope: CACHE_SCOPE });
+    const getMyCache = () => CacheClient.getCache();
 
     const applyFilters = (rows, params) => {
         let filtered = rows;
@@ -175,6 +177,12 @@ define(['N/cache', 'N/url', 'N/runtime', 'N/record', 'N/log'], (cache, url, runt
         return handler(dataIn);
     };
 
+    const DEFAULT_UOM_CONFIG = {
+        'CWP IND': ['MBF', 'Packs'],
+        'CWP MTL': ['MBF', 'Packs', 'TL'],
+        'CWP ARCH': ['MBF', 'Cubic meters (m\u00B3)', 'Packs'],
+    };
+
     const handleGetContext = () => {
         const user = runtime.getCurrentUser();
         let subsidiaryName = '';
@@ -186,6 +194,20 @@ define(['N/cache', 'N/url', 'N/runtime', 'N/record', 'N/log'], (cache, url, runt
                 subsidiaryName = String(user.subsidiary);
             }
         }
+
+        let uomConfig = DEFAULT_UOM_CONFIG;
+        try {
+            const uomJson = runtime.getCurrentScript().getParameter({ name: 'custscript_ts_uom_config_json' });
+            if (uomJson) {
+                const parsed = JSON.parse(uomJson);
+                if (parsed && typeof parsed === 'object') {
+                    uomConfig = parsed;
+                }
+            }
+        } catch (e) {
+            log.debug('trader_screen_service', 'UOM config parse error, using defaults: ' + e.message);
+        }
+
         return {
             success: true,
             data: {
@@ -194,7 +216,7 @@ define(['N/cache', 'N/url', 'N/runtime', 'N/record', 'N/log'], (cache, url, runt
                 subsidiaryId: user.subsidiary,
                 subsidiaryName: subsidiaryName,
                 accountId: runtime.accountId,
-                uomOptions: ['Packs', 'MBF'],
+                uomConfig: uomConfig,
             },
         };
     };
@@ -202,7 +224,7 @@ define(['N/cache', 'N/url', 'N/runtime', 'N/record', 'N/log'], (cache, url, runt
     const handleGetMeta = () => {
         try {
             const myCache = getMyCache();
-            const metaStr = myCache.get({ key: 'TS_META' });
+            const metaStr = myCache.get({ key: CacheKeys.TS_META });
             if (!metaStr) {
                 return { available: false, reason: 'CACHE_MISS' };
             }
@@ -222,7 +244,7 @@ define(['N/cache', 'N/url', 'N/runtime', 'N/record', 'N/log'], (cache, url, runt
     const handleGetSummary = params => {
         try {
             const myCache = getMyCache();
-            const summaryStr = myCache.get({ key: 'TS_SUMMARY' });
+            const summaryStr = myCache.get({ key: CacheKeys.TS_SUMMARY });
             if (!summaryStr) {
                 return { error: 'CACHE_MISS', message: 'Cache is being refreshed. Try again shortly.' };
             }
@@ -232,7 +254,7 @@ define(['N/cache', 'N/url', 'N/runtime', 'N/record', 'N/log'], (cache, url, runt
             const filtered = applyFilters(rows, params || {});
             const totals = computeTotals(filtered);
 
-            const metaStr = myCache.get({ key: 'TS_META' });
+            const metaStr = myCache.get({ key: CacheKeys.TS_META });
             let meta = { lastUpdated: '', cacheVersion: 0, rowCount: 0 };
             if (metaStr) {
                 try {
@@ -266,12 +288,30 @@ define(['N/cache', 'N/url', 'N/runtime', 'N/record', 'N/log'], (cache, url, runt
         }
         try {
             const myCache = getMyCache();
-            const key = 'TS_DETAIL__' + itemId + '__' + locationId;
+            const key = CacheKeys.buildDetailKey(itemId, locationId);
             const detailStr = myCache.get({ key: key });
-            if (!detailStr) {
-                return { error: 'DETAIL_CACHE_MISS', message: 'Data unavailable, please wait for next cache refresh.' };
+            let detail;
+            if (detailStr) {
+                detail = JSON.parse(detailStr);
+            } else {
+                const bucketNames = ['onHand', 'committed', 'outbound', 'onOrder', 'inTransit'];
+                const merged = {};
+                let anyFound = false;
+                bucketNames.forEach(b => {
+                    const bKey = CacheKeys.buildDetailBucketKey(itemId, locationId, b);
+                    const bStr = myCache.get({ key: bKey });
+                    if (bStr) {
+                        anyFound = true;
+                        try { merged[b] = JSON.parse(bStr); } catch (e) { merged[b] = []; }
+                    } else {
+                        merged[b] = [];
+                    }
+                });
+                if (!anyFound) {
+                    return { error: 'DETAIL_CACHE_MISS', message: 'Data unavailable, please wait for next cache refresh.' };
+                }
+                detail = merged;
             }
-            const detail = JSON.parse(detailStr);
             if (bucket && detail[bucket] !== undefined) {
                 return { success: true, data: detail[bucket] };
             }
