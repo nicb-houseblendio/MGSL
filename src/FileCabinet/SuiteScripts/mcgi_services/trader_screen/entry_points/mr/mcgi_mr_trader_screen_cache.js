@@ -106,21 +106,6 @@ define([
         const itemType = result.getValue({ name: 'type', summary: 'MAX' });
         const itemCode = result.getValue({ name: 'itemid', summary: 'GROUP' });
 
-        let widthVal = '';
-        let lengthVal = '';
-        result.columns.forEach((col) => {
-            const name = (col.name || '').toLowerCase();
-            const label = (col.label || '').toLowerCase();
-            if (name.indexOf('width') >= 0 || label.indexOf('width') >= 0) {
-                widthVal = result.getText(col) || result.getValue(col) || widthVal;
-            }
-            if (name.indexOf('length') >= 0 || label.indexOf('length') >= 0) {
-                lengthVal = result.getText(col) || result.getValue(col) || lengthVal;
-            }
-        });
-        if (!widthVal) widthVal = itemCode || '';
-        if (!lengthVal) lengthVal = '';
-
         const recordType = ITEM_RECORD_TYPE_MAPPING[itemType] || 'inventoryitem';
 
         const row = {
@@ -128,21 +113,21 @@ define([
             locationId: String(locationId),
             locationName: locationName || '',
             locationUrl: getRecordUrl(locationId, 'location'),
-            isReload: false,
+            isReload: result.getValue({ name: 'custrecord_is_reload', join: 'inventoryLocation', summary: 'GROUP' }) === 'T',
             itemType: itemType || 'inventoryitem',
             itemCode: itemCode || '',
             itemName: result.getValue({ name: 'salesdescription', summary: 'GROUP' }) || '',
             itemUrl: getRecordUrl(itemInternalId, recordType),
-            species: result.getText({ name: 'custitem_species' }) || '',
-            thickness: result.getText({ name: 'custitem_mgsl_thickness' }) || '',
-            width: widthVal,
-            length: lengthVal,
-            grade: result.getText({ name: 'custitem_grade' }) || '',
-            finition: result.getText({ name: 'custitem_finition' }) || '',
-            humidity: result.getText({ name: 'custitem_humidity' }) || '',
-            plannage: result.getText({ name: 'custitem_plannage' }) || '',
-            etampage: result.getText({ name: 'custitem_etampage' }) || '',
-            autres: result.getText({ name: 'custitem_autres' }) || '',
+            species: result.getText({ name: 'custitem_species', summary: 'GROUP' }) || result.getValue({ name: 'custitem_species', summary: 'GROUP' }) || '',
+            thickness: result.getText({ name: 'custitem_mgsl_thickness', summary: 'GROUP' }) || result.getValue({ name: 'custitem_mgsl_thickness', summary: 'GROUP' }) || '',
+            width: result.getText({ name: 'custitem_mgsl_width', summary: 'GROUP' }) || result.getValue({ name: 'custitem_mgsl_width', summary: 'GROUP' }) || '',
+            length: result.getText({ name: 'custitem_mgsl_length', summary: 'GROUP' }) || result.getValue({ name: 'custitem_mgsl_length', summary: 'GROUP' }) || '',
+            grade: result.getText({ name: 'custitem_grade', summary: 'GROUP' }) || result.getValue({ name: 'custitem_grade', summary: 'GROUP' }) || '',
+            finition: result.getText({ name: 'custitem_finition', summary: 'GROUP' }) || result.getValue({ name: 'custitem_finition', summary: 'GROUP' }) || '',
+            humidity: result.getText({ name: 'custitem_humidity', summary: 'GROUP' }) || result.getValue({ name: 'custitem_humidity', summary: 'GROUP' }) || '',
+            plannage: result.getText({ name: 'custitem_plannage', summary: 'GROUP' }) || result.getValue({ name: 'custitem_plannage', summary: 'GROUP' }) || '',
+            etampage: result.getText({ name: 'custitem_etampage', summary: 'GROUP' }) || result.getValue({ name: 'custitem_etampage', summary: 'GROUP' }) || '',
+            autres: result.getText({ name: 'custitem_autres', summary: 'GROUP' }) || result.getValue({ name: 'custitem_autres', summary: 'GROUP' }) || '',
             quantityFBM: roundToTwoDecimals(
                     parseFloat(result.getValue({ name: 'locationquantityonhand', summary: 'GROUP' })) || 0
             ),
@@ -166,7 +151,7 @@ define([
      */
     const getInputData = () => {
         const subsidiaryId = getScriptParam('custscript_ts_subsidiary_id', null);
-        const forceFull = getScriptParam('custscript_ts_force_full_rebuild', true);
+        const forceFull = getScriptParam('custscript_ts_force_full_rebuild', false);
         const deltaThreshold = getScriptParam('custscript_ts_delta_fallback_threshold', 500);
 
         if (!subsidiaryId) {
@@ -181,13 +166,11 @@ define([
 
         if (isFullMode) {
             const mySearch = search.load({ id: ITEM_DATA_SEARCH_ID });
-            //const filters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
-            //filters.push('AND', ['subsidiary', 'anyof', subsidiaryId]);
-            //mySearch.filterExpression = filters;
-            //log.debug('MCGI_MR_TraderScreenCache', filters);
+            const filters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
+            filters.push('AND', ['subsidiary', 'anyof', subsidiaryId]);
+            mySearch.filterExpression = filters;
+            log.debug('MCGI_MR_TraderScreenCache', 'getInputData(full): applied subsidiary filter=' + subsidiaryId);
             const fullInput = {};
-            //const resultSet = mySearch.run();
-            log.debug('MCGI_MR_TraderScreenCache', 'Running full search in full mode');
             const searchResultCount = mySearch.runPaged().count;
             log.audit('MCGI_MR_TraderScreenCache', 'getInputData(full): searchResultCount=' + searchResultCount);
             const searchResultsPaged = mySearch.runPaged({ pageSize: 1000 });
@@ -228,6 +211,9 @@ define([
         }
         if (!lastRunDate) {
             const mySearch = search.load({ id: ITEM_DATA_SEARCH_ID });
+            const flbkFilters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
+            flbkFilters.push('AND', ['subsidiary', 'anyof', subsidiaryId]);
+            mySearch.filterExpression = flbkFilters;
             const fullInput = {};
             runPagedAll(mySearch).forEach((result) => {
                 const row = buildSummaryRow(result, subsidiaryId);
@@ -281,6 +267,9 @@ define([
 
         if (pairCount > deltaThreshold || pairCount === 0) {
             const mySearch = search.load({ id: ITEM_DATA_SEARCH_ID });
+            const threshFilters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
+            threshFilters.push('AND', ['subsidiary', 'anyof', subsidiaryId]);
+            mySearch.filterExpression = threshFilters;
             const fullInput = {};
             runPagedAll(mySearch).forEach((result) => {
                 const row = buildSummaryRow(result, subsidiaryId);
@@ -654,11 +643,34 @@ define([
         const now = new Date();
         const nowIso = now.toISOString();
 
-        myCache.put({
-            key: CacheKeys.TS_SUMMARY,
-            value: JSON.stringify(mergedRows),
-            ttl: TTL_SUMMARY,
-        });
+        const fullJson = JSON.stringify(mergedRows);
+        let summaryChunkCount = 1;
+        if (fullJson.length <= CacheKeys.MAX_CACHE_VALUE_BYTES) {
+            myCache.put({
+                key: CacheKeys.TS_SUMMARY,
+                value: fullJson,
+                ttl: TTL_SUMMARY,
+            });
+        } else {
+            const chunkSize = CacheKeys.MAX_CACHE_VALUE_BYTES;
+            const rowsPerChunk = Math.floor(mergedRows.length / Math.ceil(fullJson.length / chunkSize));
+            summaryChunkCount = 0;
+            for (let i = 0; i < mergedRows.length; i += rowsPerChunk) {
+                const slice = mergedRows.slice(i, i + rowsPerChunk);
+                myCache.put({
+                    key: CacheKeys.buildSummaryDataKey(summaryChunkCount),
+                    value: JSON.stringify(slice),
+                    ttl: TTL_SUMMARY,
+                });
+                summaryChunkCount++;
+            }
+            myCache.put({
+                key: CacheKeys.TS_SUMMARY,
+                value: JSON.stringify({ chunked: true, chunkCount: summaryChunkCount }),
+                ttl: TTL_SUMMARY,
+            });
+            log.audit('MCGI_MR_TraderScreenCache', 'summarize: wrote ' + summaryChunkCount + ' summary chunks for ' + mergedRows.length + ' rows (' + fullJson.length + ' bytes total)');
+        }
 
         const metaObj = {
             cacheVersion: cacheVersion,
@@ -666,6 +678,7 @@ define([
             rowCount: mergedRows.length,
             lastRunMode: lastRunMode,
             lastRunTimestamp: nowIso,
+            summaryChunkCount: summaryChunkCount,
         };
         if (lastRunMode === 'DELTA') {
             metaObj.deltaCount = allRows.length;

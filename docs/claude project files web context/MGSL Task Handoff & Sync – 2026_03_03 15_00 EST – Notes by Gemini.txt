@@ -1,0 +1,427 @@
+﻿📝 Notes
+Mar 3, 2026
+MGSL Task Handoff & Sync
+Invited Lee Young Andrei Serban
+Attachments MGSL Task Handoff & Sync 
+Meeting records Transcript Recording 
+
+
+Summary
+UI and CSS adjustments were discussed, alongside data population issues, with a commitment to address missing search fields and purchase order functionality.
+
+Initial UI Adjustments
+UI and CSS adjustments were initiated to resolve perpetual scrolling, with initial experimentation suggesting a margin adjustment of 250 would reduce the unwanted scroll behavior.
+
+Data Population and Cache
+Fields are not populating because necessary components are missing from the saved search, necessitating an update to the cache via a map reduce script every 15 minutes.
+
+Deployment and PO Functionality
+SDF deployment is confirmed to automate all file and object deployment to NetSuite, eliminating manual checklists, but failed purchase order creation requires adding terms and department fields to the screen.
+
+
+Rate this Summary: Helpful or Not Helpful
+
+
+Details
+Decisions
+Rate these decisions: Helpful or Not Helpful
+
+
+NEEDS FURTHER DISCUSSION
+* Purchase Order Screen Adjustments The Purchase Order creation screen requires adjustment to include necessary fields like Terms and Department, potentially utilizing default values.
+
+
+ALIGNED
+* Cache Refresh Scheduling Frequency The cache refresh process must be scheduled to run every 15 minutes because the current process is not scheduled.
+* Automated Netsuite Deployment Standard Deployment to Netsuite should be standardized using the Netsuite plugin extension (SDF method) to push code directly, replacing manual file uploads.
+* Missing Filter Fields Addition All required filter fields, including Length, Width, Grade, and Species, will be ensured to be correctly added and functional in the search results.
+* Cache Validator Tool Creation A quick and easy cache validator script (Sweetlet) will be built to allow validation of the data currently stored in the Netsuite cache.
+
+
+More details:
+* Initial UI and CSS Adjustments: Lee Young identified that they must adjust the CSS, specifically the bottom margin, to address an issue where the content scrolls perpetually, although a scroll bar appears. They experimented with the margin, noting that a margin of 250 reduced the scroll, indicating this area requires further adjustment. Andrei Serban questioned whether the desired behavior involved two scroll bars or only the larger one on the right (00:00:00).
+* Data Population and Cache Refresh: Lee Young noted that certain fields are not being filled in because the necessary fields are missing from the saved search that should populate them (00:01:46) (00:07:10). They also mentioned that the cache needs to be updated, a process that takes approximately 4 minutes and is currently not scheduled, requiring it to be scheduled every 15 minutes (00:03:55). The React app reads from this cache, which is stored in a NetSuite cache via a map reduce script (00:05:30).
+* Project Documentation and AI Usage: The current project was built based on specifications provided by Nick, which Lee Young converted into markdown using AI to generate the implementation plan (00:03:55) (00:38:38). Lee Young confirmed that the entire project was built from scratch using the provided requirements and files, and they did not receive any code from Miguel Salon (00:08:22). Lee Young also mentioned they took the documentation and used AI to create a build plan, which helped expedite the development process, estimating the total work time to be about 3 hours over three days (00:36:15).
+* Deployment Process via SDF: When questioned about the deployment process and a deployment checklist, Lee Young explained that they use SDF (SuiteCloud Development Framework) to deploy everything to NetSuite, which eliminates the need for manual checklists because the deployment is automated via a command like "NetSuite deploy" (00:08:22). Lee Young elaborated that SDF deployment pushes all files and objects, and they do not recommend manually uploading files through the NetSuite interface (00:09:52) (00:14:40). They explained how a dry run validates dependencies and confirmed that SDF deploys all project elements (like custom fields and scripts) simultaneously, though they noted SDF does not delete anything, requiring manual deletion if necessary (00:11:00) (00:13:32).
+* Upcoming Demo and Task Hand-off: Andrei Serban noted they have many unrelated tasks and expected to start working on this project on Thursday, with a demo scheduled for Friday (00:07:10). Lee Young confirmed they do not have an invite for the Friday meeting and offered to continue plugging away at the project to make it more demo-ready before the eventual hand-off (00:08:22). They identified that the immediate missing component is the population of fields due to their absence in the required saved search (00:07:10).
+* Required Data Fields and Search Filters: The conversation returned to the missing fields, such as length, width, and species, which are not currently populated in the display (00:22:13) (00:27:16). Lee Young committed to ensuring that the fields (length, width, grade, species, etc.) are added to the correct search, and they will follow up when this is complete. Lee Young also committed to building another SuiteLet or similar script to validate what is stored in the NetSuite cache, as there is currently no way to tell what data the React app is retrieving (00:34:17) (00:39:50).
+* Purchase Order Creation Functionality: The participants discussed the "Create a PO" functionality, which attempted to create a purchase order but failed because terms and department fields were not specified and must be added to the screen, potentially with default values (00:41:57). Lee Young confirmed that, as a proof of concept, this functionality is built to the current requirements, but noted that necessary adjustments will likely be required later (00:43:39).
+* Next Steps and Follow-up Meeting: Andrei Serban stated they would review the provided documentation and the code built on GitHub, intending to start on the project by Thursday at the latest (00:23:20) (00:39:50). Lee Young confirmed they will take on the task of updating the search filters and committed to having a follow-up meeting on Wednesday at the same time to discuss any further questions, describing the current meeting as an introduction (00:43:39).
+
+
+Suggested next steps
+* [Andrei Serban] Review React Doc: Look into React requirement version 1.3 documentation.
+* [Andrei Serban] Configure Cursor: Try to configure Cursor to work with the Netsuite plugin.
+* [Lee Young] Share Extension: Provide the name of the Field Forwarder extension.
+* [Lee Young] Update Search: Ensure all missing fields (length, width, grade, species) are included in the search results; ping Andrei Serban upon completion.
+* [Lee Young] Build Cache Validator: Create a quick and easy Suitelet to validate and display contents of the Netsuite cache.
+
+
+You should review Gemini's notes to make sure they're accurate. Get tips and learn how Gemini takes notes
+Please provide feedback about using Gemini to take notes in a short survey.
+📖 Transcript
+Mar 3, 2026
+MGSL Task Handoff & Sync - Transcript
+00:00:00
+ 
+Lee Young: have to work on getting the uh the CSS. And I'm not sure it's probably the the route. Uh which one is it here? This might have to adjust the margin. It's - 65 top right bottom. This might have to go to 50 or something to get rid of. See how the I don't know if the scroll bar is going to lessen. That's one thing that I'll have to be adjusted. Like what if I do just to see 250 it's less. So that's something that you'll probably that'll take a while to figure out is this bottom margin because otherwise you can see it just it scrolls on forever but the scroll bar shows up. So that's one thing.
+Andrei Serban: So,
+Lee Young: Um,
+Andrei Serban: do we want to have two scroll bars, but the bigger one on the right? What is the behavior here that we
+Lee Young: I think I think I think the idea is because you can scroll here,
+Andrei Serban: want?
+Lee Young: right? But you don't know what the bottom is.
+ 
+ 
+00:01:46
+ 
+Lee Young: It's hidden by this footer, which I guess is fine, but the footer is going to hide. There's probably something underneath this. I don't know if that's going to be a problem, but for proof of concept, I don't think it will be. So, that's one thing. The other thing is that um this here, these need to be filled in. And I asked yesterday, worked on this last night. Um uh here here. So, I was questioning why. Oh, yes. The this custom I'll put this right in to the chat so you know. Where's the chat? Here it is. just because this isn't filling in. But there's a search and it is using this trader screen all items. But in the search uh to get those filters at the top, I don't see the fields they're looking for in order to grab this information. Plus, they're probably going to want the UI updated, but I don't know. But you can see yeah so there the cache needs to be updated.
+ 
+ 
+00:03:55
+ 
+Lee Young: This takes about 4 minutes. It's not scheduled. The other thing too is that these parameters there's a full rebuild subsidiary I have to seven because that's where I was getting most of the data. I'm not sure what the delta threshold was for because I don't read French and but I do I did I do have the uh the docs that were this was built off of in in the git repo. So this will all be here because I don't know how much you use AI but this is all generated with AI. So I took the I took the um the doc that of
+Andrei Serban: Okay.
+Lee Young: specs that Nick provided uh turn it into markdowns brought in what it is expecting. There's a bunch of stuff here. Um and that's this is what it's been built to. And there was a couple things for in this the one other thing I should mention um entry point somewhere here. I commented out the subsidiary for just to make sure for the filter. So you'll see that just for the all the items just to see if it would make a difference.
+ 
+ 
+00:05:30
+ 
+Lee Young: But for everything else, I think the subsidiary and the subsidiary comes from the script parameter. So I have it to seven because that's what is returning the most. So I want to see a lot of data here. Um I don't know if it exports. Yeah, it does. So that works, I guess. We'll see what happens. I never even tested that. Oh, there you go. So, that looks like it's working. Um, this refresh so that Yeah, this this guy takes about 4 minutes to run and it'll refresh the cache. It's not scheduled, so it has to be scheduled for every 15 minutes. So, basically, the the React app reads from the cache. And what I probably would have done is in the top here, I'm not this is another thing. I'm not sure what this is for. Um these two I didn't find anything regarding of it. Anyway, so for the cash, um I think ideally the best way to go about it would to grab the cache from the map reduce and what it does it the map produce stores it in a netswuite cache and then I'm not sure if the react app has it but I think ideally it should be stored in local storage for that 15 minutes and then goes and gets it like checks if it's been 15 minutes
+ 
+ 
+00:07:10
+ 
+Lee Young: or you'd have to check to see the best way to go about it. I think refreshing the local cache so that it's done locally and then when when this script hasn't run it still displays something because you saw when I came in here um what it say like the cash hadn't been refreshed or something like that.
+Andrei Serban: Just to stop you here, like this seems like a a ton of information.
+Lee Young: I know.
+Andrei Serban: Um, I do have a ton of tasks unrelated to this.
+Lee Young: So,
+Andrei Serban: So, I was expecting to maybe start on this on Thursday. Nick told me there's a demo on Friday.
+Lee Young: okay. Well, you can tell them like what's what's missing.
+Andrei Serban: Um,
+Lee Young: So, what's what's missing is that the this these fields are not being populated because they're not in the save search that like should populate it. That's that hasn't been done.
+Andrei Serban: I think I'm more so curious.
+Lee Young: I don't think that's a I don't know.
+Andrei Serban: Are you going to attend that meeting?
+ 
+ 
+00:08:22
+ 
+Lee Young: I don't have an invite.
+Andrei Serban: Okay. Um, let me check with Nick B here. Um. Oh, he's not going to attend it. You're not going to attend it. Um,
+Lee Young: So, if you if you want, I can I can I I can keep plugging away on it to get it more demo
+Andrei Serban: wow.
+Lee Young: ready, but at some point I'll be handing this off.
+Andrei Serban: Okay. Um, you built everything this from scratch or did Miguel Salon give
+Lee Young: Yeah.
+Andrei Serban: stuff?
+Lee Young: uh this is this is built from scratch. So this is built to the to the requirements that I that was provided to me and using
+Andrei Serban: Okay.
+Lee Young: the uh the files that Nick provided which
+Andrei Serban: Do you have a deployment checklist or anything of the sort?
+Lee Young: oh you just deploy it through SDF that's
+Andrei Serban: What do you mean through SDF?
+Lee Young: Oh, just the play SDF. Are you not
+Andrei Serban: I don't know. I mean the stuff that you built like do you have a how do
+ 
+ 
+00:09:52
+ 
+Lee Young: sure?
+Andrei Serban: I say this? Like let's say completely redundant example here. You create three save searches and one user event script and one map reduce script with 10 fields. Usually I put them into a sort of Excel spreadsheet that documents what I did. So when I put it into production, I have it on
+Lee Young: Yeah, with SDF you don't need to do that. This is it.
+Andrei Serban: hand.
+Lee Young: You just deploy to Netswuite. Like if I was to deploy this, I just go Netswuite deploy. That's it. And it pushes all the pushes all the files pushes. But the saves like the searches apparently they're already there. So, I'm not going to overwrite them,
+Andrei Serban: How were you able to do that?
+Lee Young: right?
+Andrei Serban: Like is that's intellig or like can can you do it manually is my question because I don't know how to do it like I don't have intelligent.
+Lee Young: Why would you do it manually?
+Andrei Serban: I'm just wondering if it's possible manually.
+ 
+ 
+00:11:00
+ 
+Lee Young: You could. I just don't see why you would do anything. If you're not familiar, I can I can walk you through it. It's pretty simple. I don't know what um I don't know what IDE you use or or what you're using
+Andrei Serban: I just use cursor to be honest.
+Lee Young: for
+Andrei Serban: But um is this the paid or free
+Lee Young: of WebStorm,
+Andrei Serban: version?
+Lee Young: you can use cursor. There's a there's a uh Netswuite plugin for uh VS Code you can use. Yeah.
+Andrei Serban: Really?
+Lee Young: And basically all it is is so like if for example um this is going to say that I probably don't have uh you would just do you just hit this and it would deploy it. There's like dry run. So it's going to go through and make sure that there's no dependencies. So now see it failed. So it's saying that this custom script. Um so the manifest. So I'm just going to netswuite.
+ 
+ 
+00:12:15
+ 
+Lee Young: So now let's see server sign. Let's try it again. There. So it would have deployed everything. That's it. There's nothing else to do. As long as you have all your objects in commit this,
+Andrei Serban: Yeah, I think you have to teach me this like um
+Lee Young: it's just ask cursor just get cursor to just get cursor to
+Andrei Serban: Okay.
+Lee Young: do it and say you know like as part of your workflow you can when you're done uh with your build plan if you if you I don't know how much you use AI but as part of your build hand build plan. You can say once the plan is built, deploy this to Netswuite and it'll just run the command of the Sweet Cloud project deploy and it'll deploy it over. So I could I could deploy this now, but there's there's no point. Everything's in there and
+Andrei Serban: What do you mean by deploy?
+Lee Young: it's
+Andrei Serban: Like is it it's a package or it's going to go manually one by one by one to the let's say you have three scripts when you click deploy is it going for each script is going to be deployed or it's like a zip that it gets to netswuite and then it all of them all deployed at the same
+ 
+ 
+00:13:32
+ 
+Lee Young: one all of them.
+Andrei Serban: time.
+Lee Young: So, one at a time. So, for example, this is a massive project that I'm working on. Um, it's going to deploy all these custom body fields, custom entity fields, custom scripts.
+Andrei Serban: Wait, what? Can you just open like a random custom body
+Lee Young: Um,
+Andrei Serban: field? So, how do you actually create
+Lee Young: Um,
+Andrei Serban: this?
+Lee Young: you can go here and that's we import objects from account. I'm not sure how to do it in VS Code, right? So, if I want something, it just says, okay, what what next? And then I can select, okay, I want uh client scripts and then I'll search for them and then, okay, I want to deploy this one and just bring it in. And then it's it's part of my deployment. And then you validate to make sure that you're not missing anything. And that's what the um this SweetCloud project when you do this deploy dry run it does a dry run within uh against Netswuite to make sure that you're not missing anything.
+ 
+ 
+00:14:40
+ 
+Lee Young: So when you do deploy it you're good. 99% of the time this works because normally what you do is you do this through the through the pipeline. So you push a PR, the PR gets approved and then GitHub actions deploy the code to Netswuite for you. So you so you know the account is up to date. So you're working within sandbox for development, you do that manually, right? Like if I want like here for example every all these files um like here I just upload the folder folder to account right well that's fine in the development environment within your sandbox but you don't want to do that in production you just want make sure the pipeline does
+Andrei Serban: Okay, this is like extremely confusing to me at the moment. Um,
+Lee Young: It's it's it's basically taking what you would normally do like I don't know if you go into like say you go to Netswuite do you go to scripting scripts
+Andrei Serban: Yeah.
+Lee Young: new upload the file yourself yeah don't do that anymore you're
+Andrei Serban: Yeah.
+ 
+ 
+00:15:51
+ 
+Lee Young: wasting you're wasting way too much time Um, so let's say for example, uh, this is Miguel right here. Okay. So, I'll show you. Um, for example, say I made this and I'm going to I'm not I'm doing it here, but let's say underscore 2, right? I'm going to add it to the add it to git. And then under my objects, I have this one. I'm going to just copy and paste it just for just for sake. it. There is there's times when you're going to upload the file to Netswuite yourself, but you're going to do that within the IDE. So, there's look into the sweet cloud um like even if I ask cursor, right? Like I'm going to go um see just composer, right? Um we'll start a new chat using sweet cloud. How can I upload a file? Right. Uh composer
+Andrei Serban: Why are you not using like any bigger
+Lee Young: because this is like a simple question.
+Andrei Serban: ones?
+Lee Young: If if I don't if I don't need to do any deep reasoning or anything that's that's complex anything that contain as far as if it's not a plan if it's not revenue facing and it's strict like no math involved it's just a script then I'm going to use the lesser model that I probably composer one or maybe on it or 4.5 high is even kind of too high.
+ 
+ 
+00:17:48
+ 
+Lee Young: But for something like this, like even composer 1.5 is too high because it can go to the web and can it can find it. This is simple, right? So it's telling you right here, okay, then I'm going to upload this path. So I could I could copy and paste this into this terminal and I could just say like, okay, deploy this file and give it the path, right? And it would do it. So anyway, so back here. So now I have this new name. I'm going to call it AP APX. We'll delete it when we're done. Right. So now under here, I'm going to call it APX because it all has to match. That's my deployment. And then I have this one here, API_2. So now when I deploy this I'm going to have two wrestllets. Okay. So, there's script ID. Oh, it's got to be underscore. Come on. APX. Apx and PX. So now I just go get a coffee.
+ 
+ 
+00:19:14
+ 
+Lee Young: Whatever. This one shouldn't take long. There we go. So it created the restlet. It's updated all my custom scripts. Everything updated here. So now I come back in here. If I come into scripts, I'm going to see under restitlets my APX right it. Yeah,
+Andrei Serban: Interesting.
+Lee Young: but it doesn't So the one thing with SDF is it does not delete anything. So just keep that in mind. Um yes.
+Andrei Serban: So if you want to delete, you have to do it manually.
+Lee Young: Um so I'm going to have entry points. Yeah, you definitely the only time that um sometimes I'll do it backwards and by that I mean I will create the script record in Netswuite after I've uploaded the file. So, if I duplicated this, then sometimes I'll go in because I'm not sure the settings I'm going to have, but then you can pull the pull that information in from the account, right? Like if you have, for example, um on this map reduce, I might in this one, I might do it because I'm going to create the script parameters first, then I'll just pull this script down and it brings the deployments with it.
+ 
+ 
+00:21:02
+ 
+Lee Young: That's the only other time.
+Andrei Serban: I see.
+Lee Young: Yeah, but yeah, as far as deployment checklist go, if you have to do anything manually like maybe uh API keys or set a preference company side maybe, but it's generally moving a form around, maybe moving some tabs or whatever on a form, then that's your that's your production checklist. But your production checklist is this deploy file cuz you know like this asterisk is going to it's going to deploy everything under this path. Right? If I only want to do like for example in this other project I have um this one I have this add diff deploy. It goes through the git diff and sees what has changed and then it updates the deploy file to only include the files that I'm deploying so that I'm in sandbox. I can just keep deploying and it just these are the files that have changed in in the in this in this branch. So I just add the files and I don't have to do it all manually because otherwise I got oh what changed?
+ 
+ 
+00:22:13
+ 
+Lee Young: I got to go right look in the look in git and say okay I have to add this I have to add that. It's just a pain in the butt. So, I just wrote a script for that. But, uh, yeah. So, that's your deployment checklist. But anyway, so back to the project. Um, these need to be updated. I will look into this. Oh, width works. So, I don't know why thickness is probably not part of the species. Nothing here. Length, nothing here.
+Andrei Serban: I see that the item name isn't correct. No.
+Lee Young: I don't know.
+Andrei Serban: Okay.
+Lee Young: Oh, because of
+Andrei Serban: Yeah. I feel like it's because it's French stuff.
+Lee Young: the
+Andrei Serban: I don't know. I'm actually just assuming because I saw this error multiple times when working with other clients that were French.
+Lee Young: see here. Let's just throw in actual item.
+Andrei Serban: Oh, it's actually like that. It's
+ 
+ 
+00:23:20
+ 
+Lee Young: Yeah.
+Andrei Serban: weird.
+Lee Young: Uh, so what does this do? Okay, so that removes the filter. So that works cuz I don't know French. My son's in French immersion, but he doesn't teach me anything. Um, it's just Tabernac and whatever else. Married. Um, so overall it's like kind of usable. Uh, I don't know. I think there was like a crate PO or something. Check this. Uh, there was some check box that allows you to create a purchase order. Oh, the dollar sign. Create a PO. So, I don't know what needs to happen here. Create skills on her. Not sure if that actually works or not. I have to look again. Yeah. So
+Andrei Serban: just for my understanding here on where we stand. Um Nick B gave me like a some
+Lee Young: just
+Andrei Serban: documentation regarding this React requirement version 1.3. I'm going to look into that. Um, I'm going to try to see how I can make cursor work the same the way you stated with the Netswuite plugin.
+ 
+ 
+00:25:03
+ 
+Andrei Serban: If not, then I'll just get WebStorm by the looks of it. Is the Webtorm that you have um like free or is it the premium version? I know there's premium versions from this and that
+Lee Young: Uh, I think they made it free a while ago.
+Andrei Serban: for
+Lee Young: There was Yeah, I I personally pay for it because it was like cheap enough. Um, I think it was like 200 bucks or something and the, you know, it just made sense. It's like I've been using it for a long time. Um, but as far as the sweet cloud, like I don't have it in my cursor. I don't think uh got to make sure I'm in the right one. Oh, maybe I do. Where is it? Uh, I don't know why it's working cuz I don't think I have anything. Huh. Maybe it's not public. There is. If you go into uh help Sweet cloud. Lord. So that's going to be yeah Visual Studio Code.
+ 
+ 
+00:27:16
+ 
+Lee Young: So it it shows you here setting it up installing it.
+Andrei Serban: I can check this some on my own time here.
+Lee Young: Yeah. Yeah. Yeah.
+Andrei Serban: I think um but logically speaking you would install this extension or
+Lee Young: You should
+Andrei Serban: something to be able to push directly to netswuite instead of manually uploading elements. Okay.
+Lee Young: correct.
+Andrei Serban: And then if we can go back to the like project itself. Um what is what remains to be done here? Like the search filters I guess a couple of them need to be done and oh this on wood.
+Lee Young: Yeah.
+Andrei Serban: Uh making so long. Okay.
+Lee Young: Yes.
+Andrei Serban: Um let me try
+Lee Young: So, it looks like because they're not in the search results, like I don't see length or whatever. So, that'd be up to
+Andrei Serban: Oh my god, those formulas look
+Lee Young: Yeah.
+Andrei Serban: crazy.
+Lee Young: Um, I had I thought doing this with uh SwQL would be easier, but then I'm like I don't want to try and convert this to like SQL.
+ 
+ 
+00:29:04
+ 
+Lee Young: Just no. No thanks. Um, like if they've if they've spec this out, then just leave it be. But I don't see length and everything else. And it's supposed to come from I believe I'll double check tonight and let you know. Uh those top filters need to come in, but I think they're supposed to come from Yeah, you can see like main summary search.
+Andrei Serban: So, where am I supposed to like grab these from? They're supposed to come like let's say I jump on this. like naturally I'm going to read the doc but what remains to be done here and then I'm more so curious on how do I do it like cuz I have to prep for the demo on Friday and like I'm sick as f*** and it's I have two days to prep for this so it's a bit of tight
+Lee Young: Yeah.
+Andrei Serban: schedule. I don't think I have two days either. I have other tasks.
+Lee Young: Well, um, let's just see if this is even here.
+ 
+ 
+00:30:41
+ 
+Lee Young: Is this just transaction search? Item search. Like they're not even like what is this?
+Andrei Serban: Is this a safe search?
+Lee Young: Yeah. Like I just want to see if this will bring in any in MGSL length. I guess it does. Is that the actual field name? Like I can do that. It's not a problem. We can do it tonight, but
+Andrei Serban: Oh my god. I didn't even know you could do that to explore that
+Lee Young: quest item.
+Andrei Serban: script.
+Lee Young: It's an extension uh for Chrome. There's this one too, this field forwarder. Um it's uh see search. I don't know where our screen went. Anyway, I I can give it to you. Look for that one.
+Andrei Serban: Thanks.
+Lee Young: Yeah, it's helpful. Um, so that looks like it'll Let's Okay, so that was saved. So if I Let's go to the regular search. It's this one. So you might you I I can do that.
+ 
+ 
+00:32:45
+ 
+Lee Young: It's I don't know how much you're going to have left to do, right? You got to kind of read through. I don't know what I'm missing. I don't think I'm missing anything. Um because the build plan went through the specs and I think it's been built. So, it's it's all here. I'm just not sure about the the only thing I'm not sure about is the um purchase order and sales order regardless of length group.
+Andrei Serban: So I think the Sorry, started coughing. I think um like most of from my understanding most of it is built. It's like proof of concept ready kind of ready for the demo. Needs to be modified here and there and then the task will be essentially given to me. Question mark in the air.
+Lee Young: Yeah.
+Andrei Serban: I'm not sure what's going to happen. Um, what get branch? Is it already in main or is there like a get branch on
+Lee Young: It's a separate repo.
+Andrei Serban: this?
+ 
+ 
+00:34:17
+ 
+Lee Young: Um,
+Andrei Serban: I know Nick invited me to one this
+Lee Young: yeah,
+Andrei Serban: morning.
+Lee Young: most likely this one. It's in the dev branch.
+Andrei Serban: Yeah. Thank
+Lee Young: So, divide by zero and bring in length.
+Andrei Serban: you.
+Lee Young: You know what? Let's just see if this will run. Nope. So, this one runs. Uh, this one. Oh, you're good. Okay. So, that's what it was.
+Andrei Serban: Sorry.
+Lee Young: It was the wrong one. I'm going to edit this. Okay. So, I you know what? I'll I'll make sure that um you can leave that with me. I'll make sure that these what's the formula I'm not going to worry about I guess those are already in there but I'll make sure that all these uh fields are in here tonight and just make sure it works and then I think everything else should be fine. This is a lot to take in. So, I'm like, uh, I'm working on this like an hour a night.
+ 
+ 
+00:36:15
+ 
+Lee Young: So, I've only I got limited time, but most of it's done.
+Andrei Serban: How long have you been working on this?
+Lee Young: It's about 3 hours.
+Andrei Serban: That's it. Wow.
+Lee Young: Yeah.
+Andrei Serban: Like the progress that you made is insane. Like there's no way I would have done this in three hours. Three days maybe.
+Lee Young: It's uh it's all on how you use the AI, right? So, what I did um to give you an overview is that the first hour I was given, well, let's say it was two hours. Uh because the first I've worked on this for three days, an hour each time, maybe an hour and a bit. The first time Nick gave me the stuff and then it wasn't correct. So I had to go back because it was a completely different thing. So what I did is I took the scripts that they had, I fed them into the AI said, "Build this, add that, whatever." Um, and then it changed. So I the cursor can't read uh uh word docs.
+ 
+ 
+00:37:29
+ 
+Lee Young: So I put this in the chat tpt and had it convert this to the markdown files and that was last night. So yeah, two days. I think it was Friday. No, Thursday. Thursday and last night is is what this is built in. So basically it was all in the plan. We just build the plan and I just let it let it go. So I didn't do any work on it. Um and yeah, but I had I had reference material for it to to use, right? I said use this from another project as as a reference like how to build the React uh site kind of so to speak because it gets bundled into a bundle through React like with Vite and that gets uploaded to Netswuite. But I had that as a framework from another project already. So yeah, it would have taken if I had to do it from scratch like it would have taken a day probably. But I had reference material for it to fall back on to say this is the way I want it
+ 
+ 
+00:38:38
+ 
+Andrei Serban: Okay.
+Lee Young: done.
+Andrei Serban: Is this implementation plan that you just showed me here um from AI or is it from the some documentation that they had?
+Lee Young: So this this plan was built from these requirements.
+Andrei Serban: Okay,
+Lee Young: Yeah.
+Andrei Serban: gotcha.
+Lee Young: So like in this one. Yeah, markdown. So I asked you know convert this to markdown. If you got questions ask and it did this. Then it said do you want a cursor ready something? I said yes please. And then I got more documentation. Then I said this is what I want. And you know then I want the implement implementation plan. I got this. I put it into cursor and I said you know read through this. Do you have enough information? It did. And then I had to come back and ask one more question or something.
+Andrei Serban: Okay, super. Um,
+Lee Young: Yeah.
+Andrei Serban: I'm going to look through this especially as well the cursor thing, webtorm thing and Um, like the code that you built on GitHub.
+ 
+ 
+00:39:50
+ 
+Lee Young: Yep.
+Andrei Serban: I'll probably start it like I'll probably start on this worst case scenario on Thursday.
+Lee Young: Yeah, that's fine.
+Andrei Serban: Um
+Lee Young: I'll go I'll go through I'll make sure that these are here. Length, width, uh grade, you know, species, all this stuff. I'll make sure that this the search is correct and I will ping you when that's done. And I think the these are all these are all written to um the cache. what I should do, what I will build into another sweet lit most likely something quick and easy uh is just a cache validator to show what's in the cache because right now there's no way to tell right so we don't know because what this
+Andrei Serban: Okay.
+Lee Young: the map reduce puts it into the netswuite cache and then the react goes and gets it right the app goes and gets it but we don't I mean we have the data showing in in front of us but There's no way to validate what is in the cache. Um, yeah. So, yeah, I'll get
+ 
+ 
+00:41:05
+ 
+Andrei Serban: So it's just like a data manipulation sort of task here where you they just want data from a save search or
+Lee Young: this.
+Andrei Serban: whatever on the main menu and you can filter on it
+Lee Young: Yeah. Yeah. So, what they do,
+Andrei Serban: basically.
+Lee Young: I guess, and then they say, "Okay, well, there's 62. I want to create a PO for this or a sales order." And that's it. They want to
+Andrei Serban: Do you think you would be able to like when you click purchase order it would open a window with populated data for that specific item? Would that make sense? Like is that even possible? What I'm asking?
+Lee Young: I don't know.
+Andrei Serban: Let me
+Lee Young: Uh yeah, like it should. Let's see what happens here. Like this should probably be a drop down so you can select the vendors. I don't know if that's in here or not.
+Andrei Serban: I'm more so thinking of actually opening up the peel page as a sort of a popup
+ 
+ 
+00:41:57
+ 
+Lee Young: Yeah, that's what I'm wondering what's in here. Uh to see what happens.
+Andrei Serban: window.
+Lee Young: Uh create portrait one trader calls and submisso form valies field record create ses record save. So it just so I don't know if it'll work but it should like there's no this should be a drop down to saying what vendor do you want or if you start typing right like it should select one but it's not in the it's not in the requirements so I'm not doing
+Andrei Serban: Yeah.
+Lee Young: it if it's not there you know that's that's up to them but if we go to relationships vendors uh let's just pick one I don't think Pauling will do it or Canada, but you know, 877. I'm just curious what'll happen. Uh yeah. So tried tried to create the PO
+Andrei Serban: Yeah, I guess
+Lee Young: right so this is these are the things that are they're going to come back with like okay well we don't know what the values for these should be so someone has to decide right um like I don't see anything create a PO there's location is that here required yes item location quantity date.
+ 
+ 
+00:43:39
+ 
+Lee Young: Well, like terms and department aren't specified. So, this screen will have to be adjusted to have those fields and with defaults or something.
+Andrei Serban: Yeah.
+Lee Young: I don't know. But this is this is like a demo proof of concept like not this is a finished product as far as I'm
+Andrei Serban: Yeah.
+Lee Young: concerned.
+Andrei Serban: Yep.
+Lee Young: Let's see here. Just want to see if it brings up. Okay. So, length and width are there. I'm just curious. So, like I said, I'll get you can go through this
+Andrei Serban: Um,
+Lee Young: um and see if there's I like I said, I will make sure that these are added and then yeah, whatever questions you have like even we can jump on a 20 minute tomorrow because this is kind of just an introduction, right?
+Andrei Serban: Yeah. Yeah. Yeah. I'll um What's your availability?
+Lee Young: So
+Andrei Serban: Let me just open the calendar here. I don't know. I'm suspecting I'll have time, but like remains to be seen unless I do so overtime.
+ 
+ 
+00:45:14
+ 
+Andrei Serban: um
+Lee Young: yeah, my I am uh
+Andrei Serban: which should be available at the same time
+Lee Young: let me check here because I think tomorrow's Wednesday,
+Andrei Serban: tomorrow.
+Lee Young: Right. Yeah, that should be fine. I think I think so.
+Andrei Serban: Yeah, I think we're we're fine for now. I need to really align with the documents and what was built because I don't know what's going on.
+Lee Young: Yeah. Yeah. 100%. Yeah. Me neither.
+Andrei Serban: Basically,
+Lee Young: I wasn't in the thick of it, so I got uh I got the AI. So the problem is is that you don't always know what you don't what has been missed. But I mean it's a working model. So until they play with it and say this is missing this is missing then but I think you know given the plan I think most of them are most of the requirements are
+Andrei Serban: Yep.
+Lee Young: there so should be okay.
+Andrei Serban: Yeah, I think we're going to be fine.
+Lee Young: Yeah. Okay.
+Andrei Serban: Listen, thank you so much. Thank you so much. See you tomorrow. Actually, do I resend the meeting?
+ 
+ 
+Transcription ended after 00:48:34
+
+
+This editable transcript was computer generated and might contain errors. People can also change the text after it was created.

@@ -74,8 +74,8 @@ function TraderScreenContent() {
   );
 
   const filterOptions = React.useMemo(
-    () => getFilterOptions(allRows),
-    [getFilterOptions, allRows]
+    () => getFilterOptions(allRows, filters),
+    [getFilterOptions, allRows, filters]
   );
 
   const avgCost = React.useMemo(() => {

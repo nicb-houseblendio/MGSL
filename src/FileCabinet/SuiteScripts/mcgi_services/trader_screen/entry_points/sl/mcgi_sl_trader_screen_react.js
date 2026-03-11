@@ -8,7 +8,7 @@
  * (1) ensure the RESTlet script/deploy IDs below match your deployed RESTlet, and (2) run or schedule the
  * Map/Reduce script to populate the cache.
  */
-define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record'], (serverWidget, runtime, url, file, record) => {
+define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record', 'N/log'], (serverWidget, runtime, url, file, record, log) => {
 
     // Must match the deployed RESTlet. If using mcgi_rl_trader_api.js, script id is often customscript_mcgi_rl_trader_api.
     const RESTLET_SCRIPT_ID = 'customscript_mcgi_rl_traderapi';

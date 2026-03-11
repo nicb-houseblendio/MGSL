@@ -248,8 +248,20 @@ define([
             if (!summaryStr) {
                 return { error: 'CACHE_MISS', message: 'Cache is being refreshed. Try again shortly.' };
             }
-            const rows = JSON.parse(summaryStr);
-            if (!Array.isArray(rows)) rows = [];
+            const parsed = JSON.parse(summaryStr);
+            let rows;
+            if (parsed && parsed.chunked && parsed.chunkCount) {
+                rows = [];
+                for (let i = 0; i < parsed.chunkCount; i++) {
+                    const chunkStr = myCache.get({ key: CacheKeys.buildSummaryDataKey(i) });
+                    if (chunkStr) {
+                        const chunkRows = JSON.parse(chunkStr);
+                        if (Array.isArray(chunkRows)) rows.push.apply(rows, chunkRows);
+                    }
+                }
+            } else {
+                rows = Array.isArray(parsed) ? parsed : [];
+            }
 
             const filtered = applyFilters(rows, params || {});
             const totals = computeTotals(filtered);
@@ -378,9 +390,11 @@ define([
             }
 
             const docId = rec.save();
-            const docNum = rec.getValue({ fieldId: 'tranid' });
+            const recType = type === 'PO' ? 'purchaseorder' : 'salesorder';
+            const savedRec = record.load({ type: recType, id: docId });
+            const docNum = savedRec.getValue({ fieldId: 'tranid' });
             const docUrl = url.resolveRecord({
-                recordType: type === 'PO' ? 'purchaseorder' : 'salesorder',
+                recordType: recType,
                 recordId: docId,
                 isEditMode: false,
             });

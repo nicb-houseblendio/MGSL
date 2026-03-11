@@ -63,6 +63,21 @@ function applyClientFilters(rows: SummaryRow[], filters: FilterState): SummaryRo
   return filtered;
 }
 
+function parseNumericLabel(s: string): number {
+  // Direct integer or decimal: "4", "6", "10", "1.5"
+  if (!isNaN(parseFloat(s)) && !/[\s/']/.test(s)) return parseFloat(s);
+  // Mixed fraction: "3 1/2", "1 3/8", "5 1/2"
+  const mixed = s.match(/^(\d+)\s+(\d+)\/(\d+)/);
+  if (mixed) return parseInt(mixed[1]) + parseInt(mixed[2]) / parseInt(mixed[3]);
+  // Simple fraction: "1/2", "3/4"
+  const frac = s.match(/^(\d+)\/(\d+)$/);
+  if (frac) return parseInt(frac[1]) / parseInt(frac[2]);
+  // Length with apostrophe: "10'", "8'", "10' Green Rough"
+  const feet = s.match(/^([\d.]+)'/);
+  if (feet) return parseFloat(feet[1]);
+  return NaN;
+}
+
 export const useSummaryData = (subsidiaryId: string) => {
   const [allRows, setAllRows] = useState<SummaryRow[] | null>(null);
   const [meta, setMeta] = useState<{ lastUpdated: string; cacheVersion: number } | null>(null);
@@ -95,56 +110,71 @@ export const useSummaryData = (subsidiaryId: string) => {
   }, [subsidiaryId, fetchSummary]);
 
   const getFilteredRows = useCallback(
-    (filters: FilterState): SummaryRow[] => {
-      if (!allRows) return [];
-      return applyClientFilters(allRows, filters);
-    },
-    [allRows]
+      (filters: FilterState): SummaryRow[] => {
+        if (!allRows) return [];
+        return applyClientFilters(allRows, filters);
+      },
+      [allRows]
   );
 
   const getTotals = useCallback((rows: SummaryRow[]) => {
     return rows.reduce(
-      (acc, r) => ({
-        onHand: acc.onHand + (r.onHand || 0),
-        committed: acc.committed + (r.committed || 0),
-        outbound: acc.outbound + (r.outbound || 0),
-        onOrder: acc.onOrder + (r.onOrder || 0),
-        inTransit: acc.inTransit + (r.inTransit || 0),
-        available: acc.available + (r.available || 0),
-      }),
-      { onHand: 0, committed: 0, outbound: 0, onOrder: 0, inTransit: 0, available: 0 }
+        (acc, r) => ({
+          onHand: acc.onHand + (r.onHand || 0),
+          committed: acc.committed + (r.committed || 0),
+          outbound: acc.outbound + (r.outbound || 0),
+          onOrder: acc.onOrder + (r.onOrder || 0),
+          inTransit: acc.inTransit + (r.inTransit || 0),
+          available: acc.available + (r.available || 0),
+        }),
+        { onHand: 0, committed: 0, outbound: 0, onOrder: 0, inTransit: 0, available: 0 }
     );
   }, []);
 
-  const getFilterOptions = useCallback((rows: SummaryRow[] | null) => {
-    if (!rows?.length) return {} as Record<string, { value: string; label: string }[]>;
-    const options: Record<string, { value: string; label: string }[]> = {};
-    const add = (valueKey: keyof SummaryRow, labelKey: keyof SummaryRow, outKey: string) => {
-      const seen = new Set<string>();
-      rows.forEach((r) => {
-        const v = String(r[valueKey] ?? '').trim();
-        const lbl = String(r[labelKey] ?? v).trim();
-        if (v && !seen.has(v)) {
-          seen.add(v);
-          if (!options[outKey]) options[outKey] = [];
-          options[outKey].push({ value: v, label: lbl || v });
+  const getFilterOptions = useCallback(
+      (rows: SummaryRow[] | null, filters: FilterState) => {
+        if (!rows?.length) return {} as Record<string, { value: string; label: string }[]>;
+
+        const FILTER_FIELDS: { valueKey: keyof SummaryRow; labelKey: keyof SummaryRow; outKey: string; filterKey: keyof FilterState }[] = [
+          { valueKey: 'locationId', labelKey: 'locationName', outKey: 'location', filterKey: 'location' },
+          { valueKey: 'internalId', labelKey: 'itemCode', outKey: 'item', filterKey: 'item' },
+          { valueKey: 'species', labelKey: 'species', outKey: 'species', filterKey: 'species' },
+          { valueKey: 'thickness', labelKey: 'thickness', outKey: 'thickness', filterKey: 'thickness' },
+          { valueKey: 'width', labelKey: 'width', outKey: 'width', filterKey: 'width' },
+          { valueKey: 'length', labelKey: 'length', outKey: 'length', filterKey: 'length' },
+          { valueKey: 'grade', labelKey: 'grade', outKey: 'grade', filterKey: 'grade' },
+          { valueKey: 'finition', labelKey: 'finition', outKey: 'finition', filterKey: 'finition' },
+          { valueKey: 'humidity', labelKey: 'humidity', outKey: 'humidity', filterKey: 'humidity' },
+          { valueKey: 'plannage', labelKey: 'plannage', outKey: 'plannage', filterKey: 'plannage' },
+          { valueKey: 'etampage', labelKey: 'etampage', outKey: 'etampage', filterKey: 'etampage' },
+          { valueKey: 'autres', labelKey: 'autres', outKey: 'autres', filterKey: 'autres' },
+        ];
+
+        const options: Record<string, { value: string; label: string }[]> = {};
+        for (const field of FILTER_FIELDS) {
+          const filtersWithout: FilterState = { ...filters, [field.filterKey]: undefined };
+          const subset = applyClientFilters(rows, filtersWithout);
+          const seen = new Set<string>();
+          const items: { value: string; label: string }[] = [];
+          for (const r of subset) {
+            const v = String(r[field.valueKey] ?? '').trim();
+            const lbl = String(r[field.labelKey] ?? v).trim();
+            if (v && !seen.has(v)) {
+              seen.add(v);
+              items.push({ value: v, label: lbl || v });
+            }
+          }
+          options[field.outKey] = items.sort((a, b) => {
+            const aNum = parseNumericLabel(a.label);
+            const bNum = parseNumericLabel(b.label);
+            if (!isNaN(aNum) && !isNaN(bNum)) return aNum - bNum;
+            return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+          });
         }
-      });
-    };
-    add('locationId', 'locationName', 'location');
-    add('internalId', 'itemCode', 'item');
-    add('species', 'species', 'species');
-    add('thickness', 'thickness', 'thickness');
-    add('width', 'width', 'width');
-    add('length', 'length', 'length');
-    add('grade', 'grade', 'grade');
-    add('finition', 'finition', 'finition');
-    add('humidity', 'humidity', 'humidity');
-    add('plannage', 'plannage', 'plannage');
-    add('etampage', 'etampage', 'etampage');
-    add('autres', 'autres', 'autres');
-    return options;
-  }, []);
+        return options;
+      },
+      []
+  );
 
   return {
     allRows,
