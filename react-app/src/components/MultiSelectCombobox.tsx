@@ -1,5 +1,6 @@
 import * as React from 'react';
-import { Check, ChevronsUpDown, X } from 'lucide-react';
+import { ChevronsUpDown, X } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -73,6 +74,8 @@ export const MultiSelectCombobox = ({
     .map((v) => options.find((o) => o.value === v)?.label || v)
     .filter(Boolean);
 
+  const tooltipText = selectedLabels.length > 0 ? selectedLabels.join(', ') : undefined;
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -81,8 +84,9 @@ export const MultiSelectCombobox = ({
           role="combobox"
           aria-expanded={open}
           disabled={disabled || loading}
+          title={tooltipText}
           className={cn(
-            'min-w-[160px] justify-between font-normal',
+            'w-full min-w-[160px] justify-between font-normal overflow-hidden',
             !selected.length && 'text-muted-foreground',
             className
           )}
@@ -96,20 +100,43 @@ export const MultiSelectCombobox = ({
           </span>
           <div className="flex items-center gap-1 shrink-0">
             {selected.length > 0 && (
-              <X
-                className="h-4 w-4 opacity-50 hover:opacity-100"
-                onClick={(e) => {
+              <span
+                role="button"
+                tabIndex={0}
+                className="inline-flex items-center justify-center h-5 w-5 rounded-full hover:bg-destructive/20 cursor-pointer"
+                onPointerDown={(e) => {
+                  e.preventDefault();
                   e.stopPropagation();
                   clearAll();
                 }}
-              />
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    clearAll();
+                  }
+                }}
+              >
+                <X className="h-3.5 w-3.5 opacity-70 hover:opacity-100" />
+              </span>
             )}
             <ChevronsUpDown className="h-4 w-4 opacity-50" />
           </div>
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
-        <Command>
+      <PopoverContent className="w-[300px] min-w-[var(--radix-popover-trigger-width)] p-0" align="start">
+        <Command
+          shouldFilter={false}
+          onKeyDown={(e) => {
+            if (e.key === 'Tab') {
+              setOpen(false);
+            }
+          }}
+        >
           <CommandInput
             placeholder={searchPlaceholder}
             value={search}
@@ -123,14 +150,14 @@ export const MultiSelectCombobox = ({
                   key={option.value}
                   value={option.value}
                   onSelect={() => toggleValue(option.value)}
+                  title={option.label}
+                  className="truncate"
                 >
-                  <Check
-                    className={cn(
-                      'mr-2 h-4 w-4',
-                      selected.includes(option.value) ? 'opacity-100' : 'opacity-0'
-                    )}
+                  <Checkbox
+                    checked={selected.includes(option.value)}
+                    className="mr-2 h-4 w-4 shrink-0 pointer-events-none"
                   />
-                  {option.label}
+                  <span className="truncate">{option.label}</span>
                 </CommandItem>
               ))}
             </CommandGroup>

@@ -53,13 +53,6 @@ function applyClientFilters(rows: SummaryRow[], filters: FilterState): SummaryRo
     const set = new Set(filters.autres);
     filtered = filtered.filter((r) => r.autres && set.has(r.autres));
   }
-  if (filters.quantityGreaterThanZero !== false) {
-    filtered = filtered.filter((r) => {
-      const total =
-        (r.onHand || 0) + (r.committed || 0) + (r.outbound || 0) + (r.onOrder || 0) + (r.inTransit || 0);
-      return total > 0;
-    });
-  }
   return filtered;
 }
 
@@ -91,6 +84,33 @@ export const useSummaryData = (subsidiaryId: string) => {
       const result = await apiGet<SummaryResponse>('summary', { greaterThanZero: true });
       setAllRows(result.rows);
       setMeta(result.meta ? { lastUpdated: result.meta.lastUpdated, cacheVersion: result.meta.cacheVersion } : null);
+
+      // ── UoM diagnostic ──────────────────────────────────────────
+      if (result.rows?.length > 0) {
+        const total = result.rows.length;
+        const withMbf = result.rows.filter(r => r.mbfFactor != null && r.mbfFactor > 0).length;
+        const sample = result.rows.slice(0, 5).map(r => ({
+          itemCode: r.itemCode,
+          mbfFactor: r.mbfFactor,
+          fieldPresent: 'mbfFactor' in r,
+        }));
+        console.group('[UoM Diagnostic] mbfFactor data check');
+        console.log(`Rows with mbfFactor > 0: ${withMbf} / ${total}`);
+        console.table(sample);
+        if (withMbf === 0) {
+          console.warn(
+            'ALL rows have mbfFactor=0 or missing. MBF mode will show N/A everywhere.\n' +
+            'Checklist:\n' +
+            '  1. NetSuite saved search has custitem_mgsl_fbm + custitem_mgsl_ppp as GROUP columns?\n' +
+            '  2. MR script (mcgi_mr_trader_screen_cache.js) deployed with mbfFactor code?\n' +
+            '  3. MR has been run since deployment? (trigger manual run or wait for schedule)\n' +
+            '  4. Items in NetSuite have FBM per Piece and Pieces per Pack fields populated?'
+          );
+        }
+        console.groupEnd();
+      }
+      // ── end diagnostic ──────────────────────────────────────────
+
       return result;
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load data';
@@ -127,6 +147,23 @@ export const useSummaryData = (subsidiaryId: string) => {
           inTransit: acc.inTransit + (r.inTransit || 0),
           available: acc.available + (r.available || 0),
         }),
+        { onHand: 0, committed: 0, outbound: 0, onOrder: 0, inTransit: 0, available: 0 }
+    );
+  }, []);
+
+  const getTotalsMBF = useCallback((rows: SummaryRow[]) => {
+    return rows.reduce(
+        (acc, r) => {
+          const f = r.mbfFactor ?? 0;
+          return {
+            onHand: acc.onHand + (r.onHand * f),
+            committed: acc.committed + (r.committed * f),
+            outbound: acc.outbound + (r.outbound * f),
+            onOrder: acc.onOrder + (r.onOrder * f),
+            inTransit: acc.inTransit + (r.inTransit * f),
+            available: acc.available + (r.available * f),
+          };
+        },
         { onHand: 0, committed: 0, outbound: 0, onOrder: 0, inTransit: 0, available: 0 }
     );
   }, []);
@@ -184,6 +221,7 @@ export const useSummaryData = (subsidiaryId: string) => {
     fetchSummary,
     getFilteredRows,
     getTotals,
+    getTotalsMBF,
     getFilterOptions,
   };
 };

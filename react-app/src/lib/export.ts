@@ -33,13 +33,13 @@ export const exportToExcel = (
     'On Order': r.onOrder || 0,
     'In Transit': r.inTransit || 0,
     'Available': r.available || 0,
-    'Avg Prix/M³': r.averageCost || 0,
+    'Avg Price': r.averageCost || 0,
   }));
 
   excelRows.push({
     'Item ID': '',
     'Location': '',
-    'Item': `TOTALS — ${rows.length} ART.`,
+    'Item': `TOTALS — ${rows.length} items`,
     'Species': '',
     'Thickness': '',
     'Width': '',
@@ -55,7 +55,7 @@ export const exportToExcel = (
     'On Order': totals.onOrder,
     'In Transit': totals.inTransit,
     'Available': totals.available,
-    'Avg Prix/M³': 0,
+    'Avg Price': 0,
   });
 
   const ws = XLSX.utils.json_to_sheet(excelRows);

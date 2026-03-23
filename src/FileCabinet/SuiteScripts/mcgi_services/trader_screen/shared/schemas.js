@@ -10,7 +10,7 @@ define([], () => {
         'species', 'thickness', 'width', 'length', 'grade',
         'finition', 'humidity', 'plannage', 'etampage', 'autres',
         'onHand', 'committed', 'outbound', 'onOrder', 'inTransit', 'available',
-        'quantityFBM', 'averageCost', 'detailKey',
+        'mbfFactor', 'averageCost', 'detailKey',
     ];
 
     const META_FIELDS = [
@@ -21,11 +21,11 @@ define([], () => {
     const DETAIL_BUCKETS = ['onHand', 'committed', 'outbound', 'onOrder', 'inTransit'];
 
     const DETAIL_ROW_SCHEMAS = {
-        onHand: ['docType', 'docNum', 'docUrl', 'receiptDate', 'vendor', 'vendorUrl', 'lotNo', 'packQty', 'avgPrice'],
-        committed: ['docNum', 'docUrl', 'customerName', 'customerUrl', 'tranDate', 'expectedShipDate', 'itemCode', 'itemUrl', 'packCommitted', 'openPackQty', 'rate', 'pricePerPiece'],
-        outbound: ['docNum', 'docUrl', 'customerName', 'customerUrl', 'dueDate', 'itemCode', 'itemUrl', 'packQty', 'invoicedQty', 'remainingQty', 'rate'],
-        onOrder: ['docNum', 'docUrl', 'vendorName', 'vendorUrl', 'shipDate', 'itemCode', 'itemUrl', 'packQty', 'openQty', 'rate'],
-        inTransit: ['docNum', 'docUrl', 'tranDate', 'vendor', 'vendorUrl', 'itemCode', 'itemUrl', 'packQty', 'inTransitAdditional', 'rate'],
+        onHand: ['docType', 'docNum', 'docUrl', 'reloadId', 'poWoNumber', 'receiptDate', 'vendor', 'vendorUrl', 'lotNo', 'packQty', 'piecesPerPack', 'pricePerPiece', 'avgPrice'],
+        committed: ['docNum', 'docUrl', 'customerName', 'customerUrl', 'tranDate', 'expectedShipDate', 'packCommitted', 'piecesPerPack', 'pricePerPiece', 'rate'],
+        outbound: ['docNum', 'docUrl', 'customerName', 'customerUrl', 'dueDate', 'packQty', 'piecesPerPack', 'pricePerPiece', 'rate'],
+        onOrder: ['docNum', 'docUrl', 'vendorName', 'vendorUrl', 'shipDate', 'packQty', 'piecesPerPack', 'pricePerPiece', 'rate'],
+        inTransit: ['docNum', 'docUrl', 'tranDate', 'vendor', 'vendorUrl', 'packQty', 'piecesPerPack', 'pricePerPiece', 'rate'],
     };
 
     return {

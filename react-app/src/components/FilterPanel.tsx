@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { Checkbox } from '@/components/ui/checkbox';
 import { ChevronDown } from 'lucide-react';
 import { MultiSelectCombobox } from '@/components/MultiSelectCombobox';
 import { useNetSuite } from '@/context/NetSuiteContext';
@@ -46,7 +45,6 @@ export type FilterOptions = Record<string, { value: string; label: string }[]>;
 interface FilterPanelProps {
   filters: FilterState;
   onFiltersChange: (filters: FilterState) => void;
-  onApply: () => void;
   onReset: () => void;
   onExport: () => void;
   filterOptions?: FilterOptions;
@@ -56,7 +54,6 @@ interface FilterPanelProps {
 export const FilterPanel = ({
   filters,
   onFiltersChange,
-  onApply,
   onReset,
   onExport,
   filterOptions = {},
@@ -75,7 +72,7 @@ export const FilterPanel = ({
   };
 
   const allFilters = config.filters;
-  const [filtersOpen, setFiltersOpen] = React.useState(true);
+  const [filtersOpen, setFiltersOpen] = React.useState(false);
 
   const activeFilterCount = allFilters.filter((key) => {
     const apiKey = FILTER_TO_API[key] || key;
@@ -95,17 +92,17 @@ export const FilterPanel = ({
         style={{ background: filtersOpen ? 'transparent' : '#EEF1F6' }}
       >
         <div className="flex items-center gap-2.5">
-          <span className="text-[13px] font-semibold text-[#0F2641]">🔍 Filtres</span>
+          <span className="text-[13px] font-semibold text-[#0F2641]">Filters</span>
           {activeFilterCount > 0 && (
             <span
               className="text-white text-[11px] font-bold px-2 py-0.5 rounded-full"
               style={{ background: '#1E6B47' }}
             >
-              {activeFilterCount} actif{activeFilterCount > 1 ? 's' : ''}
+              {activeFilterCount} active
             </span>
           )}
           {!filtersOpen && (
-            <span className="text-[#7A8FA3] text-xs">(cliquer pour développer)</span>
+            <span className="text-[#7A8FA3] text-xs">(click to expand)</span>
           )}
         </div>
         <ChevronDown
@@ -114,70 +111,61 @@ export const FilterPanel = ({
         />
       </button>
 
-      {filtersOpen && (
-        <div className="px-5 pb-3.5 border-t border-[#E2E8F0]">
-          <div className="grid gap-x-3 gap-y-2 mb-3 pt-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(155px, 1fr))' }}>
-            {allFilters.map((key) => (
-              <FilterField
-                key={key}
-                filterKey={key}
-                filters={filters}
-                updateFilter={updateFilter}
-                options={filterOptions[FILTER_TO_API[key] || key] || filterOptions[key] || []}
-                comboboxClassName={COMBOBOX_POC_CLASS}
-              />
-            ))}
-          </div>
-          <div className="flex items-center gap-4 flex-wrap">
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="qty-toggle"
-                checked={filters.quantityGreaterThanZero !== false}
-                onCheckedChange={(checked) =>
-                  onFiltersChange({
-                    ...filters,
-                    quantityGreaterThanZero: checked !== false,
-                  })
-                }
-              />
-              <label htmlFor="qty-toggle" className="text-[13px] font-medium select-none cursor-pointer text-[#3D5166]">
-                Quantité &gt; 0 seulement
-              </label>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateRows: filtersOpen ? '1fr' : '0fr',
+        }}
+      >
+        <div
+          className="overflow-hidden"
+          aria-hidden={!filtersOpen}
+          style={{ pointerEvents: filtersOpen ? 'auto' : 'none' }}
+        >
+          <div className="px-5 pb-3.5 border-t border-[#E2E8F0]">
+            <div className="flex gap-3 pt-3">
+              <div className="grid flex-1 gap-x-3 gap-y-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
+                {allFilters.map((key) => (
+                  <FilterField
+                    key={key}
+                    filterKey={key}
+                    filters={filters}
+                    updateFilter={updateFilter}
+                    options={filterOptions[FILTER_TO_API[key] || key] || filterOptions[key] || []}
+                    comboboxClassName={COMBOBOX_POC_CLASS}
+                  />
+                ))}
+              </div>
+              <div className="flex items-end gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={onReset}
+                  title="Reset"
+                  className="h-10 px-3 rounded-md text-lg font-semibold border border-[#CBD5E1] bg-transparent text-[#3D5166] hover:bg-[#F8FAFC]"
+                >
+                  ↺
+                </button>
+                <button
+                  type="button"
+                  onClick={onExport}
+                  disabled={exportDisabled}
+                  title="Export Excel"
+                  className="h-10 px-3 rounded-md text-lg font-extrabold border-2 bg-transparent hover:bg-[#FFFEF5] disabled:opacity-50"
+                  style={{ borderColor: '#C8A035', color: '#C8A035' }}
+                >
+                  ↓
+                </button>
+              </div>
             </div>
-            <div className="flex-1" />
-            <button
-              type="button"
-              onClick={onReset}
-              className="py-1.5 px-4 rounded-md text-xs font-semibold border border-[#CBD5E1] bg-transparent text-[#3D5166] hover:bg-[#F8FAFC]"
-            >
-              ↺ Réinitialiser
-            </button>
-            <button
-              type="button"
-              onClick={onApply}
-              className="py-1.5 px-5 rounded-md text-[13px] font-bold text-white border-0 shadow-md"
-              style={{ background: 'linear-gradient(135deg, #1E6B47, #237A52)', boxShadow: '0 2px 8px rgba(30,107,71,0.3)' }}
-            >
-              ▶ Appliquer les filtres
-            </button>
-            <button
-              type="button"
-              onClick={onExport}
-              disabled={exportDisabled}
-              className="py-1.5 px-3.5 rounded-md text-xs font-semibold border-2 bg-transparent hover:bg-[#FFFEF5] disabled:opacity-50"
-              style={{ borderColor: '#C8A035', color: '#C8A035' }}
-            >
-              ↓ Export Excel
-            </button>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };
 
 const COMBOBOX_POC_CLASS =
-  'bg-white border-[#CBD5E1] text-[#0D1F33] hover:bg-[#F8FAFC] hover:border-[#94A3B8]';
+  'bg-white border-[#CBD5E1] text-[#0D1F33] hover:bg-[#EDF1F7]';
 
 interface FilterFieldProps {
   filterKey: FilterKey;
@@ -193,15 +181,15 @@ const FilterField = ({ filterKey, filters, updateFilter, options, comboboxClassN
 
   return (
     <div className="space-y-1">
-      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#3D5166]">
+      <label className="text-[10px] font-bold uppercase tracking-wider text-[#3D5166]">
         {FILTER_LABELS[filterKey] || filterKey}
       </label>
       <MultiSelectCombobox
         options={options}
         selected={selected}
         onChange={(v) => updateFilter(filterKey, v)}
-        placeholder={FILTER_LABELS[filterKey] || filterKey}
-        searchPlaceholder="Rechercher..."
+        placeholder="All"
+        searchPlaceholder="Search..."
         className={comboboxClassName}
       />
     </div>

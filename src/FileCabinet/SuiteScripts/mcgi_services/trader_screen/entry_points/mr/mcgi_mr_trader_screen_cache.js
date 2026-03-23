@@ -9,20 +9,20 @@
  * @param {number} custscript_ts_delta_fallback_threshold - Fall back to full rebuild if delta pairs > this (default: 500)
  */
 define([
-    'N/search', 'N/cache', 'N/log', 'N/runtime',
+    'N/search', 'N/cache', 'N/log', 'N/runtime', 'N/task',
     '../../shared/cacheKeys',
     '../../shared/cacheClient',
     '../../shared/urlResolver',
-], (search, cache, log, runtime, CacheKeys, CacheClient, UrlResolver) => {
+], (search, cache, log, runtime, task, CacheKeys, CacheClient, UrlResolver) => {
     const { TTL_SUMMARY, TTL_LAST_RUN, buildDetailKey, buildDetailBucketKey, buildChunkKey } = CacheKeys;
     const { getRecordUrl } = UrlResolver;
 
-    const ITEM_DATA_SEARCH_ID = 'customsearch_suitelet_all_items_search';
-    const ON_HAND_SEARCH_ID = 'customsearch_mgsl_trader_onhand_tran';
-    const COMMITTED_SEARCH_ID = 'customsearch_mgsl_trader_committed';
-    const OUTBOUND_SEARCH_ID = 'customsearch_mgsl_trader_outbound';
-    const ON_ORDER_SEARCH_ID = 'customsearch_mgsl_trader_onorder';
-    const IN_TRANSIT_SEARCH_ID = 'customsearch_mgsl_trader_intransit';
+    const ITEM_DATA_SEARCH_ID = 'customsearch_suitelet_all_items_search_n';
+    const ON_HAND_SEARCH_ID = 'customsearch_mgsl_trader_onhand_tran_nts';
+    const COMMITTED_SEARCH_ID = 'customsearch_mgsl_trader_committed_nts';
+    const OUTBOUND_SEARCH_ID = 'customsearch_mgsl_trader_outbound_nts';
+    const ON_ORDER_SEARCH_ID = 'customsearch_mgsl_trader_onorder_nts';
+    const IN_TRANSIT_SEARCH_ID = 'customsearch_mgsl_trader_intransit_nts';
 
     const ITEM_RECORD_TYPE_MAPPING = {
         InvAdjst: 'inventoryadjustment',
@@ -88,7 +88,6 @@ define([
                 if (label === 'commited') formulaValues.commited = result.getValue(col);
                 if (label === 'onorder') formulaValues.onOrder = result.getValue(col);
                 if (label === 'intransit') formulaValues.inTransit = result.getValue(col);
-                if (label === 'available') formulaValues.available = result.getValue(col);
                 if (label === 'outbound') formulaValues.outbound = result.getValue(col);
             }
         });
@@ -98,7 +97,7 @@ define([
         const outbound = roundToTwoDecimals(parseFloat(formulaValues.outbound) || 0);
         const onOrder = roundToTwoDecimals(parseFloat(formulaValues.onOrder) || 0);
         const inTransit = roundToTwoDecimals(parseFloat(formulaValues.inTransit) || 0);
-        const available = roundToTwoDecimals(parseFloat(formulaValues.available) || 0);
+        const available = roundToTwoDecimals(onHand - committed - outbound + onOrder - inTransit);
 
         const locationId = result.getValue({ name: 'inventorylocation', summary: 'GROUP' });
         const locationName = result.getText({ name: 'inventorylocation', summary: 'GROUP' });
@@ -128,9 +127,15 @@ define([
             plannage: result.getText({ name: 'custitem_plannage', summary: 'GROUP' }) || result.getValue({ name: 'custitem_plannage', summary: 'GROUP' }) || '',
             etampage: result.getText({ name: 'custitem_etampage', summary: 'GROUP' }) || result.getValue({ name: 'custitem_etampage', summary: 'GROUP' }) || '',
             autres: result.getText({ name: 'custitem_autres', summary: 'GROUP' }) || result.getValue({ name: 'custitem_autres', summary: 'GROUP' }) || '',
-            quantityFBM: roundToTwoDecimals(
-                    parseFloat(result.getValue({ name: 'locationquantityonhand', summary: 'GROUP' })) || 0
-            ),
+            mbfFactor: (() => {
+                const fbmPerPiece = parseFloat(
+                    result.getValue({ name: 'custitem_mgsl_fbm', summary: 'GROUP' })
+                ) || 0;
+                const piecesPerPack = parseFloat(
+                    result.getValue({ name: 'custitem_mgsl_ppp', summary: 'GROUP' })
+                ) || 0;
+                return Math.round((fbmPerPiece * piecesPerPack) / 1000 * 1000000) / 1000000;
+            })(),
             onHand: onHand,
             committed: committed,
             outbound: outbound,
@@ -339,25 +344,37 @@ define([
         return rows;
     };
 
+    const safeGetValue = (r, opts) => { try { return r.getValue(opts); } catch (e) { return ''; } };
+    const safeGetText = (r, opts) => { try { return r.getText(opts); } catch (e) { return ''; } };
+
     const buildOnHandRow = (r) => {
         let formulaCol = null;
+        let pppCol = null;
         r.columns.forEach((col) => {
-            if (col.formula && col.label) formulaCol = col;
+            const lbl = (col.label || '').toLowerCase();
+            if (col.formula && lbl === 'pack quantity') formulaCol = col;
+            if (col.formula && lbl.indexOf('piece per package') >= 0) pppCol = col;
         });
         const qty = formulaCol ? parseFloat(r.getValue(formulaCol)) || 0 : 0;
+        const ppp = pppCol ? parseFloat(r.getValue(pppCol)) || 0 : 0;
         const docType = r.getValue({ name: 'type' });
         const docId = r.getValue({ name: 'internalid' });
         const vendorId = r.getValue({ name: 'mainname' });
+        const mbfPrice = roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0);
         return {
             docType: r.getText({ name: 'type' }),
             docNum: r.getValue({ name: 'tranid' }),
             docUrl: getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'transaction'),
+            reloadId: safeGetValue(r, { name: 'custcol3' }) || '',
+            poWoNumber: safeGetText(r, { name: 'createdfrom' }) || safeGetValue(r, { name: 'createdfrom' }) || '',
             receiptDate: r.getValue({ name: 'trandate' }),
             vendor: r.getText({ name: 'mainname' }),
             vendorUrl: getRecordUrl(vendorId, 'vendor'),
-            lotNo: r.getValue({ name: 'serialnumber' }) || '-',
+            lotNo: safeGetText(r, { name: 'inventorynumber', join: 'inventoryDetail' }) || safeGetValue(r, { name: 'inventorynumber', join: 'inventoryDetail' }) || '-',
             packQty: roundToTwoDecimals(qty),
-            avgPrice: roundToTwoDecimals(parseFloat(r.getValue({ name: 'locationaveragecost' })) || 0),
+            piecesPerPack: ppp,
+            pricePerPiece: ppp > 0 ? roundToTwoDecimals(mbfPrice / ppp) : 0,
+            avgPrice: mbfPrice,
         };
     };
 
@@ -371,8 +388,7 @@ define([
         });
         const docId = r.getValue({ name: 'internalid' });
         const entityId = r.getValue({ name: 'entity' });
-        const itemId = r.getValue({ name: 'internalid', join: 'item' });
-        const itemType = r.getValue({ name: 'type', join: 'item' });
+        const ppp = parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
         return {
             docNum: r.getValue({ name: 'tranid' }),
             docUrl: getRecordUrl(docId, 'salesorder'),
@@ -380,39 +396,26 @@ define([
             customerUrl: getRecordUrl(entityId, 'customer'),
             tranDate: r.getValue({ name: 'trandate' }),
             expectedShipDate: r.getValue({ name: 'custbody_ship_week' }),
-            itemCode: r.getValue({ name: 'itemid', join: 'item' }),
-            itemUrl: getRecordUrl(itemId, ITEM_RECORD_TYPE_MAPPING[itemType] || 'inventoryitem'),
             packCommitted: roundToTwoDecimals(parseFloat(formulaValues.commited) || 0),
-            openPackQty: roundToTwoDecimals(parseFloat(formulaValues.quantity) || 0),
+            piecesPerPack: ppp,
+            pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece' })) || 0),
             rate: roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
-            pricePerPiece: roundToTwoDecimals(parseFloat(r.getValue({ name: 'custcol_prixpiece' })) || 0),
         };
     };
 
     const buildOutboundRow = (r) => {
-        const formulaValues = {};
-        r.columns.forEach((col) => {
-            if (col.formula) {
-                if (col.label === 'Invoiced Quantity') formulaValues.invoicedQuantity = r.getValue(col);
-                if (col.label === 'Remaining Quantity') formulaValues.remainingQuantity = r.getValue(col);
-            }
-        });
-        const docType = r.getValue({ name: 'type', join: 'item' });
         const docId = r.id;
         const entityId = r.getValue({ name: 'entity' });
-        const itemId = r.getValue({ name: 'internalid', join: 'item' });
-        const itemType = r.getValue({ name: 'type', join: 'item' });
+        const ppp = parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
         return {
             docNum: r.getValue({ name: 'tranid' }),
-            docUrl: getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'salesorder'),
+            docUrl: getRecordUrl(docId, 'salesorder'),
             customerName: r.getText({ name: 'entity' }),
             customerUrl: getRecordUrl(entityId, 'customer'),
-            dueDate: r.getValue({ name: 'duedate' }) || r.getValue({ name: 'shipdate' }),
-            itemCode: r.getValue({ name: 'itemid', join: 'item' }),
-            itemUrl: getRecordUrl(itemId, ITEM_RECORD_TYPE_MAPPING[itemType] || 'inventoryitem'),
+            dueDate: safeGetValue(r, { name: 'trandate', join: 'billingTransaction' }) || '',
             packQty: roundToTwoDecimals(parseFloat(r.getValue({ name: 'custcol_mgsl_packqty' })) || 0),
-            invoicedQty: roundToTwoDecimals(parseFloat(formulaValues.invoicedQuantity) || 0),
-            remainingQty: roundToTwoDecimals(parseFloat(formulaValues.remainingQuantity) || 0),
+            piecesPerPack: ppp,
+            pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece' })) || 0),
             rate: roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
         };
     };
@@ -426,45 +429,36 @@ define([
             }
         });
         const docId = r.getValue({ name: 'internalid', summary: 'GROUP' });
-        const vendorId = r.getValue({ name: 'entity', summary: 'GROUP' });
-        const itemId = r.getValue({ name: 'internalid', join: 'item', summary: 'GROUP' });
-        const itemType = r.getValue({ name: 'type', join: 'item', summary: 'GROUP' });
+        const vendorId = safeGetValue(r, { name: 'internalid', join: 'vendor', summary: 'GROUP' }) || '';
+        const ppp = parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item', summary: 'GROUP' })) || 0;
+        const rate = roundToTwoDecimals(parseFloat(formulaValues.price) || parseFloat(r.getValue({ name: 'rate', summary: 'MAX' })) || 0);
         return {
             docNum: r.getValue({ name: 'tranid', summary: 'GROUP' }),
             docUrl: getRecordUrl(docId, 'purchaseorder'),
-            vendorName: r.getText({ name: 'entityid', join: 'vendor' }) || r.getValue({ name: 'entity', summary: 'GROUP' }),
+            vendorName: safeGetValue(r, { name: 'entityid', join: 'vendor', summary: 'GROUP' }) || '',
             vendorUrl: getRecordUrl(vendorId, 'vendor'),
-            shipDate: r.getValue({ name: 'duedate', summary: 'GROUP' }) || r.getValue({ name: 'shipdate', summary: 'GROUP' }),
-            itemCode: r.getValue({ name: 'itemid', join: 'item', summary: 'GROUP' }),
-            itemUrl: getRecordUrl(itemId, ITEM_RECORD_TYPE_MAPPING[itemType] || 'inventoryitem'),
+            shipDate: safeGetValue(r, { name: 'custbody_ship_week', summary: 'GROUP' }) || '',
             packQty: roundToTwoDecimals(parseFloat(r.getValue({ name: 'custcol_mgsl_packqty', summary: 'GROUP' })) || 0),
-            openQty: roundToTwoDecimals(parseFloat(formulaValues.openQuantity) || 0),
-            rate: roundToTwoDecimals(parseFloat(formulaValues.price) || parseFloat(r.getValue({ name: 'rate', summary: 'MAX' })) || 0),
+            piecesPerPack: ppp,
+            pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece', summary: 'GROUP' })) || 0),
+            rate: rate,
         };
     };
 
     const buildInTransitRow = (r) => {
-        const formulaValues = {};
-        r.columns.forEach((col) => {
-            if (col.formula && (col.label === 'In Transit *Additional' || col.label === 'In Transit * Additional')) {
-                formulaValues.quantity = r.getValue(col);
-            }
-        });
         const docType = r.getValue({ name: 'type' });
         const docId = r.id;
         const vendorId = r.getValue({ name: 'mainname' });
-        const itemId = r.getValue({ name: 'internalid', join: 'item' });
-        const itemType = r.getValue({ name: 'type', join: 'item' });
+        const ppp = parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
         return {
             docNum: r.getValue({ name: 'tranid' }),
             docUrl: getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'purchaseorder'),
             tranDate: r.getValue({ name: 'trandate' }),
             vendor: r.getText({ name: 'mainname' }),
             vendorUrl: getRecordUrl(vendorId, 'vendor'),
-            itemCode: r.getValue({ name: 'itemid', join: 'item' }),
-            itemUrl: getRecordUrl(itemId, ITEM_RECORD_TYPE_MAPPING[itemType] || 'inventoryitem'),
             packQty: roundToTwoDecimals(parseFloat(r.getValue({ name: 'custcol_mgsl_packqty' })) || 0),
-            inTransitAdditional: roundToTwoDecimals(parseFloat(formulaValues.quantity) || 0),
+            piecesPerPack: ppp,
+            pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece' })) || 0),
             rate: roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
         };
     };
@@ -496,7 +490,100 @@ define([
         });
         if (!summaryRow) return;
 
-        const onHand = runDetailSearch(ON_HAND_SEARCH_ID, itemId, locationId, buildOnHandRow);
+        // On Hand: replicates MCGI_SSU_OnHand.js (v1) logic exactly.
+        // Uses inventoryDetail.inventorynumber (getText) for lot name,
+        // inventoryDetail.quantity for per-lot base unit qty,
+        // converts to packs via: (qty * 1000) / (PPP * FBM_per_piece).
+        // Aggregates by lot name, filters qty > 0.
+        const onHand = (() => {
+            try {
+                var mySearch = search.load({ id: ON_HAND_SEARCH_ID });
+                var originalFilters = mySearch.filters;
+                originalFilters.push(
+                    search.createFilter({ name: 'item', operator: search.Operator.ANYOF, values: itemId })
+                );
+                originalFilters.push(
+                    search.createFilter({ name: 'location', operator: search.Operator.ANYOF, values: locationId })
+                );
+                mySearch.filters = originalFilters;
+
+                mySearch.columns.push(
+                    search.createColumn({ name: 'trandate', sort: search.Sort.ASC })
+                );
+
+                var colAdjValue = search.createColumn({
+                    name: 'formulanumeric',
+                    formula: "CASE WHEN {type} = 'Inventory Adjustment' THEN CASE WHEN {quantity} > 0 THEN ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {quantity} < 0 THEN -ABS(NVL({custcol_mgsl_packqty}, 0)) ELSE 0 END WHEN {type} = 'Item Receipt' THEN ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {type} = 'Item Fulfillment' THEN -ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {type} = 'Credit Memo' THEN ABS(NVL({custcol_mgsl_packqty}, 0)) ELSE 0 END",
+                });
+                mySearch.columns.push(colAdjValue);
+
+                var seenLots = {};
+                var itemData = [];
+                mySearch.run().each(function (result) {
+                    var lotNumber = result.getText({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
+                    var volPCFBM = parseFloat(result.getValue({ name: 'custitem_mgsl_fbm', join: 'item' })) || 0;
+                    var itemTranQty = parseFloat(result.getValue(colAdjValue)) || 0;
+                    var invDetailQty = parseFloat(result.getValue({ name: 'quantity', join: 'inventoryDetail' })) || 0;
+                    var tranType = result.recordType;
+
+                    // Determine signed qty from inventoryDetail base units (v1 logic)
+                    var qty = 0;
+                    if (tranType === 'itemreceipt' || (tranType === 'inventoryadjustment' && itemTranQty > 0) || tranType === 'creditmemo') {
+                        qty = invDetailQty;
+                    } else if (tranType === 'itemfulfillment' || (tranType === 'inventoryadjustment' && itemTranQty < 0)) {
+                        qty = -Math.abs(invDetailQty);
+                    }
+
+                    // Extract PPP from lot number string (last number after last hyphen)
+                    var piecesPerPack = 1;
+                    if (lotNumber) {
+                        var match = lotNumber.match(/-(\d+(?:\.\d+)?)$/);
+                        if (match) piecesPerPack = Number(match[1]);
+                    } else {
+                        return true; // skip rows without lot number
+                    }
+
+                    // Convert base units to packs
+                    var packs = (volPCFBM > 0 && piecesPerPack > 0) ? (qty * 1000) / (piecesPerPack * volPCFBM) : 0;
+
+                    // Aggregate by lot
+                    if (lotNumber && seenLots[lotNumber] !== undefined) {
+                        itemData[seenLots[lotNumber]].packQty += packs;
+                        return true;
+                    }
+                    if (lotNumber) {
+                        seenLots[lotNumber] = itemData.length;
+                    }
+
+                    var docType = result.getValue({ name: 'type' });
+                    var docId = result.getValue({ name: 'internalid' });
+                    var vendorId = result.getValue({ name: 'mainname' });
+                    var price = roundToTwoDecimals(parseFloat(result.getValue({ name: 'rate' })) || 0);
+
+                    itemData.push({
+                        docType: result.getText({ name: 'type' }),
+                        docNum: result.getValue({ name: 'tranid' }),
+                        docUrl: getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'transaction'),
+                        reloadId: safeGetValue(result, { name: 'custcol3' }) || '',
+                        poWoNumber: safeGetText(result, { name: 'createdfrom' }) || safeGetValue(result, { name: 'createdfrom' }) || '',
+                        receiptDate: result.getValue({ name: 'trandate' }),
+                        vendor: result.getText({ name: 'mainname' }),
+                        vendorUrl: getRecordUrl(vendorId, 'vendor'),
+                        lotNo: lotNumber || '-',
+                        packQty: roundToTwoDecimals(packs),
+                        piecesPerPack: piecesPerPack,
+                        pricePerPiece: piecesPerPack > 0 ? roundToTwoDecimals(price / piecesPerPack) : 0,
+                        avgPrice: price,
+                    });
+                    return true;
+                });
+                // Filter out lots with net qty <= 0 (v1 line 255-257)
+                return itemData.filter(function (row) { return row.packQty > 0; });
+            } catch (e) {
+                log.error('MCGI_MR_TraderScreenCache', 'On Hand detail error: ' + e.message);
+                return [];
+            }
+        })();
         const committed = runDetailSearch(COMMITTED_SEARCH_ID, itemId, locationId, buildCommittedRow);
         const outbound = runDetailSearch(OUTBOUND_SEARCH_ID, itemId, locationId, buildOutboundRow);
         const onOrder = runDetailSearch(ON_ORDER_SEARCH_ID, itemId, locationId, buildOnOrderRow);
@@ -704,6 +791,26 @@ define([
 
         const duration = Date.now() - startTime;
         log.audit('MCGI_MR_TraderScreenCache', 'Completed. reduceKeysCount=' + reduceKeysCount + ', allRows=' + allRows.length + ', mergedRows=' + mergedRows.length + ', duration=' + duration + 'ms');
+
+        // Self-reschedule in 5 minutes
+        try {
+            const scriptId = runtime.getCurrentScript().id;
+            const deployId = runtime.getCurrentScript().deploymentId;
+            const mrTask = task.create({
+                taskType: task.TaskType.MAP_REDUCE,
+                scriptId: scriptId,
+                deploymentId: deployId,
+                params: {
+                    custscript_ts_subsidiary_id: getScriptParam('custscript_ts_subsidiary_id', null),
+                    custscript_ts_force_full_rebuild: false,
+                    custscript_ts_delta_fallback_threshold: getScriptParam('custscript_ts_delta_fallback_threshold', 500),
+                },
+            });
+            var taskId = mrTask.submit();
+            log.audit('MCGI_MR_TraderScreenCache', 'Self-rescheduled. taskId=' + taskId);
+        } catch (e) {
+            log.error('MCGI_MR_TraderScreenCache', 'Self-reschedule failed: ' + e.message);
+        }
     };
 
     return {

@@ -31,7 +31,7 @@ export const useInventoryData = () => {
       };
       const result = await apiRequest<ItemsResponse>('getItems', {
         filters: filtersForApi,
-        quantityGreaterThanZero: filters.quantityGreaterThanZero !== false,
+        quantityGreaterThanZero: true,
         uom,
       });
       setData(result);

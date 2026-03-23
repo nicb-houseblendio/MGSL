@@ -2,10 +2,10 @@ import * as React from 'react';
 import { ThemeProvider } from '@/context/ThemeProvider';
 import { NetSuiteProvider, useNetSuite } from '@/context/NetSuiteContext';
 import { FilterPanel } from '@/components/FilterPanel';
-import { InventoryTable, InventoryFooter } from '@/components/InventoryTable';
+import { InventoryTable } from '@/components/InventoryTable';
 import { DetailDrawer } from '@/components/DetailDrawer';
 import { Button } from '@/components/ui/button';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Maximize2, Minimize2 } from 'lucide-react';
 import { useSummaryData } from '@/hooks/useSummaryData';
 import { useRefreshState } from '@/hooks/useRefreshState';
 import { exportToExcel } from '@/lib/export';
@@ -19,8 +19,17 @@ const DEFAULT_UOM_CONFIG: Record<string, string[]> = {
   'CWP ARCH': ['MBF', 'Cubic meters (m³)', 'Packs'],
 };
 
-const defaultFilters: FilterState = {
-  quantityGreaterThanZero: true,
+const defaultFilters: FilterState = {};
+
+const getIsFullscreen = () => {
+  const win = typeof window !== 'undefined' ? window : null;
+  const config = (win as { MCGI_CONFIG?: { fullscreen?: boolean } })?.MCGI_CONFIG;
+  return config?.fullscreen === true;
+};
+
+const getSuiteletUrl = () => {
+  const win = typeof window !== 'undefined' ? window : null;
+  return (win as { MCGI_CONFIG?: { suiteletUrl?: string } })?.MCGI_CONFIG?.suiteletUrl || '';
 };
 
 function TraderScreenContent() {
@@ -37,6 +46,7 @@ function TraderScreenContent() {
     fetchSummary,
     getFilteredRows,
     getTotals,
+    getTotalsMBF,
     getFilterOptions,
   } = useSummaryData(subsidiaryId || 'default');
 
@@ -46,6 +56,8 @@ function TraderScreenContent() {
     error: refreshError,
     doRefresh,
     dismissBanner,
+    formatLastUpdated,
+    getLastUpdatedBadgeState,
   } = useRefreshState({
     loadedCacheVersion: meta?.cacheVersion ?? null,
     lastUpdated: meta?.lastUpdated ?? null,
@@ -61,7 +73,40 @@ function TraderScreenContent() {
     itemId: string;
     locationId: string;
     type: DetailType;
+    row: SummaryRow;
   } | null>(null);
+
+  const isFullscreen = getIsFullscreen();
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  const [appHeight, setAppHeight] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    if (isFullscreen) return; // fullscreen uses 100vh, no measurement needed
+    const measure = () => {
+      if (rootRef.current) {
+        const top = rootRef.current.getBoundingClientRect().top;
+        setAppHeight(window.innerHeight - top);
+      }
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [isFullscreen]);
+
+  const handleToggleFullscreen = React.useCallback(() => {
+    const base = getSuiteletUrl();
+    if (!base) return;
+    if (isFullscreen) {
+      window.location.href = base;
+    } else {
+      window.location.href = base + (base.includes('?') ? '&' : '?') + 'fullscreen=true';
+    }
+  }, [isFullscreen]);
+
+  const rowSelectionRef = React.useRef<Record<string, boolean>>({});
+  const handleSelectionChange = React.useCallback((selection: Record<string, boolean>) => {
+    rowSelectionRef.current = selection;
+  }, []);
 
   const filteredRows = React.useMemo(
     () => getFilteredRows(filters),
@@ -69,8 +114,8 @@ function TraderScreenContent() {
   );
 
   const totals = React.useMemo(
-    () => getTotals(filteredRows),
-    [getTotals, filteredRows]
+    () => uom === 'MBF' ? getTotalsMBF(filteredRows) : getTotals(filteredRows),
+    [getTotals, getTotalsMBF, filteredRows, uom]
   );
 
   const filterOptions = React.useMemo(
@@ -78,18 +123,35 @@ function TraderScreenContent() {
     [getFilterOptions, allRows, filters]
   );
 
-  const avgCost = React.useMemo(() => {
-    if (!filteredRows.length) return 0;
-    const sum = filteredRows.reduce((s, r) => s + (r.averageCost || 0), 0);
-    return sum / filteredRows.length;
-  }, [filteredRows]);
+  const activeFilters = React.useMemo(() => ({
+    location: filters.location || [],
+    item: filters.item || [],
+    species: filters.species || [],
+    thickness: filters.thickness || [],
+    width: filters.width || [],
+    length: filters.length || [],
+    grade: filters.grade || [],
+  }), [filters]);
 
-  const handleApply = React.useCallback(() => {
-    setFilters((f) => ({ ...f }));
-  }, []);
+  const [resetKey, setResetKey] = React.useState(0);
 
   const handleReset = React.useCallback(() => {
     setFilters(defaultFilters);
+    setResetKey(k => k + 1);
+  }, []);
+
+  const handleCellFilter = React.useCallback((filterKey: string, value: string) => {
+    setFilters(prev => {
+      const current = (prev[filterKey as keyof FilterState] as string[]) || [];
+      const newValues = current.includes(value)
+        ? current.filter(v => v !== value)
+        : [...current, value];
+      return {
+        ...prev,
+        [filterKey]: newValues,
+        ...(filterKey === 'location' && { reload: newValues }),
+      };
+    });
   }, []);
 
   const handleDrillDown = React.useCallback(
@@ -99,6 +161,7 @@ function TraderScreenContent() {
           itemId: row.internalId,
           locationId: row.locationId,
           type,
+          row,
         });
         setDetailOpen(true);
       }
@@ -107,16 +170,33 @@ function TraderScreenContent() {
   );
 
   const handleExport = React.useCallback(() => {
-    exportToExcel(filteredRows, totals);
-  }, [filteredRows, totals]);
+    const selection = rowSelectionRef.current;
+    const selectedKeys = Object.keys(selection).filter(k => selection[k]);
+    if (selectedKeys.length > 0) {
+      const selectedRows = filteredRows.filter(r => {
+        const key = r.detailKey || `${r.internalId}-${r.locationId}`;
+        return selectedKeys.includes(key);
+      });
+      exportToExcel(selectedRows, getTotals(selectedRows));
+    } else {
+      exportToExcel(filteredRows, totals);
+    }
+  }, [filteredRows, totals, getTotals]);
 
   const displayError = error || refreshError;
 
-  const today = typeof window !== 'undefined' ? new Date().toLocaleDateString('fr-CA', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }) : '';
+  const today = typeof window !== 'undefined' ? new Date().toLocaleDateString('en-CA', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }) : '';
   const uomOptions = uomConfig[activeView] || ['MBF', 'Packs'];
 
   return (
-    <div className="min-h-screen flex flex-col text-foreground pb-10" style={{ background: 'var(--background)' }}>
+    <div
+      ref={rootRef}
+      className="flex flex-col text-foreground overflow-hidden"
+      style={{
+        background: 'var(--background)',
+        height: isFullscreen ? '100vh' : appHeight ? `${appHeight}px` : '100vh',
+      }}
+    >
       {/* POC-style header: gradient 56px, MG logo, two-line branding, CWP pills, UoM + date */}
       <header
         className="sticky top-0 z-30 text-white flex-shrink-0 shadow-lg"
@@ -180,6 +260,22 @@ function TraderScreenContent() {
           </div>
           <div className="w-px h-5 bg-white/15" />
           <span className="text-white/40 text-[11px]">{today}</span>
+          {meta?.lastUpdated && (() => {
+            const badgeState = getLastUpdatedBadgeState(meta.lastUpdated);
+            const badgeColor = badgeState === 'ok' ? 'rgba(76,175,80,0.25)' : badgeState === 'stale' ? 'rgba(255,183,77,0.25)' : 'rgba(239,83,80,0.25)';
+            const textColor = badgeState === 'ok' ? '#A5D6A7' : badgeState === 'stale' ? '#FFB74D' : '#EF9A9A';
+            return (
+              <>
+                <div className="w-px h-5 bg-white/15" />
+                <span
+                  className="text-[10px] px-2 py-0.5 rounded-full"
+                  style={{ background: badgeColor, color: textColor }}
+                >
+                  Updated {formatLastUpdated(meta.lastUpdated)}
+                </span>
+              </>
+            );
+          })()}
           <div className="w-px h-5 bg-white/15" />
           <Button
             variant="ghost"
@@ -190,47 +286,50 @@ function TraderScreenContent() {
           >
             <RefreshCw className={`h-4 w-4 ${(refreshState === 'checking' || refreshState === 'fetching') ? 'animate-spin' : ''}`} />
           </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            type="button"
+            onClick={handleToggleFullscreen}
+            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            className="h-8 w-8 text-white/70 hover:text-white hover:bg-white/10"
+          >
+            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </Button>
         </div>
       </header>
 
-      {/* POC-style tabs: navyMid bg, Inventaire / Vues sauvegardées */}
+      {/* Tabs */}
       <div className="flex gap-0.5 px-6 flex-shrink-0" style={{ background: 'var(--navy-mid)', paddingTop: 0, paddingBottom: 0 }}>
         <button
           type="button"
           className="px-4 py-2 text-xs font-semibold rounded-t-md transition-all text-[var(--navy)]"
           style={{ background: 'var(--background)' }}
         >
-          📦  Inventaire
-        </button>
-        <button
-          type="button"
-          className="px-4 py-2 text-xs font-semibold rounded-t-md transition-all text-white/60 hover:text-white/80 hover:bg-white/5"
-        >
-          ⭐  Vues sauvegardées
+          Inventory
         </button>
       </div>
 
       {/* New version banner */}
       {newVersionAvailable && (
-        <div className="flex items-center justify-between bg-green/10 text-green px-4 py-2 text-sm border-b border-green/20">
-          <span>Nouvelles donn&eacute;es disponibles.</span>
+        <div className="flex items-center justify-between bg-green/10 text-green px-4 py-2 text-sm border-b border-green/20 flex-shrink-0">
+          <span>New data available.</span>
           <div className="flex gap-2">
             <Button size="sm" onClick={() => { dismissBanner(); void doRefresh(true); }} className="bg-green text-white hover:bg-green/90 text-xs">
-              Charger maintenant
+              Load now
             </Button>
             <Button size="sm" variant="outline" onClick={dismissBanner} className="text-xs">
-              Ignorer
+              Dismiss
             </Button>
           </div>
         </div>
       )}
 
       {/* Filters */}
-      <div className="px-4 pt-3">
+      <div className="px-4 pt-3 flex-shrink-0">
         <FilterPanel
           filters={filters}
           onFiltersChange={setFilters}
-          onApply={handleApply}
           onReset={handleReset}
           onExport={handleExport}
           filterOptions={filterOptions}
@@ -240,14 +339,14 @@ function TraderScreenContent() {
 
       {/* Error display */}
       {displayError && (
-        <div className="px-4 pt-2">
+        <div className="px-4 pt-2 flex-shrink-0">
           <p className="text-destructive text-sm bg-destructive/10 px-3 py-2 rounded">{displayError}</p>
         </div>
       )}
 
       {/* Main table area — POC: bg #EEF1F6, loading "Chargement…" with circular spinner */}
-      <main className="flex-1 px-4 pt-3 pb-2 min-h-0">
-        <div className="relative flex-1">
+      <main className="flex-1 flex flex-col px-4 pt-3 pb-2 min-h-0">
+        <div className="relative flex-1 flex flex-col min-h-0">
           {loading && !allRows && (
             <div
               className="absolute inset-0 flex flex-col items-center justify-center z-10 rounded backdrop-blur-sm"
@@ -256,28 +355,28 @@ function TraderScreenContent() {
               <div
                 className="w-11 h-11 rounded-full border-4 border-[#CBD5E1] border-t-[var(--green)] animate-spin"
               />
-              <div className="mt-3 text-[13px] font-medium text-[#3D5166]">Chargement…</div>
+              <div className="mt-3 text-[13px] font-medium text-[#3D5166]">Loading…</div>
             </div>
           )}
           {allRows ? (
             <InventoryTable
               data={filteredRows}
               onDrillDown={handleDrillDown}
+              onCellFilter={handleCellFilter}
+              activeFilters={activeFilters}
+              onRowSelectionChange={handleSelectionChange}
+              resetKey={resetKey}
+              totals={totals}
+              rowCount={filteredRows.length}
+              uom={uom}
             />
           ) : !loading ? (
             <p className="py-12 text-center text-sm text-[#3D5166]">
-              Chargement des donn&eacute;es d&apos;inventaire…
+              Loading inventory data…
             </p>
           ) : null}
         </div>
       </main>
-
-      {/* Fixed footer with totals */}
-      <InventoryFooter
-        rowCount={filteredRows.length}
-        totals={totals}
-        averageCost={avgCost}
-      />
 
       {/* Detail drawer */}
       {detailParams && (
@@ -287,6 +386,7 @@ function TraderScreenContent() {
           itemId={detailParams.itemId}
           locationId={detailParams.locationId}
           triggerType={detailParams.type}
+          row={detailParams.row}
           resetCacheVersion={meta?.cacheVersion ?? null}
         />
       )}

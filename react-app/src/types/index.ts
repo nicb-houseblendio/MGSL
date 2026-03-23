@@ -61,7 +61,6 @@ export interface FilterState {
   etampage?: string[];
   autres?: string[];
   category?: string[];
-  quantityGreaterThanZero?: boolean;
 }
 
 export interface NetSuiteContext {
