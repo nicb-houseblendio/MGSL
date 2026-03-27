@@ -9,7 +9,7 @@
   <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/sl/mcgi_sl_trader_screen_react.js]</scriptfile>
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploymcgi_sl_trader_screen_react">
-      <allemployees>F</allemployees>
+      <allemployees>T</allemployees>
       <allpartners>F</allpartners>
       <allroles>F</allroles>
       <audslctrole></audslctrole>
@@ -18,7 +18,7 @@
       <isonline>F</isonline>
       <loglevel>DEBUG</loglevel>
       <runasrole></runasrole>
-      <status>TESTING</status>
+      <status>RELEASED</status>
       <title>MCGI SL Trader Screen React</title>
     </scriptdeployment>
   </scriptdeployments>

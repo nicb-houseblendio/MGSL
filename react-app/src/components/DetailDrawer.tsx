@@ -47,10 +47,10 @@ interface ColDef {
 
 const COLUMN_MAP: Record<DetailType, ColDef[]> = {
   onHand: [
-    { id: 'docType', label: 'Document Type' },
+    { id: 'docType', label: 'Document Type', link: true },
     { id: 'docNum', label: 'Document Number', link: true },
     { id: 'reloadId', label: 'Reload ID' },
-    { id: 'poWoNumber', label: 'PO/WO Number' },
+    { id: 'poWoNumber', label: 'PO/WO Number', link: true },
     { id: 'receiptDate', label: 'Date' },
     { id: 'vendor', label: 'Vendor', link: true },
     { id: 'lotNo', label: 'Lot Number' },
@@ -325,9 +325,10 @@ const DetailTable = ({ rows, columns, meta }: DetailTableProps) => {
           >
             {columns.map((col) => {
               const val = row[col.id];
-              const linkUrl = col.id === 'docNum' ? row.docUrl
+              const linkUrl = col.id === 'docNum' || col.id === 'docType' ? row.docUrl
                 : col.id === 'vendor' || col.id === 'vendorName' ? row.vendorUrl
                 : col.id === 'customerName' ? row.customerUrl
+                : col.id === 'poWoNumber' ? row.poWoUrl
                 : undefined;
               return (
                 <td

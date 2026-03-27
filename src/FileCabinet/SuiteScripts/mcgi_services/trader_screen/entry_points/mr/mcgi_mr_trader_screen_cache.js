@@ -14,7 +14,7 @@ define([
     '../../shared/cacheClient',
     '../../shared/urlResolver',
 ], (search, cache, log, runtime, task, CacheKeys, CacheClient, UrlResolver) => {
-    const { TTL_SUMMARY, TTL_LAST_RUN, buildDetailKey, buildDetailBucketKey, buildChunkKey } = CacheKeys;
+    const { TTL_SUMMARY, TTL_LAST_RUN, buildDetailKey, buildDetailBucketKey } = CacheKeys;
     const { getRecordUrl } = UrlResolver;
 
     const ITEM_DATA_SEARCH_ID = 'customsearch_suitelet_all_items_search_n';
@@ -23,6 +23,54 @@ define([
     const OUTBOUND_SEARCH_ID = 'customsearch_mgsl_trader_outbound_nts';
     const ON_ORDER_SEARCH_ID = 'customsearch_mgsl_trader_onorder_nts';
     const IN_TRANSIT_SEARCH_ID = 'customsearch_mgsl_trader_intransit_nts';
+
+    // --- Search caching: load each saved search once per MR batch (~200 invocations) ---
+    // Module-level state resets automatically on MR re-queue (module reload).
+    var _detailSearchCache = {};
+
+    /**
+     * Returns a cached Search object for the given searchId.
+     * Resets filters to their original state before returning so
+     * per-invocation item/location filters don't accumulate.
+     */
+    function getDetailSearch(searchId) {
+        if (!_detailSearchCache[searchId]) {
+            var s = search.load({ id: searchId });
+            _detailSearchCache[searchId] = {
+                search: s,
+                baseFilterLen: s.filters.length,
+            };
+        }
+        var entry = _detailSearchCache[searchId];
+        entry.search.filters.length = entry.baseFilterLen;
+        return entry.search;
+    }
+
+    /**
+     * Cached onHand search with pre-pushed custom columns.
+     * Columns are added once; only filters are reset per invocation.
+     */
+    var _onHandCache = null;
+    function getOnHandSearch() {
+        if (!_onHandCache) {
+            var s = search.load({ id: ON_HAND_SEARCH_ID });
+            s.columns.push(
+                search.createColumn({ name: 'trandate', sort: search.Sort.ASC })
+            );
+            var colAdjValue = search.createColumn({
+                name: 'formulanumeric',
+                formula: "CASE WHEN {type} = 'Inventory Adjustment' THEN CASE WHEN {quantity} > 0 THEN ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {quantity} < 0 THEN -ABS(NVL({custcol_mgsl_packqty}, 0)) ELSE 0 END WHEN {type} = 'Item Receipt' THEN ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {type} = 'Item Fulfillment' THEN -ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {type} = 'Credit Memo' THEN ABS(NVL({custcol_mgsl_packqty}, 0)) ELSE 0 END",
+            });
+            s.columns.push(colAdjValue);
+            _onHandCache = {
+                search: s,
+                colAdjValue: colAdjValue,
+                baseFilterLen: s.filters.length,
+            };
+        }
+        _onHandCache.search.filters.length = _onHandCache.baseFilterLen;
+        return _onHandCache;
+    }
 
     const ITEM_RECORD_TYPE_MAPPING = {
         InvAdjst: 'inventoryadjustment',
@@ -97,7 +145,7 @@ define([
         const outbound = roundToTwoDecimals(parseFloat(formulaValues.outbound) || 0);
         const onOrder = roundToTwoDecimals(parseFloat(formulaValues.onOrder) || 0);
         const inTransit = roundToTwoDecimals(parseFloat(formulaValues.inTransit) || 0);
-        const available = roundToTwoDecimals(onHand - committed - outbound + onOrder - inTransit);
+        const available = roundToTwoDecimals(onHand - committed - outbound + onOrder + inTransit);
 
         const locationId = result.getValue({ name: 'inventorylocation', summary: 'GROUP' });
         const locationName = result.getText({ name: 'inventorylocation', summary: 'GROUP' });
@@ -329,54 +377,24 @@ define([
     const runDetailSearch = (searchId, itemId, locationId, rowBuilder) => {
         const rows = [];
         try {
-            const s = search.load({ id: searchId });
+            const s = getDetailSearch(searchId);
             s.filters.push(
                     search.createFilter({ name: 'item', operator: search.Operator.ANYOF, values: itemId }),
                     search.createFilter({ name: 'location', operator: search.Operator.ANYOF, values: locationId })
             );
-            runPagedAll(s).forEach((r) => {
+            s.run().each(function (r) {
                 const row = rowBuilder(r);
                 if (row) rows.push(row);
+                return true;
             });
         } catch (e) {
-            log.debug('MCGI_MR_TraderScreenCache', 'Detail search ' + searchId + ' error: ' + e.message);
+            log.debug('MCGI_MR_TraderScreenCache', 'Detail search ' + searchId + ' error for item=' + itemId + ' loc=' + locationId + ': ' + e.message);
         }
         return rows;
     };
 
     const safeGetValue = (r, opts) => { try { return r.getValue(opts); } catch (e) { return ''; } };
     const safeGetText = (r, opts) => { try { return r.getText(opts); } catch (e) { return ''; } };
-
-    const buildOnHandRow = (r) => {
-        let formulaCol = null;
-        let pppCol = null;
-        r.columns.forEach((col) => {
-            const lbl = (col.label || '').toLowerCase();
-            if (col.formula && lbl === 'pack quantity') formulaCol = col;
-            if (col.formula && lbl.indexOf('piece per package') >= 0) pppCol = col;
-        });
-        const qty = formulaCol ? parseFloat(r.getValue(formulaCol)) || 0 : 0;
-        const ppp = pppCol ? parseFloat(r.getValue(pppCol)) || 0 : 0;
-        const docType = r.getValue({ name: 'type' });
-        const docId = r.getValue({ name: 'internalid' });
-        const vendorId = r.getValue({ name: 'mainname' });
-        const mbfPrice = roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0);
-        return {
-            docType: r.getText({ name: 'type' }),
-            docNum: r.getValue({ name: 'tranid' }),
-            docUrl: getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'transaction'),
-            reloadId: safeGetValue(r, { name: 'custcol3' }) || '',
-            poWoNumber: safeGetText(r, { name: 'createdfrom' }) || safeGetValue(r, { name: 'createdfrom' }) || '',
-            receiptDate: r.getValue({ name: 'trandate' }),
-            vendor: r.getText({ name: 'mainname' }),
-            vendorUrl: getRecordUrl(vendorId, 'vendor'),
-            lotNo: safeGetText(r, { name: 'inventorynumber', join: 'inventoryDetail' }) || safeGetValue(r, { name: 'inventorynumber', join: 'inventoryDetail' }) || '-',
-            packQty: roundToTwoDecimals(qty),
-            piecesPerPack: ppp,
-            pricePerPiece: ppp > 0 ? roundToTwoDecimals(mbfPrice / ppp) : 0,
-            avgPrice: mbfPrice,
-        };
-    };
 
     const buildCommittedRow = (r) => {
         const formulaValues = {};
@@ -388,7 +406,7 @@ define([
         });
         const docId = r.getValue({ name: 'internalid' });
         const entityId = r.getValue({ name: 'entity' });
-        const ppp = parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
+        const ppp = parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) || parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
         return {
             docNum: r.getValue({ name: 'tranid' }),
             docUrl: getRecordUrl(docId, 'salesorder'),
@@ -406,7 +424,7 @@ define([
     const buildOutboundRow = (r) => {
         const docId = r.id;
         const entityId = r.getValue({ name: 'entity' });
-        const ppp = parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
+        const ppp = parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) || parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
         return {
             docNum: r.getValue({ name: 'tranid' }),
             docUrl: getRecordUrl(docId, 'salesorder'),
@@ -430,7 +448,7 @@ define([
         });
         const docId = r.getValue({ name: 'internalid', summary: 'GROUP' });
         const vendorId = safeGetValue(r, { name: 'internalid', join: 'vendor', summary: 'GROUP' }) || '';
-        const ppp = parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item', summary: 'GROUP' })) || 0;
+        const ppp = parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp', summary: 'GROUP' })) || parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item', summary: 'GROUP' })) || 0;
         const rate = roundToTwoDecimals(parseFloat(formulaValues.price) || parseFloat(r.getValue({ name: 'rate', summary: 'MAX' })) || 0);
         return {
             docNum: r.getValue({ name: 'tranid', summary: 'GROUP' }),
@@ -449,7 +467,7 @@ define([
         const docType = r.getValue({ name: 'type' });
         const docId = r.id;
         const vendorId = r.getValue({ name: 'mainname' });
-        const ppp = parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
+        const ppp = parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) || parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
         return {
             docNum: r.getValue({ name: 'tranid' }),
             docUrl: getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'purchaseorder'),
@@ -497,25 +515,13 @@ define([
         // Aggregates by lot name, filters qty > 0.
         const onHand = (() => {
             try {
-                var mySearch = search.load({ id: ON_HAND_SEARCH_ID });
-                var originalFilters = mySearch.filters;
-                originalFilters.push(
-                    search.createFilter({ name: 'item', operator: search.Operator.ANYOF, values: itemId })
-                );
-                originalFilters.push(
+                var cached = getOnHandSearch();
+                var mySearch = cached.search;
+                var colAdjValue = cached.colAdjValue;
+                mySearch.filters.push(
+                    search.createFilter({ name: 'item', operator: search.Operator.ANYOF, values: itemId }),
                     search.createFilter({ name: 'location', operator: search.Operator.ANYOF, values: locationId })
                 );
-                mySearch.filters = originalFilters;
-
-                mySearch.columns.push(
-                    search.createColumn({ name: 'trandate', sort: search.Sort.ASC })
-                );
-
-                var colAdjValue = search.createColumn({
-                    name: 'formulanumeric',
-                    formula: "CASE WHEN {type} = 'Inventory Adjustment' THEN CASE WHEN {quantity} > 0 THEN ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {quantity} < 0 THEN -ABS(NVL({custcol_mgsl_packqty}, 0)) ELSE 0 END WHEN {type} = 'Item Receipt' THEN ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {type} = 'Item Fulfillment' THEN -ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {type} = 'Credit Memo' THEN ABS(NVL({custcol_mgsl_packqty}, 0)) ELSE 0 END",
-                });
-                mySearch.columns.push(colAdjValue);
 
                 var seenLots = {};
                 var itemData = [];
@@ -566,11 +572,12 @@ define([
                         docUrl: getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'transaction'),
                         reloadId: safeGetValue(result, { name: 'custcol3' }) || '',
                         poWoNumber: safeGetText(result, { name: 'createdfrom' }) || safeGetValue(result, { name: 'createdfrom' }) || '',
+                        poWoUrl: getRecordUrl(safeGetValue(result, { name: 'createdfrom' }), 'purchaseorder'),
                         receiptDate: result.getValue({ name: 'trandate' }),
                         vendor: result.getText({ name: 'mainname' }),
                         vendorUrl: getRecordUrl(vendorId, 'vendor'),
                         lotNo: lotNumber || '-',
-                        packQty: roundToTwoDecimals(packs),
+                        packQty: packs,
                         piecesPerPack: piecesPerPack,
                         pricePerPiece: piecesPerPack > 0 ? roundToTwoDecimals(price / piecesPerPack) : 0,
                         avgPrice: price,
@@ -578,12 +585,21 @@ define([
                     return true;
                 });
                 // Filter out lots with net qty <= 0 (v1 line 255-257)
-                return itemData.filter(function (row) { return row.packQty > 0; });
+                return itemData.filter(function (row) { return Math.round(row.packQty) > 0; });
             } catch (e) {
                 log.error('MCGI_MR_TraderScreenCache', 'On Hand detail error: ' + e.message);
                 return [];
             }
         })();
+        if (onHand.length > 0) {
+            const fbmOnHand = roundToTwoDecimals(
+                onHand.reduce(function (sum, row) { return sum + row.packQty; }, 0)
+            );
+            summaryRow.onHand = fbmOnHand;
+            summaryRow.available = roundToTwoDecimals(
+                fbmOnHand - summaryRow.committed - summaryRow.outbound + summaryRow.onOrder + summaryRow.inTransit
+            );
+        }
         const committed = runDetailSearch(COMMITTED_SEARCH_ID, itemId, locationId, buildCommittedRow);
         const outbound = runDetailSearch(OUTBOUND_SEARCH_ID, itemId, locationId, buildOutboundRow);
         const onOrder = runDetailSearch(ON_ORDER_SEARCH_ID, itemId, locationId, buildOnOrderRow);
@@ -625,12 +641,7 @@ define([
             });
         }
 
-        const chunkKey = buildChunkKey(key);
-        myCache.put({
-            key: chunkKey,
-            value: JSON.stringify([summaryRow]),
-            ttl: TTL_SUMMARY,
-        });
+        context.write({ key: key, value: JSON.stringify(summaryRow) });
     };
 
     /**
@@ -641,7 +652,6 @@ define([
         const myCache = CacheClient.getCache();
 
         const allRows = [];
-        const chunkPrefix = CacheKeys.TS_SUMMARY_CHUNK_PREFIX;
         const keysToDelete = [];
 
         if (context.inputSummary.error) {
@@ -658,25 +668,20 @@ define([
 
         let reduceKeysCount = 0;
         if (context.reduceSummary && context.reduceSummary.keys) {
-            context.reduceSummary.keys.iterator().each((reduceKey) => {
-                reduceKeysCount++;
-                const chunkKey = chunkPrefix + reduceKey;
-                const val = myCache.get({ key: chunkKey });
-                if (val) {
-                    keysToDelete.push(chunkKey);
-                    try {
-                        const rows = JSON.parse(val);
-                        if (Array.isArray(rows)) allRows.push(...rows);
-                    } catch (e) {
-                        log.debug('MCGI_MR_TraderScreenCache', 'Chunk parse error: ' + e.message);
-                    }
-                } else {
-                    log.audit('MCGI_MR_TraderScreenCache', 'summarize: chunk MISS for key=' + reduceKey);
-                }
-                return true;
-            });
+            context.reduceSummary.keys.iterator().each(() => { reduceKeysCount++; return true; });
         }
-        log.audit('MCGI_MR_TraderScreenCache', 'summarize: reduceKeysCount=' + reduceKeysCount + ', allRows.length=' + allRows.length);
+
+        // Read summary rows from reduce's context.write() output (MR framework storage, not N/cache)
+        context.output.iterator().each(function (key, value) {
+            try {
+                var row = JSON.parse(value);
+                if (row) allRows.push(row);
+            } catch (e) {
+                log.debug('MCGI_MR_TraderScreenCache', 'Output parse error for key=' + key + ': ' + (e.message || e));
+            }
+            return true;
+        });
+        log.audit('MCGI_MR_TraderScreenCache', 'summarize: reduceKeysCount=' + reduceKeysCount + ', outputRows=' + allRows.length);
 
         const existingSummary = myCache.get({ key: CacheKeys.TS_SUMMARY });
         log.audit('MCGI_MR_TraderScreenCache', 'summarize: existingSummary present=' + !!existingSummary + ', existingSummaryLen=' + (existingSummary ? existingSummary.length : 0));
@@ -792,7 +797,9 @@ define([
         const duration = Date.now() - startTime;
         log.audit('MCGI_MR_TraderScreenCache', 'Completed. reduceKeysCount=' + reduceKeysCount + ', allRows=' + allRows.length + ', mergedRows=' + mergedRows.length + ', duration=' + duration + 'ms');
 
-        // Self-reschedule in 5 minutes
+        // Self-reschedule to same deployment. Oracle docs confirm: when a MR script
+        // resubmits itself, the resubmit waits until current execution completes.
+        // taskId=null is expected — it means the task is deferred, not failed.
         try {
             const scriptId = runtime.getCurrentScript().id;
             const deployId = runtime.getCurrentScript().deploymentId;

@@ -234,17 +234,6 @@ export const InventoryTable = ({ data, onDrillDown, onCellFilter, activeFilters,
         size: 220,
       },
       {
-        accessorKey: 'species',
-        header: ({ column }) => <SortHeader label="SPECIES" column={column} />,
-        cell: ({ getValue }) => {
-          const v = getValue() as string;
-          if (!v) return <span className="text-xs">—</span>;
-          const active = activeFilters?.species?.includes(v);
-          return <button type="button" onClick={() => onCellFilter?.('species', v)} className={`w-full block text-xs hover:underline cursor-pointer text-left ${active ? 'font-bold text-[#1E6B47] bg-[#1E6B47]/10 px-1 rounded' : ''}`}>{v}</button>;
-        },
-        size: 210,
-      },
-      {
         accessorKey: 'thickness',
         header: ({ column }) => <SortHeader label="THICKNESS" column={column} />,
         cell: ({ getValue }) => {

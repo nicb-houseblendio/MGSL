@@ -5,6 +5,7 @@ import type { MetaResponse } from '@/lib/api';
 export type RefreshState = 'idle' | 'checking' | 'up-to-date' | 'fetching' | 'error';
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
+const VISIBILITY_COOLDOWN_MS = 2 * 60 * 1000;
 
 function formatLastUpdated(iso: string): string {
   try {
@@ -53,6 +54,7 @@ export const useRefreshState = (options: {
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const upToDateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastPollRef = useRef<number>(Date.now());
 
   const checkMeta = useCallback(async (): Promise<MetaResponse | null> => {
     try {
@@ -110,7 +112,7 @@ export const useRefreshState = (options: {
 
   useEffect(() => {
     const check = async () => {
-      if (document.hidden) return;
+      lastPollRef.current = Date.now();
       try {
         const meta = await checkMeta();
         if (meta?.available && meta.cacheVersion != null && meta.cacheVersion > (loadedCacheVersion ?? 0)) {
@@ -120,10 +122,19 @@ export const useRefreshState = (options: {
         // ignore background poll errors
       }
     };
+
+    const onVisibilityChange = () => {
+      if (!document.hidden && Date.now() - lastPollRef.current >= VISIBILITY_COOLDOWN_MS) {
+        void check();
+      }
+    };
+
     pollRef.current = setInterval(check, POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
       if (upToDateTimeoutRef.current) clearTimeout(upToDateTimeoutRef.current);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [checkMeta, loadedCacheVersion]);
 
