@@ -9,11 +9,11 @@
  * @param {number} custscript_ts_delta_fallback_threshold - Fall back to full rebuild if delta pairs > this (default: 500)
  */
 define([
-    'N/search', 'N/cache', 'N/log', 'N/runtime', 'N/task',
+    'N/search', 'N/cache', 'N/log', 'N/runtime', 'N/task', 'N/query',
     '../../shared/cacheKeys',
     '../../shared/cacheClient',
     '../../shared/urlResolver',
-], (search, cache, log, runtime, task, CacheKeys, CacheClient, UrlResolver) => {
+], (search, cache, log, runtime, task, query, CacheKeys, CacheClient, UrlResolver) => {
     const { TTL_SUMMARY, TTL_LAST_RUN, buildDetailKey, buildDetailBucketKey } = CacheKeys;
     const { getRecordUrl } = UrlResolver;
 
@@ -70,6 +70,40 @@ define([
         }
         _onHandCache.search.filters.length = _onHandCache.baseFilterLen;
         return _onHandCache;
+    }
+
+    /**
+     * SuiteQL lookup: PO line pricing for a given item.
+     * Returns map keyed by "poId_ppp" → { rate, prixPiece }.
+     * Cached per itemId across reduce invocations within the same MR batch.
+     */
+    var _poPricingCache = {};
+    function getPoPricingForItem(itemId) {
+        if (_poPricingCache[itemId]) return _poPricingCache[itemId];
+        try {
+            var results = query.runSuiteQL({
+                query: "SELECT t.id AS po_id, tl.custcol_mgsl_ppp AS ppp, tl.rate, tl.custcol_prixpiece " +
+                       "FROM transactionline tl " +
+                       "JOIN transaction t ON t.id = tl.transaction " +
+                       "WHERE tl.item = ? " +
+                       "AND t.type = 'PurchOrd' " +
+                       "AND tl.mainline = 'F' " +
+                       "AND tl.custcol_mgsl_ppp IS NOT NULL",
+                params: [itemId]
+            }).asMappedResults();
+            var map = {};
+            results.forEach(function (r) {
+                map[r.po_id + '_' + parseFloat(r.ppp)] = {
+                    rate: parseFloat(r.rate) || 0,
+                    prixPiece: parseFloat(r.custcol_prixpiece) || 0,
+                };
+            });
+            _poPricingCache[itemId] = map;
+            return map;
+        } catch (e) {
+            log.error('getPoPricingForItem', 'SuiteQL error for item ' + itemId + ': ' + e.message);
+            return {};
+        }
     }
 
     const ITEM_RECORD_TYPE_MAPPING = {
@@ -523,6 +557,7 @@ define([
                     search.createFilter({ name: 'location', operator: search.Operator.ANYOF, values: locationId })
                 );
 
+                var poPricing = getPoPricingForItem(itemId);
                 var seenLots = {};
                 var itemData = [];
                 mySearch.run().each(function (result) {
@@ -564,7 +599,20 @@ define([
                     var docType = result.getValue({ name: 'type' });
                     var docId = result.getValue({ name: 'internalid' });
                     var vendorId = result.getValue({ name: 'mainname' });
-                    var price = roundToTwoDecimals(parseFloat(result.getValue({ name: 'rate' })) || 0);
+
+                    // PO pricing: look up via createdfrom + PPP match
+                    var createdfromId = result.getValue({ name: 'createdfrom' }) || '';
+                    var poData = createdfromId ? poPricing[createdfromId + '_' + piecesPerPack] : null;
+                    var price, piecePrice;
+                    if (poData && poData.rate > 0) {
+                        price = roundToTwoDecimals(poData.rate);
+                        piecePrice = poData.prixPiece > 0
+                            ? roundToTwoDecimals(poData.prixPiece)
+                            : (volPCFBM > 0 ? roundToTwoDecimals(price * volPCFBM / 1000) : 0);
+                    } else {
+                        price = roundToTwoDecimals(parseFloat(result.getValue({ name: 'rate' })) || 0);
+                        piecePrice = volPCFBM > 0 ? roundToTwoDecimals(price * volPCFBM / 1000) : 0;
+                    }
 
                     itemData.push({
                         docType: result.getText({ name: 'type' }),
@@ -579,7 +627,7 @@ define([
                         lotNo: lotNumber || '-',
                         packQty: packs,
                         piecesPerPack: piecesPerPack,
-                        pricePerPiece: piecesPerPack > 0 ? roundToTwoDecimals(price / piecesPerPack) : 0,
+                        pricePerPiece: piecePrice,
                         avgPrice: price,
                     });
                     return true;
@@ -592,7 +640,7 @@ define([
             }
         })();
         if (onHand.length > 0) {
-            const fbmOnHand = roundToTwoDecimals(
+            const fbmOnHand = Math.round(
                 onHand.reduce(function (sum, row) { return sum + row.packQty; }, 0)
             );
             summaryRow.onHand = fbmOnHand;

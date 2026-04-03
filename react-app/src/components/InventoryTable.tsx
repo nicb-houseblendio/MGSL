@@ -76,12 +76,6 @@ const convertQty = (value: number, uom: string, mbfFactor?: number): number => {
   return Math.round(value * f * 100) / 100;
 };
 
-const convertPrice = (value: number, uom: string, mbfFactor?: number): number => {
-  if (uom !== 'MBF') return value;
-  const f = mbfFactor ?? 0;
-  if (f === 0) return 0;
-  return Math.round((value / f) * 100) / 100;
-};
 
 interface MetricCellProps {
   value: number;
@@ -216,8 +210,17 @@ export const InventoryTable = ({ data, onDrillDown, onCellFilter, activeFilters,
           const v = getValue() as string;
           if (!v) return <span className="font-mono text-xs">—</span>;
           const id = row.original.internalId;
+          const itemUrl = row.original.itemUrl;
           const active = activeFilters?.item?.includes(id);
-          return <button type="button" onClick={() => onCellFilter?.('item', id)} className={`w-full block font-mono text-xs hover:underline cursor-pointer text-left ${active ? 'font-bold text-[#1E6B47] bg-[#1E6B47]/10 px-1 rounded' : ''}`}>{v}</button>;
+          return (
+            <div onClick={() => onCellFilter?.('item', id)} className={`w-full cursor-pointer ${active ? 'font-bold text-[#1E6B47] bg-[#1E6B47]/10 px-1 rounded' : ''}`}>
+              {itemUrl ? (
+                <a href={itemUrl} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="font-mono text-xs hover:underline">{v}</a>
+              ) : (
+                <span className="font-mono text-xs">{v}</span>
+              )}
+            </div>
+          );
         },
         size: 130,
       },
@@ -407,15 +410,12 @@ export const InventoryTable = ({ data, onDrillDown, onCellFilter, activeFilters,
       },
       {
         accessorKey: 'averageCost',
-        header: () => <span className="block text-right">AVG PRICE</span>,
-        cell: ({ getValue, row }) => {
+        header: () => <span className="block text-right">AVG COST</span>,
+        cell: ({ getValue }) => {
           const raw = getValue() as number;
-          if (uom === 'MBF' && (row.original.mbfFactor ?? 0) === 0) {
-            return <span className="text-[#7A8FA3] tabular-nums font-mono text-xs text-right block">N/A</span>;
-          }
           return (
             <span className="tabular-nums font-mono text-xs text-right block">
-              {formatCurrency(convertPrice(raw, uom ?? 'Packs', row.original.mbfFactor))}
+              {formatCurrency(raw)}
             </span>
           );
         },
