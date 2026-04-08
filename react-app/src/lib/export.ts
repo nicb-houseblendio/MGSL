@@ -12,8 +12,10 @@ interface Totals {
 
 export const exportToExcel = (
   rows: SummaryRow[],
-  totals: Totals
+  totals: Totals,
+  uom?: string
 ) => {
+  const isPacks = uom === 'Packs';
   const excelRows = rows.map((r) => ({
     'Item ID': r.itemCode || '',
     'Location': r.locationName || '',
@@ -27,6 +29,7 @@ export const exportToExcel = (
     'Humidity': r.humidity || '',
     'Planing': r.plannage || '',
     'Stamping': r.etampage || '',
+    ...(isPacks ? { 'On Hand (MBF)': r.quantityFBM ?? 0 } : {}),
     'On Hand': r.onHand || 0,
     'Committed': r.committed || 0,
     'Outbound': r.outbound || 0,
@@ -35,6 +38,8 @@ export const exportToExcel = (
     'Available': r.available || 0,
     'Avg Price': r.averageCost || 0,
   }));
+
+  const quantityFBMTotal = isPacks ? rows.reduce((sum, r) => sum + (r.quantityFBM ?? 0), 0) : undefined;
 
   excelRows.push({
     'Item ID': '',
@@ -49,6 +54,7 @@ export const exportToExcel = (
     'Humidity': '',
     'Planing': '',
     'Stamping': '',
+    ...(isPacks ? { 'On Hand (MBF)': quantityFBMTotal ?? 0 } : {}),
     'On Hand': totals.onHand,
     'Committed': totals.committed,
     'Outbound': totals.outbound,

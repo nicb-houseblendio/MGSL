@@ -14,9 +14,9 @@ import type { SummaryRow } from '@/lib/api';
 import type { DetailType } from '@/hooks/useDetailData';
 
 const DEFAULT_UOM_CONFIG: Record<string, string[]> = {
-  'CWP IND': ['MBF', 'Packs'],
-  'CWP MTL': ['MBF', 'Packs', 'TL'],
-  'CWP ARCH': ['MBF', 'Cubic meters (m³)', 'Packs'],
+  'CWP IND': ['Packs'],
+  'CWP MTL': ['Packs', 'TL'],
+  'CWP ARCH': ['Cubic meters (m³)', 'Packs'],
 };
 
 const defaultFilters: FilterState = {};
@@ -177,16 +177,16 @@ function TraderScreenContent() {
         const key = r.detailKey || `${r.internalId}-${r.locationId}`;
         return selectedKeys.includes(key);
       });
-      exportToExcel(selectedRows, getTotals(selectedRows));
+      exportToExcel(selectedRows, getTotals(selectedRows), uom);
     } else {
-      exportToExcel(filteredRows, totals);
+      exportToExcel(filteredRows, totals, uom);
     }
-  }, [filteredRows, totals, getTotals]);
+  }, [filteredRows, totals, getTotals, uom]);
 
   const displayError = error || refreshError;
 
   const today = typeof window !== 'undefined' ? new Date().toLocaleDateString('en-CA', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }) : '';
-  const uomOptions = uomConfig[activeView] || ['MBF', 'Packs'];
+  const uomOptions = uomConfig[activeView] || ['Packs'];
 
   return (
     <div
@@ -388,6 +388,7 @@ function TraderScreenContent() {
           triggerType={detailParams.type}
           row={detailParams.row}
           resetCacheVersion={meta?.cacheVersion ?? null}
+          uom={uom}
         />
       )}
     </div>

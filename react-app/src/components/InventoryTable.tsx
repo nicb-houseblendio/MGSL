@@ -165,6 +165,11 @@ export const InventoryTable = ({ data, onDrillDown, onCellFilter, activeFilters,
   const [rowSelection, setRowSelection] = React.useState<Record<string, boolean>>({});
   const [columnOrder, setColumnOrder] = React.useState<ColumnOrderState>([]);
 
+  const onHandMbfTotal = React.useMemo(
+    () => uom === 'Packs' ? data.reduce((sum, r) => sum + (r.quantityFBM ?? 0), 0) : 0,
+    [data, uom]
+  );
+
   React.useEffect(() => {
     onRowSelectionChange?.(rowSelection);
   }, [rowSelection, onRowSelectionChange]);
@@ -280,9 +285,23 @@ export const InventoryTable = ({ data, onDrillDown, onCellFilter, activeFilters,
         },
         size: 90,
       },
+      ...(uom === 'Packs' ? [{
+        accessorKey: 'quantityFBM',
+        header: ({ column }: { column: Parameters<typeof SortHeader>[0]['column'] }) => <SortHeader label="ON HAND (MBF)" column={column} align="right" />,
+        cell: ({ getValue }: { getValue: () => unknown }) => {
+          const val = (getValue() as number) ?? 0;
+          return (
+            <span className="text-metric-onhand tabular-nums text-right block">
+              {(Math.round(val * 100) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+          );
+        },
+        sortingFn: (rowA: { original: SummaryRow }, rowB: { original: SummaryRow }) => (rowA.original.quantityFBM ?? 0) - (rowB.original.quantityFBM ?? 0),
+        size: 115,
+      } as ColumnDef<SummaryRow>] : []),
       {
         accessorKey: 'onHand',
-        header: ({ column }) => <SortHeader label="ON HAND" column={column} align="right" />,
+        header: ({ column }) => <SortHeader label={uom === 'Packs' ? 'ON HAND (Packs)' : 'ON HAND'} column={column} align="right" />,
         cell: ({ getValue, row }) => (
           <MetricCell
             value={convertQty(getValue() as number, uom ?? 'Packs', row.original.mbfFactor)}
@@ -299,7 +318,7 @@ export const InventoryTable = ({ data, onDrillDown, onCellFilter, activeFilters,
           const b = convertQty(rowB.original.onHand, uom ?? 'Packs', rowB.original.mbfFactor);
           return a - b;
         },
-        size: 85,
+        size: uom === 'Packs' ? 115 : 85,
       },
       {
         accessorKey: 'committed',
@@ -438,6 +457,14 @@ export const InventoryTable = ({ data, onDrillDown, onCellFilter, activeFilters,
     }
   }, [defaultOrder, columnOrder.length]);
 
+  const prevUomRef = React.useRef(uom);
+  React.useEffect(() => {
+    if (prevUomRef.current !== uom) {
+      prevUomRef.current = uom;
+      setColumnOrder(defaultOrder);
+    }
+  }, [uom, defaultOrder]);
+
   React.useEffect(() => {
     if (resetKey != null && resetKey > 0) {
       setColumnOrder(defaultOrder);
@@ -575,14 +602,17 @@ export const InventoryTable = ({ data, onDrillDown, onCellFilter, activeFilters,
                 {headers.slice(leadingNonMetric).map((header) => {
                   const colId = header.column.id;
                   if (METRIC_COLUMNS.has(colId)) {
-                    const val = totals[colId as keyof typeof totals];
+                    const isQtyFBM = colId === 'quantityFBM';
+                    const val = isQtyFBM ? onHandMbfTotal : totals[colId as keyof typeof totals];
                     const isAvailable = colId === 'available';
                     const color = isAvailable
                       ? (val >= 0 ? FOOTER_LABEL.available : FOOTER_LABEL.availableNeg)
                       : FOOTER_LABEL[colId];
-                    const display = isAvailable
-                      ? `${val >= 0 ? '' : '▼'}${formatQty(Math.abs(val), uom)}`
-                      : formatQty(val, uom);
+                    const display = isQtyFBM
+                      ? (Math.round(val * 100) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                      : isAvailable
+                        ? `${val >= 0 ? '' : '▼'}${formatQty(Math.abs(val), uom)}`
+                        : formatQty(val, uom);
                     return (
                       <TableCell key={colId} className="pt-[13px] pb-2.5 px-3" style={{ width: header.getSize() }}>
                         <span className="font-mono text-[12px] font-bold tabular-nums text-right block" style={{ color }}>
@@ -605,6 +635,7 @@ export const InventoryTable = ({ data, onDrillDown, onCellFilter, activeFilters,
 
 /* Footer label colors for totals row */
 const FOOTER_LABEL: Record<string, string> = {
+  quantityFBM: '#A5D6A7',
   onHand: '#A5D6A7',
   committed: '#FFB74D',
   outbound: '#F48FB1',
@@ -614,4 +645,4 @@ const FOOTER_LABEL: Record<string, string> = {
   availableNeg: '#FCA5A5',
 };
 
-const METRIC_COLUMNS = new Set(['onHand', 'committed', 'outbound', 'onOrder', 'inTransit', 'available']);
+const METRIC_COLUMNS = new Set(['quantityFBM', 'onHand', 'committed', 'outbound', 'onOrder', 'inTransit', 'available']);

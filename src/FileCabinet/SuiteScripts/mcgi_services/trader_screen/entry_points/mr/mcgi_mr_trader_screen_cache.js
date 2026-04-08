@@ -209,6 +209,9 @@ define([
             plannage: result.getText({ name: 'custitem_plannage', summary: 'GROUP' }) || result.getValue({ name: 'custitem_plannage', summary: 'GROUP' }) || '',
             etampage: result.getText({ name: 'custitem_etampage', summary: 'GROUP' }) || result.getValue({ name: 'custitem_etampage', summary: 'GROUP' }) || '',
             autres: result.getText({ name: 'custitem_autres', summary: 'GROUP' }) || result.getValue({ name: 'custitem_autres', summary: 'GROUP' }) || '',
+            quantityFBM: roundToTwoDecimals(
+                parseFloat(result.getValue({ name: 'locationquantityonhand', summary: 'GROUP' })) || 0
+            ),
             mbfFactor: (() => {
                 const fbmPerPiece = parseFloat(
                     result.getValue({ name: 'custitem_mgsl_fbm', summary: 'GROUP' })

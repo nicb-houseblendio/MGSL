@@ -18,6 +18,7 @@ interface DetailDrawerProps {
   triggerType: DetailType;
   row?: SummaryRow | null;
   resetCacheVersion?: number | null;
+  uom?: string;
 }
 
 const MODAL_META: Record<DetailType, { label: string; color: string; bg: string; icon: string }> = {
@@ -116,7 +117,10 @@ export const DetailDrawer = ({
   triggerType,
   row,
   resetCacheVersion,
+  uom,
 }: DetailDrawerProps) => {
+  const isMBF = uom === 'MBF';
+  const mbfFactor = row?.mbfFactor ?? 0;
   const { data, loading, error, fetchDetail } = useDetailData({ resetCacheVersion });
   const [activeTab, setActiveTab] = React.useState<DetailType>(triggerType);
   const fetchedRef = React.useRef(false);
@@ -137,11 +141,20 @@ export const DetailDrawer = ({
 
   const headerTotal = React.useMemo(() => {
     const tabData = data?.[activeTab] as Record<string, unknown>[] | undefined;
-    if (!tabData?.length) return (row?.[activeTab as keyof SummaryRow] as number) || 0;
-    const qtyField = COLUMN_MAP[activeTab].find(c => c.totalKey === 'qty')?.id;
-    if (!qtyField) return 0;
-    return tabData.reduce((sum, r) => sum + (Number(r[qtyField]) || 0), 0);
-  }, [data, activeTab, row]);
+    let raw: number;
+    if (!tabData?.length) {
+      raw = (row?.[activeTab as keyof SummaryRow] as number) || 0;
+    } else {
+      const qtyField = COLUMN_MAP[activeTab].find(c => c.totalKey === 'qty')?.id;
+      if (!qtyField) return 0;
+      raw = tabData.reduce((sum, r) => sum + (Number(r[qtyField]) || 0), 0);
+    }
+    if (isMBF) {
+      if (mbfFactor === 0) return 0;
+      return Math.round(raw * mbfFactor * 100) / 100;
+    }
+    return raw;
+  }, [data, activeTab, row, isMBF, mbfFactor]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -183,7 +196,11 @@ export const DetailDrawer = ({
               <div className="text-right">
                 <div className="text-white/45 text-[10px] uppercase tracking-wider">Total</div>
                 <div className="font-mono text-[16px] font-bold" style={{ color: meta.bg }}>
-                  {Math.round(headerTotal).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                  {isMBF && mbfFactor === 0
+                    ? 'N/A'
+                    : isMBF
+                      ? (Math.round(headerTotal * 10) / 10).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+                      : Math.round(headerTotal).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </div>
               </div>
             )}
@@ -252,6 +269,8 @@ export const DetailDrawer = ({
                   rows={data[activeTab] as Record<string, unknown>[]}
                   columns={COLUMN_MAP[activeTab]}
                   meta={MODAL_META[activeTab]}
+                  uom={uom}
+                  mbfFactor={mbfFactor}
                 />
               ) : (
                 <p className="text-muted-foreground">No data</p>
@@ -267,10 +286,29 @@ interface DetailTableProps {
   rows: Record<string, unknown>[];
   columns: ColDef[];
   meta: { color: string; bg: string };
+  uom?: string;
+  mbfFactor?: number;
 }
 
-const DetailTable = ({ rows, columns, meta }: DetailTableProps) => {
-  const qtyField = columns.find(c => c.totalKey === 'qty')?.id;
+const DetailTable = ({ rows, columns, meta, uom, mbfFactor }: DetailTableProps) => {
+  const isMBF = uom === 'MBF';
+  const factor = mbfFactor ?? 0;
+  const canConvert = isMBF && factor > 0;
+
+  // Adjust qty column labels for MBF
+  const effectiveColumns = React.useMemo(() => {
+    if (!isMBF) return columns;
+    return columns.map(col => {
+      if (col.totalKey !== 'qty') return col;
+      const label = col.label
+        .replace('Packs on Hand', 'MBF On Hand')
+        .replace('Packs Committed', 'MBF Committed')
+        .replace('Packs', 'MBF');
+      return { ...col, label };
+    });
+  }, [columns, isMBF]);
+
+  const qtyField = effectiveColumns.find(c => c.totalKey === 'qty')?.id;
   const visibleRows = React.useMemo(() => {
     if (!qtyField) return rows;
     return rows.filter(r => (Number(r[qtyField]) || 0) > 0);
@@ -278,19 +316,27 @@ const DetailTable = ({ rows, columns, meta }: DetailTableProps) => {
 
   const totals = React.useMemo(() => {
     const result: Record<string, number> = {};
-    for (const col of columns) {
-      if (col.totalKey) {
-        result[col.id] = rows.reduce((sum, r) => sum + (Number(r[col.id]) || 0), 0);
+    for (const col of effectiveColumns) {
+      if (col.totalKey === 'qty') {
+        const rawTotal = rows.reduce((sum, r) => sum + (Number(r[col.id]) || 0), 0);
+        result[col.id] = canConvert
+          ? Math.round(rawTotal * factor * 100) / 100
+          : rawTotal;
+      } else if (col.totalKey === 'price' && qtyField) {
+        const totalQty = rows.reduce((sum, r) => sum + (Number(r[qtyField]) || 0), 0);
+        result[col.id] = totalQty > 0
+          ? rows.reduce((sum, r) => sum + (Number(r[qtyField]) || 0) * (Number(r[col.id]) || 0), 0) / totalQty
+          : 0;
       }
     }
     return result;
-  }, [rows, columns]);
+  }, [rows, effectiveColumns, canConvert, factor, qtyField]);
 
   return (
     <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 12, tableLayout: 'auto' }}>
       <thead>
         <tr>
-          {columns.map((col) => (
+          {effectiveColumns.map((col) => (
             <th
               key={col.id}
               style={{
@@ -323,8 +369,12 @@ const DetailTable = ({ rows, columns, meta }: DetailTableProps) => {
             onMouseEnter={e => { e.currentTarget.style.background = '#EEF7EF'; }}
             onMouseLeave={e => { e.currentTarget.style.background = i % 2 === 0 ? '#fff' : '#F8FAFC'; }}
           >
-            {columns.map((col) => {
-              const val = row[col.id];
+            {effectiveColumns.map((col) => {
+              const rawVal = row[col.id];
+              const isQtyCol = col.totalKey === 'qty';
+              const val = isQtyCol && isMBF
+                ? (canConvert ? Math.round(Number(rawVal || 0) * factor * 100) / 100 : null)
+                : rawVal;
               const linkUrl = col.id === 'docNum' || col.id === 'docType' ? row.docUrl
                 : col.id === 'vendor' || col.id === 'vendorName' ? row.vendorUrl
                 : col.id === 'customerName' ? row.customerUrl
@@ -357,16 +407,20 @@ const DetailTable = ({ rows, columns, meta }: DetailTableProps) => {
                       style={{
                         fontFamily: "'IBM Plex Mono', monospace",
                         fontWeight: 700,
-                        color: col.totalKey === 'qty' ? meta.color : col.totalKey === 'price' ? '#7A4100' : '#3D5166',
+                        color: isQtyCol && isMBF && !canConvert ? '#7A8FA3' : isQtyCol ? meta.color : col.totalKey === 'price' ? '#7A4100' : '#3D5166',
                       }}
                     >
-                      {typeof val === 'number'
-                        ? col.format === 'int'
-                          ? Math.round(val).toLocaleString(undefined, { maximumFractionDigits: 0 })
-                          : col.format === 'currency'
-                            ? `$${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                            : val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-                        : String(val ?? '—')}
+                      {isQtyCol && isMBF && !canConvert
+                        ? 'N/A'
+                        : typeof val === 'number'
+                          ? isQtyCol && isMBF
+                            ? (Math.round(val * 10) / 10).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+                            : col.format === 'int'
+                              ? Math.round(val).toLocaleString(undefined, { maximumFractionDigits: 0 })
+                              : col.format === 'currency'
+                                ? `$${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                : val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                          : String(val ?? '—')}
                     </span>
                   ) : (
                     <span style={{ color: '#3D5166', fontSize: 11 }}>{String(val ?? '—')}</span>
@@ -379,7 +433,7 @@ const DetailTable = ({ rows, columns, meta }: DetailTableProps) => {
       </tbody>
       <tfoot>
         <tr style={{ background: '#F1F5FA' }}>
-          {columns.map((col, i) => (
+          {effectiveColumns.map((col, i) => (
             <td
               key={col.id}
               style={{
@@ -395,14 +449,12 @@ const DetailTable = ({ rows, columns, meta }: DetailTableProps) => {
                   TOTAL
                 </span>
               ) : col.totalKey === 'qty' ? (
-                <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: meta.color, fontSize: 13 }}>
-                  {Math.round(totals[col.id] || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                </span>
-              ) : col.totalKey === 'price' ? (
-                <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: '#7A4100', fontSize: 12 }}>
-                  {totals[col.id] && rows.length
-                    ? `$${(totals[col.id] / rows.length).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                    : '—'}
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: isMBF && !canConvert ? '#7A8FA3' : meta.color, fontSize: 13 }}>
+                  {isMBF && !canConvert
+                    ? 'N/A'
+                    : isMBF
+                      ? (Math.round((totals[col.id] || 0) * 10) / 10).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+                      : Math.round(totals[col.id] || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </span>
               ) : null}
             </td>

@@ -67,6 +67,7 @@ export interface SummaryRow {
   plannage: string;
   etampage: string;
   autres: string;
+  quantityFBM?: number;
   mbfFactor?: number;
   onHand: number;
   committed: number;
