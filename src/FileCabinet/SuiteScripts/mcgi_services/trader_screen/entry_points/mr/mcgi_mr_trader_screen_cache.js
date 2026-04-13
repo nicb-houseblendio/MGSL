@@ -508,7 +508,7 @@ define([
         return {
             docNum: r.getValue({ name: 'tranid' }),
             docUrl: getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'purchaseorder'),
-            tranDate: r.getValue({ name: 'trandate' }),
+            shipWeek: r.getValue({ name: 'custbody_ship_week' }) || '',
             vendor: r.getText({ name: 'mainname' }),
             vendorUrl: getRecordUrl(vendorId, 'vendor'),
             packQty: roundToTwoDecimals(parseFloat(r.getValue({ name: 'custcol_mgsl_packqty' })) || 0),

@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { apiGet } from '@/lib/api';
 
-export type DetailType = 'onHand' | 'committed' | 'outbound' | 'onOrder' | 'inTransit';
+export type DetailType = 'onHand' | 'committed' | 'outbound' | 'onOrder' | 'inTransit' | 'available';
 
 export interface DetailPayload {
   onHand?: Record<string, unknown>[];
@@ -9,6 +9,7 @@ export interface DetailPayload {
   outbound?: Record<string, unknown>[];
   onOrder?: Record<string, unknown>[];
   inTransit?: Record<string, unknown>[];
+  available?: Record<string, unknown>[];
 }
 
 interface UseDetailDataOptions {
@@ -26,8 +27,8 @@ export const useDetailData = (options?: UseDetailDataOptions) => {
   }, [options?.resetCacheVersion]);
 
   const fetchDetail = useCallback(
-    async (itemId: string, locationId: string, bucket?: DetailType) => {
-      const cacheKey = `${itemId}__${locationId}`;
+    async (itemId: string, locationId: string, bucket?: DetailType, subsidiaryId?: string) => {
+      const cacheKey = `${subsidiaryId || 'ind'}__${itemId}__${locationId}`;
       const cached = cacheRef.current.get(cacheKey);
       if (cached) {
         setData(cached);
@@ -39,6 +40,7 @@ export const useDetailData = (options?: UseDetailDataOptions) => {
       try {
         const params: Record<string, string> = { itemId, locationId };
         if (bucket) params.bucket = bucket;
+        if (subsidiaryId) params.subsidiaryId = subsidiaryId;
         const result = await apiGet<{ success?: boolean; data?: DetailPayload | Record<string, unknown>[] }>('detail', params);
         const raw = (result as { data?: DetailPayload | Record<string, unknown>[] })?.data ?? result;
         const payload = Array.isArray(raw)

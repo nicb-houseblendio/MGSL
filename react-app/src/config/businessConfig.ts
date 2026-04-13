@@ -12,7 +12,10 @@ export type FilterKey =
   | 'planing'
   | 'stamping'
   | 'other'
-  | 'category';
+  | 'category'
+  | 'country'
+  | 'vendor'
+  | 'po';
 
 export interface BusinessConfig {
   filters: FilterKey[];
@@ -21,7 +24,7 @@ export interface BusinessConfig {
 
 export const BUSINESS_CONFIG: Record<string, BusinessConfig> = {
   CWP_MTL: {
-    filters: ['location', 'thickness', 'width', 'length', 'grade', 'supplier'],
+    filters: ['country', 'vendor', 'po', 'location', 'item', 'thickness', 'width', 'length', 'grade'],
     columns: ['width', 'length', 'onHand', 'committed', 'outbound', 'inTransit', 'available'],
   },
   CWP_IND: {

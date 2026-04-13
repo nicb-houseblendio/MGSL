@@ -27,6 +27,9 @@ define(['../../service/trader_screen_service_factory'], ServiceFactory => {
             plannage: p.plannage,
             etampage: p.etampage,
             autres: p.autres,
+            country: p.country,
+            vendor: p.vendor,
+            po: p.po,
         };
     };
 
@@ -43,7 +46,7 @@ define(['../../service/trader_screen_service_factory'], ServiceFactory => {
     const get = requestParams => {
         const params = getParamsFromGet(requestParams);
         if (!params.action) params.action = 'get';
-        const svc = ServiceFactory.getService(serviceName);
+        const svc = ServiceFactory.getService(serviceName, params.subsidiaryId);
         const result = svc.getRouter(params);
         return (result && typeof result === 'object') ? JSON.stringify(result) : result;
     };
@@ -51,7 +54,7 @@ define(['../../service/trader_screen_service_factory'], ServiceFactory => {
     const post = requestBody => {
         const params = getParamsFromPost(requestBody);
         if (!params.action) params.action = 'post';
-        const svc = ServiceFactory.getService(serviceName);
+        const svc = ServiceFactory.getService(serviceName, params.subsidiaryId);
         const result = svc.postRouter(params);
         return (result && typeof result === 'object') ? JSON.stringify(result) : result;
     };

@@ -12,10 +12,14 @@ import { exportToExcel } from '@/lib/export';
 import type { FilterState } from '@/types';
 import type { SummaryRow } from '@/lib/api';
 import type { DetailType } from '@/hooks/useDetailData';
+import { InventoryTableMTL } from '@/components/InventoryTableMTL';
+import { DetailDrawerMTL } from '@/components/DetailDrawerMTL';
+import { PriceListModal } from '@/components/PriceListModal';
+import { exportToExcelMTL } from '@/lib/exportMTL';
 
 const DEFAULT_UOM_CONFIG: Record<string, string[]> = {
   'CWP IND': ['Packs'],
-  'CWP MTL': ['Packs', 'TL'],
+  'CWP MTL': ['Packs', 'MBF'],
   'CWP ARCH': ['Cubic meters (m³)', 'Packs'],
 };
 
@@ -38,6 +42,13 @@ function TraderScreenContent() {
     ? contextUomConfig
     : DEFAULT_UOM_CONFIG;
   const CWP_VIEWS = Object.keys(uomConfig);
+
+  // View state must be declared before useSummaryData so we can derive the
+  // correct subsidiaryId for each view (MTL = subsidiary 5).
+  const [activeView, setActiveView] = React.useState(CWP_VIEWS[0] || 'CWP IND');
+  const isMTL = activeView === 'CWP MTL';
+  const effectiveSubsidiaryId = isMTL ? '5' : (subsidiaryId || 'default');
+
   const {
     allRows,
     meta,
@@ -48,7 +59,7 @@ function TraderScreenContent() {
     getTotals,
     getTotalsMBF,
     getFilterOptions,
-  } = useSummaryData(subsidiaryId || 'default');
+  } = useSummaryData(effectiveSubsidiaryId);
 
   const {
     refreshState,
@@ -65,8 +76,11 @@ function TraderScreenContent() {
     onFetchComplete: () => {},
   });
 
-  const [activeView, setActiveView] = React.useState(CWP_VIEWS[0] || 'CWP IND');
   const [uom, setUom] = React.useState('Packs');
+  React.useEffect(() => {
+    const options = uomConfig[activeView] || ['Packs'];
+    setUom((prev) => options.includes(prev) ? prev : options[0]);
+  }, [activeView, uomConfig]);
   const [filters, setFilters] = React.useState<FilterState>(defaultFilters);
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [detailParams, setDetailParams] = React.useState<{
@@ -75,6 +89,8 @@ function TraderScreenContent() {
     type: DetailType;
     row: SummaryRow;
   } | null>(null);
+  const [priceListOpen, setPriceListOpen] = React.useState(false);
+  const handlePriceList = React.useCallback(() => setPriceListOpen(true), []);
 
   const isFullscreen = getIsFullscreen();
   const rootRef = React.useRef<HTMLDivElement>(null);
@@ -118,10 +134,14 @@ function TraderScreenContent() {
     [getTotals, getTotalsMBF, filteredRows, uom]
   );
 
-  const filterOptions = React.useMemo(
-    () => getFilterOptions(allRows, filters),
-    [getFilterOptions, allRows, filters]
-  );
+  const filterOptions = React.useMemo(() => {
+    const opts = getFilterOptions(allRows, filters);
+    const uniquePOs = isMTL ? (meta?.uniquePOs ?? []) : [];
+    if (uniquePOs.length) {
+      opts['po'] = uniquePOs.map((po) => ({ value: po, label: po }));
+    }
+    return opts;
+  }, [getFilterOptions, allRows, filters, isMTL, meta?.uniquePOs]);
 
   const activeFilters = React.useMemo(() => ({
     location: filters.location || [],
@@ -140,6 +160,8 @@ function TraderScreenContent() {
     setResetKey(k => k + 1);
   }, []);
 
+  const [filterOpenTrigger, setFilterOpenTrigger] = React.useState(0);
+
   const handleCellFilter = React.useCallback((filterKey: string, value: string) => {
     setFilters(prev => {
       const current = (prev[filterKey as keyof FilterState] as string[]) || [];
@@ -152,6 +174,7 @@ function TraderScreenContent() {
         ...(filterKey === 'location' && { reload: newValues }),
       };
     });
+    setFilterOpenTrigger(k => k + 1);
   }, []);
 
   const handleDrillDown = React.useCallback(
@@ -172,16 +195,17 @@ function TraderScreenContent() {
   const handleExport = React.useCallback(() => {
     const selection = rowSelectionRef.current;
     const selectedKeys = Object.keys(selection).filter(k => selection[k]);
+    const exportFn = isMTL ? exportToExcelMTL : exportToExcel;
     if (selectedKeys.length > 0) {
       const selectedRows = filteredRows.filter(r => {
         const key = r.detailKey || `${r.internalId}-${r.locationId}`;
         return selectedKeys.includes(key);
       });
-      exportToExcel(selectedRows, getTotals(selectedRows), uom);
+      exportFn(selectedRows, getTotals(selectedRows), uom);
     } else {
-      exportToExcel(filteredRows, totals, uom);
+      exportFn(filteredRows, isMTL ? getTotals(filteredRows) : totals, uom);
     }
-  }, [filteredRows, totals, getTotals, uom]);
+  }, [filteredRows, totals, getTotals, uom, isMTL]);
 
   const displayError = error || refreshError;
 
@@ -232,7 +256,12 @@ function TraderScreenContent() {
             <button
               key={view}
               type="button"
-              onClick={() => setActiveView(view)}
+              onClick={() => {
+                setActiveView(view);
+                setFilters(defaultFilters);
+                setDetailOpen(false);
+                setPriceListOpen(false);
+              }}
               className="px-3.5 py-1.5 rounded-full text-xs font-semibold tracking-wide transition-all"
               style={{
                 background: activeView === view ? 'linear-gradient(135deg, var(--green), #237A52)' : 'rgba(255,255,255,0.1)',
@@ -334,6 +363,9 @@ function TraderScreenContent() {
           onExport={handleExport}
           filterOptions={filterOptions}
           exportDisabled={!allRows}
+          onPriceList={isMTL ? handlePriceList : undefined}
+          activeView={activeView}
+          openTrigger={filterOpenTrigger}
         />
       </div>
 
@@ -359,17 +391,30 @@ function TraderScreenContent() {
             </div>
           )}
           {allRows ? (
-            <InventoryTable
-              data={filteredRows}
-              onDrillDown={handleDrillDown}
-              onCellFilter={handleCellFilter}
-              activeFilters={activeFilters}
-              onRowSelectionChange={handleSelectionChange}
-              resetKey={resetKey}
-              totals={totals}
-              rowCount={filteredRows.length}
-              uom={uom}
-            />
+            isMTL ? (
+              <InventoryTableMTL
+                data={filteredRows}
+                onDrillDown={handleDrillDown}
+                onCellFilter={handleCellFilter}
+                activeFilters={activeFilters}
+                resetKey={resetKey}
+                totals={totals}
+                rowCount={filteredRows.length}
+                uom={uom}
+              />
+            ) : (
+              <InventoryTable
+                data={filteredRows}
+                onDrillDown={handleDrillDown}
+                onCellFilter={handleCellFilter}
+                activeFilters={activeFilters}
+                onRowSelectionChange={handleSelectionChange}
+                resetKey={resetKey}
+                totals={totals}
+                rowCount={filteredRows.length}
+                uom={uom}
+              />
+            )
           ) : !loading ? (
             <p className="py-12 text-center text-sm text-[#3D5166]">
               Loading inventory data…
@@ -380,15 +425,34 @@ function TraderScreenContent() {
 
       {/* Detail drawer */}
       {detailParams && (
-        <DetailDrawer
-          open={detailOpen}
-          onOpenChange={setDetailOpen}
-          itemId={detailParams.itemId}
-          locationId={detailParams.locationId}
-          triggerType={detailParams.type}
-          row={detailParams.row}
-          resetCacheVersion={meta?.cacheVersion ?? null}
-          uom={uom}
+        isMTL ? (
+          <DetailDrawerMTL
+            open={detailOpen}
+            onOpenChange={setDetailOpen}
+            type={detailParams.type}
+            row={detailParams.row}
+            resetCacheVersion={meta?.cacheVersion ?? null}
+            uom={uom}
+            subsidiaryId={effectiveSubsidiaryId}
+          />
+        ) : (
+          <DetailDrawer
+            open={detailOpen}
+            onOpenChange={setDetailOpen}
+            itemId={detailParams.itemId}
+            locationId={detailParams.locationId}
+            triggerType={detailParams.type}
+            row={detailParams.row}
+            resetCacheVersion={meta?.cacheVersion ?? null}
+            uom={uom}
+          />
+        )
+      )}
+      {isMTL && (
+        <PriceListModal
+          open={priceListOpen}
+          onOpenChange={setPriceListOpen}
+          rows={filteredRows}
         />
       )}
     </div>

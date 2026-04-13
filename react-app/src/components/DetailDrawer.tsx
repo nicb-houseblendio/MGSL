@@ -27,6 +27,7 @@ const MODAL_META: Record<DetailType, { label: string; color: string; bg: string;
   outbound:  { label: 'Outbound',   color: '#880E4F', bg: '#FCE4EC', icon: '\u{1F69A}' },
   onOrder:   { label: 'On Order',   color: '#0D47A1', bg: '#E3F2FD', icon: '\u{1F6D2}' },
   inTransit: { label: 'In Transit', color: '#4A148C', bg: '#F3E5F5', icon: '\u{26F5}' },
+  available: { label: 'Available',  color: '#1B5E20', bg: '#E8F5E9', icon: '\u2705' },
 };
 
 const TAB_LABELS: Record<DetailType, string> = {
@@ -35,6 +36,7 @@ const TAB_LABELS: Record<DetailType, string> = {
   outbound: 'Outbound',
   onOrder: 'On Order',
   inTransit: 'In Transit',
+  available: 'Available',
 };
 
 interface ColDef {
@@ -90,13 +92,14 @@ const COLUMN_MAP: Record<DetailType, ColDef[]> = {
   ],
   inTransit: [
     { id: 'docNum', label: 'Document Number', link: true },
-    { id: 'tranDate', label: 'Date' },
+    { id: 'shipWeek', label: 'Ship Week' },
     { id: 'vendor', label: 'Vendor', link: true },
     { id: 'packQty', label: 'Packs', numeric: true, totalKey: 'qty', format: 'int' },
     { id: 'piecesPerPack', label: 'Pieces Per Pack', numeric: true, format: 'int' },
     { id: 'pricePerPiece', label: 'Price Per Piece', numeric: true, format: 'currency' },
     { id: 'rate', label: 'MBF Price', numeric: true, totalKey: 'price', format: 'currency' },
   ],
+  available: [],
 };
 
 function makeDescription(row: SummaryRow): string {
@@ -221,7 +224,7 @@ export const DetailDrawer = ({
               className="grid w-full grid-cols-5 flex-shrink-0 rounded-lg overflow-hidden"
               style={{ background: 'linear-gradient(135deg, var(--navy) 0%, var(--navy-mid) 100%)' }}
             >
-              {(Object.keys(TAB_LABELS) as DetailType[]).map((t) => {
+              {(['onHand', 'committed', 'outbound', 'onOrder', 'inTransit'] as DetailType[]).map((t) => {
                 const isActive = activeTab === t;
                 const tabMeta = MODAL_META[t];
                 return (

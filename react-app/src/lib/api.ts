@@ -44,7 +44,7 @@ export interface SummaryResponse {
   success: boolean;
   rows: SummaryRow[];
   totals: { onHand: number; committed: number; outbound: number; onOrder: number; inTransit: number; available: number };
-  meta: { lastUpdated: string; cacheVersion: number; rowCount: number };
+  meta: { lastUpdated: string; cacheVersion: number; rowCount: number; uniquePOs?: string[] };
 }
 
 export interface SummaryRow {
@@ -77,6 +77,9 @@ export interface SummaryRow {
   available: number;
   averageCost: number;
   detailKey: string;
+  currency?: string;
+  vendor?: string;
+  pos?: string[];
 }
 
 export const apiGet = async <T>(action: string, params: Record<string, unknown> = {}): Promise<T> => {

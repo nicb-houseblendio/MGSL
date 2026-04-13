@@ -53,10 +53,29 @@ function applyClientFilters(rows: SummaryRow[], filters: FilterState): SummaryRo
     const set = new Set(filters.autres);
     filtered = filtered.filter((r) => r.autres && set.has(r.autres));
   }
+  if (filters.country?.length) {
+    const set = new Set(filters.country);
+    filtered = filtered.filter((r) => {
+      if (!r.currency) return false;
+      const country = r.currency === 'USD' ? 'US' : r.currency === 'CAD' ? 'CA' : null;
+      return country !== null && set.has(country);
+    });
+  }
+  if (filters.vendor?.length) {
+    const set = new Set(filters.vendor);
+    filtered = filtered.filter((r) => r.vendor && set.has(r.vendor));
+  }
+  if (filters.po?.length) {
+    const set = new Set(filters.po);
+    filtered = filtered.filter((r) => {
+      if (!r.pos || !Array.isArray(r.pos)) return false;
+      return r.pos.some((p: string) => set.has(p));
+    });
+  }
   return filtered;
 }
 
-function parseNumericLabel(s: string): number {
+export function parseNumericLabel(s: string): number {
   // Direct integer or decimal: "4", "6", "10", "1.5"
   if (!isNaN(parseFloat(s)) && !/[\s/']/.test(s)) return parseFloat(s);
   // Mixed fraction: "3 1/2", "1 3/8", "5 1/2"
@@ -73,7 +92,7 @@ function parseNumericLabel(s: string): number {
 
 export const useSummaryData = (subsidiaryId: string) => {
   const [allRows, setAllRows] = useState<SummaryRow[] | null>(null);
-  const [meta, setMeta] = useState<{ lastUpdated: string; cacheVersion: number } | null>(null);
+  const [meta, setMeta] = useState<{ lastUpdated: string; cacheVersion: number; uniquePOs?: string[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,9 +100,13 @@ export const useSummaryData = (subsidiaryId: string) => {
     setLoading(true);
     setError(null);
     try {
-      const result = await apiGet<SummaryResponse>('summary', { greaterThanZero: true });
+      const result = await apiGet<SummaryResponse>('summary', { greaterThanZero: true, subsidiaryId });
       setAllRows(result.rows);
-      setMeta(result.meta ? { lastUpdated: result.meta.lastUpdated, cacheVersion: result.meta.cacheVersion } : null);
+      setMeta(result.meta ? {
+        lastUpdated: result.meta.lastUpdated,
+        cacheVersion: result.meta.cacheVersion,
+        uniquePOs: result.meta.uniquePOs || [],
+      } : null);
 
       // ── UoM diagnostic ──────────────────────────────────────────
       if (result.rows?.length > 0) {
@@ -121,7 +144,7 @@ export const useSummaryData = (subsidiaryId: string) => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [subsidiaryId]);
 
   useEffect(() => {
     if (subsidiaryId) {
@@ -172,7 +195,7 @@ export const useSummaryData = (subsidiaryId: string) => {
       (rows: SummaryRow[] | null, filters: FilterState) => {
         if (!rows?.length) return {} as Record<string, { value: string; label: string }[]>;
 
-        const FILTER_FIELDS: { valueKey: keyof SummaryRow; labelKey: keyof SummaryRow; outKey: string; filterKey: keyof FilterState }[] = [
+        const FILTER_FIELDS: { valueKey: keyof SummaryRow; labelKey: keyof SummaryRow; outKey: string; filterKey: keyof FilterState; availableOnly?: boolean }[] = [
           { valueKey: 'locationId', labelKey: 'locationName', outKey: 'location', filterKey: 'location' },
           { valueKey: 'internalId', labelKey: 'itemCode', outKey: 'item', filterKey: 'item' },
           { valueKey: 'species', labelKey: 'species', outKey: 'species', filterKey: 'species' },
@@ -185,12 +208,17 @@ export const useSummaryData = (subsidiaryId: string) => {
           { valueKey: 'plannage', labelKey: 'plannage', outKey: 'plannage', filterKey: 'plannage' },
           { valueKey: 'etampage', labelKey: 'etampage', outKey: 'etampage', filterKey: 'etampage' },
           { valueKey: 'autres', labelKey: 'autres', outKey: 'autres', filterKey: 'autres' },
+          { valueKey: 'currency', labelKey: 'currency', outKey: 'country', filterKey: 'country' },
+          { valueKey: 'vendor', labelKey: 'vendor', outKey: 'vendor', filterKey: 'vendor', availableOnly: true },
         ];
 
         const options: Record<string, { value: string; label: string }[]> = {};
         for (const field of FILTER_FIELDS) {
           const filtersWithout: FilterState = { ...filters, [field.filterKey]: undefined };
-          const subset = applyClientFilters(rows, filtersWithout);
+          let subset = applyClientFilters(rows, filtersWithout);
+          if (field.availableOnly) {
+            subset = subset.filter((r) => (r.available ?? 0) > 0);
+          }
           const seen = new Set<string>();
           const items: { value: string; label: string }[] = [];
           for (const r of subset) {
@@ -207,6 +235,13 @@ export const useSummaryData = (subsidiaryId: string) => {
             if (!isNaN(aNum) && !isNaN(bNum)) return aNum - bNum;
             return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
           });
+        }
+        if (options['country']) {
+          const countryMap: Record<string, string> = { USD: 'US', CAD: 'CA' };
+          const seen = new Set<string>();
+          options['country'] = options['country']
+            .map(item => ({ value: countryMap[item.value] || item.value, label: countryMap[item.value] || item.value }))
+            .filter(item => { if (seen.has(item.value)) return false; seen.add(item.value); return true; });
         }
         return options;
       },

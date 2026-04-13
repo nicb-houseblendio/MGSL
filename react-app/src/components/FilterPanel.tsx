@@ -21,6 +21,15 @@ const FILTER_LABELS: Record<string, string> = {
   other: 'OTHER',
   category: 'CATEGORY',
   supplier: 'SUPPLIER',
+  country: 'COUNTRY',
+  vendor: 'VENDOR',
+  po: 'PO',
+};
+
+const FILTER_PLACEHOLDERS: Record<string, string> = {
+  location: 'All locations',
+  vendor: 'All vendors',
+  po: 'All POs',
 };
 
 const FILTER_TO_API: Record<string, string> = {
@@ -38,6 +47,9 @@ const FILTER_TO_API: Record<string, string> = {
   stamping: 'etampage',
   other: 'autres',
   category: 'category',
+  country: 'country',
+  vendor: 'vendor',
+  po: 'po',
 };
 
 export type FilterOptions = Record<string, { value: string; label: string }[]>;
@@ -49,6 +61,9 @@ interface FilterPanelProps {
   onExport: () => void;
   filterOptions?: FilterOptions;
   exportDisabled?: boolean;
+  onPriceList?: () => void;
+  activeView?: string;
+  openTrigger?: number;
 }
 
 export const FilterPanel = ({
@@ -58,9 +73,12 @@ export const FilterPanel = ({
   onExport,
   filterOptions = {},
   exportDisabled,
+  onPriceList,
+  activeView,
+  openTrigger,
 }: FilterPanelProps) => {
   const { subsidiaryName } = useNetSuite();
-  const config = getBusinessConfig(subsidiaryName);
+  const config = getBusinessConfig(activeView || subsidiaryName);
 
   const updateFilter = (key: FilterKey, value: string[]) => {
     const apiKey = FILTER_TO_API[key] || key;
@@ -73,6 +91,10 @@ export const FilterPanel = ({
 
   const allFilters = config.filters;
   const [filtersOpen, setFiltersOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    if (openTrigger && openTrigger > 0) setFiltersOpen(true);
+  }, [openTrigger]);
 
   const activeFilterCount = allFilters.filter((key) => {
     const apiKey = FILTER_TO_API[key] || key;
@@ -155,6 +177,16 @@ export const FilterPanel = ({
                 >
                   ↓
                 </button>
+                {onPriceList && (
+                  <button
+                    type="button"
+                    onClick={onPriceList}
+                    title="Price List"
+                    className="h-10 px-3 rounded-md text-xs font-semibold border border-[#CBD5E1] bg-transparent text-[#3D5166] hover:bg-[#F8FAFC] whitespace-nowrap"
+                  >
+                    📄 Price List
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -188,7 +220,7 @@ const FilterField = ({ filterKey, filters, updateFilter, options, comboboxClassN
         options={options}
         selected={selected}
         onChange={(v) => updateFilter(filterKey, v)}
-        placeholder="All"
+        placeholder={FILTER_PLACEHOLDERS[filterKey] || 'All'}
         searchPlaceholder="Search..."
         className={comboboxClassName}
       />

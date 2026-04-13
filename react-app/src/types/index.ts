@@ -61,6 +61,9 @@ export interface FilterState {
   etampage?: string[];
   autres?: string[];
   category?: string[];
+  country?: string[];
+  vendor?: string[];
+  po?: string[];
 }
 
 export interface NetSuiteContext {
