@@ -51,8 +51,8 @@ const formatQtyMTL = (n: number, uom?: string): string => {
 };
 
 const formatMBF = (n?: number): string => {
-  if (n == null || n === 0) return '0.0';
-  return (Math.round(n * 10) / 10).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  if (n == null || n === 0) return '0.00';
+  return (Math.round(n * 100) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
 const formatCurrencyMTL = (n: number) =>
@@ -228,6 +228,28 @@ export const InventoryTableMTL = ({
             >
               {v}
             </button>
+          );
+        },
+        size: 130,
+      },
+      // Item ID
+      {
+        accessorKey: 'itemCode',
+        header: ({ column }) => <SortHeaderMTL label="ITEM ID" column={column} />,
+        cell: ({ row, getValue }) => {
+          const v = getValue() as string;
+          if (!v) return <span className="font-mono text-xs">—</span>;
+          const id = row.original.internalId;
+          const itemUrl = row.original.itemUrl;
+          const active = activeFilters?.item?.includes(id);
+          return (
+            <div onClick={() => onCellFilter?.('item', id)} className={`w-full cursor-pointer ${active ? 'font-bold text-[#1E6B47] bg-[#1E6B47]/10 px-1 rounded' : ''}`}>
+              {itemUrl ? (
+                <a href={itemUrl} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="font-mono text-xs hover:underline">{v}</a>
+              ) : (
+                <span className="font-mono text-xs">{v}</span>
+              )}
+            </div>
           );
         },
         size: 130,

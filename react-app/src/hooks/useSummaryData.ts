@@ -55,11 +55,7 @@ function applyClientFilters(rows: SummaryRow[], filters: FilterState): SummaryRo
   }
   if (filters.country?.length) {
     const set = new Set(filters.country);
-    filtered = filtered.filter((r) => {
-      if (!r.currency) return false;
-      const country = r.currency === 'USD' ? 'US' : r.currency === 'CAD' ? 'CA' : null;
-      return country !== null && set.has(country);
-    });
+    filtered = filtered.filter((r) => !!r.country && set.has(r.country));
   }
   if (filters.vendor?.length) {
     const set = new Set(filters.vendor);
@@ -208,7 +204,7 @@ export const useSummaryData = (subsidiaryId: string) => {
           { valueKey: 'plannage', labelKey: 'plannage', outKey: 'plannage', filterKey: 'plannage' },
           { valueKey: 'etampage', labelKey: 'etampage', outKey: 'etampage', filterKey: 'etampage' },
           { valueKey: 'autres', labelKey: 'autres', outKey: 'autres', filterKey: 'autres' },
-          { valueKey: 'currency', labelKey: 'currency', outKey: 'country', filterKey: 'country' },
+          { valueKey: 'country', labelKey: 'country', outKey: 'country', filterKey: 'country' },
           { valueKey: 'vendor', labelKey: 'vendor', outKey: 'vendor', filterKey: 'vendor', availableOnly: true },
         ];
 
@@ -235,13 +231,6 @@ export const useSummaryData = (subsidiaryId: string) => {
             if (!isNaN(aNum) && !isNaN(bNum)) return aNum - bNum;
             return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
           });
-        }
-        if (options['country']) {
-          const countryMap: Record<string, string> = { USD: 'US', CAD: 'CA' };
-          const seen = new Set<string>();
-          options['country'] = options['country']
-            .map(item => ({ value: countryMap[item.value] || item.value, label: countryMap[item.value] || item.value }))
-            .filter(item => { if (seen.has(item.value)) return false; seen.add(item.value); return true; });
         }
         return options;
       },

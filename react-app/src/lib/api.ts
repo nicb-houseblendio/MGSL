@@ -78,6 +78,7 @@ export interface SummaryRow {
   averageCost: number;
   detailKey: string;
   currency?: string;
+  country?: string;
   vendor?: string;
   pos?: string[];
 }

@@ -21,6 +21,7 @@ define([
     // ═══════════════════════════════════════════════════════════════════════════
 
     const MTL_SUBSIDIARY_ID = 5;
+    const MIN_INTERVAL_MS   = 120000; // 2 minutes — minimum gap between real processing runs
 
     const SUMMARY_SEARCH_ID    = 'customsearch_suitelet_all_items_search_m';
     const ON_HAND_SEARCH_ID    = 'customsearch_mgsl_trader_onhand_tran_mtl';
@@ -35,6 +36,10 @@ define([
         'Inventory Item':  'inventoryitem',
         inventoryItem:     'inventoryitem',
     };
+
+    // Virtual locations — physical country is irrelevant (no address).
+    // Country filter routes these to the "Other" bucket.
+    const VIRTUAL_LOCATION_IDS = { '103': true, '104': true, '310': true, '311': true };
 
     const locationCurrencyMap = {
         '108': 'USD', '217': 'USD', '216': 'USD', '7':   'USD',
@@ -134,6 +139,19 @@ define([
     function getDetailSearch(searchId) {
         if (!_detailSearchCache[searchId]) {
             var s = search.load({ id: searchId });
+            // All MTL searches use consolidationtype:ACCTTYPE which converts rate to base currency (CAD);
+            // add exchangerate so row builders can divide rate/exchangerate to get transaction-currency price
+            if (searchId === ON_ORDER_SEARCH_ID) {
+                s.columns.push(search.createColumn({ name: 'exchangerate', summary: 'MAX' }));
+                s.columns.push(search.createColumn({ name: 'currency', summary: 'GROUP' }));
+            } else {
+                s.columns.push(search.createColumn({ name: 'exchangerate' }));
+                s.columns.push(search.createColumn({ name: 'currency' }));
+            }
+            // Outbound needs the allocated PO segment so we can resolve vendor downstream
+            if (searchId === OUTBOUND_SEARCH_ID) {
+                s.columns.push(search.createColumn({ name: 'cseg_po_segment_gl' }));
+            }
             _detailSearchCache[searchId] = {
                 search: s,
                 baseFilterLen: s.filters.length,
@@ -150,6 +168,7 @@ define([
         if (!_onHandMtlCache) {
             var s = search.load({ id: ON_HAND_SEARCH_ID });
             s.columns.push(search.createColumn({ name: 'trandate', sort: search.Sort.ASC }));
+            s.columns.push(search.createColumn({ name: 'exchangerate' }));
             _onHandMtlCache = {
                 search:        s,
                 baseFilterLen: s.filters.length,
@@ -159,6 +178,18 @@ define([
         return _onHandMtlCache;
     }
 
+    // Summary search loader — pushes location country column so country filter
+    // can key on physical location country rather than currency proxy.
+    const loadSummarySearch = () => {
+        var s = search.load({ id: SUMMARY_SEARCH_ID });
+        s.columns.push(search.createColumn({
+            name:    'country',
+            join:    'inventoryLocation',
+            summary: 'GROUP',
+        }));
+        return s;
+    };
+
     // ═══════════════════════════════════════════════════════════════════════════
     //  ROW BUILDERS — formula column refs cached at module scope
     // ═══════════════════════════════════════════════════════════════════════════
@@ -166,7 +197,7 @@ define([
     var colPackCommitted       = null;
     var colInTransitAdditional = null;
     var colOpenQty             = null;
-    var colShippedPacks        = null;
+    var colOutboundPacks        = null;
 
     // ── Committed ─────────────────────────────────────────────────────────────
     const buildCommittedRow = (r) => {
@@ -183,6 +214,8 @@ define([
         var entityId = r.getValue({ name: 'entity' });
         var ppp      = parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) ||
                        parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
+        var rawRate  = parseFloat(r.getValue({ name: 'rate' })) || 0;
+        var exchRate = parseFloat(r.getValue({ name: 'exchangerate' })) || 1;
         return {
             docNumber:      r.getValue({ name: 'tranid' }),
             docUrl:         getRecordUrl(docId, 'salesorder'),
@@ -192,7 +225,8 @@ define([
             shipWeek:       r.getValue({ name: 'custbody_ship_week' }) || '',
             packsCommitted: packsCommitted,
             piecesPerPack:  ppp,
-            mbfPrice:       roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
+            mbfPrice:       roundToTwoDecimals(rawRate / exchRate),
+            currency:       CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
             allocatedPO:    r.getText({ name: 'line.cseg_po_segment_gl' }) || '\u2014',
             lotNumber:      r.getValue({ name: 'serialnumber' }) || '\u2014',
         };
@@ -211,6 +245,8 @@ define([
         var vendorId = r.getValue({ name: 'mainname' });
         var ppp      = parseFloat(r.getValue({ name: 'custcol_mgsl_ppp' })) ||
                        parseFloat(r.getValue({ name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
+        var rawRate  = parseFloat(r.getValue({ name: 'rate' })) || 0;
+        var exchRate = parseFloat(r.getValue({ name: 'exchangerate' })) || 1;
         return {
             docNumber:     r.getValue({ name: 'tranid' }),
             docUrl:        getRecordUrl(docId, 'purchaseorder'),
@@ -219,7 +255,8 @@ define([
             vendorUrl:     getRecordUrl(vendorId, 'vendor'),
             packs:         packs,
             piecesPerPack: ppp,
-            mbfPrice:      roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
+            mbfPrice:      roundToTwoDecimals(rawRate / exchRate),
+            currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
         };
     };
 
@@ -236,6 +273,11 @@ define([
         var vendorId = r.getValue({ name: 'internalid', join: 'vendor', summary: 'GROUP' });
         var ppp      = parseFloat(r.getValue({ name: 'custcol_mgsl_ppp', summary: 'GROUP' })) ||
                        parseFloat(r.getValue({ name: 'custitem_mgsl_ppp', join: 'item', summary: 'GROUP' })) || 0;
+        // rate is in base currency (CAD) due to consolidationtype:ACCTTYPE;
+        // divide by exchangerate to get transaction-currency price (what the PO shows)
+        var rawRate  = parseFloat(r.getValue({ name: 'rate', summary: 'MAX' })) || 0;
+        var exchRate = parseFloat(r.getValue({ name: 'exchangerate', summary: 'MAX' })) || 1;
+        var price    = roundToTwoDecimals(rawRate / exchRate);
         return {
             docNumber:     r.getValue({ name: 'tranid', summary: 'GROUP' }),
             docUrl:        getRecordUrl(docId, 'purchaseorder'),
@@ -244,36 +286,43 @@ define([
             shipWeek:      r.getValue({ name: 'custbody_ship_week', summary: 'GROUP' }) || '',
             packs:         packs,
             piecesPerPack: ppp,
-            mbfPrice:      roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate', summary: 'MAX' })) || 0),
+            mbfPrice:      price,
+            currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency', summary: 'GROUP' })] || r.getText({ name: 'currency', summary: 'GROUP' }) || '',
         };
     };
 
     // ── Outbound ──────────────────────────────────────────────────────────────
     const buildOutboundRow = (r) => {
-        if (!colShippedPacks) {
+        if (!colOutboundPacks) {
             r.columns.forEach((col) => {
-                if (col.label === 'Invoiced Quantity') colShippedPacks = col;
+                if (col.label === 'Remaining Quantity') colOutboundPacks = col;
             });
-            if (!colShippedPacks) log.error('MTL Outbound', 'Formula column "Invoiced Quantity" not found');
+            if (!colOutboundPacks) log.error('MTL Outbound', 'Formula column "Remaining Quantity" not found');
         }
-        var packs = roundToTwoDecimals(parseFloat(colShippedPacks ? r.getValue(colShippedPacks) : 0) || 0);
+        var packs = roundToTwoDecimals(parseFloat(colOutboundPacks ? r.getValue(colOutboundPacks) : 0) || 0);
         if (packs <= 0) return null;
 
         var docId    = r.getValue({ name: 'internalid' });
         var entityId = r.getValue({ name: 'entity' });
         var ppp      = parseFloat(r.getValue({ name: 'custcol_mgsl_ppp' })) ||
                        parseFloat(r.getValue({ name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
-        var lotNumber = r.getValue({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
+        var lotNumber = r.getText({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
+        var lotId     = r.getValue({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
+        var rawRate   = parseFloat(r.getValue({ name: 'rate' })) || 0;
+        var exchRate  = parseFloat(r.getValue({ name: 'exchangerate' })) || 1;
         return {
             docNumber:     r.getValue({ name: 'tranid' }),
             docUrl:        getRecordUrl(docId, 'salesorder'),
             lotNumber:     lotNumber || '\u2014',
+            lotUrl:        getRecordUrl(lotId, 'inventorynumber'),
             customer:      r.getText({ name: 'entity' }),
             customerUrl:   getRecordUrl(entityId, 'customer'),
             invoicedDate:  r.getValue({ name: 'trandate', join: 'billingTransaction' }) || '',
             packs:         packs,
             piecesPerPack: ppp,
-            mbfPrice:      roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
+            mbfPrice:      roundToTwoDecimals(rawRate / exchRate),
+            currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
+            allocatedPO:   r.getText({ name: 'cseg_po_segment_gl' }) || '\u2014',
         };
     };
 
@@ -308,6 +357,63 @@ define([
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
+    //  resolveAllocatedPOVendors — one batched PO search, returns {tranid: {vendor, vendorUrl}}
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const resolveAllocatedPOVendors = (committed, outbound) => {
+        var poSet = {};
+        committed.forEach(function (r) {
+            if (r.allocatedPO && r.allocatedPO !== '\u2014') poSet[r.allocatedPO] = true;
+        });
+        outbound.forEach(function (r) {
+            if (r.allocatedPO && r.allocatedPO !== '\u2014') poSet[r.allocatedPO] = true;
+        });
+        var poList = Object.keys(poSet);
+        var result = {};
+        if (poList.length === 0) return result;
+
+        try {
+            // tranid is a text field — build an OR expression (not anyof)
+            var tranidExpr = [];
+            poList.forEach(function (po, idx) {
+                if (idx > 0) tranidExpr.push('OR');
+                tranidExpr.push(['tranid', 'is', po]);
+            });
+            var poSearch = search.create({
+                type: 'purchaseorder',
+                filters: [['mainline', 'is', 'T'], 'AND', tranidExpr],
+                columns: [
+                    search.createColumn({ name: 'tranid' }),
+                    search.createColumn({ name: 'entity' }),
+                ],
+            });
+            poSearch.run().each(function (r) {
+                var tranid    = r.getValue({ name: 'tranid' });
+                var vendorId  = r.getValue({ name: 'entity' });
+                var vendorTxt = r.getText({ name: 'entity' });
+                if (tranid) {
+                    result[tranid] = {
+                        vendor:    vendorTxt || '',
+                        vendorUrl: vendorId ? getRecordUrl(vendorId, 'vendor') : '',
+                    };
+                }
+                return true;
+            });
+        } catch (e) {
+            log.error('MTL vendor lookup', 'POs=' + poList.join(',') + ' ERROR: ' + e.message);
+        }
+        return result;
+    };
+
+    const applyVendor = (rows, vendorByPO) => {
+        rows.forEach(function (r) {
+            var v = vendorByPO[r.allocatedPO];
+            r.vendor    = v ? v.vendor    : '';
+            r.vendorUrl = v ? v.vendorUrl : '';
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
     //  buildAvailable — computed from the 5 detail arrays
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -336,11 +442,15 @@ define([
             available.push({
                 docType:       lot.docType,
                 docNumber:     lot.docNumber,
+                docUrl:        lot.docUrl,
                 poNumber:      lot.poNumber,
+                poUrl:         lot.poUrl,
                 date:          lot.date,
                 lotNumber:     lot.lotNumber,
+                lotUrl:        lot.lotUrl,
                 mbfPrice:      lot.mbfPrice,
                 vendor:        lot.vendor,
+                vendorUrl:     lot.vendorUrl,
                 status:        'On Hand',
                 packsAvail:    packsAvail,
                 piecesPerPack: lot.piecesPerPack,
@@ -351,11 +461,14 @@ define([
         onOrder.forEach((row) => {
             if ((row.packs || 0) <= 0) return;
             available.push({
-                docNumber:     row.docNumber,
+                poNumber:      row.docNumber,
+                poUrl:         row.docUrl,
                 vendor:        row.vendor,
+                vendorUrl:     row.vendorUrl,
                 status:        'On Order',
                 packsAvail:    row.packs,
                 piecesPerPack: row.piecesPerPack,
+                mbfPrice:      row.mbfPrice,
             });
         });
 
@@ -363,21 +476,33 @@ define([
         inTransit.forEach((row) => {
             if ((row.packs || 0) <= 0) return;
             available.push({
-                docNumber:     row.docNumber,
+                poNumber:      row.docNumber,
+                poUrl:         row.docUrl,
                 vendor:        row.vendor,
+                vendorUrl:     row.vendorUrl,
                 status:        'In Transit',
                 packsAvail:    row.packs,
                 piecesPerPack: row.piecesPerPack,
+                mbfPrice:      row.mbfPrice,
             });
         });
 
-        // ── Reconcile: deduct unmatched committed/outbound from On Hand lots ─
-        // Per-lot allocation misses outbound/committed rows whose lot numbers
-        // are '—' or don't match any On Hand lot.  Compute the aggregate
-        // On Hand contribution target and trim the largest lots to match.
+        // ── Split committed into allocated (has lot) vs unallocated (lot '—') ─
+        var allocatedCommittedTotal = 0;
+        var unallocatedCommitted = [];
+        committed.forEach(function (row) {
+            if (!row.lotNumber || row.lotNumber === '\u2014') {
+                unallocatedCommitted.push(row);
+            } else {
+                allocatedCommittedTotal += (row.packsCommitted || 0);
+            }
+        });
+
+        // ── Reconcile: deduct only ALLOCATED committed + all outbound from On Hand ─
+        // Unallocated SOs appear as separate rows so the trader can decide allocation.
         var ohContribTarget = roundToTwoDecimals(Math.max(0,
             onHand.reduce(function (s, r) { return s + (r.packsOnHand || 0); }, 0) -
-            committed.reduce(function (s, r) { return s + (r.packsCommitted || 0); }, 0) -
+            allocatedCommittedTotal -
             outbound.reduce(function (s, r) { return s + (r.packs || 0); }, 0)
         ));
         var ohContribActual = roundToTwoDecimals(
@@ -397,6 +522,20 @@ define([
             }
             available = available.filter(function (r) { return r.packsAvail > 0; });
         }
+
+        // ── Unallocated committed SOs — distinct rows with negative packsAvail ──
+        // Negative value keeps the Available total unchanged (On Hand↑ offset by deduction).
+        unallocatedCommitted.forEach(function (row) {
+            if ((row.packsCommitted || 0) <= 0) return;
+            available.push({
+                docNumber:     row.docNumber,
+                docUrl:        row.docUrl,
+                status:        'Committed',
+                packsAvail:    -(row.packsCommitted || 0),
+                piecesPerPack: row.piecesPerPack,
+                mbfPrice:      row.mbfPrice,
+            });
+        });
 
         return available;
     };
@@ -430,6 +569,9 @@ define([
             locationId:   String(locationId),
             locationName: locationName,
             locationUrl:  getRecordUrl(locationId, 'location'),
+            country:      VIRTUAL_LOCATION_IDS[String(locationId)]
+                              ? 'Other'
+                              : (result.getValue({ name: 'country', join: 'inventoryLocation', summary: 'GROUP' }) || ''),
             isReload:     result.getValue({ name: 'custrecord_is_reload', join: 'inventoryLocation', summary: 'GROUP' }) === 'T',
             itemType:     itemType || 'inventoryitem',
             itemCode:     result.getValue({ name: 'itemid', summary: 'GROUP' }),
@@ -472,13 +614,23 @@ define([
 
         var myCache    = CacheClient.getCache();
         var lastRunStr = myCache.get({ key: CacheKeysMTL.LAST_RUN });
+
+        // ── Throttle: skip processing if less than MIN_INTERVAL_MS since last run ─
+        if (!forceFull && lastRunStr) {
+            var elapsed = Date.now() - new Date(lastRunStr).getTime();
+            if (!isNaN(elapsed) && elapsed < MIN_INTERVAL_MS) {
+                log.debug('MTL Cache', 'getInputData: throttled — ' + Math.round(elapsed / 1000) + 's since last run, min=' + (MIN_INTERVAL_MS / 1000) + 's');
+                return {};
+            }
+        }
+
         var isFullMode = forceFull || !lastRunStr;
         log.audit('MTL Cache', 'getInputData: forceFull=' + forceFull + ' lastRunStr=' + (lastRunStr || '(empty)') + ' isFullMode=' + isFullMode);
 
         // ── Full mode ─────────────────────────────────────────────────────────
         if (isFullMode) {
             log.audit('MTL Cache', 'getInputData: FULL mode');
-            var mySearch = search.load({ id: SUMMARY_SEARCH_ID });
+            var mySearch = loadSummarySearch();
             var fullInput = {};
             var paged = mySearch.runPaged({ pageSize: 1000 });
             paged.pageRanges.forEach((pageRange) => {
@@ -500,7 +652,7 @@ define([
 
         if (!lastRunDate) {
             log.audit('MTL Cache', 'getInputData: invalid lastRunDate, falling back to FULL');
-            var mySearch2 = search.load({ id: SUMMARY_SEARCH_ID });
+            var mySearch2 = loadSummarySearch();
             var fullInput2 = {};
             runPagedAll(mySearch2).forEach((result) => {
                 var row = buildSummaryRow(result);
@@ -551,9 +703,20 @@ define([
 
         log.audit('MTL Cache', 'getInputData: DELTA pairCount=' + pairCount + ' threshold=' + deltaThreshold);
 
-        if (pairCount > deltaThreshold || pairCount === 0) {
-            log.audit('MTL Cache', 'getInputData: DELTA->FULL fallback');
-            var mySearch3 = search.load({ id: SUMMARY_SEARCH_ID });
+        if (pairCount === 0) {
+            // Nothing changed — refresh LAST_RUN so throttle stays current, skip processing
+            myCache.put({
+                key:   CacheKeysMTL.LAST_RUN,
+                value: new Date().toISOString(),
+                ttl:   CacheKeysMTL.TTL_LAST_RUN,
+            });
+            log.audit('MTL Cache', 'getInputData: DELTA 0 changes, LAST_RUN refreshed');
+            return {};
+        }
+
+        if (pairCount > deltaThreshold) {
+            log.audit('MTL Cache', 'getInputData: DELTA->FULL fallback (pairCount=' + pairCount + ')');
+            var mySearch3 = loadSummarySearch();
             var fullInput3 = {};
             runPagedAll(mySearch3).forEach((result) => {
                 var row = buildSummaryRow(result);
@@ -564,7 +727,7 @@ define([
 
         // Rebuild summary rows for changed pairs only
         var inputData = {};
-        var itemsSearch = search.load({ id: SUMMARY_SEARCH_ID });
+        var itemsSearch = loadSummarySearch();
         var baseFilters = itemsSearch.filterExpression ? itemsSearch.filterExpression.concat() : [];
 
         Object.keys(pairs).forEach((k) => {
@@ -658,7 +821,8 @@ define([
                         });
                     }
 
-                    var lotNumber    = result.getValue({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
+                    var lotNumber    = result.getText({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
+                    var lotId        = result.getValue({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
                     if (!lotNumber) return true;
 
                     var invDetailQty = parseFloat(result.getValue({ name: 'quantity', join: 'inventoryDetail' })) || 0;
@@ -680,12 +844,13 @@ define([
                         qty = -Math.abs(invDetailQty);
                     }
 
-                    // PPP fallback chain
-                    var ppp = parsePppFromLot(lotNumber);
-                    if (ppp) { _ohPppFromLot++; }
+                    // PPP fallback chain — formula column first (authoritative), lot name fallback
+                    var ppp = 0;
+                    if (colPPPFormula) ppp = parseFloat(result.getValue(colPPPFormula)) || 0;
+                    if (ppp) { _ohPppFromCol++; }
                     else {
-                        if (colPPPFormula) ppp = parseFloat(result.getValue(colPPPFormula)) || 0;
-                        if (ppp) { _ohPppFromCol++; } else { _ohPppZero++; }
+                        ppp = parsePppFromLot(lotNumber);
+                        if (ppp) { _ohPppFromLot++; } else { _ohPppZero++; }
                     }
 
                     // FBM fallback chain
@@ -707,7 +872,9 @@ define([
                         itemData[seenLots[lotNumber]].packsOnHand += packs;
                         // Defensive: capture rate/currency if first encounter was IF
                         if (tranType === 'itemreceipt' && itemData[seenLots[lotNumber]].mbfPrice === 0) {
-                            itemData[seenLots[lotNumber]].mbfPrice  = parseFloat(result.getValue({ name: 'rate' })) || 0;
+                            var aggRawRate  = parseFloat(result.getValue({ name: 'rate' })) || 0;
+                            var aggExchRate = parseFloat(result.getValue({ name: 'exchangerate' })) || 1;
+                            itemData[seenLots[lotNumber]].mbfPrice  = roundToTwoDecimals(aggRawRate / aggExchRate);
                             itemData[seenLots[lotNumber]].currency  = CURRENCY_TO_ISO[result.getText({ name: 'currency' })] || result.getText({ name: 'currency' }) || '';
                         }
                         return true;
@@ -715,18 +882,21 @@ define([
 
                     // First encounter — full row
                     seenLots[lotNumber] = itemData.length;
+                    var createdFromId = result.getValue({ name: 'createdfrom' });
                     itemData.push({
                         docType:       result.getText({ name: 'type' }),
                         docNumber:     result.getValue({ name: 'tranid' }),
                         docUrl:        getRecordUrl(result.getValue({ name: 'internalid' }), tranType),
                         poNumber:      stripPrefix(result.getText({ name: 'createdfrom' })),
+                        poUrl:         (tranType === 'itemreceipt' && createdFromId) ? getRecordUrl(createdFromId, 'purchaseorder') : '',
                         date:          result.getValue({ name: 'trandate' }),
                         vendor:        result.getText({ name: 'mainname' }),
                         vendorUrl:     getRecordUrl(result.getValue({ name: 'internalid', join: 'vendor' }), 'vendor'),
                         lotNumber:     lotNumber,
+                        lotUrl:        getRecordUrl(lotId, 'inventorynumber'),
                         packsOnHand:   packs,
                         piecesPerPack: ppp,
-                        mbfPrice:      tranType === 'itemreceipt' ? (parseFloat(result.getValue({ name: 'rate' })) || 0) : 0,
+                        mbfPrice:      tranType === 'itemreceipt' ? roundToTwoDecimals((parseFloat(result.getValue({ name: 'rate' })) || 0) / (parseFloat(result.getValue({ name: 'exchangerate' })) || 1)) : 0,
                         currency:      tranType === 'itemreceipt'
                             ? (CURRENCY_TO_ISO[result.getText({ name: 'currency' })] || result.getText({ name: 'currency' }) || '')
                             : '',
@@ -757,6 +927,11 @@ define([
         var onOrder   = runDetailSearch(ON_ORDER_SEARCH_ID,   itemId, locationId, buildOnOrderRow);
         var inTransit = runDetailSearch(IN_TRANSIT_SEARCH_ID, itemId, locationId, buildInTransitRow);
 
+        // ── Resolve allocated-PO vendor for committed + outbound rows ─────────
+        var vendorByPO = resolveAllocatedPOVendors(committed, outbound);
+        applyVendor(committed, vendorByPO);
+        applyVendor(outbound,  vendorByPO);
+
         // ── Compute totals from detail arrays ─────────────────────────────────
         var onHandTotal    = roundToTwoDecimals(onHand.reduce(function (s, r) { return s + (r.packsOnHand || 0); }, 0));
         var committedTotal = roundToTwoDecimals(committed.reduce(function (s, r) { return s + (r.packsCommitted || 0); }, 0));
@@ -779,6 +954,7 @@ define([
             ? onHand[0].currency
             : (locationCurrencyMap[locationId] || 'CAD');
 
+
         // ── DEBUG: detail search row counts + computed totals ─────────────────
         if (reduceInvokeCount <= 5 || reduceInvokeCount % 20 === 0) {
             log.audit('MTL reduce', '#' + reduceInvokeCount + ' key=' + key +
@@ -799,6 +975,70 @@ define([
         onOrder.forEach(function (r) { if (r.docNumber) poSet[r.docNumber] = true; });
         inTransit.forEach(function (r) { if (r.docNumber) poSet[r.docNumber] = true; });
         summaryRow.pos = Object.keys(poSet);
+
+        // ── Resolve Lot # URLs (Committed only — On Hand / Outbound built inline) ──
+        try {
+            var commitLotNames = {};
+            committed.forEach(function (r) { if (r.lotNumber && r.lotNumber !== '\u2014') commitLotNames[r.lotNumber] = true; });
+            var uniqueCommitLots = Object.keys(commitLotNames);
+            if (uniqueCommitLots.length > 0) {
+                var lotFilters = [];
+                uniqueCommitLots.forEach(function (name, idx) {
+                    if (idx > 0) lotFilters.push('OR');
+                    lotFilters.push(['inventorynumber', 'is', name]);
+                });
+                var lotUrlMap = {};
+                search.create({
+                    type: 'inventorynumber',
+                    filters: lotFilters,
+                    columns: [
+                        search.createColumn({ name: 'internalid' }),
+                        search.createColumn({ name: 'inventorynumber' }),
+                    ],
+                }).run().each(function (r) {
+                    var lotName = r.getValue({ name: 'inventorynumber' });
+                    if (lotName && !lotUrlMap[lotName]) {
+                        lotUrlMap[lotName] = getRecordUrl(r.getValue({ name: 'internalid' }), 'inventorynumber');
+                    }
+                    return true;
+                });
+                committed.forEach(function (r) { r.lotUrl = lotUrlMap[r.lotNumber] || ''; });
+            }
+        } catch (e) {
+            log.debug('MTL reduce', 'Committed lot URL resolution error: ' + e.message);
+        }
+
+        // ── Resolve Allocated PO # URLs (Committed) ──────────────────────────
+        try {
+            var poTranIds = {};
+            committed.forEach(function (r) { if (r.allocatedPO && r.allocatedPO !== '\u2014') poTranIds[r.allocatedPO] = true; });
+            var uniquePOTranIds = Object.keys(poTranIds);
+            if (uniquePOTranIds.length > 0) {
+                var poFilters = [];
+                uniquePOTranIds.forEach(function (tid, idx) {
+                    if (idx > 0) poFilters.push('OR');
+                    poFilters.push(['tranid', 'is', tid]);
+                });
+                var poUrlMap = {};
+                search.create({
+                    type: search.Type.PURCHASE_ORDER,
+                    filters: poFilters,
+                    columns: [
+                        search.createColumn({ name: 'internalid' }),
+                        search.createColumn({ name: 'tranid' }),
+                    ],
+                }).run().each(function (r) {
+                    var tid = r.getValue({ name: 'tranid' });
+                    if (tid && !poUrlMap[tid]) {
+                        poUrlMap[tid] = getRecordUrl(r.getValue({ name: 'internalid' }), 'purchaseorder');
+                    }
+                    return true;
+                });
+                committed.forEach(function (r) { r.allocatedPOUrl = poUrlMap[r.allocatedPO] || ''; });
+            }
+        } catch (e) {
+            log.debug('MTL reduce', 'Allocated PO URL resolution error: ' + e.message);
+        }
 
         // ── Build Available tab ───────────────────────────────────────────────
         var available = buildAvailable(onHand, committed, outbound, onOrder, inTransit);
@@ -895,6 +1135,29 @@ define([
         });
         log.audit('MTL Cache', 'summarize: outputRows=' + allRows.length + ' parseErrors=' + parseErrors);
 
+        // ── Throttled run guard: no data + no errors → preserve cache, just re-queue ─
+        if (allRows.length === 0 && !context.inputSummary.error && mapErrors === 0 && reduceErrors === 0) {
+            log.debug('MTL Cache', 'summarize: throttled (no-op), duration=' + (Date.now() - startTime) + 'ms');
+            try {
+                var scriptObj = runtime.getCurrentScript();
+                var mrTask = task.create({
+                    taskType:     task.TaskType.MAP_REDUCE,
+                    scriptId:     scriptObj.id,
+                    deploymentId: scriptObj.deploymentId,
+                    params: {
+                        custscript_ts_mtl_subsidiary_id:      scriptObj.getParameter({ name: 'custscript_ts_mtl_subsidiary_id' }) || MTL_SUBSIDIARY_ID,
+                        custscript_ts_mtl_force_full_rebuild:  false,
+                        custscript_ts_mtl_delta_threshold:     scriptObj.getParameter({ name: 'custscript_ts_mtl_delta_threshold' }) || 500,
+                    },
+                });
+                var taskId = mrTask.submit();
+                log.debug('MTL Cache', 'Self-rescheduled (throttled). taskId=' + taskId);
+            } catch (e) {
+                log.error('MTL Cache', 'Self-reschedule failed: ' + e.message);
+            }
+            return;
+        }
+
         // Read existing summary for delta merge (handles chunked summaries)
         var existingSummary = myCache.get({ key: CacheKeysMTL.SUMMARY });
         log.debug('MTL Cache', 'summarize: existingSummary key present=' + !!existingSummary +
@@ -950,6 +1213,18 @@ define([
 
         var now    = new Date();
         var nowIso = now.toISOString();
+
+        // Country distribution — safety net to catch locations with missing country
+        var countryDist = { CA: 0, US: 0, Other: 0, empty: 0, unknown: 0 };
+        mergedRows.forEach(function (r) {
+            var c = (r && r.country) || '';
+            if (c === 'CA')         countryDist.CA++;
+            else if (c === 'US')    countryDist.US++;
+            else if (c === 'Other') countryDist.Other++;
+            else if (c === '')      countryDist.empty++;
+            else                    countryDist.unknown++;
+        });
+        log.audit('MTL country distribution', JSON.stringify(countryDist));
 
         // Chunked summary write
         var fullJson = JSON.stringify(mergedRows);
@@ -1026,26 +1301,24 @@ define([
         var duration = Date.now() - startTime;
         log.audit('MTL Cache', 'Completed. allRows=' + allRows.length + ', mergedRows=' + mergedRows.length + ', duration=' + duration + 'ms');
 
-        // Self-reschedule — DISABLED for initial testing.
-        // Uncomment once delta mode and cache read/write are confirmed stable.
-        // try {
-        //     var scriptObj = runtime.getCurrentScript();
-        //     var mrTask = task.create({
-        //         taskType:     task.TaskType.MAP_REDUCE,
-        //         scriptId:     scriptObj.id,
-        //         deploymentId: scriptObj.deploymentId,
-        //         params: {
-        //             custscript_ts_mtl_subsidiary_id:     scriptObj.getParameter({ name: 'custscript_ts_mtl_subsidiary_id' }) || MTL_SUBSIDIARY_ID,
-        //             custscript_ts_mtl_force_full_rebuild: false,
-        //             custscript_ts_mtl_delta_threshold:    scriptObj.getParameter({ name: 'custscript_ts_mtl_delta_threshold' }) || 500,
-        //         },
-        //     });
-        //     var taskId = mrTask.submit();
-        //     log.audit('MTL Cache', 'Self-rescheduled. taskId=' + taskId);
-        // } catch (e) {
-        //     log.error('MTL Cache', 'Self-reschedule failed: ' + e.message);
-        // }
-        log.audit('MTL Cache', 'Self-reschedule DISABLED — manual trigger only');
+        // Self-reschedule to same deployment
+        try {
+            var scriptObj = runtime.getCurrentScript();
+            var mrTask = task.create({
+                taskType:     task.TaskType.MAP_REDUCE,
+                scriptId:     scriptObj.id,
+                deploymentId: scriptObj.deploymentId,
+                params: {
+                    custscript_ts_mtl_subsidiary_id:      scriptObj.getParameter({ name: 'custscript_ts_mtl_subsidiary_id' }) || MTL_SUBSIDIARY_ID,
+                    custscript_ts_mtl_force_full_rebuild:  false,
+                    custscript_ts_mtl_delta_threshold:     scriptObj.getParameter({ name: 'custscript_ts_mtl_delta_threshold' }) || 500,
+                },
+            });
+            var taskId = mrTask.submit();
+            log.audit('MTL Cache', 'Self-rescheduled. taskId=' + taskId);
+        } catch (e) {
+            log.error('MTL Cache', 'Self-reschedule failed: ' + e.message);
+        }
     };
 
     return {

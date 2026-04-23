@@ -59,10 +59,7 @@ define([
         }
         if (params.country && toValueList(params.country).length > 0) {
             const countries = toValueList(params.country);
-            filtered = filtered.filter(r => {
-                const c = r.currency === 'USD' ? 'US' : r.currency === 'CAD' ? 'CA' : null;
-                return c && countries.indexOf(c) >= 0;
-            });
+            filtered = filtered.filter(r => r.country && countries.indexOf(r.country) >= 0);
         }
         if (params.vendor && toValueList(params.vendor).length > 0) {
             const vendors = toValueList(params.vendor);

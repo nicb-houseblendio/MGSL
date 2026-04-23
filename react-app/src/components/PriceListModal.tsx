@@ -32,14 +32,20 @@ const dimDisplay = (v: string | undefined): string =>
 // ── PDF helpers ──────────────────────────────────────────────────────────────
 
 const esc = (s: string) =>
-  String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const getLogoUrl = (): string => {
+  const win = typeof window !== 'undefined' ? window : undefined;
+  return (win as { MCGI_CONFIG?: { logoUrl?: string } } | undefined)?.MCGI_CONFIG?.logoUrl || '';
+};
 
 const buildPriceListHTML = (
   selectedRows: SummaryRow[],
   priceMap: Record<string, string>,
-  locationName: string
+  locationName: string,
+  logoUrl: string
 ): string => {
-  // Step 1: group by grade
+  // Group by grade
   const byGrade: Record<string, SummaryRow[]> = {};
   for (const r of selectedRows) {
     const g = r.grade || 'Unknown';
@@ -47,48 +53,87 @@ const buildPriceListHTML = (
     byGrade[g].push(r);
   }
 
-  // Step 2: one row per selected item (no merging — preserves per-row prices)
-  const tableHTML = Object.entries(byGrade)
-    .map(([grade, gradeRows]) => {
-      const rowsHTML = gradeRows
-        .map((r) => {
-          const availMBF = r.available * (r.mbfFactor ?? 0);
-          const availDisplay = availMBF >= 27 ? 'TL' : String(Math.round(r.available));
-          const price = esc(priceMap[rowKey(r)] || '');
-          return `
-            <tr>
-              <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">${esc(dimDisplay(r.thickness))}</td>
-              <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">${esc(dimDisplay(r.width))}</td>
-              <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">${esc(dimDisplay(r.length))}</td>
-              <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">${esc(r.vendor || '')}</td>
-              <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;font-family:monospace">${availDisplay}</td>
-              <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;font-family:monospace">${price}</td>
-            </tr>`;
-        })
-        .join('');
-      return `
-        <h3 style="font-family:sans-serif;color:#0F2641;margin:20px 0 6px">${esc(grade)}</h3>
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead>
-            <tr style="background:#0F2641;color:#fff">
-              <th style="padding:8px 10px;text-align:left;font-weight:700">Thickness</th>
-              <th style="padding:8px 10px;text-align:left;font-weight:700">Width</th>
-              <th style="padding:8px 10px;text-align:left;font-weight:700">Length</th>
-              <th style="padding:8px 10px;text-align:left;font-weight:700">Vendor</th>
-              <th style="padding:8px 10px;text-align:right;font-weight:700">Available</th>
-              <th style="padding:8px 10px;text-align:right;font-weight:700">Price/MBF</th>
-            </tr>
-          </thead>
-          <tbody>${rowsHTML}</tbody>
-        </table>`;
-    })
+  // Shared column widths — keep inner tables aligned across grades
+  const colgroup = `
+    <colgroup>
+      <col style="width:10%" />
+      <col style="width:10%" />
+      <col style="width:10%" />
+      <col style="width:38%" />
+      <col style="width:17%" />
+      <col style="width:15%" />
+    </colgroup>`;
+
+  // Build one grade section (h3 + inner table with its own blue thead)
+  const buildGradeSection = (grade: string, gradeRows: SummaryRow[]) => {
+    const rowsHTML = gradeRows
+      .map((r) => {
+        const availMBF = r.available * (r.mbfFactor ?? 0);
+        const availDisplay = availMBF >= 27 ? 'TL' : String(Math.round(r.available));
+        const rawPrice = priceMap[rowKey(r)] || '';
+        const priceDisplay = rawPrice ? '$' + esc(rawPrice) : '';
+        return `
+          <tr>
+            <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">${esc(dimDisplay(r.thickness))}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">${esc(dimDisplay(r.width))}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">${esc(dimDisplay(r.length))}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">${esc(r.vendor || '')}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;font-family:monospace">${availDisplay}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;font-family:monospace">${priceDisplay}</td>
+          </tr>`;
+      })
+      .join('');
+
+    return `
+      <h3 style="font-family:sans-serif;color:#0F2641;margin:20px 0 6px">${esc(grade)}</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
+        ${colgroup}
+        <thead>
+          <tr style="background:#0F2641;color:#fff">
+            <th style="padding:8px 10px;text-align:left;font-weight:700">Thickness</th>
+            <th style="padding:8px 10px;text-align:left;font-weight:700">Width</th>
+            <th style="padding:8px 10px;text-align:left;font-weight:700">Length</th>
+            <th style="padding:8px 10px;text-align:left;font-weight:700">Vendor</th>
+            <th style="padding:8px 10px;text-align:right;font-weight:700">Available Packs</th>
+            <th style="padding:8px 10px;text-align:right;font-weight:700">Price/MBF</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHTML}</tbody>
+      </table>`;
+  };
+
+  // One outer row per grade — row boundaries give the browser clean break points
+  // so the outer <thead> (logo + title) repeats on every print page.
+  const outerBodyRows = Object.entries(byGrade)
+    .map(([grade, gradeRows]) => `<tr><td>${buildGradeSection(grade, gradeRows)}</td></tr>`)
     .join('');
 
-  return `<!DOCTYPE html><html><head><title>Price List</title></head>
-    <body style="font-family:sans-serif;padding:24px">
-      <h2 style="color:#0F2641;margin:0 0 4px">Europe Offering &amp; Price List</h2>
-      <p style="color:#3D5166;margin:0 0 16px">${esc(locationName)}</p>
-      ${tableHTML}
+  const logoHTML = logoUrl
+    ? `<img src="${esc(logoUrl)}" alt="Logo" style="max-height:80px;max-width:300px;margin-bottom:8px;display:block" />`
+    : '';
+
+  return `<!DOCTYPE html><html><head><title>Price List</title>
+    <style>
+      @page { margin: 15mm; }
+      @media print {
+        html, body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        thead { display: table-header-group; }
+      }
+    </style>
+    </head>
+    <body style="font-family:sans-serif">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr>
+            <td style="padding:0 0 12px 0">
+              ${logoHTML}
+              <h2 style="color:#0F2641;margin:0 0 4px">Europe Offering &amp; Price List</h2>
+              <p style="color:#3D5166;margin:0">${esc(locationName)}</p>
+            </td>
+          </tr>
+        </thead>
+        <tbody>${outerBodyRows}</tbody>
+      </table>
     </body></html>`;
 };
 
@@ -294,17 +339,31 @@ export const PriceListModal = ({ open, onOpenChange, rows }: PriceListModalProps
     const selectedRows = tableRows.filter(
       (r) => checked[rowKey(r)] && parseFloat(priceMap[rowKey(r)] || '') > 0
     );
-    const html = buildPriceListHTML(selectedRows, priceMap, selectedLocation.name);
+    const html = buildPriceListHTML(selectedRows, priceMap, selectedLocation.name, getLogoUrl());
     const iframe = document.createElement('iframe');
     iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;';
     document.body.appendChild(iframe);
-    iframe.contentDocument!.write(html);
-    iframe.contentDocument!.close();
-    iframe.contentWindow!.focus();
-    setTimeout(() => {
+    const doc = iframe.contentDocument!;
+    doc.write(html);
+    doc.close();
+
+    let printed = false;
+    const triggerPrint = () => {
+      if (printed) return;
+      printed = true;
+      iframe.contentWindow!.focus();
       iframe.contentWindow!.print();
       setTimeout(() => document.body.removeChild(iframe), 2000);
-    }, 600);
+    };
+
+    const img = doc.querySelector('img');
+    if (img && !img.complete) {
+      img.onload = triggerPrint;
+      img.onerror = triggerPrint;
+      setTimeout(triggerPrint, 5000);
+    } else {
+      setTimeout(triggerPrint, 100);
+    };
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────

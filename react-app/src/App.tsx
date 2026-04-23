@@ -19,7 +19,7 @@ import { exportToExcelMTL } from '@/lib/exportMTL';
 
 const DEFAULT_UOM_CONFIG: Record<string, string[]> = {
   'CWP IND': ['Packs'],
-  'CWP MTL': ['Packs', 'MBF'],
+  'CWP MTL': ['Packs'],
   'CWP ARCH': ['Cubic meters (m³)', 'Packs'],
 };
 
@@ -43,9 +43,18 @@ function TraderScreenContent() {
     : DEFAULT_UOM_CONFIG;
   const CWP_VIEWS = Object.keys(uomConfig);
 
-  // View state must be declared before useSummaryData so we can derive the
-  // correct subsidiaryId for each view (MTL = subsidiary 5).
-  const [activeView, setActiveView] = React.useState(CWP_VIEWS[0] || 'CWP IND');
+  // Map subsidiary to default view tab
+  // CWP MTL (5) children: 9501-3413 Quebec (11), Produits de Bois CWP (8), Elim MTL Conso (10)
+  // CWP IND (7) children: CWP Architectural (9), Premier Pallets (15), Delaware Ops (14),
+  //   Elim Delaware Conso (16), Bois ETCO 2014 (17), Elim Industriel Conso (18)
+  const SUBSIDIARY_TO_VIEW: Record<string, string> = {
+    '5': 'CWP MTL', '8': 'CWP MTL', '10': 'CWP MTL', '11': 'CWP MTL',
+    '7': 'CWP IND', '9': 'CWP IND', '14': 'CWP IND', '15': 'CWP IND', '16': 'CWP IND', '17': 'CWP IND', '18': 'CWP IND',
+  };
+  const defaultView = SUBSIDIARY_TO_VIEW[subsidiaryId] && CWP_VIEWS.includes(SUBSIDIARY_TO_VIEW[subsidiaryId])
+    ? SUBSIDIARY_TO_VIEW[subsidiaryId]
+    : CWP_VIEWS[0] || 'CWP IND';
+  const [activeView, setActiveView] = React.useState(defaultView);
   const isMTL = activeView === 'CWP MTL';
   const effectiveSubsidiaryId = isMTL ? '5' : (subsidiaryId || 'default');
 
@@ -276,23 +285,23 @@ function TraderScreenContent() {
 
         <div className="flex items-center gap-2.5 flex-shrink-0">
           <div className="flex items-center gap-1.5">
-            <span className="text-white/45 text-[11px] uppercase tracking-wider">UoM</span>
+            <span className="text-white text-[10px] font-bold uppercase tracking-wider">UoM</span>
             <select
               value={uomOptions.includes(uom) ? uom : uomOptions[0]}
               onChange={(e) => setUom(e.target.value)}
-              className="py-1 px-2.5 rounded-md text-white text-xs cursor-pointer outline-none border border-white/25 bg-white/10"
+              className="py-1 px-2.5 rounded-md text-[#0D1F33] text-xs font-semibold cursor-pointer outline-none border border-[#CBD5E1] bg-white hover:bg-[#EDF1F7]"
             >
               {uomOptions.map((o) => (
-                <option key={o} value={o} className="bg-navy text-white">{o}</option>
+                <option key={o} value={o} className="bg-white text-[#0D1F33]">{o}</option>
               ))}
             </select>
           </div>
           <div className="w-px h-5 bg-white/15" />
-          <span className="text-white/40 text-[11px]">{today}</span>
+          <span className="text-white text-[11px]">{today}</span>
           {meta?.lastUpdated && (() => {
             const badgeState = getLastUpdatedBadgeState(meta.lastUpdated);
             const badgeColor = badgeState === 'ok' ? 'rgba(76,175,80,0.25)' : badgeState === 'stale' ? 'rgba(255,183,77,0.25)' : 'rgba(239,83,80,0.25)';
-            const textColor = badgeState === 'ok' ? '#A5D6A7' : badgeState === 'stale' ? '#FFB74D' : '#EF9A9A';
+            const textColor = '#FFFFFF';
             return (
               <>
                 <div className="w-px h-5 bg-white/15" />
@@ -311,7 +320,7 @@ function TraderScreenContent() {
             size="icon"
             onClick={() => void doRefresh()}
             disabled={refreshState === 'checking' || refreshState === 'fetching'}
-            className="h-8 w-8 text-white/70 hover:text-white hover:bg-white/10"
+            className="h-8 w-8 text-white hover:bg-white/10"
           >
             <RefreshCw className={`h-4 w-4 ${(refreshState === 'checking' || refreshState === 'fetching') ? 'animate-spin' : ''}`} />
           </Button>
@@ -321,7 +330,7 @@ function TraderScreenContent() {
             type="button"
             onClick={handleToggleFullscreen}
             title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-            className="h-8 w-8 text-white/70 hover:text-white hover:bg-white/10"
+            className="h-8 w-8 text-white hover:bg-white/10"
           >
             {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
           </Button>

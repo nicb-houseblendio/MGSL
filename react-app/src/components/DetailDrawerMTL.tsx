@@ -4,6 +4,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useDetailData } from '@/hooks/useDetailData';
 import type { DetailType } from '@/hooks/useDetailData';
 import type { SummaryRow } from '@/lib/api';
+import { AvailableTabMTL, buildPOGroups } from '@/components/AvailableTabMTL';
+import { CurrencyBadge } from '@/components/InventoryTableMTL';
 
 interface DetailDrawerMTLProps {
   open: boolean;
@@ -40,6 +42,7 @@ const MODAL_META_MTL: Record<string, { label: string; color: string; bg: string;
 interface MTLColDef {
   id: string;
   label: string;
+  link?: boolean;        // Render as clickable hyperlink (uses URL mapping below)
   numeric?: boolean;
   isQty?: boolean;       // UoM conversion applies; label adapts Packs → MBF
   isAging?: boolean;     // Computed from d.date, colored badge
@@ -47,69 +50,74 @@ interface MTLColDef {
   onHandOnly?: boolean;  // Show '—' for non-On-Hand rows in Available tab
   isMbfPrice?: boolean;  // Currency format
   isInt?: boolean;       // Integer format (Pcs/Pack)
+  isCurrency?: boolean;  // CurrencyBadge (CAD/USD pill)
 }
 
 const COLUMN_MAP_MTL: Record<string, MTLColDef[]> = {
   onHand: [
-    { id: 'docType',       label: 'Document Type' },
-    { id: 'docNumber',     label: 'Document #' },
-    { id: 'poNumber',      label: 'PO/WO #' },
+    { id: 'docNumber',     label: 'Document #',     link: true },
     { id: 'date',          label: 'Date' },
     { id: 'aging',         label: 'Aging',          isAging: true },
-    { id: 'vendor',        label: 'Vendor' },
-    { id: 'lotNumber',     label: 'Lot #' },
+    { id: 'vendor',        label: 'Vendor',          link: true },
+    { id: 'lotNumber',     label: 'Lot #',           link: true },
     { id: 'packsOnHand',   label: 'Packs On Hand',  numeric: true, isQty: true },
     { id: 'piecesPerPack', label: 'Pcs/Pack',        numeric: true, isInt: true },
     { id: 'mbfPrice',      label: 'MBF Price',       numeric: true, isMbfPrice: true },
+    { id: 'currency',      label: 'Currency',     isCurrency: true },
   ],
   committed: [
-    { id: 'docNumber',      label: 'Document #' },
-    { id: 'customer',       label: 'Customer' },
+    { id: 'docNumber',      label: 'Document #',          link: true },
+    { id: 'customer',       label: 'Customer',             link: true },
     { id: 'soCreationDate', label: 'SO Creation Date' },
     { id: 'shipWeek',       label: 'Ship Week' },
-    { id: 'allocatedPO',    label: 'Allocated from PO #' },
-    { id: 'lotNumber',      label: 'Lot #' },
+    { id: 'allocatedPO',    label: 'Allocated from PO #',  link: true },
+    { id: 'vendor',         label: 'Vendor',               link: true },
+    { id: 'lotNumber',      label: 'Lot #',                link: true },
     { id: 'packsCommitted', label: 'Packs Committed', numeric: true, isQty: true },
     { id: 'piecesPerPack',  label: 'Pcs/Pack',         numeric: true, isInt: true },
     { id: 'mbfPrice',       label: 'MBF Price',        numeric: true, isMbfPrice: true },
+    { id: 'currency',       label: 'Currency',  isCurrency: true },
   ],
   outbound: [
-    { id: 'docNumber',     label: 'Document #' },
-    { id: 'lotNumber',     label: 'Lot #' },
-    { id: 'customer',      label: 'Customer' },
+    { id: 'docNumber',     label: 'Document #',  link: true },
+    { id: 'lotNumber',     label: 'Lot #',        link: true },
+    { id: 'customer',      label: 'Customer',     link: true },
+    { id: 'vendor',        label: 'Vendor',       link: true },
     { id: 'invoicedDate',  label: 'Invoiced Date' },
     { id: 'packs',         label: 'Packs',   numeric: true, isQty: true },
     { id: 'piecesPerPack', label: 'Pcs/Pack', numeric: true, isInt: true },
     { id: 'mbfPrice',      label: 'MBF Price', numeric: true, isMbfPrice: true },
+    { id: 'currency',      label: 'Currency',     isCurrency: true },
   ],
   onOrder: [
-    { id: 'docNumber',     label: 'Document #' },
-    { id: 'vendor',        label: 'Vendor' },
+    { id: 'docNumber',     label: 'Document #',  link: true },
+    { id: 'vendor',        label: 'Vendor',       link: true },
     { id: 'shipWeek',      label: 'Ship Week' },
     { id: 'packs',         label: 'Packs',   numeric: true, isQty: true },
     { id: 'piecesPerPack', label: 'Pcs/Pack', numeric: true, isInt: true },
     { id: 'mbfPrice',      label: 'MBF Price', numeric: true, isMbfPrice: true },
+    { id: 'currency',      label: 'Currency',     isCurrency: true },
   ],
   inTransit: [
-    { id: 'docNumber',     label: 'Document #' },
+    { id: 'docNumber',     label: 'Document #',  link: true },
     { id: 'shipWeek',      label: 'Ship Week' },
-    { id: 'vendor',        label: 'Vendor' },
+    { id: 'vendor',        label: 'Vendor',       link: true },
     { id: 'packs',         label: 'Packs',   numeric: true, isQty: true },
     { id: 'piecesPerPack', label: 'Pcs/Pack', numeric: true, isInt: true },
     { id: 'mbfPrice',      label: 'MBF Price', numeric: true, isMbfPrice: true },
+    { id: 'currency',      label: 'Currency',     isCurrency: true },
   ],
   available: [
-    { id: 'docType',       label: 'Document Type', onHandOnly: true },
-    { id: 'docNumber',     label: 'Document #' },
-    { id: 'poNumber',      label: 'PO/WO #',       onHandOnly: true },
+    { id: 'docNumber',     label: 'Document #', link: true },
     { id: 'date',          label: 'Date',          onHandOnly: true },
     { id: 'aging',         label: 'Aging',         isAging: true, onHandOnly: true },
-    { id: 'vendor',        label: 'Vendor' },
-    { id: 'lotNumber',     label: 'Lot #',         onHandOnly: true },
+    { id: 'vendor',        label: 'Vendor', link: true },
+    { id: 'lotNumber',     label: 'Lot #',         onHandOnly: true, link: true },
     { id: 'status',        label: 'Status',        isStatus: true },
     { id: 'packsAvail',    label: 'Packs Available', numeric: true, isQty: true },
     { id: 'piecesPerPack', label: 'Pcs/Pack',       numeric: true, isInt: true },
-    { id: 'mbfPrice',      label: 'MBF Price',      numeric: true, isMbfPrice: true, onHandOnly: true },
+    { id: 'mbfPrice',      label: 'MBF Price',      numeric: true, isMbfPrice: true },
+    { id: 'currency',      label: 'Currency',     isCurrency: true },
   ],
 };
 
@@ -145,6 +153,7 @@ const StatusBadge = ({ status }: { status: unknown }) => {
     'On Hand':    { bg: '#E8F5E9', color: '#1B5E20', border: '#A5D6A7' },
     'On Order':   { bg: '#E3F2FD', color: '#0D47A1', border: '#90CAF9' },
     'In Transit': { bg: '#F3E5F5', color: '#4A148C', border: '#CE93D8' },
+    'Committed':  { bg: '#FFF3E0', color: '#E65100', border: '#FFB74D' },
   };
   const s = cfg[status] ?? { bg: '#F5F5F5', color: '#3D5166', border: '#CBD5E1' };
   return (
@@ -278,18 +287,21 @@ const DetailTableMTL = ({ rows, columns, meta, uom, mbfFactor }: DetailTableMTLP
                 // Quantity with UoM conversion
                 if (col.isQty) {
                   const raw = Number(rawVal || 0);
-                  const display = canConvert ? Math.round(raw * mbfFactor * 100) / 100 : raw;
+                  const isDeduction = raw < 0;
+                  const absRaw = Math.abs(raw);
+                  const display = canConvert ? Math.round(absRaw * mbfFactor * 100) / 100 : absRaw;
+                  const formatted = isMBF && !canConvert
+                    ? 'N/A'
+                    : isMBF
+                      ? (Math.round(display * 10) / 10).toLocaleString(undefined, {
+                          minimumFractionDigits: 1,
+                          maximumFractionDigits: 1,
+                        })
+                      : Math.round(display).toLocaleString(undefined, { maximumFractionDigits: 0 });
                   return (
                     <td key={col.id} style={CELL_STYLE(true)}>
-                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: isMBF && !canConvert ? '#7A8FA3' : meta.color }}>
-                        {isMBF && !canConvert
-                          ? 'N/A'
-                          : isMBF
-                            ? (Math.round(display * 10) / 10).toLocaleString(undefined, {
-                                minimumFractionDigits: 1,
-                                maximumFractionDigits: 1,
-                              })
-                            : Math.round(display).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: isDeduction ? '#E65100' : (isMBF && !canConvert ? '#7A8FA3' : meta.color) }}>
+                        {isMBF && !canConvert ? 'N/A' : isDeduction ? `(${formatted})` : formatted}
                       </span>
                     </td>
                   );
@@ -324,11 +336,43 @@ const DetailTableMTL = ({ rows, columns, meta, uom, mbfFactor }: DetailTableMTLP
                   );
                 }
 
-                // Default: text
+                // Currency badge (CAD/USD pill)
+                if (col.isCurrency) {
+                  const cur = rawVal == null || rawVal === '' ? '' : String(rawVal);
+                  return (
+                    <td key={col.id} style={CELL_STYLE(false)}>
+                      {cur ? <CurrencyBadge currency={cur} /> : <span style={{ color: '#7A8FA3' }}>—</span>}
+                    </td>
+                  );
+                }
+
+                // Default: text (with optional hyperlink)
                 const text = rawVal == null || rawVal === '' ? '—' : String(rawVal);
+                const linkUrl = col.link
+                  ? (col.id === 'docNumber' || col.id === 'docType' ? d.docUrl
+                    : col.id === 'vendor' ? d.vendorUrl
+                    : col.id === 'customer' ? d.customerUrl
+                    : col.id === 'poNumber' ? d.poUrl
+                    : col.id === 'allocatedPO' ? d.allocatedPOUrl
+                    : col.id === 'lotNumber' ? d.lotUrl
+                    : undefined) as string | undefined
+                  : undefined;
                 return (
                   <td key={col.id} style={CELL_STYLE(false)}>
-                    <span style={{ color: '#3D5166', fontSize: 11 }}>{text}</span>
+                    {col.link && linkUrl && text !== '—' ? (
+                      <a
+                        href={linkUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ fontFamily: "'IBM Plex Mono', monospace", color: '#1A3D63', fontWeight: 400, fontSize: 11, textDecoration: 'none', cursor: 'pointer' }}
+                        onMouseEnter={(e) => { e.currentTarget.style.textDecoration = 'underline'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.textDecoration = 'none'; }}
+                      >
+                        {text}
+                      </a>
+                    ) : (
+                      <span style={{ color: '#3D5166', fontSize: 11 }}>{text}</span>
+                    )}
                   </td>
                 );
               })}
@@ -409,6 +453,20 @@ export const DetailDrawerMTL = ({
 
   const headerTotal = React.useMemo(() => {
     if (!row) return 0;
+    // Available tab: compute from raw buckets (same source as footer)
+    if (activeTab === 'available' && data) {
+      const grouped = buildPOGroups(data);
+      const raw = grouped.totalNetAvailable;
+      const factor = row.mbfFactor ?? 0;
+      if (isMBF && factor > 0) return Math.round(raw * factor * 100) / 100;
+      return raw;
+    }
+    if (activeTab === 'available') {
+      const raw = (row.available as number) || 0;
+      const factor = row.mbfFactor ?? 0;
+      if (isMBF && factor > 0) return Math.round(raw * factor * 100) / 100;
+      return raw;
+    }
     const tabData = data?.[activeTab as keyof typeof data] as Record<string, unknown>[] | undefined;
     const qtyCol = COLUMN_MAP_MTL[activeTab]?.find((c) => c.isQty);
     if (!qtyCol) return 0;
@@ -427,16 +485,31 @@ export const DetailDrawerMTL = ({
   if (!row) return null;
 
   const meta = MODAL_META_MTL[activeTab] ?? MODAL_META_MTL.onHand;
-  // Line 1: vendor · grade · location
+  // Line 1: itemCode · location · grade (matching IND)
   const headerLine1 = [
-    row.vendor,
-    row.grade ? `Grade ${row.grade}` : '',
+    row.itemCode,
     row.locationName,
-  ].filter(Boolean).join('  ');
-  // Line 2: dimensions (only when all three are present)
-  const headerLine2 = [row.thickness, row.width, row.length].filter(Boolean).join(' × ');
+    row.grade ? `Grade ${row.grade}` : '',
+  ].filter(Boolean).join(' · ');
+  // Line 2: description (matching IND)
+  const descParts: string[] = [];
+  if (row.species) descParts.push(row.species);
+  if (row.thickness) descParts.push(row.thickness);
+  if (row.width) descParts.push('x' + row.width);
+  if (row.length) descParts.push(row.length);
+  if (row.grade) descParts.push(row.grade);
+  const headerLine2 = descParts.join(' ') || row.itemName || '';
 
-  const tabData = data?.[activeTab as keyof typeof data] as Record<string, unknown>[] | undefined;
+  const rawTabData = data?.[activeTab as keyof typeof data] as Record<string, unknown>[] | undefined;
+  // On Hand: show PO# (or Inv. Adj. #) in Document # instead of IR#
+  const tabData = React.useMemo(() => {
+    if (activeTab !== 'onHand' || !rawTabData) return rawTabData;
+    return rawTabData.map((r) => ({
+      ...r,
+      docNumber: r.poNumber || r.docNumber,
+      docUrl: r.poUrl || r.docUrl,
+    }));
+  }, [rawTabData, activeTab]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -462,12 +535,12 @@ export const DetailDrawerMTL = ({
                 {meta.label} — Transaction Detail
               </div>
               {headerLine1 && (
-                <div className="text-white/70 text-xs font-medium mt-0.5">
+                <div className="text-white/55 text-xs font-mono mt-0.5">
                   {headerLine1}
                 </div>
               )}
               {headerLine2 && (
-                <div className="text-white/45 text-xs font-mono mt-0.5">
+                <div className="text-white/70 text-[11px] mt-0.5">
                   {headerLine2}
                 </div>
               )}
@@ -551,6 +624,8 @@ export const DetailDrawerMTL = ({
               <Skeleton className="h-64 w-full" />
             ) : error ? (
               <p className="text-destructive">{error}</p>
+            ) : activeTab === 'available' && data ? (
+              <AvailableTabMTL data={data} uom={uom} mbfFactor={mbfFactor} />
             ) : tabData?.length ? (
               <DetailTableMTL
                 rows={tabData}

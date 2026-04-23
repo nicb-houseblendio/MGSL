@@ -46,6 +46,7 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record', 'N/log'
 
         const user = runtime.getCurrentUser();
         let subsidiaryName = 'CWP Industriel Inc.';
+        let logoUrl = '';
         if (user.subsidiary) {
             try {
                 const subRec = record.load({ type: 'subsidiary', id: user.subsidiary });
@@ -53,6 +54,21 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record', 'N/log'
             } catch (err) {
                 subsidiaryName = String(user.subsidiary);
             }
+        }
+        // Always load logo from CWP MTL subsidiary (ID 5)
+        try {
+            var logoSubRec = record.load({ type: 'subsidiary', id: 5 });
+            var pageLogoId = logoSubRec.getValue({ fieldId: 'pagelogo' });
+            if (pageLogoId) {
+                try {
+                    var logoFile = file.load({ id: pageLogoId });
+                    logoUrl = logoFile.url || '';
+                } catch (logoErr) {
+                    log.debug('Logo', 'Could not load page logo file: ' + logoErr.message);
+                }
+            }
+        } catch (logoSubErr) {
+            log.debug('Logo', 'Could not load CWP MTL subsidiary: ' + logoSubErr.message);
         }
 
         const suiteletUrl = url.resolveScript({
@@ -67,6 +83,7 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record', 'N/log'
             userName: user.name || '',
             accountId: runtime.accountId,
             subsidiary: { id: user.subsidiary, name: subsidiaryName },
+            logoUrl: logoUrl,
             fullscreen: isFullscreen,
         };
         log.debug('Config Object', configObj);
