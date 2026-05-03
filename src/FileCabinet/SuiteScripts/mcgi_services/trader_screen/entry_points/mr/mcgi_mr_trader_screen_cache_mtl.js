@@ -94,23 +94,6 @@ define([
     const parseTh  = (val) => parseDim(val, 1);
     const parseLen = (val) => parseDim(String(val || '').replace(/[^\d.\s\/]/g, ''), 8);
 
-    // Lot name format: {PO#}-{FBM_per_piece}-{PPP}  e.g. "PO344996-6-240"
-    const parseFbmFromLot = (lotNumber) => {
-        if (!lotNumber) return 0;
-        var parts = String(lotNumber).split('-');
-        if (parts.length < 3) return 0;
-        var fbm = parseFloat(parts[parts.length - 2]);
-        return isNaN(fbm) || fbm <= 0 ? 0 : fbm;
-    };
-
-    const parsePppFromLot = (lotNumber) => {
-        if (!lotNumber) return 0;
-        var match = String(lotNumber).match(/-(\d+(?:\.\d+)?)$/);
-        if (!match) return 0;
-        var val = parseFloat(match[1]);
-        return isNaN(val) || val <= 0 ? 0 : val;
-    };
-
     // FBM fallback: thickness(in) * width(in) * length(ft) / 12
     const computeFbmFromDims = (thickness, width, length) => {
         var th  = parseTh(thickness);
@@ -1050,25 +1033,17 @@ define([
                         qty = -Math.abs(invDetailQty);
                     }
 
-                    // PPP fallback chain — formula column first (authoritative), lot name fallback
+                    // MTL convention: lot name doesn't encode PPP/FBM (unlike IND's PO###-FBM-PPP).
+                    // Item master + line custom column are the authoritative sources.
                     var ppp = 0;
                     if (colPPPFormula) ppp = parseFloat(result.getValue(colPPPFormula)) || 0;
-                    if (ppp) { _ohPppFromCol++; }
-                    else {
-                        ppp = parsePppFromLot(lotNumber);
-                        if (ppp) { _ohPppFromLot++; } else { _ohPppZero++; }
-                    }
+                    if (ppp) { _ohPppFromCol++; } else { _ohPppZero++; }
 
-                    // FBM fallback chain
-                    var fbm = parseFbmFromLot(lotNumber);
-                    if (fbm) { _ohFbmFromLot++; }
+                    var fbm = volPCFBM;
+                    if (fbm) { _ohFbmFromItem++; }
                     else {
-                        fbm = volPCFBM;
-                        if (fbm) { _ohFbmFromItem++; }
-                        else {
-                            fbm = computeFbmFromDims(thickness, width, len);
-                            if (fbm) { _ohFbmFromDims++; } else { _ohFbmZero++; }
-                        }
+                        fbm = computeFbmFromDims(thickness, width, len);
+                        if (fbm) { _ohFbmFromDims++; } else { _ohFbmZero++; }
                     }
 
                     var packs = (fbm > 0 && ppp > 0) ? (qty * 1000) / (ppp * fbm) : 0;
