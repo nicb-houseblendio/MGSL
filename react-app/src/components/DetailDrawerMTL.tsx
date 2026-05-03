@@ -63,6 +63,7 @@ const COLUMN_MAP_MTL: Record<string, MTLColDef[]> = {
     { id: 'packsOnHand',   label: 'Packs On Hand',  numeric: true, isQty: true },
     { id: 'piecesPerPack', label: 'Pcs/Pack',        numeric: true, isInt: true },
     { id: 'mbfPrice',      label: 'MBF Price',       numeric: true, isMbfPrice: true },
+    { id: 'lotCost',       label: 'Lot Cost',        numeric: true, isMbfPrice: true },
     { id: 'currency',      label: 'Currency',     isCurrency: true },
   ],
   committed: [
@@ -307,9 +308,17 @@ const DetailTableMTL = ({ rows, columns, meta, uom, mbfFactor }: DetailTableMTLP
                   );
                 }
 
-                // MBF Price (currency)
+                // MBF Price / Lot Cost (currency)
                 if (col.isMbfPrice) {
-                  const n = Number(rawVal || 0);
+                  // null / undefined → dash (no data). 0 preserved as "$0.00" (legitimate zero).
+                  if (rawVal == null) {
+                    return (
+                      <td key={col.id} style={CELL_STYLE(true)}>
+                        <span style={{ color: '#7A8FA3' }}>—</span>
+                      </td>
+                    );
+                  }
+                  const n = Number(rawVal);
                   return (
                     <td key={col.id} style={CELL_STYLE(true)}>
                       <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: '#7A4100' }}>
@@ -433,18 +442,13 @@ export const DetailDrawerMTL = ({
   // All hooks must be called before any conditional return
   const { data, loading, error, fetchDetail } = useDetailData({ resetCacheVersion });
   const [activeTab, setActiveTab] = React.useState<string>(type ?? 'onHand');
-  const fetchedRef = React.useRef(false);
 
   const mbfFactor = row?.mbfFactor ?? 0;
   const isMBF = uom === 'MBF';
 
   React.useEffect(() => {
-    if (!row) return;
-    if (open && !fetchedRef.current) {
-      fetchedRef.current = true;
-      fetchDetail(row.internalId, row.locationId, undefined, subsidiaryId).catch(() => {});
-    }
-    if (!open) fetchedRef.current = false;
+    if (!row || !open) return;
+    fetchDetail(row.internalId, row.locationId, undefined, subsidiaryId).catch(() => {});
   }, [open, row?.internalId, row?.locationId, fetchDetail, subsidiaryId]);
 
   React.useEffect(() => {

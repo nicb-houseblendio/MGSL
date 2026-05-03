@@ -29,6 +29,13 @@ define([
     const COMMITTED_SEARCH_ID  = 'customsearch_mgsl_trader_committed_mtl';
     const ON_ORDER_SEARCH_ID   = 'customsearch_mgsl_trader_onorder_mtl';
     const OUTBOUND_SEARCH_ID   = 'customsearch_mgsl_trader_outbound_mtl';
+    const LOT_COST_SEARCH_ID    = 'customsearch_ts_lot_cost_mtl';
+    const LOT_COST_IA_SEARCH_ID = 'customsearch_ts_lot_cost_ia_mtl';
+    // NOTE: Both lot-cost saved searches share the same Account filter (288, 632).
+    // If the inventory account list changes in the future, update BOTH searches to
+    // avoid drift between IR and IA cost lookups.
+    // IDs were shortened from 'customsearch_trader_screen_lot_cost_*' (Apr 2026) to
+    // fit NetSuite's ~27-char limit on the user-typed portion of saved search IDs.
 
     const ITEM_RECORD_TYPE_MAPPING = {
         Assembly:          'assemblyitem',
@@ -169,6 +176,11 @@ define([
             var s = search.load({ id: ON_HAND_SEARCH_ID });
             s.columns.push(search.createColumn({ name: 'trandate', sort: search.Sort.ASC }));
             s.columns.push(search.createColumn({ name: 'exchangerate' }));
+            // For IA-origin lots: lot creation date (custbody4) and lot supplier (custbody_lot_supplier).
+            // Both are body-level fields on the IA record; populated only on imported IAs.
+            // Used in row construction to display Date and Vendor for IA rows.
+            s.columns.push(search.createColumn({ name: 'custbody4' }));
+            s.columns.push(search.createColumn({ name: 'custbody_lot_supplier' }));
             _onHandMtlCache = {
                 search:        s,
                 baseFilterLen: s.filters.length,
@@ -414,6 +426,196 @@ define([
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
+    //  applyLotCost — Option B: lot origin trace + GL aggregation
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    //  Per On Hand row:
+    //   - Resolve lot's originating transaction (earliest IR/IA with qty > 0)
+    //   - For IR origin: sum GL on inventory asset → cost per unit / xr
+    //   - Override mbfPrice + currency when origin ≠ row's own transaction (transferred lot)
+    //   - For IA origin or lookup miss: lotCost = null (→ dash in UI)
+    //   - Legitimate 0 preserved
+
+    const resolveLotOrigins = (lotIds) => {
+        var origins = {};  // lotId → {irId, tranType, mbfPrice, currency}
+        if (!lotIds || lotIds.length === 0) return origins;
+        try {
+            var originSearch = search.create({
+                type: 'transaction',
+                filters: [
+                    search.createFilter({
+                        name: 'type', operator: search.Operator.ANYOF,
+                        values: ['ItemRcpt', 'InvAdjst']
+                    }),
+                    search.createFilter({
+                        name: 'inventorynumber', join: 'inventoryDetail',
+                        operator: search.Operator.ANYOF, values: lotIds
+                    }),
+                    search.createFilter({
+                        name: 'quantity', join: 'inventoryDetail',
+                        operator: search.Operator.GREATERTHAN, values: 0
+                    }),
+                ],
+                columns: [
+                    search.createColumn({ name: 'inventorynumber', join: 'inventoryDetail' }),
+                    search.createColumn({ name: 'trandate', sort: search.Sort.ASC }),
+                    search.createColumn({ name: 'internalid', sort: search.Sort.ASC }),
+                    search.createColumn({ name: 'rate' }),
+                    search.createColumn({ name: 'exchangerate' }),
+                    search.createColumn({ name: 'currency' }),
+                    search.createColumn({ name: 'type' }),
+                ],
+            });
+            originSearch.run().each(function (r) {
+                var lotId = r.getValue({ name: 'inventorynumber', join: 'inventoryDetail' });
+                if (!lotId || origins[lotId]) return true;  // first-seen wins
+                var rate = parseFloat(r.getValue({ name: 'rate' })) || 0;
+                var xr   = parseFloat(r.getValue({ name: 'exchangerate' })) || 1;
+                origins[lotId] = {
+                    irId:     r.getValue({ name: 'internalid' }),
+                    tranType: r.recordType,
+                    mbfPrice: roundToTwoDecimals(rate / (xr > 0 ? xr : 1)),
+                    currency: CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
+                };
+                return true;
+            });
+        } catch (e) {
+            log.error('MTL lot origin lookup', 'lots=' + lotIds.join(',') + ' ERROR: ' + e.message);
+        }
+        return origins;
+    };
+
+    const resolveLotCostByOriginIR = (originIrIds) => {
+        var result = {};  // `${irId}__${itemId}` → costPerUnit in txn currency
+        if (!originIrIds || originIrIds.length === 0) return result;
+        try {
+            var glSearch = search.load({ id: LOT_COST_SEARCH_ID });
+            glSearch.filters.push(search.createFilter({
+                name: 'internalid', operator: search.Operator.ANYOF, values: originIrIds
+            }));
+            glSearch.run().each(function (r) {
+                var irId  = r.getValue({ name: 'internalid', summary: 'GROUP' });
+                var item  = r.getValue({ name: 'internalid', join: 'item', summary: 'GROUP' });
+                var xr    = parseFloat(r.getValue({ name: 'exchangerate', summary: 'MAX' })) || 1;
+                var gl    = parseFloat(r.getValue({ name: 'debitamount', summary: 'SUM' })) || 0;
+                var qty   = parseFloat(r.getValue({
+                    name: 'formulanumeric', summary: 'SUM',
+                    formula: 'CASE WHEN {quantity} > 0 THEN {quantity} ELSE 0 END'
+                })) || 0;
+                if (irId && item && qty > 0) {
+                    var perUnit = (gl / qty) / (xr > 0 ? xr : 1);
+                    result[irId + '__' + item] = roundToTwoDecimals(perUnit);
+                }
+                return true;
+            });
+        } catch (e) {
+            log.error('MTL lot cost GL lookup', 'irs=' + originIrIds.join(',') + ' ERROR: ' + e.message);
+        }
+        return result;
+    };
+
+    const resolveLotCostByOriginIA = (originIaIds) => {
+        var result = {};  // `${iaId}__${itemId}` → costPerUnit USD (already in USD from book filter)
+        if (!originIaIds || originIaIds.length === 0) return result;
+        try {
+            var glSearch = search.load({ id: LOT_COST_IA_SEARCH_ID });
+            glSearch.filters.push(search.createFilter({
+                name: 'internalid', operator: search.Operator.ANYOF, values: originIaIds
+            }));
+            glSearch.run().each(function (r) {
+                var iaId = r.getValue({ name: 'internalid', summary: 'GROUP' });
+                var item = r.getValue({ name: 'internalid', join: 'item', summary: 'GROUP' });
+                // IMPORTANT: 'debitamount' must be JOINED to 'accountingTransaction' to be book-aware.
+                // Unjoined 'debitamount' always returns Primary Book amount regardless of book filter.
+                // We filter to USD Accounting Book (id=6), so the joined debitamount returns USD values.
+                var gl   = parseFloat(r.getValue({
+                    name: 'debitamount',
+                    join: 'accountingTransaction',
+                    summary: 'SUM'
+                })) || 0;
+                var qty  = parseFloat(r.getValue({
+                    name: 'formulanumeric', summary: 'SUM',
+                    formula: 'CASE WHEN {quantity} > 0 THEN {quantity} ELSE 0 END'
+                })) || 0;
+                if (iaId && item && qty > 0) {
+                    // USD book amount / qty = USD per unit directly; no xr math needed
+                    result[iaId + '__' + item] = roundToTwoDecimals(gl / qty);
+                }
+                return true;
+            });
+        } catch (e) {
+            log.error('MTL IA lot cost USD lookup', 'ias=' + originIaIds.join(',') + ' ERROR: ' + e.message);
+        }
+        return result;
+    };
+
+    const applyLotCost = (onHand, itemId) => {
+        // Collect lot IDs for both IR AND IA origins
+        var lotIdSet = {};
+        onHand.forEach(function (row) {
+            if ((row.tranType === 'itemreceipt' || row.tranType === 'inventoryadjustment') && row.lotInternalId) {
+                lotIdSet[row.lotInternalId] = true;
+            }
+        });
+        var lotIds = Object.keys(lotIdSet);
+        if (lotIds.length === 0) {
+            onHand.forEach(function (row) { row.lotCost = null; });
+            return;
+        }
+
+        var originMap = resolveLotOrigins(lotIds);
+
+        // Split origin transaction IDs by type — disjoint sets
+        var originIrSet = {};
+        var originIaSet = {};
+        Object.keys(originMap).forEach(function (lotId) {
+            var o = originMap[lotId];
+            if (!o || !o.irId) return;
+            if (o.tranType === 'itemreceipt')              originIrSet[o.irId] = true;
+            else if (o.tranType === 'inventoryadjustment') originIaSet[o.irId] = true;
+        });
+
+        var costMapIR = resolveLotCostByOriginIR(Object.keys(originIrSet));
+        var costMapIA = resolveLotCostByOriginIA(Object.keys(originIaSet));
+
+        onHand.forEach(function (row) {
+            if (!row.lotInternalId) { row.lotCost = null; return; }
+            var origin = originMap[row.lotInternalId];
+            if (!origin) { row.lotCost = null; return; }
+
+            // Transferred lot (origin tx ≠ row's own tx): override mbfPrice + currency to match origin
+            if (origin.irId && origin.irId !== row.tranId) {
+                row.mbfPrice = origin.mbfPrice;
+                row.currency = origin.currency;
+            }
+
+            // Lot Cost lookup by origin type
+            var key = origin.irId + '__' + itemId;
+            if (origin.tranType === 'itemreceipt') {
+                row.lotCost = (costMapIR[key] !== undefined) ? costMapIR[key] : null;
+            } else if (origin.tranType === 'inventoryadjustment') {
+                var iaCost = costMapIA[key];
+                row.lotCost = (iaCost !== undefined) ? iaCost : null;
+                // For IAs: row construction left mbfPrice=0 / currency=''. After USD lookup,
+                // mirror lotCost into mbfPrice and stamp USD currency for consistent display.
+                //
+                // ASSUMPTION (CWP MTL specific): every IA on this subsidiary posts in CAD primary,
+                // USD secondary book. The IA saved search filters to USD book → values are USD by
+                // construction. Hardcoding 'USD' is correct for this MR file (mtl variant only).
+                // If this code path is ever ported to a different subsidiary or a different
+                // secondary book, revisit: read the actual book's currency code or expose it as a
+                // config constant.
+                if (iaCost !== undefined) {
+                    row.mbfPrice = iaCost;
+                    row.currency = 'USD';
+                }
+            } else {
+                row.lotCost = null;
+            }
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
     //  buildAvailable — computed from the 5 detail arrays
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -630,6 +832,7 @@ define([
         // ── Full mode ─────────────────────────────────────────────────────────
         if (isFullMode) {
             log.audit('MTL Cache', 'getInputData: FULL mode');
+            myCache.put({ key: CacheKeysMTL.LAST_INPUT_MODE, value: 'FULL', ttl: CacheKeysMTL.TTL_LAST_RUN });
             var mySearch = loadSummarySearch();
             var fullInput = {};
             var paged = mySearch.runPaged({ pageSize: 1000 });
@@ -652,6 +855,7 @@ define([
 
         if (!lastRunDate) {
             log.audit('MTL Cache', 'getInputData: invalid lastRunDate, falling back to FULL');
+            myCache.put({ key: CacheKeysMTL.LAST_INPUT_MODE, value: 'FULL', ttl: CacheKeysMTL.TTL_LAST_RUN });
             var mySearch2 = loadSummarySearch();
             var fullInput2 = {};
             runPagedAll(mySearch2).forEach((result) => {
@@ -716,6 +920,7 @@ define([
 
         if (pairCount > deltaThreshold) {
             log.audit('MTL Cache', 'getInputData: DELTA->FULL fallback (pairCount=' + pairCount + ')');
+            myCache.put({ key: CacheKeysMTL.LAST_INPUT_MODE, value: 'FULL', ttl: CacheKeysMTL.TTL_LAST_RUN });
             var mySearch3 = loadSummarySearch();
             var fullInput3 = {};
             runPagedAll(mySearch3).forEach((result) => {
@@ -726,6 +931,7 @@ define([
         }
 
         // Rebuild summary rows for changed pairs only
+        myCache.put({ key: CacheKeysMTL.LAST_INPUT_MODE, value: 'DELTA', ttl: CacheKeysMTL.TTL_LAST_RUN });
         var inputData = {};
         var itemsSearch = loadSummarySearch();
         var baseFilters = itemsSearch.filterExpression ? itemsSearch.filterExpression.concat() : [];
@@ -870,12 +1076,14 @@ define([
                     // Aggregate branch — lot already seen
                     if (seenLots[lotNumber] !== undefined) {
                         itemData[seenLots[lotNumber]].packsOnHand += packs;
-                        // Defensive: capture rate/currency if first encounter was IF
+                        // Defensive: capture rate/currency/tranId/tranType if first encounter was non-IR
                         if (tranType === 'itemreceipt' && itemData[seenLots[lotNumber]].mbfPrice === 0) {
                             var aggRawRate  = parseFloat(result.getValue({ name: 'rate' })) || 0;
                             var aggExchRate = parseFloat(result.getValue({ name: 'exchangerate' })) || 1;
                             itemData[seenLots[lotNumber]].mbfPrice  = roundToTwoDecimals(aggRawRate / aggExchRate);
                             itemData[seenLots[lotNumber]].currency  = CURRENCY_TO_ISO[result.getText({ name: 'currency' })] || result.getText({ name: 'currency' }) || '';
+                            itemData[seenLots[lotNumber]].tranId    = result.getValue({ name: 'internalid' });
+                            itemData[seenLots[lotNumber]].tranType  = tranType;
                         }
                         return true;
                     }
@@ -889,11 +1097,23 @@ define([
                         docUrl:        getRecordUrl(result.getValue({ name: 'internalid' }), tranType),
                         poNumber:      stripPrefix(result.getText({ name: 'createdfrom' })),
                         poUrl:         (tranType === 'itemreceipt' && createdFromId) ? getRecordUrl(createdFromId, 'purchaseorder') : '',
-                        date:          result.getValue({ name: 'trandate' }),
-                        vendor:        result.getText({ name: 'mainname' }),
+                        // For IA-origin rows: prefer custbody4 (lot creation date) if populated,
+                        // else fall back to trandate (IA posting date). IRs always use trandate.
+                        // custbody4 is a temporary field used during IA import; usually blank for non-imported IAs.
+                        date:          (tranType === 'inventoryadjustment'
+                                        ? (safeGetValue(result, { name: 'custbody4' }) || result.getValue({ name: 'trandate' }))
+                                        : result.getValue({ name: 'trandate' })),
+                        // Vendor: IRs use mainname (vendor record link). For IAs, mainname is empty —
+                        // fall back to custbody_lot_supplier (free text vendor name set at IA import).
+                        vendor:        (result.getText({ name: 'mainname' })
+                                        || safeGetValue(result, { name: 'custbody_lot_supplier' })
+                                        || ''),
                         vendorUrl:     getRecordUrl(result.getValue({ name: 'internalid', join: 'vendor' }), 'vendor'),
                         lotNumber:     lotNumber,
                         lotUrl:        getRecordUrl(lotId, 'inventorynumber'),
+                        lotInternalId: lotId,
+                        tranId:        result.getValue({ name: 'internalid' }),
+                        tranType:      tranType,
                         packsOnHand:   packs,
                         piecesPerPack: ppp,
                         mbfPrice:      tranType === 'itemreceipt' ? roundToTwoDecimals((parseFloat(result.getValue({ name: 'rate' })) || 0) / (parseFloat(result.getValue({ name: 'exchangerate' })) || 1)) : 0,
@@ -931,6 +1151,9 @@ define([
         var vendorByPO = resolveAllocatedPOVendors(committed, outbound);
         applyVendor(committed, vendorByPO);
         applyVendor(outbound,  vendorByPO);
+
+        // ── Lot Cost: origin trace + GL aggregation (Option B) ────────────────
+        applyLotCost(onHand, itemId);
 
         // ── Compute totals from detail arrays ─────────────────────────────────
         var onHandTotal    = roundToTwoDecimals(onHand.reduce(function (s, r) { return s + (r.packsOnHand || 0); }, 0));
@@ -1158,9 +1381,14 @@ define([
             return;
         }
 
-        // Read existing summary for delta merge (handles chunked summaries)
+        // FULL: trust allRows (canonical set from summary search). Merging with existing
+        // produces "ghost" rows for items the search no longer returns — their detail
+        // expires on TTL but summary keeps them alive forever, causing DETAIL_CACHE_MISS.
+        // DELTA: merge required since allRows only contains changed items.
+        var lastInputMode = myCache.get({ key: CacheKeysMTL.LAST_INPUT_MODE }) || 'FULL';
         var existingSummary = myCache.get({ key: CacheKeysMTL.SUMMARY });
-        log.debug('MTL Cache', 'summarize: existingSummary key present=' + !!existingSummary +
+        log.debug('MTL Cache', 'summarize: lastInputMode=' + lastInputMode +
+            ' existingSummary present=' + !!existingSummary +
             (existingSummary ? ' length=' + existingSummary.length : ''));
         var mergedRows = allRows;
         var lastRunMode = 'FULL';
@@ -1171,7 +1399,7 @@ define([
             try { cacheVersion = (JSON.parse(lastMeta).cacheVersion || 0) + 1; } catch (e) {}
         }
 
-        if (existingSummary && allRows.length > 0) {
+        if (lastInputMode === 'DELTA' && existingSummary && allRows.length > 0) {
             try {
                 var parsed = JSON.parse(existingSummary);
                 var existingRows = null;

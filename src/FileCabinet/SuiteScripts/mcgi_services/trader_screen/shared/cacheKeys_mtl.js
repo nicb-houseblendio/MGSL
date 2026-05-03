@@ -28,6 +28,7 @@ define([], () => {
         SUMMARY:               'TS_MTL_SUMMARY',
         META:                  'TS_MTL_META',
         LAST_RUN:              'TS_MTL_LAST_RUN_TIMESTAMP',
+        LAST_INPUT_MODE:       'TS_MTL_LAST_INPUT_MODE',
         LOCATION_NAMES:        'TS_MTL_LOCATION_NAMES',
         TTL_SUMMARY:           TTL_SUMMARY,
         TTL_LAST_RUN:          TTL_LAST_RUN,

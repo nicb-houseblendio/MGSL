@@ -55,9 +55,6 @@ const formatMBF = (n?: number): string => {
   return (Math.round(n * 100) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
-const formatCurrencyMTL = (n: number) =>
-  n === 0 ? '$0.00' : `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
 const convertQtyMTL = (value: number, uom: string, mbfFactor?: number): number => {
   if (uom !== 'MBF') return value;
   const f = mbfFactor ?? 0;
@@ -504,25 +501,6 @@ export const InventoryTableMTL = ({
           return a - b;
         },
         size: 90,
-      },
-      // Avg Cost
-      {
-        accessorKey: 'averageCost',
-        header: ({ column }) => <SortHeaderMTL label="AVG COST" column={column} align="right" />,
-        cell: ({ getValue }) => (
-          <span className="tabular-nums font-mono text-xs text-right block">
-            {formatCurrencyMTL(getValue() as number)}
-          </span>
-        ),
-        size: 105,
-      },
-      // Currency — MTL defaults to CAD (Q2 pending: locationCurrencyMap empty, fallback 'CAD').
-      // Use || 'CAD' so stale cache rows without the field still render a badge.
-      {
-        accessorKey: 'currency',
-        header: ({ column }) => <SortHeaderMTL label="CURRENCY" column={column} />,
-        cell: ({ getValue }) => <CurrencyBadge currency={(getValue() as string) || 'CAD'} />,
-        size: 85,
       },
     ],
     [uom, onDrillDown, onCellFilter, activeFilters]

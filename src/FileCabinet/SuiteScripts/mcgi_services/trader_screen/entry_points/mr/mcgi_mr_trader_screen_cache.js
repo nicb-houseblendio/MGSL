@@ -36,6 +36,16 @@ define([
     function getDetailSearch(searchId) {
         if (!_detailSearchCache[searchId]) {
             var s = search.load({ id: searchId });
+            // PROD bug fix: in-transit detail saved search has hardcoded
+            // location.internalid=7 / tolocation.internalid=7 filter that excludes
+            // all locations except 7. Strip it; runDetailSearch adds a dynamic
+            // location formula filter that mirrors the count formula's logic.
+            if (searchId === IN_TRANSIT_SEARCH_ID) {
+                s.filters = s.filters.filter(function(f) {
+                    var formula = f.formula || '';
+                    return formula.indexOf('tolocation.internalid') === -1;
+                });
+            }
             _detailSearchCache[searchId] = {
                 search: s,
                 baseFilterLen: s.filters.length,
@@ -257,7 +267,7 @@ define([
         if (isFullMode) {
             const mySearch = search.load({ id: ITEM_DATA_SEARCH_ID });
             const filters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
-            filters.push('AND', ['subsidiary', 'anyof', subsidiaryId]);
+            filters.push('AND', ['inventorylocation.subsidiary', 'anyof', subsidiaryId]);
             mySearch.filterExpression = filters;
             log.debug('MCGI_MR_TraderScreenCache', 'getInputData(full): applied subsidiary filter=' + subsidiaryId);
             const fullInput = {};
@@ -302,7 +312,7 @@ define([
         if (!lastRunDate) {
             const mySearch = search.load({ id: ITEM_DATA_SEARCH_ID });
             const flbkFilters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
-            flbkFilters.push('AND', ['subsidiary', 'anyof', subsidiaryId]);
+            flbkFilters.push('AND', ['inventorylocation.subsidiary', 'anyof', subsidiaryId]);
             mySearch.filterExpression = flbkFilters;
             const fullInput = {};
             runPagedAll(mySearch).forEach((result) => {
@@ -358,7 +368,7 @@ define([
         if (pairCount > deltaThreshold || pairCount === 0) {
             const mySearch = search.load({ id: ITEM_DATA_SEARCH_ID });
             const threshFilters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
-            threshFilters.push('AND', ['subsidiary', 'anyof', subsidiaryId]);
+            threshFilters.push('AND', ['inventorylocation.subsidiary', 'anyof', subsidiaryId]);
             mySearch.filterExpression = threshFilters;
             const fullInput = {};
             runPagedAll(mySearch).forEach((result) => {
@@ -372,7 +382,7 @@ define([
         const inputData = {};
         const itemsSearch = search.load({ id: ITEM_DATA_SEARCH_ID });
         const baseFilters = itemsSearch.filterExpression ? itemsSearch.filterExpression.concat() : [];
-        baseFilters.push('AND', ['subsidiary', 'anyof', subsidiaryId]);
+        baseFilters.push('AND', ['inventorylocation.subsidiary', 'anyof', subsidiaryId]);
 
         Object.keys(pairs).forEach((k) => {
             const p = pairs[k];
@@ -416,9 +426,28 @@ define([
         try {
             const s = getDetailSearch(searchId);
             s.filters.push(
-                    search.createFilter({ name: 'item', operator: search.Operator.ANYOF, values: itemId }),
-                    search.createFilter({ name: 'location', operator: search.Operator.ANYOF, values: locationId })
+                    search.createFilter({ name: 'item', operator: search.Operator.ANYOF, values: itemId })
             );
+            if (searchId === IN_TRANSIT_SEARCH_ID) {
+                // Mirror count formula's location attribution: Transfer Order →
+                // destination (tolocation), Purchase Order → line location.
+                var locId = parseInt(locationId, 10);
+                s.filters.push(
+                        search.createFilter({
+                            name: 'formulanumeric',
+                            operator: search.Operator.EQUALTO,
+                            values: '1',
+                            formula: "CASE " +
+                                     "WHEN {type}='Transfer Order' AND {tolocation.internalid}=" + locId + " THEN 1 " +
+                                     "WHEN {type}='Purchase Order' AND {location.internalid}=" + locId + " THEN 1 " +
+                                     "ELSE 0 END"
+                        })
+                );
+            } else {
+                s.filters.push(
+                        search.createFilter({ name: 'location', operator: search.Operator.ANYOF, values: locationId })
+                );
+            }
             s.run().each(function (r) {
                 const row = rowBuilder(r);
                 if (row) rows.push(row);
@@ -501,6 +530,15 @@ define([
     };
 
     const buildInTransitRow = (r) => {
+        // Read in-transit portion from saved search formula column.
+        // Formula: (packqty * billed/qty) - (packqty * shipReceived/qty)
+        // This matches the main grid count attribution so totals reconcile.
+        const formulaValues = {};
+        r.columns.forEach((col) => {
+            if (col.formula && col.label === 'In Transit *Additional') {
+                formulaValues.inTransit = r.getValue(col);
+            }
+        });
         const docType = r.getValue({ name: 'type' });
         const docId = r.id;
         const vendorId = r.getValue({ name: 'mainname' });
@@ -511,7 +549,7 @@ define([
             shipWeek: r.getValue({ name: 'custbody_ship_week' }) || '',
             vendor: r.getText({ name: 'mainname' }),
             vendorUrl: getRecordUrl(vendorId, 'vendor'),
-            packQty: roundToTwoDecimals(parseFloat(r.getValue({ name: 'custcol_mgsl_packqty' })) || 0),
+            packQty: roundToTwoDecimals(parseFloat(formulaValues.inTransit) || 0),
             piecesPerPack: ppp,
             pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece' })) || 0),
             rate: roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),

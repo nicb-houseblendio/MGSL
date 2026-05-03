@@ -30,8 +30,6 @@ export const exportToExcelMTL = (rows: SummaryRow[], totals: Totals, uom?: strin
     'On Order':       r.onOrder || 0,
     'In Transit':     r.inTransit || 0,
     'Available':      r.available || 0,
-    'Avg Cost':       r.averageCost || 0,
-    'Currency':       r.currency || '',
   }));
 
   const onHandMBFTotal = isPacks ? rows.reduce((s, r) => s + (r.quantityFBM ?? 0), 0) : undefined;
@@ -52,8 +50,6 @@ export const exportToExcelMTL = (rows: SummaryRow[], totals: Totals, uom?: strin
     'On Order':   totals.onOrder,
     'In Transit': totals.inTransit,
     'Available':  totals.available,
-    'Avg Cost':   0,
-    'Currency':   '',
   });
 
   const ws = XLSX.utils.json_to_sheet(excelRows);

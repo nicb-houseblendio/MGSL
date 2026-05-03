@@ -29,6 +29,7 @@ export const useDetailData = (options?: UseDetailDataOptions) => {
   const fetchDetail = useCallback(
     async (itemId: string, locationId: string, bucket?: DetailType, subsidiaryId?: string) => {
       const cacheKey = `${subsidiaryId || 'ind'}__${itemId}__${locationId}`;
+      setError(null);
       const cached = cacheRef.current.get(cacheKey);
       if (cached) {
         setData(cached);
@@ -36,7 +37,6 @@ export const useDetailData = (options?: UseDetailDataOptions) => {
       }
 
       setLoading(true);
-      setError(null);
       try {
         const params: Record<string, string> = { itemId, locationId };
         if (bucket) params.bucket = bucket;
