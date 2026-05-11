@@ -1052,6 +1052,22 @@ define([
         }
 
         // ── On Hand detail (inline — uses separate getOnHandSearch cache) ─────
+        //
+        // Two-pass design:
+        //   Pass 1 — drain the search into rawRows, extracting every field pass 2 needs.
+        //            Along the way, latch each lot's authoritative PPP/FBM from the first
+        //            additive transaction (IR / +IA / CM) into lotPppMap / lotFbmMap.
+        //   Pass 2 — iterate rawRows, computing packs with the now-fully-populated latch
+        //            maps and running the existing seenLots aggregation.
+        //
+        // Why two passes: line-level custcol_mgsl_ppp drifts on IF lines (they inherit
+        // the SO's commitment PPP, not the lot's received PPP — e.g. SS2416 lot
+        // R46450-0019 received at PPP=216 but fulfilled on lines stamped PPP=240, which
+        // under-deducts packs). Single-pass with on-the-fly latching only works when the
+        // IR is processed before any IF for the lot — but a SuiteQL audit on 2026-05-11
+        // found 2,063 (lot, item, location) combos in CWP MTL where the first same-day
+        // transaction is an IF (id < the IR's id), so the single-pass latch would miss
+        // those. Two passes eliminate the ordering dependency entirely.
         var onHand = (() => {
             try {
                 var cached     = getOnHandSearch();
@@ -1063,15 +1079,18 @@ define([
                 var _ohFbmFromLot = 0, _ohFbmFromItem = 0, _ohFbmFromDims = 0, _ohFbmZero = 0;
                 var colPPPFormula     = null;
                 var colPackQtyFormula = null;
+                var lotPppMap = {};
+                var lotFbmMap = {};
+                var rawRows  = [];
 
                 mySearch.filters.push(
                     search.createFilter({ name: 'item',     operator: search.Operator.ANYOF, values: itemId }),
                     search.createFilter({ name: 'location', operator: search.Operator.ANYOF, values: locationId })
                 );
 
+                // ── Pass 1: extract + latch ──────────────────────────────────
                 mySearch.run().each(function (result) {
                     _ohRowCount++;
-                    // Discover formula columns on first row
                     if (!colPPPFormula) {
                         result.columns.forEach(function (col) {
                             if (col.label === 'Piece per Package (PPP)') colPPPFormula     = col;
@@ -1079,35 +1098,16 @@ define([
                         });
                     }
 
-                    var lotNumber    = result.getText({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
-                    var lotId        = result.getValue({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
+                    var lotNumber = result.getText({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
                     if (!lotNumber) return true;
 
-                    var invDetailQty = parseFloat(result.getValue({ name: 'quantity', join: 'inventoryDetail' })) || 0;
-                    var itemTranQty  = colPackQtyFormula ? (parseFloat(result.getValue(colPackQtyFormula)) || 0) : 0;
-                    var volPCFBM     = parseFloat(result.getValue({ name: 'custitem_mgsl_fbm', join: 'item' })) || 0;
-                    var tranType     = result.recordType;
+                    var ppp = colPPPFormula ? (parseFloat(result.getValue(colPPPFormula)) || 0) : 0;
+                    if (ppp) { _ohPppFromCol++; } else { _ohPppZero++; }
 
+                    var volPCFBM = parseFloat(result.getValue({ name: 'custitem_mgsl_fbm', join: 'item' })) || 0;
                     var thickness = result.getValue({ name: 'csegseg_thickness', join: 'item' }) || '';
                     var width     = result.getValue({ name: 'csegwidth',         join: 'item' }) || '';
                     var len       = result.getValue({ name: 'cseglength',        join: 'item' }) || '';
-
-                    // Signed MBF qty — use invDetailQty, NOT Pack Quantity
-                    var qty = 0;
-                    if (tranType === 'itemreceipt' || tranType === 'creditmemo' ||
-                        (tranType === 'inventoryadjustment' && itemTranQty > 0)) {
-                        qty = invDetailQty;
-                    } else if (tranType === 'itemfulfillment' ||
-                               (tranType === 'inventoryadjustment' && itemTranQty < 0)) {
-                        qty = -Math.abs(invDetailQty);
-                    }
-
-                    // MTL convention: lot name doesn't encode PPP/FBM (unlike IND's PO###-FBM-PPP).
-                    // Item master + line custom column are the authoritative sources.
-                    var ppp = 0;
-                    if (colPPPFormula) ppp = parseFloat(result.getValue(colPPPFormula)) || 0;
-                    if (ppp) { _ohPppFromCol++; } else { _ohPppZero++; }
-
                     var fbm = volPCFBM;
                     if (fbm) { _ohFbmFromItem++; }
                     else {
@@ -1115,58 +1115,107 @@ define([
                         if (fbm) { _ohFbmFromDims++; } else { _ohFbmZero++; }
                     }
 
-                    var packs = (fbm > 0 && ppp > 0) ? (qty * 1000) / (ppp * fbm) : 0;
+                    var itemTranQty = colPackQtyFormula ? (parseFloat(result.getValue(colPackQtyFormula)) || 0) : 0;
+                    var tranType    = result.recordType;
+                    var isAdditive  = tranType === 'itemreceipt' || tranType === 'creditmemo' ||
+                                      (tranType === 'inventoryadjustment' && itemTranQty > 0);
 
-                    // Aggregate branch — lot already seen
-                    if (seenLots[lotNumber] !== undefined) {
-                        itemData[seenLots[lotNumber]].packsOnHand += packs;
-                        // Defensive: capture rate/currency/tranId/tranType if first encounter was non-IR
-                        if (tranType === 'itemreceipt' && itemData[seenLots[lotNumber]].mbfPrice === 0) {
-                            var aggRawRate  = parseFloat(result.getValue({ name: 'rate' })) || 0;
-                            var aggExchRate = parseFloat(result.getValue({ name: 'exchangerate' })) || 1;
-                            itemData[seenLots[lotNumber]].mbfPrice  = roundToTwoDecimals(aggRawRate / aggExchRate);
-                            itemData[seenLots[lotNumber]].currency  = CURRENCY_TO_ISO[result.getText({ name: 'currency' })] || result.getText({ name: 'currency' }) || '';
-                            itemData[seenLots[lotNumber]].tranId    = result.getValue({ name: 'internalid' });
-                            itemData[seenLots[lotNumber]].tranType  = tranType;
-                        }
-                        return true;
+                    // First-additive-wins: capture the lot's authoritative PPP/FBM
+                    if (isAdditive && ppp > 0 && !lotPppMap[lotNumber]) {
+                        lotPppMap[lotNumber] = ppp;
+                        lotFbmMap[lotNumber] = fbm;
                     }
 
-                    // First encounter — full row
-                    seenLots[lotNumber] = itemData.length;
-                    var createdFromId = result.getValue({ name: 'createdfrom' });
-                    itemData.push({
-                        docType:       result.getText({ name: 'type' }),
-                        docNumber:     result.getValue({ name: 'tranid' }),
-                        docUrl:        getRecordUrl(result.getValue({ name: 'internalid' }), tranType),
-                        poNumber:      stripPrefix(result.getText({ name: 'createdfrom' })),
-                        poUrl:         (tranType === 'itemreceipt' && createdFromId) ? getRecordUrl(createdFromId, 'purchaseorder') : '',
-                        // For IA-origin rows: prefer custbody4 (lot creation date) if populated,
-                        // else fall back to trandate (IA posting date). IRs always use trandate.
-                        // custbody4 is a temporary field used during IA import; usually blank for non-imported IAs.
-                        date:          (tranType === 'inventoryadjustment'
-                                        ? (safeGetValue(result, { name: 'custbody4' }) || result.getValue({ name: 'trandate' }))
-                                        : result.getValue({ name: 'trandate' })),
-                        // Vendor: IRs use mainname (vendor record link). For IAs, mainname is empty —
-                        // fall back to custbody_lot_supplier (free text vendor name set at IA import).
-                        vendor:        (result.getText({ name: 'mainname' })
-                                        || safeGetValue(result, { name: 'custbody_lot_supplier' })
-                                        || ''),
-                        vendorUrl:     getRecordUrl(result.getValue({ name: 'internalid', join: 'vendor' }), 'vendor'),
-                        lotNumber:     lotNumber,
-                        lotUrl:        getRecordUrl(lotId, 'inventorynumber'),
-                        lotInternalId: lotId,
-                        tranId:        result.getValue({ name: 'internalid' }),
-                        tranType:      tranType,
-                        packsOnHand:   packs,
-                        piecesPerPack: ppp,
-                        mbfPrice:      tranType === 'itemreceipt' ? roundToTwoDecimals((parseFloat(result.getValue({ name: 'rate' })) || 0) / (parseFloat(result.getValue({ name: 'exchangerate' })) || 1)) : 0,
-                        currency:      tranType === 'itemreceipt'
-                            ? (CURRENCY_TO_ISO[result.getText({ name: 'currency' })] || result.getText({ name: 'currency' }) || '')
-                            : '',
-                        reloadId:      result.getValue({ name: 'custcol3' }) || '',
+                    // Stash every field pass 2 will need so we don't have to hold the
+                    // search Result reference across iterations.
+                    rawRows.push({
+                        lotNumber:           lotNumber,
+                        lotId:               result.getValue({ name: 'inventorynumber', join: 'inventoryDetail' }) || '',
+                        invDetailQty:        parseFloat(result.getValue({ name: 'quantity', join: 'inventoryDetail' })) || 0,
+                        itemTranQty:         itemTranQty,
+                        tranType:            tranType,
+                        isAdditive:          isAdditive,
+                        ppp:                 ppp,
+                        fbm:                 fbm,
+                        docType:             result.getText({ name: 'type' }),
+                        docNumber:           result.getValue({ name: 'tranid' }),
+                        tranInternalId:      result.getValue({ name: 'internalid' }),
+                        createdFromText:     result.getText({ name: 'createdfrom' }),
+                        createdFromId:       result.getValue({ name: 'createdfrom' }),
+                        trandate:            result.getValue({ name: 'trandate' }),
+                        custbody4:           safeGetValue(result, { name: 'custbody4' }),
+                        mainnameText:        result.getText({ name: 'mainname' }),
+                        custbodyLotSupplier: safeGetValue(result, { name: 'custbody_lot_supplier' }),
+                        vendorInternalId:    result.getValue({ name: 'internalid', join: 'vendor' }),
+                        rate:                parseFloat(result.getValue({ name: 'rate' })) || 0,
+                        exchangerate:        parseFloat(result.getValue({ name: 'exchangerate' })) || 1,
+                        currencyText:        result.getText({ name: 'currency' }),
+                        custcol3:            result.getValue({ name: 'custcol3' }) || '',
                     });
                     return true;
+                });
+
+                // ── Pass 2: aggregate with the now-complete lotPppMap ────────
+                rawRows.forEach(function (row) {
+                    var pppToUse = lotPppMap[row.lotNumber] || row.ppp;
+                    var fbmToUse = lotFbmMap[row.lotNumber] || row.fbm;
+
+                    var qty = 0;
+                    if (row.tranType === 'itemreceipt' || row.tranType === 'creditmemo' ||
+                        (row.tranType === 'inventoryadjustment' && row.itemTranQty > 0)) {
+                        qty = row.invDetailQty;
+                    } else if (row.tranType === 'itemfulfillment' ||
+                               (row.tranType === 'inventoryadjustment' && row.itemTranQty < 0)) {
+                        qty = -Math.abs(row.invDetailQty);
+                    }
+
+                    var packs = (fbmToUse > 0 && pppToUse > 0) ? (qty * 1000) / (pppToUse * fbmToUse) : 0;
+
+                    if (seenLots[row.lotNumber] !== undefined) {
+                        var stored = itemData[seenLots[row.lotNumber]];
+                        stored.packsOnHand += packs;
+                        // Defensive: if first encounter for this lot wasn't an IR, capture
+                        // rate/currency/tranId/tranType from the first IR we see.
+                        if (row.tranType === 'itemreceipt' && stored.mbfPrice === 0) {
+                            stored.mbfPrice = roundToTwoDecimals(row.rate / (row.exchangerate > 0 ? row.exchangerate : 1));
+                            stored.currency = CURRENCY_TO_ISO[row.currencyText] || row.currencyText || '';
+                            stored.tranId   = row.tranInternalId;
+                            stored.tranType = row.tranType;
+                        }
+                        return;
+                    }
+
+                    // First encounter — build the displayed row. pppToUse here is the
+                    // lot-authoritative PPP (latched in pass 1) when available, so the
+                    // stored piecesPerPack is always correct regardless of which row
+                    // came first.
+                    seenLots[row.lotNumber] = itemData.length;
+                    itemData.push({
+                        docType:       row.docType,
+                        docNumber:     row.docNumber,
+                        docUrl:        getRecordUrl(row.tranInternalId, row.tranType),
+                        poNumber:      stripPrefix(row.createdFromText),
+                        poUrl:         (row.tranType === 'itemreceipt' && row.createdFromId) ? getRecordUrl(row.createdFromId, 'purchaseorder') : '',
+                        date:          (row.tranType === 'inventoryadjustment'
+                                        ? (row.custbody4 || row.trandate)
+                                        : row.trandate),
+                        vendor:        row.mainnameText || row.custbodyLotSupplier || '',
+                        vendorUrl:     getRecordUrl(row.vendorInternalId, 'vendor'),
+                        lotNumber:     row.lotNumber,
+                        lotUrl:        getRecordUrl(row.lotId, 'inventorynumber'),
+                        lotInternalId: row.lotId,
+                        tranId:        row.tranInternalId,
+                        tranType:      row.tranType,
+                        packsOnHand:   packs,
+                        piecesPerPack: pppToUse,
+                        mbfPrice:      row.tranType === 'itemreceipt'
+                            ? roundToTwoDecimals(row.rate / (row.exchangerate > 0 ? row.exchangerate : 1))
+                            : 0,
+                        currency:      row.tranType === 'itemreceipt'
+                            ? (CURRENCY_TO_ISO[row.currencyText] || row.currencyText || '')
+                            : '',
+                        reloadId:      row.custcol3,
+                    });
                 });
 
                 // Ghost lot filter
@@ -1175,6 +1224,7 @@ define([
                     log.debug('MTL reduce', 'OnHand item=' + itemId + ' loc=' + locationId +
                         ' | searchRows=' + _ohRowCount + ' uniqueLots=' + Object.keys(seenLots).length +
                         ' preFilter=' + itemData.length + ' postFilter=' + filtered.length +
+                        ' | latched lots=' + Object.keys(lotPppMap).length +
                         ' | PPP: lot=' + _ohPppFromLot + ' col=' + _ohPppFromCol + ' ZERO=' + _ohPppZero +
                         ' | FBM: lot=' + _ohFbmFromLot + ' item=' + _ohFbmFromItem + ' dims=' + _ohFbmFromDims + ' ZERO=' + _ohFbmZero);
                 }
