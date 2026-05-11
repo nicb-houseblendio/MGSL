@@ -35,7 +35,7 @@ export const exportToExcelMTL = (rows: SummaryRow[], totals: Totals, uom?: strin
     'Location', 'Item Code', 'Item Description', 'Vendor',
     'Thickness', 'Width', 'Length', 'Grade',
     ...(isPacks ? ['On Hand (MBF)'] : []),
-    'On Hand', 'Committed', 'Outbound', 'On Order', 'In Transit', 'Available',
+    'On Hand', 'Committed', 'Outbound', 'On Order', 'In Transit', 'Available', 'To Be Sold',
   ];
 
   const dataRows: (string | number)[][] = rows.map((r) => {
@@ -57,6 +57,7 @@ export const exportToExcelMTL = (rows: SummaryRow[], totals: Totals, uom?: strin
       r.onOrder || 0,
       r.inTransit || 0,
       r.available || 0,
+      (r.onHand || 0) - (r.committed || 0) - (r.outbound || 0) + (r.inTransit || 0),
     );
     return base;
   });
@@ -74,6 +75,7 @@ export const exportToExcelMTL = (rows: SummaryRow[], totals: Totals, uom?: strin
     totals.onOrder,
     totals.inTransit,
     totals.available,
+    totals.onHand - totals.committed - totals.outbound + totals.inTransit,
   ];
 
   const sheetData: (string | number)[][] = [headers, ...dataRows, totalsRow];

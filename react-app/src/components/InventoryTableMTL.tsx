@@ -88,9 +88,13 @@ export const CurrencyBadge = ({ currency }: { currency?: string }) => {
 
 // ── MetricCellMTL ────────────────────────────────────────────────────────────
 
+// 'toBeSold' is a UI-only metric (computed on the frontend, no detail bucket),
+// so it widens the cell's type union without touching DetailType / useDetailData.
+type MetricType = DetailType | 'toBeSold';
+
 interface MetricCellMTLProps {
   value: number;
-  type: DetailType;
+  type: MetricType;
   row: SummaryRow;
   onDrillDown?: (type: DetailType, row: SummaryRow) => void;
   uom?: string;
@@ -103,6 +107,7 @@ const METRIC_COLOR_CLASS: Record<string, string> = {
   onOrder:   'text-metric-onorder',
   inTransit: 'text-metric-intransit',
   available: 'text-metric-onhand',
+  toBeSold:  'text-metric-onhand',
 };
 
 const MetricCellMTL = ({ value, type, row, onDrillDown, uom }: MetricCellMTLProps) => {
@@ -110,17 +115,18 @@ const MetricCellMTL = ({ value, type, row, onDrillDown, uom }: MetricCellMTLProp
     return <span className="text-[#7A8FA3] tabular-nums text-right block">N/A</span>;
   }
   const displayValue = convertQtyMTL(value, uom ?? 'Packs', row.mbfFactor);
-  const isAvail = type === 'available';
-  const prefix = isAvail && displayValue >= 0 ? '+' : '';
+  const signedLike = type === 'available' || type === 'toBeSold';
+  const prefix = signedLike && displayValue >= 0 ? '+' : '';
   const content = `${prefix}${formatQtyMTL(displayValue, uom)}`;
   const colorClass = METRIC_COLOR_CLASS[type] ?? 'text-metric-onhand';
-  const canDrill = onDrillDown && row.internalId && row.locationId;
+  // toBeSold has no detail bucket; only the other metrics can drill.
+  const canDrill = onDrillDown && row.internalId && row.locationId && type !== 'toBeSold';
 
   if (canDrill && value !== 0) {
     return (
       <button
         type="button"
-        onClick={() => onDrillDown(type, row)}
+        onClick={() => onDrillDown(type as DetailType, row)}
         className={`${colorClass} hover:underline font-medium tabular-nums text-right w-full block`}
       >
         {content}
@@ -166,7 +172,7 @@ const SortHeaderMTL = ({
 // ── Footer constants ─────────────────────────────────────────────────────────
 
 const METRIC_COLUMNS_MTL = new Set([
-  'onHandMBF', 'onHand', 'committed', 'outbound', 'onOrder', 'inTransit', 'available',
+  'onHandMBF', 'onHand', 'committed', 'outbound', 'onOrder', 'inTransit', 'available', 'toBeSold',
 ]);
 
 const FOOTER_LABEL_MTL: Record<string, string> = {
@@ -178,6 +184,8 @@ const FOOTER_LABEL_MTL: Record<string, string> = {
   inTransit:    '#CE93D8',
   available:    '#A5D6A7',
   availableNeg: '#FCA5A5',
+  toBeSold:     '#A5D6A7',
+  toBeSoldNeg:  '#FCA5A5',
 };
 
 // ── InventoryTableMTL ────────────────────────────────────────────────────────
@@ -497,6 +505,30 @@ export const InventoryTableMTL = ({
         },
         size: 90,
       },
+      // To Be Sold — derived (onHand - committed - outbound + inTransit). No drill-down
+      // per Julie's spec (May 11 2026). Differs from Available by excluding onOrder.
+      // 100px (other metric columns are 90) — the label is one char longer than the
+      // widest peer (IN TRANSIT) and was clipping next to the sort icon.
+      {
+        id: 'toBeSold',
+        accessorFn: (row) => row.onHand - row.committed - row.outbound + row.inTransit,
+        header: ({ column }) => <SortHeaderMTL label="TO BE SOLD" column={column} align="right" />,
+        cell: ({ getValue, row }) => (
+          <MetricCellMTL
+            value={getValue() as number}
+            type="toBeSold"
+            row={row.original}
+            uom={uom}
+          />
+        ),
+        sortingFn: (rowA, rowB) => {
+          const va = rowA.original.onHand - rowA.original.committed - rowA.original.outbound + rowA.original.inTransit;
+          const vb = rowB.original.onHand - rowB.original.committed - rowB.original.outbound + rowB.original.inTransit;
+          return convertQtyMTL(va, uom ?? 'Packs', rowA.original.mbfFactor)
+               - convertQtyMTL(vb, uom ?? 'Packs', rowB.original.mbfFactor);
+        },
+        size: 100,
+      },
     ],
     [uom, onDrillDown, onCellFilter, activeFilters]
   );
@@ -596,18 +628,22 @@ export const InventoryTableMTL = ({
                     const colId = header.column.id;
                     if (METRIC_COLUMNS_MTL.has(colId)) {
                       const isOnHandMBF = colId === 'onHandMBF';
+                      const isToBeSold = colId === 'toBeSold';
                       const val = isOnHandMBF
                         ? onHandMBFTotal
-                        : (totals[colId as keyof typeof totals] ?? 0);
+                        : isToBeSold
+                          ? (totals.onHand - totals.committed - totals.outbound + totals.inTransit)
+                          : (totals[colId as keyof typeof totals] ?? 0);
                       const isAvailable = colId === 'available';
-                      const color = isAvailable
+                      const signedLike = isAvailable || isToBeSold;
+                      const color = signedLike
                         ? val >= 0
-                          ? FOOTER_LABEL_MTL.available
-                          : FOOTER_LABEL_MTL.availableNeg
+                          ? FOOTER_LABEL_MTL[colId]
+                          : FOOTER_LABEL_MTL[`${colId}Neg`]
                         : (FOOTER_LABEL_MTL[colId] ?? '#fff');
                       const display = isOnHandMBF
                         ? formatMBF(val)
-                        : isAvailable
+                        : signedLike
                           ? `${val >= 0 ? '' : '▼'}${formatQtyMTL(Math.abs(val), uom)}`
                           : formatQtyMTL(val, uom);
                       return (
