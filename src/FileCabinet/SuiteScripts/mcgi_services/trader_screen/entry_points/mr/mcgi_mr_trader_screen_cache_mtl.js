@@ -192,7 +192,6 @@ define([
     var colPackCommitted       = null;
     var colInTransitAdditional = null;
     var colOpenQty             = null;
-    var colOutboundPacks        = null;
 
     // ── Committed ─────────────────────────────────────────────────────────────
     const buildCommittedRow = (r) => {
@@ -212,6 +211,8 @@ define([
         var rawRate  = parseFloat(r.getValue({ name: 'rate' })) || 0;
         var exchRate = parseFloat(r.getValue({ name: 'exchangerate' })) || 1;
         return {
+            docId:          docId,
+            lineSeq:        r.getValue({ name: 'linesequencenumber' }),
             docNumber:      r.getValue({ name: 'tranid' }),
             docUrl:         getRecordUrl(docId, 'salesorder'),
             customer:       r.getText({ name: 'entity' }),
@@ -287,14 +288,14 @@ define([
     };
 
     // ── Outbound ──────────────────────────────────────────────────────────────
+    // Per Julie's rule (May 2026): a SO line moves to Outbound when its custom
+    // carrier field is filled, regardless of shipping/billing status. MGSL does
+    // no partial shipments, so the displayed packs = the full line packqty.
+    // Reading {custcol_mgsl_packqty} directly is correct; the "Remaining Quantity"
+    // formula returns 0 until the line is partially shipped, which would wrongly
+    // exclude carrier-filled-but-not-yet-shipped lines from the Outbound bucket.
     const buildOutboundRow = (r) => {
-        if (!colOutboundPacks) {
-            r.columns.forEach((col) => {
-                if (col.label === 'Remaining Quantity') colOutboundPacks = col;
-            });
-            if (!colOutboundPacks) log.error('MTL Outbound', 'Formula column "Remaining Quantity" not found');
-        }
-        var packs = roundToTwoDecimals(parseFloat(colOutboundPacks ? r.getValue(colOutboundPacks) : 0) || 0);
+        var packs = roundToTwoDecimals(parseFloat(r.getValue({ name: 'custcol_mgsl_packqty' })) || 0);
         if (packs <= 0) return null;
 
         var docId    = r.getValue({ name: 'internalid' });
@@ -306,10 +307,13 @@ define([
         var rawRate   = parseFloat(r.getValue({ name: 'rate' })) || 0;
         var exchRate  = parseFloat(r.getValue({ name: 'exchangerate' })) || 1;
         return {
+            docId:         docId,
+            lineSeq:       r.getValue({ name: 'linesequencenumber' }),
             docNumber:     r.getValue({ name: 'tranid' }),
             docUrl:        getRecordUrl(docId, 'salesorder'),
             lotNumber:     lotNumber || '\u2014',
             lotUrl:        getRecordUrl(lotId, 'inventorynumber'),
+            lotId:         lotId,
             customer:      r.getText({ name: 'entity' }),
             customerUrl:   getRecordUrl(entityId, 'customer'),
             invoicedDate:  r.getValue({ name: 'trandate', join: 'billingTransaction' }) || '',
@@ -349,6 +353,71 @@ define([
                 ' rawRows=' + rawCount + ' kept=' + rows.length + ' filtered=' + (rawCount - rows.length));
         }
         return rows;
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  dedupeByLine — collapses lot-fanout rows into one row per SO line
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    //  Saved searches with `serialnumber` / `inventorynumber` columns fan an SO
+    //  line into N rows (one per unique reserved lot). The Pack Committed / Open
+    //  Pack Quantity formulas evaluate at the LINE level, so every fanned row
+    //  carries the same line value. Summing them inflates totals by N.
+    //
+    //  Dedupe key: (docId, lineSeq). All fanned rows for one line share both.
+    //  Distinct sorted lot names are concatenated (capped at 3 + "+N more").
+    //  When multi-lot, lotUrl is cleared (no single URL applies).
+    //
+    //  Defensive: if any row is missing lineSeq, skip dedupe entirely. This lets
+    //  the MR keep working safely if the saved search column hasn't been added
+    //  yet or NetSuite returns a null value unexpectedly.
+
+    const dedupeByLine = (rows, label) => {
+        if (!rows || rows.length === 0) return rows;
+        var hasLineSeq = rows.every(function (r) {
+            return r && r.lineSeq !== undefined && r.lineSeq !== null && r.lineSeq !== '';
+        });
+        if (!hasLineSeq) {
+            log.audit('MTL dedupeByLine', label + ' missing lineSeq on some rows - skipping dedupe');
+            return rows;
+        }
+        var groups = {};
+        var order = [];
+        rows.forEach(function (r) {
+            var key = String(r.docId) + '__' + String(r.lineSeq);
+            if (!groups[key]) {
+                groups[key] = {
+                    row: r,
+                    lots: r.lotNumber && r.lotNumber !== '\u2014' ? [r.lotNumber] : [],
+                };
+                order.push(key);
+            } else if (r.lotNumber && r.lotNumber !== '\u2014' &&
+                       groups[key].lots.indexOf(r.lotNumber) < 0) {
+                groups[key].lots.push(r.lotNumber);
+            }
+        });
+        return order.map(function (key) {
+            var g = groups[key];
+            var sortedLots = g.lots.slice().sort();
+            var lotDisplay;
+            if (sortedLots.length === 0) {
+                lotDisplay = '\u2014';
+            } else if (sortedLots.length <= 3) {
+                lotDisplay = sortedLots.join(', ');
+            } else {
+                lotDisplay = sortedLots.slice(0, 3).join(', ') + ' (+' + (sortedLots.length - 3) + ' more)';
+            }
+            var out = {};
+            for (var k in g.row) {
+                if (Object.prototype.hasOwnProperty.call(g.row, k)) out[k] = g.row[k];
+            }
+            out.lotNumber = lotDisplay;
+            if (sortedLots.length > 1) {
+                out.lotUrl = '';
+                out.lotId = '';
+            }
+            return out;
+        });
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1122,6 +1191,10 @@ define([
         var onOrder   = runDetailSearch(ON_ORDER_SEARCH_ID,   itemId, locationId, buildOnOrderRow);
         var inTransit = runDetailSearch(IN_TRANSIT_SEARCH_ID, itemId, locationId, buildInTransitRow);
 
+        // Collapse lot-fanout rows so each SO line is counted once
+        committed = dedupeByLine(committed, 'committed');
+        outbound  = dedupeByLine(outbound,  'outbound');
+
         // ── Resolve allocated-PO vendor for committed + outbound rows ─────────
         var vendorByPO = resolveAllocatedPOVendors(committed, outbound);
         applyVendor(committed, vendorByPO);
@@ -1148,6 +1221,18 @@ define([
         summaryRow.vendor    = (onHand.length > 0 && onHand[0].vendor)
             ? onHand[0].vendor
             : (onOrder.length > 0 ? onOrder[0].vendor : '');
+        // Collect every distinct vendor across all detail buckets so the vendor
+        // filter matches rows whose primary vendor differs from the selected one.
+        var vendorSet = {};
+        var pushVendor = function (v) {
+            if (v && !vendorSet[v]) vendorSet[v] = true;
+        };
+        onHand.forEach(function (r) { pushVendor(r.vendor); });
+        onOrder.forEach(function (r) { pushVendor(r.vendor); });
+        committed.forEach(function (r) { pushVendor(r.vendor); });
+        outbound.forEach(function (r) { pushVendor(r.vendor); });
+        inTransit.forEach(function (r) { pushVendor(r.vendor); });
+        summaryRow.vendors = Object.keys(vendorSet);
         summaryRow.currency  = (onHand.length > 0 && onHand[0].currency)
             ? onHand[0].currency
             : (locationCurrencyMap[locationId] || 'CAD');

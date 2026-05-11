@@ -80,6 +80,7 @@ export interface SummaryRow {
   currency?: string;
   country?: string;
   vendor?: string;
+  vendors?: string[];
   pos?: string[];
 }
 

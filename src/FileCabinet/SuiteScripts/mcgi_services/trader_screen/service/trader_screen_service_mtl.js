@@ -63,7 +63,12 @@ define([
         }
         if (params.vendor && toValueList(params.vendor).length > 0) {
             const vendors = toValueList(params.vendor);
-            filtered = filtered.filter(r => vendors.indexOf(String(r.vendor || '')) >= 0);
+            filtered = filtered.filter(r => {
+                if (Array.isArray(r.vendors) && r.vendors.length > 0) {
+                    return r.vendors.some(v => vendors.indexOf(v) >= 0);
+                }
+                return vendors.indexOf(String(r.vendor || '')) >= 0;
+            });
         }
         if (params.po && toValueList(params.po).length > 0) {
             const pos = toValueList(params.po);

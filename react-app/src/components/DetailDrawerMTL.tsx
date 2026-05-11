@@ -84,7 +84,6 @@ const COLUMN_MAP_MTL: Record<string, MTLColDef[]> = {
     { id: 'lotNumber',     label: 'Lot #',        link: true },
     { id: 'customer',      label: 'Customer',     link: true },
     { id: 'vendor',        label: 'Vendor',       link: true },
-    { id: 'invoicedDate',  label: 'Invoiced Date' },
     { id: 'packs',         label: 'Packs',   numeric: true, isQty: true },
     { id: 'piecesPerPack', label: 'Pcs/Pack', numeric: true, isInt: true },
     { id: 'mbfPrice',      label: 'MBF Price', numeric: true, isMbfPrice: true },

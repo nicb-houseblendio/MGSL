@@ -27,6 +27,7 @@ interface AvailRow {
 interface POGroup {
   po: string;
   poUrl: string;
+  piecesPerPack: number;
   supplyRows: AvailRow[];
   committedRows: AvailRow[];
   supplyTotal: number;
@@ -56,19 +57,26 @@ export function buildPOGroups(data: DetailPayload): GroupedAvailable {
   const onOrder = (data?.onOrder ?? []) as RawRow[];
   const inTransit = (data?.inTransit ?? []) as RawRow[];
 
-  const poMap: Record<string, { supplyRows: AvailRow[]; committedRows: AvailRow[]; poUrl: string }> = {};
+  const poMap: Record<string, { po: string; ppp: number; supplyRows: AvailRow[]; committedRows: AvailRow[]; poUrl: string }> = {};
 
-  const getOrCreate = (po: string) => {
-    const key = po || NO_PO;
-    if (!poMap[key]) poMap[key] = { supplyRows: [], committedRows: [], poUrl: '' };
+  const getOrCreate = (po: string, ppp: number) => {
+    const key = `${po || NO_PO}|${ppp}`;
+    if (!poMap[key]) poMap[key] = { po: po || NO_PO, ppp, supplyRows: [], committedRows: [], poUrl: '' };
     return poMap[key];
   };
 
-  // On Hand -> group by poNumber
+  // On Hand -> group by (poNumber || docNumber, piecesPerPack)
+  // IA-driven on-hand has no poNumber; fall back to docNumber so it merges with
+  // committed rows allocated to the same IA (which key off allocatedPO=IA#).
   for (const r of onHand) {
-    const po = str(r.poNumber);
-    const g = getOrCreate(po);
-    if (!g.poUrl && r.poUrl) g.poUrl = str(r.poUrl);
+    const rawPo = str(r.poNumber);
+    const po = (rawPo && rawPo !== DASH) ? rawPo : str(r.docNumber);
+    const ppp = num(r.piecesPerPack);
+    const g = getOrCreate(po, ppp);
+    if (!g.poUrl) {
+      const url = str(r.poUrl) || str(r.docUrl);
+      if (url) g.poUrl = url;
+    }
     g.supplyRows.push({
       rowType: 'onHand',
       docType: str(r.docType), docNumber: str(r.docNumber), docUrl: str(r.docUrl),
@@ -85,10 +93,11 @@ export function buildPOGroups(data: DetailPayload): GroupedAvailable {
     });
   }
 
-  // On Order -> group by docNumber (which IS the PO)
+  // On Order -> group by (docNumber/PO, piecesPerPack)
   for (const r of onOrder) {
     const po = str(r.docNumber);
-    const g = getOrCreate(po);
+    const ppp = num(r.piecesPerPack);
+    const g = getOrCreate(po, ppp);
     if (!g.poUrl && r.docUrl) g.poUrl = str(r.docUrl);
     g.supplyRows.push({
       rowType: 'onOrder',
@@ -106,10 +115,11 @@ export function buildPOGroups(data: DetailPayload): GroupedAvailable {
     });
   }
 
-  // In Transit -> group by docNumber
+  // In Transit -> group by (docNumber/PO, piecesPerPack)
   for (const r of inTransit) {
     const po = str(r.docNumber);
-    const g = getOrCreate(po);
+    const ppp = num(r.piecesPerPack);
+    const g = getOrCreate(po, ppp);
     if (!g.poUrl && r.docUrl) g.poUrl = str(r.docUrl);
     g.supplyRows.push({
       rowType: 'inTransit',
@@ -127,10 +137,11 @@ export function buildPOGroups(data: DetailPayload): GroupedAvailable {
     });
   }
 
-  // Committed -> group by allocatedPO
+  // Committed -> group by (allocatedPO, piecesPerPack)
   const unallocated: AvailRow[] = [];
   for (const r of committed) {
     const po = str(r.allocatedPO);
+    const ppp = num(r.piecesPerPack);
     const rawLot = str(r.lotNumber);
     const lot = rawLot === DASH || rawLot === '\u2014' ? '' : rawLot;
     if (!po || po === DASH || po === '\u2014') {
@@ -144,12 +155,12 @@ export function buildPOGroups(data: DetailPayload): GroupedAvailable {
         allocatedPO: '',
         status: 'Committed',
         packsAvail: -(num(r.packsCommitted)),
-        piecesPerPack: num(r.piecesPerPack),
+        piecesPerPack: ppp,
         mbfPrice: num(r.mbfPrice),
         currency: str(r.currency),
       });
     } else {
-      const g = getOrCreate(po);
+      const g = getOrCreate(po, ppp);
       g.committedRows.push({
         rowType: 'committed',
         docType: '', docNumber: str(r.docNumber), docUrl: str(r.docUrl),
@@ -169,13 +180,14 @@ export function buildPOGroups(data: DetailPayload): GroupedAvailable {
 
   // Build sorted groups
   const poGroups: POGroup[] = [];
-  for (const [po, g] of Object.entries(poMap)) {
+  for (const g of Object.values(poMap)) {
     if (g.supplyRows.length === 0 && g.committedRows.length === 0) continue;
     const supplyTotal = g.supplyRows.reduce((s, r) => s + r.packsAvail, 0);
     const committedTotal = g.committedRows.reduce((s, r) => s + Math.abs(r.packsAvail), 0);
     poGroups.push({
-      po: po === NO_PO ? 'No PO' : po,
+      po: g.po === NO_PO ? 'No PO' : g.po,
       poUrl: g.poUrl,
+      piecesPerPack: g.ppp,
       supplyRows: g.supplyRows,
       committedRows: g.committedRows,
       supplyTotal: Math.round(supplyTotal * 100) / 100,
@@ -183,7 +195,11 @@ export function buildPOGroups(data: DetailPayload): GroupedAvailable {
       netAvailable: Math.round((supplyTotal - committedTotal) * 100) / 100,
     });
   }
-  poGroups.sort((a, b) => a.po.localeCompare(b.po));
+  poGroups.sort((a, b) => {
+    const cmp = a.po.localeCompare(b.po);
+    if (cmp !== 0) return cmp;
+    return a.piecesPerPack - b.piecesPerPack;
+  });
 
   const totalTransactions = poGroups.reduce((s, g) => s + g.supplyRows.length + g.committedRows.length, 0)
     + unallocated.length;
@@ -387,9 +403,18 @@ const POSectionHeader = ({ group, isMBF, mbfFactor }: { group: POGroup; isMBF: b
       {group.po !== 'No PO' && (
         <span style={{ color: '#7A8FA3', fontSize: 9, textTransform: 'uppercase', letterSpacing: '.1em', marginRight: 8 }}>PO</span>
       )}
-      <span style={{ color: '#0F2641', fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 700, letterSpacing: '.02em', marginRight: 16 }}>
+      <span style={{ color: '#0F2641', fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 700, letterSpacing: '.02em', marginRight: 12 }}>
         {group.po}
       </span>
+      {group.piecesPerPack > 0 && (
+        <>
+          <span style={{ color: '#CBD5E1', fontSize: 13, fontWeight: 400, marginRight: 12 }}>/</span>
+          <span style={{ color: '#7A8FA3', fontSize: 9, textTransform: 'uppercase', letterSpacing: '.1em', marginRight: 8 }}>PPP</span>
+          <span style={{ color: '#0F2641', fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 700, letterSpacing: '.02em', marginRight: 16 }}>
+            {Math.round(group.piecesPerPack).toLocaleString()}
+          </span>
+        </>
+      )}
 
       {Object.entries(supplyByType).map(([status, total]) => {
         const pill = SUPPLY_PILL[status] || SUPPLY_PILL['On Hand'];
@@ -555,17 +580,20 @@ export const AvailableTabMTL = ({ data, uom, mbfFactor }: AvailableTabMTLProps) 
         </tr>
       </thead>
 
-      {grouped.poGroups.map(group => (
-        <tbody key={group.po}>
-          <tr>
-            <td colSpan={COL_COUNT} style={{ padding: 0, borderBottom: 'none' }}>
-              <POSectionHeader group={group} isMBF={isMBF} mbfFactor={canConvert ? mbfFactor : 0} />
-            </td>
-          </tr>
-          {group.supplyRows.map((r, i) => renderRow(r, `${group.po}-s-${i}`))}
-          {group.committedRows.map((r, i) => renderRow(r, `${group.po}-c-${i}`))}
-        </tbody>
-      ))}
+      {grouped.poGroups.map(group => {
+        const groupKey = `${group.po}|${group.piecesPerPack}`;
+        return (
+          <tbody key={groupKey}>
+            <tr>
+              <td colSpan={COL_COUNT} style={{ padding: 0, borderBottom: 'none' }}>
+                <POSectionHeader group={group} isMBF={isMBF} mbfFactor={canConvert ? mbfFactor : 0} />
+              </td>
+            </tr>
+            {group.supplyRows.map((r, i) => renderRow(r, `${groupKey}-s-${i}`))}
+            {group.committedRows.map((r, i) => renderRow(r, `${groupKey}-c-${i}`))}
+          </tbody>
+        );
+      })}
 
       {grouped.unallocated.length > 0 && (
         <tbody>

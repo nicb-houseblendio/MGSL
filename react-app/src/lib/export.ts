@@ -10,62 +10,87 @@ interface Totals {
   available: number;
 }
 
+// xlsx 0.18.5's escapexml fails to escape '&' in the Vite-minified bundle (escapes
+// other XML chars correctly), producing malformed sheet1.xml that Excel renders as
+// blank. Pre-escape '&' so the live bundle leaves it intact and the output is valid.
+const escAmp = (v: string): string => v.replace(/&/g, '&amp;');
+
+const downloadXlsx = (wb: XLSX.WorkBook, filename: string) => {
+  const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([buf], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
 export const exportToExcel = (
   rows: SummaryRow[],
   totals: Totals,
   uom?: string
 ) => {
   const isPacks = uom === 'Packs';
-  const excelRows = rows.map((r) => ({
-    'Item ID': r.itemCode || '',
-    'Location': r.locationName || '',
-    'Item': r.itemName || '',
-    'Species': r.species || '',
-    'Thickness': r.thickness || '',
-    'Width': r.width || '',
-    'Length': r.length || '',
-    'Grade': r.grade || '',
-    'Finish': r.finition || '',
-    'Humidity': r.humidity || '',
-    'Planing': r.plannage || '',
-    'Stamping': r.etampage || '',
-    ...(isPacks ? { 'On Hand (MBF)': r.quantityFBM ?? 0 } : {}),
-    'On Hand': r.onHand || 0,
-    'Committed': r.committed || 0,
-    'Outbound': r.outbound || 0,
-    'On Order': r.onOrder || 0,
-    'In Transit': r.inTransit || 0,
-    'Available': r.available || 0,
-    'Avg Price': r.averageCost || 0,
-  }));
 
-  const quantityFBMTotal = isPacks ? rows.reduce((sum, r) => sum + (r.quantityFBM ?? 0), 0) : undefined;
+  const headers: string[] = [
+    'Item ID', 'Location', 'Item', 'Species',
+    'Thickness', 'Width', 'Length', 'Grade',
+    'Finish', 'Humidity', 'Planing', 'Stamping',
+    ...(isPacks ? ['On Hand (MBF)'] : []),
+    'On Hand', 'Committed', 'Outbound', 'On Order', 'In Transit', 'Available', 'Avg Price',
+  ];
 
-  excelRows.push({
-    'Item ID': '',
-    'Location': '',
-    'Item': `TOTALS — ${rows.length} items`,
-    'Species': '',
-    'Thickness': '',
-    'Width': '',
-    'Length': '',
-    'Grade': '',
-    'Finish': '',
-    'Humidity': '',
-    'Planing': '',
-    'Stamping': '',
-    ...(isPacks ? { 'On Hand (MBF)': quantityFBMTotal ?? 0 } : {}),
-    'On Hand': totals.onHand,
-    'Committed': totals.committed,
-    'Outbound': totals.outbound,
-    'On Order': totals.onOrder,
-    'In Transit': totals.inTransit,
-    'Available': totals.available,
-    'Avg Price': 0,
+  const dataRows: (string | number)[][] = rows.map((r) => {
+    const base: (string | number)[] = [
+      escAmp(r.itemCode || ''),
+      escAmp(r.locationName || ''),
+      escAmp(r.itemName || ''),
+      escAmp(r.species || ''),
+      escAmp(r.thickness || ''),
+      escAmp(r.width || ''),
+      escAmp(r.length || ''),
+      escAmp(r.grade || ''),
+      escAmp(r.finition || ''),
+      escAmp(r.humidity || ''),
+      escAmp(r.plannage || ''),
+      escAmp(r.etampage || ''),
+    ];
+    if (isPacks) base.push(r.quantityFBM ?? 0);
+    base.push(
+      r.onHand || 0,
+      r.committed || 0,
+      r.outbound || 0,
+      r.onOrder || 0,
+      r.inTransit || 0,
+      r.available || 0,
+      r.averageCost || 0,
+    );
+    return base;
   });
 
-  const ws = XLSX.utils.json_to_sheet(excelRows);
+  const quantityFBMTotal = isPacks ? rows.reduce((sum, r) => sum + (r.quantityFBM ?? 0), 0) : 0;
+
+  const totalsRow: (string | number)[] = [
+    '', '',
+    `TOTALS — ${rows.length} items`,
+    '', '', '', '', '', '', '', '', '',
+    ...(isPacks ? [quantityFBMTotal] : []),
+    totals.onHand,
+    totals.committed,
+    totals.outbound,
+    totals.onOrder,
+    totals.inTransit,
+    totals.available,
+    0,
+  ];
+
+  const sheetData: (string | number)[][] = [headers, ...dataRows, totalsRow];
+
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Inventory');
-  XLSX.writeFile(wb, `trader-screen-${Date.now()}.xlsx`);
+  downloadXlsx(wb, `trader-screen-${Date.now()}.xlsx`);
 };

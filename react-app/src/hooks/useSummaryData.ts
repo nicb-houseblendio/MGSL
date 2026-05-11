@@ -59,7 +59,12 @@ function applyClientFilters(rows: SummaryRow[], filters: FilterState): SummaryRo
   }
   if (filters.vendor?.length) {
     const set = new Set(filters.vendor);
-    filtered = filtered.filter((r) => r.vendor && set.has(r.vendor));
+    filtered = filtered.filter((r) => {
+      if (Array.isArray(r.vendors) && r.vendors.length > 0) {
+        return r.vendors.some((v) => set.has(v));
+      }
+      return !!r.vendor && set.has(r.vendor);
+    });
   }
   if (filters.po?.length) {
     const set = new Set(filters.po);
@@ -191,7 +196,7 @@ export const useSummaryData = (subsidiaryId: string) => {
       (rows: SummaryRow[] | null, filters: FilterState) => {
         if (!rows?.length) return {} as Record<string, { value: string; label: string }[]>;
 
-        const FILTER_FIELDS: { valueKey: keyof SummaryRow; labelKey: keyof SummaryRow; outKey: string; filterKey: keyof FilterState; availableOnly?: boolean }[] = [
+        const FILTER_FIELDS: { valueKey: keyof SummaryRow; labelKey: keyof SummaryRow; outKey: string; filterKey: keyof FilterState; availableOnly?: boolean; arrayKey?: keyof SummaryRow }[] = [
           { valueKey: 'locationId', labelKey: 'locationName', outKey: 'location', filterKey: 'location' },
           { valueKey: 'internalId', labelKey: 'itemCode', outKey: 'item', filterKey: 'item' },
           { valueKey: 'species', labelKey: 'species', outKey: 'species', filterKey: 'species' },
@@ -205,7 +210,7 @@ export const useSummaryData = (subsidiaryId: string) => {
           { valueKey: 'etampage', labelKey: 'etampage', outKey: 'etampage', filterKey: 'etampage' },
           { valueKey: 'autres', labelKey: 'autres', outKey: 'autres', filterKey: 'autres' },
           { valueKey: 'country', labelKey: 'country', outKey: 'country', filterKey: 'country' },
-          { valueKey: 'vendor', labelKey: 'vendor', outKey: 'vendor', filterKey: 'vendor', availableOnly: true },
+          { valueKey: 'vendor', labelKey: 'vendor', outKey: 'vendor', filterKey: 'vendor', availableOnly: true, arrayKey: 'vendors' },
         ];
 
         const options: Record<string, { value: string; label: string }[]> = {};
@@ -218,11 +223,22 @@ export const useSummaryData = (subsidiaryId: string) => {
           const seen = new Set<string>();
           const items: { value: string; label: string }[] = [];
           for (const r of subset) {
-            const v = String(r[field.valueKey] ?? '').trim();
-            const lbl = String(r[field.labelKey] ?? v).trim();
-            if (v && !seen.has(v)) {
-              seen.add(v);
-              items.push({ value: v, label: lbl || v });
+            const arr = field.arrayKey ? r[field.arrayKey] : null;
+            if (Array.isArray(arr) && arr.length > 0) {
+              for (const v of arr as string[]) {
+                const trimmed = String(v ?? '').trim();
+                if (trimmed && !seen.has(trimmed)) {
+                  seen.add(trimmed);
+                  items.push({ value: trimmed, label: trimmed });
+                }
+              }
+            } else {
+              const v = String(r[field.valueKey] ?? '').trim();
+              const lbl = String(r[field.labelKey] ?? v).trim();
+              if (v && !seen.has(v)) {
+                seen.add(v);
+                items.push({ value: v, label: lbl || v });
+              }
             }
           }
           options[field.outKey] = items.sort((a, b) => {

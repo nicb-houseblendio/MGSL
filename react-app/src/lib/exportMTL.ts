@@ -10,50 +10,76 @@ interface Totals {
   available: number;
 }
 
+// xlsx 0.18.5's escapexml fails to escape '&' in the Vite-minified bundle (escapes
+// other XML chars correctly), producing malformed sheet1.xml that Excel renders as
+// blank. Pre-escape '&' so the live bundle leaves it intact and the output is valid.
+const escAmp = (v: string): string => v.replace(/&/g, '&amp;');
+
+const downloadXlsx = (wb: XLSX.WorkBook, filename: string) => {
+  const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([buf], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
 export const exportToExcelMTL = (rows: SummaryRow[], totals: Totals, uom?: string) => {
   const isPacks = uom === 'Packs';
 
-  // Explicit type required — conditional spread causes TypeScript inference failure on .push()
-  const excelRows: Record<string, string | number>[] = rows.map((r) => ({
-    'Location':       r.locationName || '',
-    'Item Code':      r.itemCode || '',
-    'Item Description': r.itemName || '',
-    'Vendor':         r.vendor || '',
-    'Thickness':      r.thickness || '',
-    'Width':          r.width || '',
-    'Length':         r.length || '',
-    'Grade':          r.grade || '',
-    ...(isPacks ? { 'On Hand (MBF)': r.quantityFBM ?? 0 } : {}),
-    'On Hand':        r.onHand || 0,
-    'Committed':      r.committed || 0,
-    'Outbound':       r.outbound || 0,
-    'On Order':       r.onOrder || 0,
-    'In Transit':     r.inTransit || 0,
-    'Available':      r.available || 0,
-  }));
+  const headers: string[] = [
+    'Location', 'Item Code', 'Item Description', 'Vendor',
+    'Thickness', 'Width', 'Length', 'Grade',
+    ...(isPacks ? ['On Hand (MBF)'] : []),
+    'On Hand', 'Committed', 'Outbound', 'On Order', 'In Transit', 'Available',
+  ];
 
-  const onHandMBFTotal = isPacks ? rows.reduce((s, r) => s + (r.quantityFBM ?? 0), 0) : undefined;
-
-  excelRows.push({
-    'Location':   '',
-    'Item Code':  '',
-    'Item Description': '',
-    'Vendor':     `TOTALS — ${rows.length} rows`,
-    'Thickness':  '',
-    'Width':      '',
-    'Length':     '',
-    'Grade':      '',
-    ...(isPacks ? { 'On Hand (MBF)': onHandMBFTotal ?? 0 } : {}),
-    'On Hand':    totals.onHand,
-    'Committed':  totals.committed,
-    'Outbound':   totals.outbound,
-    'On Order':   totals.onOrder,
-    'In Transit': totals.inTransit,
-    'Available':  totals.available,
+  const dataRows: (string | number)[][] = rows.map((r) => {
+    const base: (string | number)[] = [
+      escAmp(r.locationName || ''),
+      escAmp(r.itemCode || ''),
+      escAmp(r.itemName || ''),
+      escAmp(r.vendor || ''),
+      escAmp(r.thickness || ''),
+      escAmp(r.width || ''),
+      escAmp(r.length || ''),
+      escAmp(r.grade || ''),
+    ];
+    if (isPacks) base.push(r.quantityFBM ?? 0);
+    base.push(
+      r.onHand || 0,
+      r.committed || 0,
+      r.outbound || 0,
+      r.onOrder || 0,
+      r.inTransit || 0,
+      r.available || 0,
+    );
+    return base;
   });
 
-  const ws = XLSX.utils.json_to_sheet(excelRows);
+  const onHandMBFTotal = isPacks ? rows.reduce((s, r) => s + (r.quantityFBM ?? 0), 0) : 0;
+
+  const totalsRow: (string | number)[] = [
+    '', '', '',
+    `TOTALS — ${rows.length} rows`,
+    '', '', '', '',
+    ...(isPacks ? [onHandMBFTotal] : []),
+    totals.onHand,
+    totals.committed,
+    totals.outbound,
+    totals.onOrder,
+    totals.inTransit,
+    totals.available,
+  ];
+
+  const sheetData: (string | number)[][] = [headers, ...dataRows, totalsRow];
+
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'MTL Inventory');
-  XLSX.writeFile(wb, `trader-screen-mtl-${Date.now()}.xlsx`);
+  downloadXlsx(wb, `trader-screen-mtl-${Date.now()}.xlsx`);
 };
