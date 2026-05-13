@@ -56,6 +56,7 @@ export function buildPOGroups(data: DetailPayload): GroupedAvailable {
   const committed = (data?.committed ?? []) as RawRow[];
   const onOrder = (data?.onOrder ?? []) as RawRow[];
   const inTransit = (data?.inTransit ?? []) as RawRow[];
+  const outbound = (data?.outbound ?? []) as RawRow[];
 
   const poMap: Record<string, { po: string; ppp: number; supplyRows: AvailRow[]; committedRows: AvailRow[]; poUrl: string }> = {};
 
@@ -131,6 +132,33 @@ export function buildPOGroups(data: DetailPayload): GroupedAvailable {
       allocatedPO: '',
       status: 'In Transit',
       packsAvail: num(r.packs),
+      piecesPerPack: num(r.piecesPerPack),
+      mbfPrice: num(r.mbfPrice),
+      currency: str(r.currency),
+    });
+  }
+
+  // Outbound -> group by (allocatedPO, piecesPerPack) — billed-but-not-shipped
+  // SO lines per Marc-Antoine's rule. Treated like Committed in the Available
+  // drawer: shown as a negative row inside its allocated PO/IA segment so the
+  // section's Net Available reflects the consumption.
+  for (const r of outbound) {
+    const po = str(r.allocatedPO);
+    const ppp = num(r.piecesPerPack);
+    const rawLot = str(r.lotNumber);
+    const lot = rawLot === DASH || rawLot === '\u2014' ? '' : rawLot;
+    if (!po || po === DASH || po === '\u2014') continue;  // skip unallocated outbound — already in OB bucket header
+    const g = getOrCreate(po, ppp);
+    g.committedRows.push({
+      rowType: 'committed',
+      docType: '', docNumber: str(r.docNumber), docUrl: str(r.docUrl),
+      poNumber: '', poUrl: '',
+      date: '',
+      vendor: str(r.vendor), vendorUrl: str(r.vendorUrl),
+      lotNumber: lot, lotUrl: str(r.lotUrl),
+      allocatedPO: po,
+      status: 'Outbound',
+      packsAvail: -(num(r.packs)),
       piecesPerPack: num(r.piecesPerPack),
       mbfPrice: num(r.mbfPrice),
       currency: str(r.currency),

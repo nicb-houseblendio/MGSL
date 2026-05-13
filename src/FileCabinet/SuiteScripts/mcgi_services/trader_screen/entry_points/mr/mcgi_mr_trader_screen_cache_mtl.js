@@ -138,9 +138,13 @@ define([
                 s.columns.push(search.createColumn({ name: 'exchangerate' }));
                 s.columns.push(search.createColumn({ name: 'currency' }));
             }
-            // Outbound needs the allocated PO segment so we can resolve vendor downstream
+            // Outbound needs the allocated PO segment so we can resolve vendor downstream.
+            // Must use `line.` prefix because the custom segment lives at line-level on
+            // sales orders — without the prefix NetSuite returns the (empty) body value
+            // and allocatedPO falls through to the em-dash fallback, which makes the
+            // AvailableTab drawer skip these rows entirely.
             if (searchId === OUTBOUND_SEARCH_ID) {
-                s.columns.push(search.createColumn({ name: 'cseg_po_segment_gl' }));
+                s.columns.push(search.createColumn({ name: 'line.cseg_po_segment_gl' }));
             }
             _detailSearchCache[searchId] = {
                 search: s,
@@ -288,12 +292,15 @@ define([
     };
 
     // ── Outbound ──────────────────────────────────────────────────────────────
-    // Per Julie's rule (May 2026): a SO line moves to Outbound when its custom
-    // carrier field is filled, regardless of shipping/billing status. MGSL does
-    // no partial shipments, so the displayed packs = the full line packqty.
-    // Reading {custcol_mgsl_packqty} directly is correct; the "Remaining Quantity"
-    // formula returns 0 until the line is partially shipped, which would wrongly
-    // exclude carrier-filled-but-not-yet-shipped lines from the Outbound bucket.
+    // Per Marc-Antoine (May 2026): a SO line moves to Outbound when EITHER
+    //   (a) the custom carrier field is filled  (Julie's original rule), OR
+    //   (b) the line is fully billed (quantitybilled >= ABS(quantity)),
+    // AND the line is not fully shipped (quantityshiprecv < ABS(quantity)).
+    // Branch (b) captures billed-but-not-fulfilled SOs that previously fell
+    // between Committed (filtered out once billed=qty) and Outbound (filtered
+    // out by the old quantitybilled=0 clause). ABS wraps quantity defensively
+    // in case the saved-search engine returns the signed (negative for SOs) value.
+    // MGSL does no partial shipments, so displayed packs = the full line packqty.
     const buildOutboundRow = (r) => {
         var packs = roundToTwoDecimals(parseFloat(r.getValue({ name: 'custcol_mgsl_packqty' })) || 0);
         if (packs <= 0) return null;
@@ -321,7 +328,7 @@ define([
             piecesPerPack: ppp,
             mbfPrice:      roundToTwoDecimals(rawRate / exchRate),
             currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
-            allocatedPO:   r.getText({ name: 'cseg_po_segment_gl' }) || '\u2014',
+            allocatedPO:   r.getText({ name: 'line.cseg_po_segment_gl' }) || '\u2014',
         };
     };
 
@@ -692,7 +699,12 @@ define([
             var lotKey = lot.lotNumber || '';
             var reserved = (committedByLot[lotKey] || 0) + (outboundByLot[lotKey] || 0);
             var packsAvail = roundToTwoDecimals(lot.packsOnHand - reserved);
-            if (packsAvail <= 0) return;
+            // Skip negative entirely. Skip 0 unless outbound consumed the lot —
+            // keep a 0-pack row so the AvailableTab UI renders the PO/IA section
+            // explicitly (Marc-Antoine: "0 available pour IA-CWP-123 & PO 57872"
+            // requires the section to be visible, not absent).
+            if (packsAvail < 0) return;
+            if (packsAvail === 0 && (outboundByLot[lotKey] || 0) <= 0) return;
             available.push({
                 docType:       lot.docType,
                 docNumber:     lot.docNumber,
@@ -858,6 +870,162 @@ define([
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
+    //  Visibility patch — seed (item, location) keys from Outbound / Committed
+    //  searches so items missing from the summary search's inventoryLocation join
+    //  still surface on the trader screen.
+    //
+    //  Root cause: customsearch_suitelet_all_items_search_m joins through the
+    //  item Location subtab (inventoryItemLocations). Lot-receipted items whose
+    //  subtab was never seeded never enter the summary results, regardless of
+    //  physical on-hand or transaction activity. Outbound/Committed searches
+    //  are transaction-driven and see those items just fine — so we union their
+    //  (item, location) keys into the seed and synthesize a summary row for
+    //  any pair the summary search missed. The reduce phase then runs the
+    //  normal detail searches against the seeded key and fills real values.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const collectKeysFromDetailSearch = (searchId, opts) => {
+        var keys = {};
+        try {
+            var s = search.load({ id: searchId });
+            if (opts && opts.addLocationCol) {
+                s.columns.push(search.createColumn({ name: 'location' }));
+            }
+            s.run().each(function (r) {
+                var itemId = r.getValue({ name: 'internalid', join: 'item' });
+                var locId  = r.getValue({ name: 'location' });
+                if (itemId && locId) {
+                    keys[itemId + '__' + locId] = { itemId: String(itemId), locationId: String(locId) };
+                }
+                return true;
+            });
+        } catch (e) {
+            log.error('MTL Cache', 'collectKeysFromDetailSearch ' + searchId + ' failed: ' + e.message);
+        }
+        return keys;
+    };
+
+    const synthesizeSummaryRow = (itemId, locationId, locationCache) => {
+        try {
+            var itemFields = search.lookupFields({
+                type: 'item',
+                id: itemId,
+                columns: [
+                    'itemid', 'displayname', 'salesdescription', 'type',
+                    'custitem_species', 'custitem_finition', 'custitem_humidity',
+                    'custitem_plannage', 'custitem_etampage', 'custitem_autres',
+                    'custitem_mgsl_fbm', 'custitem_mgsl_ppp',
+                    'cseggrade', 'cseglength', 'csegseg_thickness', 'csegwidth',
+                ],
+            });
+
+            var loc = locationCache[locationId];
+            if (!loc) {
+                var locFields = search.lookupFields({
+                    type: 'location',
+                    id: locationId,
+                    columns: ['name', 'custrecord_is_reload', 'country'],
+                });
+                loc = {
+                    name:     locFields.name || '',
+                    isReload: locFields.custrecord_is_reload === true ||
+                              locFields.custrecord_is_reload === 'T' ||
+                              (Array.isArray(locFields.custrecord_is_reload) &&
+                               locFields.custrecord_is_reload.length > 0 &&
+                               locFields.custrecord_is_reload[0].value === 'T'),
+                    country:  Array.isArray(locFields.country) && locFields.country.length
+                              ? (locFields.country[0].text || locFields.country[0].value || '')
+                              : (locFields.country || ''),
+                };
+                locationCache[locationId] = loc;
+            }
+
+            var pickText  = function (v) {
+                if (Array.isArray(v)) return v.length ? (v[0].text || v[0].value || '') : '';
+                return v || '';
+            };
+            var pickValue = function (v) {
+                if (Array.isArray(v)) return v.length ? (v[0].value || v[0].text || '') : '';
+                return v || '';
+            };
+
+            var itemTypeRaw   = pickValue(itemFields.type);
+            var fbmPerPiece   = parseFloat(pickValue(itemFields.custitem_mgsl_fbm))  || 0;
+            var piecesPerPack = parseFloat(pickValue(itemFields.custitem_mgsl_ppp)) || 0;
+            var recordType    = ITEM_RECORD_TYPE_MAPPING[itemTypeRaw] || 'inventoryitem';
+
+            return {
+                internalId:   String(itemId),
+                locationId:   String(locationId),
+                locationName: loc.name,
+                locationUrl:  getRecordUrl(locationId, 'location'),
+                country:      VIRTUAL_LOCATION_IDS[String(locationId)] ? 'Other' : loc.country,
+                isReload:     !!loc.isReload,
+                itemType:     itemTypeRaw || 'inventoryitem',
+                itemCode:     pickValue(itemFields.itemid),
+                itemName:     pickValue(itemFields.salesdescription) || pickValue(itemFields.displayname) || '',
+                itemUrl:      getRecordUrl(itemId, recordType),
+                thickness:    pickText(itemFields.csegseg_thickness),
+                width:        pickText(itemFields.csegwidth),
+                length:       pickText(itemFields.cseglength),
+                grade:        pickText(itemFields.cseggrade),
+                species:      pickText(itemFields.custitem_species),
+                finition:     pickText(itemFields.custitem_finition),
+                humidity:     pickText(itemFields.custitem_humidity),
+                plannage:     pickText(itemFields.custitem_plannage),
+                etampage:     pickText(itemFields.custitem_etampage),
+                autres:       pickText(itemFields.custitem_autres),
+                quantityFBM:  0,
+                averageCost:  0,
+                fbmPerPiece:  fbmPerPiece,
+                mbfFactor:    Math.round((fbmPerPiece * piecesPerPack) / 1000 * 1000000) / 1000000,
+                detailKey:    CacheKeysMTL.detailKey(itemId, locationId),
+                onHand:       0,
+                committed:    0,
+                outbound:     0,
+                onOrder:      0,
+                inTransit:    0,
+                available:    0,
+                currency:     '',
+                vendor:       '',
+            };
+        } catch (e) {
+            log.error('MTL Cache', 'synthesizeSummaryRow item=' + itemId + ' loc=' + locationId + ' failed: ' + e.message);
+            return null;
+        }
+    };
+
+    const applyVisibilityPatch = (fullInput) => {
+        var locationCache = {};
+        var summaryKeyCount = Object.keys(fullInput).length;
+        var seedSources = [
+            { id: OUTBOUND_SEARCH_ID,  addLocationCol: true,  label: 'Outbound'  },
+            { id: COMMITTED_SEARCH_ID, addLocationCol: false, label: 'Committed' },
+        ];
+        var seedAdded = 0;
+        var seedFailed = 0;
+        seedSources.forEach(function (src) {
+            var keys = collectKeysFromDetailSearch(src.id, { addLocationCol: src.addLocationCol });
+            Object.keys(keys).forEach(function (k) {
+                if (!fullInput[k]) {
+                    var p = keys[k];
+                    var row = synthesizeSummaryRow(p.itemId, p.locationId, locationCache);
+                    if (row) {
+                        fullInput[k] = JSON.stringify(row);
+                        seedAdded++;
+                    } else {
+                        seedFailed++;
+                    }
+                }
+            });
+        });
+        log.audit('MTL Cache', 'applyVisibilityPatch: summaryKeys=' + summaryKeyCount +
+                  ' seedAdded=' + seedAdded + ' seedFailed=' + seedFailed +
+                  ' total=' + Object.keys(fullInput).length);
+        return fullInput;
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
     //  getInputData — loads summary search, returns object keyed by itemId__locationId
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -894,6 +1062,7 @@ define([
                     fullInput[row.internalId + '__' + row.locationId] = JSON.stringify(row);
                 });
             });
+            applyVisibilityPatch(fullInput);
             log.audit('MTL Cache', 'getInputData: FULL mode rows=' + Object.keys(fullInput).length);
             return fullInput;
         }
@@ -914,6 +1083,7 @@ define([
                 var row = buildSummaryRow(result);
                 fullInput2[row.internalId + '__' + row.locationId] = JSON.stringify(row);
             });
+            applyVisibilityPatch(fullInput2);
             return fullInput2;
         }
 
@@ -979,6 +1149,7 @@ define([
                 var row = buildSummaryRow(result);
                 fullInput3[row.internalId + '__' + row.locationId] = JSON.stringify(row);
             });
+            applyVisibilityPatch(fullInput3);
             return fullInput3;
         }
 
