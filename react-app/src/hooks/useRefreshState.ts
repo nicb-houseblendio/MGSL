@@ -4,8 +4,8 @@ import type { MetaResponse } from '@/lib/api';
 
 export type RefreshState = 'idle' | 'checking' | 'up-to-date' | 'fetching' | 'error';
 
-const POLL_INTERVAL_MS = 5 * 60 * 1000;
-const VISIBILITY_COOLDOWN_MS = 2 * 60 * 1000;
+const POLL_INTERVAL_MS = 60 * 1000;
+const VISIBILITY_COOLDOWN_MS = 30 * 1000;
 
 function formatLastUpdated(iso: string): string {
   try {
