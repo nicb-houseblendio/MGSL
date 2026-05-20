@@ -168,6 +168,12 @@ define([
             // Used in row construction to display Date and Vendor for IA rows.
             s.columns.push(search.createColumn({ name: 'custbody4' }));
             s.columns.push(search.createColumn({ name: 'custbody_lot_supplier' }));
+            // NOTE: Inventory Status filter rolled back 2026-05-19 after prod outage.
+            // `search.createColumn({ name: 'inventorystatus', join: 'inventoryDetail' })`
+            // throws "invalid column" in prod (likely because the Inventory Status
+            // feature is not enabled at the account level; Marc enabled it only in
+            // SBX). Re-add this column + the whitelist filter in pass 1 once the
+            // feature is enabled in prod.
             _onHandMtlCache = {
                 search:        s,
                 baseFilterLen: s.filters.length,
@@ -1051,7 +1057,6 @@ define([
 
         // ── Full mode ─────────────────────────────────────────────────────────
         if (isFullMode) {
-            log.audit('MTL Cache', 'getInputData: FULL mode');
             myCache.put({ key: CacheKeysMTL.LAST_INPUT_MODE, value: 'FULL', ttl: CacheKeysMTL.TTL_LAST_RUN });
             var mySearch = loadSummarySearch();
             var fullInput = {};
@@ -1084,6 +1089,7 @@ define([
                 fullInput2[row.internalId + '__' + row.locationId] = JSON.stringify(row);
             });
             applyVisibilityPatch(fullInput2);
+            log.audit('MTL Cache', 'getInputData: FULL fallback rows=' + Object.keys(fullInput2).length);
             return fullInput2;
         }
 
@@ -1246,8 +1252,8 @@ define([
                 var seenLots   = {};
                 var itemData   = [];
                 var _ohRowCount = 0;
-                var _ohPppFromLot = 0, _ohPppFromCol = 0, _ohPppZero = 0;
-                var _ohFbmFromLot = 0, _ohFbmFromItem = 0, _ohFbmFromDims = 0, _ohFbmZero = 0;
+                var _ohPppFromCol = 0, _ohPppZero = 0;
+                var _ohFbmFromItem = 0, _ohFbmFromDims = 0, _ohFbmZero = 0;
                 var colPPPFormula     = null;
                 var colPackQtyFormula = null;
                 var lotPppMap = {};
@@ -1396,8 +1402,8 @@ define([
                         ' | searchRows=' + _ohRowCount + ' uniqueLots=' + Object.keys(seenLots).length +
                         ' preFilter=' + itemData.length + ' postFilter=' + filtered.length +
                         ' | latched lots=' + Object.keys(lotPppMap).length +
-                        ' | PPP: lot=' + _ohPppFromLot + ' col=' + _ohPppFromCol + ' ZERO=' + _ohPppZero +
-                        ' | FBM: lot=' + _ohFbmFromLot + ' item=' + _ohFbmFromItem + ' dims=' + _ohFbmFromDims + ' ZERO=' + _ohFbmZero);
+                        ' | PPP: col=' + _ohPppFromCol + ' ZERO=' + _ohPppZero +
+                        ' | FBM: item=' + _ohFbmFromItem + ' dims=' + _ohFbmFromDims + ' ZERO=' + _ohFbmZero);
                 }
                 return filtered;
             } catch (e) {
