@@ -491,64 +491,16 @@ define([
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  applyLotCost — Option B: lot origin trace + GL aggregation
+    //  applyLotCost — segment-aware origin + GL aggregation
     // ═══════════════════════════════════════════════════════════════════════════
     //
     //  Per On Hand row:
-    //   - Resolve lot's originating transaction (earliest IR/IA with qty > 0)
+    //   - Origin (row.tranId, row.tranType) was computed in the reduce loop's
+    //     segment-aware pass: the first positive transaction of the lot's
+    //     current uninterrupted positive run (post-last-drain).
     //   - For IR origin: sum GL on inventory asset → cost per unit / xr
-    //   - Override mbfPrice + currency when origin ≠ row's own transaction (transferred lot)
-    //   - For IA origin or lookup miss: lotCost = null (→ dash in UI)
-    //   - Legitimate 0 preserved
-
-    const resolveLotOrigins = (lotIds) => {
-        var origins = {};  // lotId → {irId, tranType, mbfPrice, currency}
-        if (!lotIds || lotIds.length === 0) return origins;
-        try {
-            var originSearch = search.create({
-                type: 'transaction',
-                filters: [
-                    search.createFilter({
-                        name: 'type', operator: search.Operator.ANYOF,
-                        values: ['ItemRcpt', 'InvAdjst']
-                    }),
-                    search.createFilter({
-                        name: 'inventorynumber', join: 'inventoryDetail',
-                        operator: search.Operator.ANYOF, values: lotIds
-                    }),
-                    search.createFilter({
-                        name: 'quantity', join: 'inventoryDetail',
-                        operator: search.Operator.GREATERTHAN, values: 0
-                    }),
-                ],
-                columns: [
-                    search.createColumn({ name: 'inventorynumber', join: 'inventoryDetail' }),
-                    search.createColumn({ name: 'trandate', sort: search.Sort.ASC }),
-                    search.createColumn({ name: 'internalid', sort: search.Sort.ASC }),
-                    search.createColumn({ name: 'rate' }),
-                    search.createColumn({ name: 'exchangerate' }),
-                    search.createColumn({ name: 'currency' }),
-                    search.createColumn({ name: 'type' }),
-                ],
-            });
-            originSearch.run().each(function (r) {
-                var lotId = r.getValue({ name: 'inventorynumber', join: 'inventoryDetail' });
-                if (!lotId || origins[lotId]) return true;  // first-seen wins
-                var rate = parseFloat(r.getValue({ name: 'rate' })) || 0;
-                var xr   = parseFloat(r.getValue({ name: 'exchangerate' })) || 1;
-                origins[lotId] = {
-                    irId:     r.getValue({ name: 'internalid' }),
-                    tranType: r.recordType,
-                    mbfPrice: roundToTwoDecimals(rate / (xr > 0 ? xr : 1)),
-                    currency: CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
-                };
-                return true;
-            });
-        } catch (e) {
-            log.error('MTL lot origin lookup', 'lots=' + lotIds.join(',') + ' ERROR: ' + e.message);
-        }
-        return origins;
-    };
+    //   - For IA origin: sum GL in USD book → cost per unit (USD), mirror to mbfPrice
+    //   - For any lookup miss: lotCost = null (→ dash in UI). Legitimate 0 preserved.
 
     const resolveLotCostByOriginIR = (originIrIds) => {
         var result = {};  // `${irId}__${itemId}` → costPerUnit in txn currency
@@ -615,61 +567,39 @@ define([
     };
 
     const applyLotCost = (onHand, itemId) => {
-        // Collect lot IDs for both IR AND IA origins
-        var lotIdSet = {};
-        onHand.forEach(function (row) {
-            if ((row.tranType === 'itemreceipt' || row.tranType === 'inventoryadjustment') && row.lotInternalId) {
-                lotIdSet[row.lotInternalId] = true;
-            }
-        });
-        var lotIds = Object.keys(lotIdSet);
-        if (lotIds.length === 0) {
-            onHand.forEach(function (row) { row.lotCost = null; });
-            return;
-        }
+        // The reduce loop has already computed each row's segment-aware origin
+        // (row.tranId + row.tranType point to the first positive transaction
+        // in the lot's current uninterrupted positive run). Use those directly
+        // — no need to re-resolve origin here.
+        if (!onHand || onHand.length === 0) return;
 
-        var originMap = resolveLotOrigins(lotIds);
-
-        // Split origin transaction IDs by type — disjoint sets
         var originIrSet = {};
         var originIaSet = {};
-        Object.keys(originMap).forEach(function (lotId) {
-            var o = originMap[lotId];
-            if (!o || !o.irId) return;
-            if (o.tranType === 'itemreceipt')              originIrSet[o.irId] = true;
-            else if (o.tranType === 'inventoryadjustment') originIaSet[o.irId] = true;
+        onHand.forEach(function (row) {
+            if (!row.tranId) return;
+            if (row.tranType === 'itemreceipt')              originIrSet[row.tranId] = true;
+            else if (row.tranType === 'inventoryadjustment') originIaSet[row.tranId] = true;
         });
 
         var costMapIR = resolveLotCostByOriginIR(Object.keys(originIrSet));
         var costMapIA = resolveLotCostByOriginIA(Object.keys(originIaSet));
 
         onHand.forEach(function (row) {
-            if (!row.lotInternalId) { row.lotCost = null; return; }
-            var origin = originMap[row.lotInternalId];
-            if (!origin) { row.lotCost = null; return; }
-
-            // Transferred lot (origin tx ≠ row's own tx): override mbfPrice + currency to match origin
-            if (origin.irId && origin.irId !== row.tranId) {
-                row.mbfPrice = origin.mbfPrice;
-                row.currency = origin.currency;
-            }
-
-            // Lot Cost lookup by origin type
-            var key = origin.irId + '__' + itemId;
-            if (origin.tranType === 'itemreceipt') {
+            if (!row.tranId) { row.lotCost = null; return; }
+            var key = row.tranId + '__' + itemId;
+            if (row.tranType === 'itemreceipt') {
                 row.lotCost = (costMapIR[key] !== undefined) ? costMapIR[key] : null;
-            } else if (origin.tranType === 'inventoryadjustment') {
+            } else if (row.tranType === 'inventoryadjustment') {
                 var iaCost = costMapIA[key];
                 row.lotCost = (iaCost !== undefined) ? iaCost : null;
-                // For IAs: row construction left mbfPrice=0 / currency=''. After USD lookup,
-                // mirror lotCost into mbfPrice and stamp USD currency for consistent display.
+                // For IA origins: reduce loop left mbfPrice=0 / currency=''. After
+                // USD GL lookup, mirror lotCost into mbfPrice and stamp USD currency
+                // for consistent display.
                 //
-                // ASSUMPTION (CWP MTL specific): every IA on this subsidiary posts in CAD primary,
-                // USD secondary book. The IA saved search filters to USD book → values are USD by
-                // construction. Hardcoding 'USD' is correct for this MR file (mtl variant only).
-                // If this code path is ever ported to a different subsidiary or a different
-                // secondary book, revisit: read the actual book's currency code or expose it as a
-                // config constant.
+                // ASSUMPTION (CWP MTL specific): every IA on this subsidiary posts in
+                // CAD primary, USD secondary book. The IA saved search filters to USD
+                // book → values are USD by construction. Hardcoding 'USD' is correct
+                // for this MR file (mtl variant only).
                 if (iaCost !== undefined) {
                     row.mbfPrice = iaCost;
                     row.currency = 'USD';
@@ -1332,6 +1262,72 @@ define([
                     return true;
                 });
 
+                // ── Pass 1.5: compute segment-aware origin per lot ───────────
+                // For each lot, walk its transactions chronologically and track
+                // running pack balance. The MOST RECENT "drain to zero, then
+                // refill" event marks a new segment. The first positive
+                // transaction in the current (latest) segment is the lot's
+                // origin for display + cost purposes.
+                //
+                // Why: when a lot is fully consumed (e.g., by a Reman
+                // components IA) and then refilled by a new IA at a different
+                // cost basis, the on-hand packs are 100% from the new IA. The
+                // pre-drain transaction is no longer the authoritative source
+                // for Doc#, Date, MBF Price, or Lot Cost.
+                var segmentOriginByLot = (function () {
+                    var byLot = {};
+                    rawRows.forEach(function (r) {
+                        if (!r.lotNumber) return;
+                        if (!byLot[r.lotNumber]) byLot[r.lotNumber] = [];
+                        byLot[r.lotNumber].push(r);
+                    });
+                    var origins = {};
+                    Object.keys(byLot).forEach(function (lotNumber) {
+                        var sorted = byLot[lotNumber].slice().sort(function (a, b) {
+                            // Parse trandate to ms-since-epoch. NS returns trandate in the
+                            // script user's preferred date format — if parse fails (non-en-US
+                            // locale, empty string), treat as 0 so the comparator falls
+                            // through to the tranInternalId tie-break.
+                            var ad = a.trandate ? new Date(a.trandate).getTime() : 0;
+                            var bd = b.trandate ? new Date(b.trandate).getTime() : 0;
+                            if (isNaN(ad)) ad = 0;
+                            if (isNaN(bd)) bd = 0;
+                            if (ad !== bd) return ad - bd;
+                            return (parseInt(a.tranInternalId, 10) || 0) - (parseInt(b.tranInternalId, 10) || 0);
+                        });
+                        var pppToUse = lotPppMap[lotNumber] || 0;
+                        var fbmToUse = lotFbmMap[lotNumber] || 0;
+                        if (!pppToUse || !fbmToUse) {
+                            for (var i = 0; i < sorted.length; i++) {
+                                if (!pppToUse && sorted[i].ppp > 0) pppToUse = sorted[i].ppp;
+                                if (!fbmToUse && sorted[i].fbm > 0) fbmToUse = sorted[i].fbm;
+                                if (pppToUse && fbmToUse) break;
+                            }
+                        }
+                        var balance = 0;
+                        var currentOrigin = null;
+                        sorted.forEach(function (r) {
+                            var qty = 0;
+                            if (r.tranType === 'itemreceipt' || r.tranType === 'creditmemo' ||
+                                (r.tranType === 'inventoryadjustment' && r.itemTranQty > 0)) {
+                                qty = r.invDetailQty;
+                            } else if (r.tranType === 'itemfulfillment' ||
+                                       (r.tranType === 'inventoryadjustment' && r.itemTranQty < 0)) {
+                                qty = -Math.abs(r.invDetailQty);
+                            }
+                            var rowPacks = (fbmToUse > 0 && pppToUse > 0) ? (qty * 1000) / (pppToUse * fbmToUse) : 0;
+                            var prev = balance;
+                            balance += rowPacks;
+                            // Segment start: balance crossed from ≤0 to >0 via a positive row
+                            if (prev <= 0.001 && balance > 0.001 && rowPacks > 0) {
+                                currentOrigin = r;
+                            }
+                        });
+                        if (currentOrigin) origins[lotNumber] = currentOrigin;
+                    });
+                    return origins;
+                })();
+
                 // ── Pass 2: aggregate with the now-complete lotPppMap ────────
                 rawRows.forEach(function (row) {
                     var pppToUse = lotPppMap[row.lotNumber] || row.ppp;
@@ -1351,47 +1347,41 @@ define([
                     if (seenLots[row.lotNumber] !== undefined) {
                         var stored = itemData[seenLots[row.lotNumber]];
                         stored.packsOnHand += packs;
-                        // Defensive: if first encounter for this lot wasn't an IR, capture
-                        // rate/currency/tranId/tranType from the first IR we see.
-                        if (row.tranType === 'itemreceipt' && stored.mbfPrice === 0) {
-                            stored.mbfPrice = roundToTwoDecimals(row.rate / (row.exchangerate > 0 ? row.exchangerate : 1));
-                            stored.currency = CURRENCY_TO_ISO[row.currencyText] || row.currencyText || '';
-                            stored.tranId   = row.tranInternalId;
-                            stored.tranType = row.tranType;
-                        }
                         return;
                     }
 
-                    // First encounter — build the displayed row. pppToUse here is the
-                    // lot-authoritative PPP (latched in pass 1) when available, so the
-                    // stored piecesPerPack is always correct regardless of which row
-                    // came first.
+                    // First encounter — build the displayed row using the lot's
+                    // segment-aware origin (the most recent post-drain refill
+                    // transaction). Fallback to the current row if no segment
+                    // origin was found (lot never had a positive balance —
+                    // exotic edge case; ghost-lot filter usually drops it).
+                    var origin = segmentOriginByLot[row.lotNumber] || row;
                     seenLots[row.lotNumber] = itemData.length;
                     itemData.push({
-                        docType:       row.docType,
-                        docNumber:     row.docNumber,
-                        docUrl:        getRecordUrl(row.tranInternalId, row.tranType),
-                        poNumber:      stripPrefix(row.createdFromText),
-                        poUrl:         (row.tranType === 'itemreceipt' && row.createdFromId) ? getRecordUrl(row.createdFromId, 'purchaseorder') : '',
-                        date:          (row.tranType === 'inventoryadjustment'
-                                        ? (row.custbody4 || row.trandate)
-                                        : row.trandate),
-                        vendor:        row.mainnameText || row.custbodyLotSupplier || '',
-                        vendorUrl:     getRecordUrl(row.vendorInternalId, 'vendor'),
-                        lotNumber:     row.lotNumber,
-                        lotUrl:        getRecordUrl(row.lotId, 'inventorynumber'),
-                        lotInternalId: row.lotId,
-                        tranId:        row.tranInternalId,
-                        tranType:      row.tranType,
+                        docType:       origin.docType,
+                        docNumber:     origin.docNumber,
+                        docUrl:        getRecordUrl(origin.tranInternalId, origin.tranType),
+                        poNumber:      stripPrefix(origin.createdFromText),
+                        poUrl:         (origin.tranType === 'itemreceipt' && origin.createdFromId) ? getRecordUrl(origin.createdFromId, 'purchaseorder') : '',
+                        date:          (origin.tranType === 'inventoryadjustment'
+                                        ? (origin.custbody4 || origin.trandate)
+                                        : origin.trandate),
+                        vendor:        origin.mainnameText || origin.custbodyLotSupplier || '',
+                        vendorUrl:     getRecordUrl(origin.vendorInternalId, 'vendor'),
+                        lotNumber:     origin.lotNumber,
+                        lotUrl:        getRecordUrl(origin.lotId, 'inventorynumber'),
+                        lotInternalId: origin.lotId,
+                        tranId:        origin.tranInternalId,
+                        tranType:      origin.tranType,
                         packsOnHand:   packs,
                         piecesPerPack: pppToUse,
-                        mbfPrice:      row.tranType === 'itemreceipt'
-                            ? roundToTwoDecimals(row.rate / (row.exchangerate > 0 ? row.exchangerate : 1))
+                        mbfPrice:      origin.tranType === 'itemreceipt'
+                            ? roundToTwoDecimals(origin.rate / (origin.exchangerate > 0 ? origin.exchangerate : 1))
                             : 0,
-                        currency:      row.tranType === 'itemreceipt'
-                            ? (CURRENCY_TO_ISO[row.currencyText] || row.currencyText || '')
+                        currency:      origin.tranType === 'itemreceipt'
+                            ? (CURRENCY_TO_ISO[origin.currencyText] || origin.currencyText || '')
                             : '',
-                        reloadId:      row.custcol3,
+                        reloadId:      origin.custcol3,
                     });
                 });
 
