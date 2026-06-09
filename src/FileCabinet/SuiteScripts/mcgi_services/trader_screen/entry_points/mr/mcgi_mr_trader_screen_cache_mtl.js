@@ -168,6 +168,11 @@ define([
             // Used in row construction to display Date and Vendor for IA rows.
             s.columns.push(search.createColumn({ name: 'custbody4' }));
             s.columns.push(search.createColumn({ name: 'custbody_lot_supplier' }));
+            // PO segment on the source transaction line. Present on IRs (copied from
+            // the originating PO line) and on IAs (set directly per MGSL accounting).
+            // Used by PO Allocation to match received-segment availability without
+            // running its own SuiteQL — see plans/for-po-allocation-sbx-transient.
+            s.columns.push(search.createColumn({ name: 'cseg_po_segment_gl' }));
             // NOTE: Inventory Status filter rolled back 2026-05-19 after prod outage.
             // `search.createColumn({ name: 'inventorystatus', join: 'inventoryDetail' })`
             // throws "invalid column" in prod (likely because the Inventory Status
@@ -234,6 +239,7 @@ define([
             mbfPrice:       roundToTwoDecimals(rawRate / exchRate),
             currency:       CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
             allocatedPO:    r.getText({ name: 'line.cseg_po_segment_gl' }) || '\u2014',
+            allocatedSegmentId: r.getValue({ name: 'line.cseg_po_segment_gl' }) || '',
             lotNumber:      r.getValue({ name: 'serialnumber' }) || '\u2014',
         };
     };
@@ -294,6 +300,12 @@ define([
             piecesPerPack: ppp,
             mbfPrice:      price,
             currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency', summary: 'GROUP' })] || r.getText({ name: 'currency', summary: 'GROUP' }) || '',
+            // PO Allocation consumes the cache for unreceived segments. segmentId
+            // (the cseg_po_segment_gl internal id on the PO line) is the join key
+            // back to the SO line; poId + poDate drive PO Allocation's FIFO sort.
+            segmentId:     r.getValue({ name: 'internalid', join: 'line.cseg_po_segment_gl', summary: 'GROUP' }) || '',
+            poId:          docId,
+            poDate:        r.getValue({ name: 'trandate', summary: 'GROUP' }) || '',
         };
     };
 
@@ -335,6 +347,7 @@ define([
             mbfPrice:      roundToTwoDecimals(rawRate / exchRate),
             currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
             allocatedPO:   r.getText({ name: 'line.cseg_po_segment_gl' }) || '\u2014',
+            allocatedSegmentId: r.getValue({ name: 'line.cseg_po_segment_gl' }) || '',
         };
     };
 
@@ -659,7 +672,8 @@ define([
             });
         });
 
-        // On Order rows — include as-is
+        // On Order rows — include as-is, carrying segmentId/poId/poDate so PO
+        // Allocation can identify and FIFO-sort these unreceived-PO rows.
         onOrder.forEach((row) => {
             if ((row.packs || 0) <= 0) return;
             available.push({
@@ -671,6 +685,9 @@ define([
                 packsAvail:    row.packs,
                 piecesPerPack: row.piecesPerPack,
                 mbfPrice:      row.mbfPrice,
+                segmentId:     row.segmentId || '',
+                poId:          row.poId || '',
+                poDate:        row.poDate || '',
             });
         });
 
@@ -1188,6 +1205,7 @@ define([
                 var colPackQtyFormula = null;
                 var lotPppMap = {};
                 var lotFbmMap = {};
+                var lotSegmentMap = {};
                 var rawRows  = [];
 
                 mySearch.filters.push(
@@ -1232,6 +1250,13 @@ define([
                         lotPppMap[lotNumber] = ppp;
                         lotFbmMap[lotNumber] = fbm;
                     }
+                    // First-additive-wins: capture the lot's origin PO/IA segment for
+                    // PO Allocation. Empty values intentionally don't latch — lets a
+                    // later row with a real value win if the first additive lacks it.
+                    var rawSeg = result.getValue({ name: 'cseg_po_segment_gl' }) || '';
+                    if (isAdditive && rawSeg && !lotSegmentMap[lotNumber]) {
+                        lotSegmentMap[lotNumber] = rawSeg;
+                    }
 
                     // Stash every field pass 2 will need so we don't have to hold the
                     // search Result reference across iterations.
@@ -1258,6 +1283,7 @@ define([
                         exchangerate:        parseFloat(result.getValue({ name: 'exchangerate' })) || 1,
                         currencyText:        result.getText({ name: 'currency' }),
                         custcol3:            result.getValue({ name: 'custcol3' }) || '',
+                        segmentId:           result.getValue({ name: 'cseg_po_segment_gl' }) || '',
                     });
                     return true;
                 });
@@ -1347,6 +1373,22 @@ define([
                     if (seenLots[row.lotNumber] !== undefined) {
                         var stored = itemData[seenLots[row.lotNumber]];
                         stored.packsOnHand += packs;
+                        // Defensive: if first encounter for this lot wasn't an IR,
+                        // capture rate/currency/tranId/tranType from the first IR we
+                        // see — IR takes precedence over IA for cost basis when both
+                        // exist for the same lot. (Pass 2 now also computes mbfPrice
+                        // for IAs, so we can no longer use `stored.mbfPrice === 0` as
+                        // the IA-marker; check tranType instead.)
+                        if (row.tranType === 'itemreceipt' && stored.tranType !== 'itemreceipt') {
+                            stored.mbfPrice = roundToTwoDecimals(row.rate / (row.exchangerate > 0 ? row.exchangerate : 1));
+                            stored.currency = CURRENCY_TO_ISO[row.currencyText] || row.currencyText || '';
+                            stored.tranId   = row.tranInternalId;
+                            stored.tranType = row.tranType;
+                        }
+                        // Same backfill pattern for segmentId — first additive wins.
+                        if (!stored.segmentId && row.segmentId) {
+                            stored.segmentId = row.segmentId;
+                        }
                         return;
                     }
 
@@ -1375,13 +1417,19 @@ define([
                         tranType:      origin.tranType,
                         packsOnHand:   packs,
                         piecesPerPack: pppToUse,
-                        mbfPrice:      origin.tranType === 'itemreceipt'
+                        // IA rows now also seed mbfPrice/currency from primary-book
+                        // rate (typically CAD on MTL) so PO Allocation has a non-zero
+                        // fallback when the USD secondary-book lookup in applyLotCost
+                        // misses. applyLotCost still overrides to USD when the IA's
+                        // USD book lookup succeeds.
+                        mbfPrice:      (origin.tranType === 'itemreceipt' || origin.tranType === 'inventoryadjustment')
                             ? roundToTwoDecimals(origin.rate / (origin.exchangerate > 0 ? origin.exchangerate : 1))
                             : 0,
-                        currency:      origin.tranType === 'itemreceipt'
+                        currency:      (origin.tranType === 'itemreceipt' || origin.tranType === 'inventoryadjustment')
                             ? (CURRENCY_TO_ISO[origin.currencyText] || origin.currencyText || '')
                             : '',
                         reloadId:      origin.custcol3,
+                        segmentId:     lotSegmentMap[row.lotNumber] || origin.segmentId || row.segmentId || '',
                     });
                 });
 
@@ -1552,6 +1600,40 @@ define([
             inTransit: inTransit,
             available: available,
         };
+
+        // ── DEBUG: field-shape check for PO Allocation contract — verify the
+        // new fields (segmentId on onHand, allocatedSegmentId on committed/outbound,
+        // mbfPrice/currency on IA onHand rows) are populated. Remove once verified.
+        if (reduceInvokeCount <= 10 || reduceInvokeCount % 50 === 0) {
+            var sampleOH = (onHand.length > 0) ? onHand[0] : null;
+            var sampleCM = (committed.length > 0) ? committed[0] : null;
+            var sampleOB = (outbound.length > 0) ? outbound[0] : null;
+            var sampleIA = null;
+            for (var iSI = 0; iSI < onHand.length; iSI++) {
+                if (onHand[iSI].tranType === 'inventoryadjustment') { sampleIA = onHand[iSI]; break; }
+            }
+            var ohSegPop = onHand.filter(function (r) { return r && r.segmentId; }).length;
+            var ohLotPop = onHand.filter(function (r) { return r && r.lotInternalId; }).length;
+            var cmSegPop = committed.filter(function (r) { return r && r.allocatedSegmentId; }).length;
+            var obSegPop = outbound.filter(function (r) { return r && r.allocatedSegmentId; }).length;
+            log.audit('MTL field check', '#' + reduceInvokeCount + ' key=' + key +
+                ' | onHand: ' + ohSegPop + '/' + onHand.length + ' have segmentId, ' +
+                ohLotPop + '/' + onHand.length + ' have lotInternalId' +
+                ' | committed: ' + cmSegPop + '/' + committed.length + ' have allocatedSegmentId' +
+                ' | outbound: ' + obSegPop + '/' + outbound.length + ' have allocatedSegmentId' +
+                (sampleOH ? ' | OH[0]: segmentId=' + (sampleOH.segmentId || '(blank)') +
+                            ' lotInternalId=' + (sampleOH.lotInternalId || '(blank)') +
+                            ' tranType=' + sampleOH.tranType +
+                            ' mbfPrice=' + sampleOH.mbfPrice +
+                            ' currency=' + (sampleOH.currency || '(blank)') : '') +
+                (sampleIA ? ' | IA[first]: mbfPrice=' + sampleIA.mbfPrice +
+                            ' currency=' + (sampleIA.currency || '(blank)') +
+                            ' lotCost=' + sampleIA.lotCost : '') +
+                (sampleCM ? ' | CM[0]: allocatedSegmentId=' + (sampleCM.allocatedSegmentId || '(blank)') +
+                            ' allocatedPO=' + sampleCM.allocatedPO : '') +
+                (sampleOB ? ' | OB[0]: allocatedSegmentId=' + (sampleOB.allocatedSegmentId || '(blank)') +
+                            ' allocatedPO=' + sampleOB.allocatedPO : ''));
+        }
 
         // ── Write detail to cache ─────────────────────────────────────────────
         var myCache   = CacheClient.getCache();
