@@ -7,7 +7,7 @@ import {
   type ColumnDef,
   type SortingState,
 } from '@tanstack/react-table';
-import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { ArrowUpDown, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -118,9 +118,53 @@ const MetricCellMTL = ({ value, type, row, onDrillDown, uom }: MetricCellMTLProp
   const signedLike = type === 'available' || type === 'toBeSold';
   const prefix = signedLike && displayValue >= 0 ? '+' : '';
   const content = `${prefix}${formatQtyMTL(displayValue, uom)}`;
-  const colorClass = METRIC_COLOR_CLASS[type] ?? 'text-metric-onhand';
+  // Shortfall trigger (Marc-approved Option B, 2026-05-14): fire when prompt
+  // (onHand − committed − outbound) goes negative, regardless of incoming POs
+  // or in-transit. Active holds already subtracted from onHand by the MR.
+  //
+  // Round each operand individually before subtracting so the trigger matches
+  // the integer values the user actually sees in the row (formatQtyMTL also
+  // rounds each cell). Rounding the sum instead — old behavior — would fire
+  // on cases like onHand=18.0, committed=18.4, outbound=0.2 (displays 18,18,0
+  // → user sees balanced, but trigger saw -0.6 → rounded to -1 → warning).
+  const promptShortfall =
+    type === 'available' &&
+    Math.round(row.onHand ?? 0) - Math.round(row.committed ?? 0) - Math.round(row.outbound ?? 0) < 0;
+  const colorClass = promptShortfall
+    ? 'text-red-600'
+    : (METRIC_COLOR_CLASS[type] ?? 'text-metric-onhand');
   // toBeSold has no detail bucket; only the other metrics can drill.
   const canDrill = onDrillDown && row.internalId && row.locationId && type !== 'toBeSold';
+
+  if (promptShortfall && canDrill) {
+    // Shortfall state: two click targets in the cell.
+    //   ⚠️ icon  → Committed modal (which SOs are at risk)
+    //   value    → Available drawer (existing breakdown behavior, just rendered red)
+    return (
+      <span className="flex items-center justify-end gap-1.5 w-full">
+        <button
+          type="button"
+          onClick={() => onDrillDown('committed' as DetailType, row)}
+          className="text-red-600 hover:text-red-700 shrink-0"
+          title="Voir les SO engagés à risque"
+          aria-label="Voir SO à risque"
+        >
+          <AlertTriangle className="h-4 w-4" />
+        </button>
+        {value !== 0 ? (
+          <button
+            type="button"
+            onClick={() => onDrillDown(type as DetailType, row)}
+            className={`${colorClass} hover:underline font-medium tabular-nums text-right`}
+          >
+            {content}
+          </button>
+        ) : (
+          <span className={`${colorClass} tabular-nums text-right`}>{content}</span>
+        )}
+      </span>
+    );
+  }
 
   if (canDrill && value !== 0) {
     return (

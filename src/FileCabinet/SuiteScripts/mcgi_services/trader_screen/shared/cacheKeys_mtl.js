@@ -30,6 +30,7 @@ define([], () => {
         LAST_RUN:              'TS_MTL_LAST_RUN_TIMESTAMP',
         LAST_INPUT_MODE:       'TS_MTL_LAST_INPUT_MODE',
         LOCATION_NAMES:        'TS_MTL_LOCATION_NAMES',
+        ACTIVE_HOLDS:          'TS_MTL_ACTIVE_HOLDS',
         TTL_SUMMARY:           TTL_SUMMARY,
         TTL_LAST_RUN:          TTL_LAST_RUN,
         MAX_CACHE_VALUE_BYTES: MAX_CACHE_VALUE_BYTES,

@@ -12,7 +12,8 @@ define([
     '../../shared/cacheKeys_mtl',
     '../../shared/cacheClient',
     '../../shared/urlResolver',
-], (search, cache, log, runtime, task, CacheKeysMTL, CacheClient, UrlResolver) => {
+    '/SuiteScripts/MCGI_LIB_LotCost',
+], (search, cache, log, runtime, task, CacheKeysMTL, CacheClient, UrlResolver, LotCostLib) => {
 
     const { getRecordUrl } = UrlResolver;
 
@@ -22,6 +23,10 @@ define([
 
     const MTL_SUBSIDIARY_ID = 5;
     const MIN_INTERVAL_MS   = 120000; // 2 minutes — minimum gap between real processing runs
+    // MGSL USD secondary accounting book ID. IA-origin lots are displayed in USD
+    // per MGSL accounting convention; applyLotCost queries MCGI_LIB_LotCost
+    // with this book id to get USD rates. Update if NS book numbering changes.
+    const USD_ACCOUNTING_BOOK_ID = 6;
 
     const SUMMARY_SEARCH_ID    = 'customsearch_suitelet_all_items_search_m';
     const ON_HAND_SEARCH_ID    = 'customsearch_mgsl_trader_onhand_tran_mtl';
@@ -29,13 +34,10 @@ define([
     const COMMITTED_SEARCH_ID  = 'customsearch_mgsl_trader_committed_mtl';
     const ON_ORDER_SEARCH_ID   = 'customsearch_mgsl_trader_onorder_mtl';
     const OUTBOUND_SEARCH_ID   = 'customsearch_mgsl_trader_outbound_mtl';
-    const LOT_COST_SEARCH_ID    = 'customsearch_ts_lot_cost_mtl';
-    const LOT_COST_IA_SEARCH_ID = 'customsearch_ts_lot_cost_ia_mtl';
-    // NOTE: Both lot-cost saved searches share the same Account filter (288, 632).
-    // If the inventory account list changes in the future, update BOTH searches to
-    // avoid drift between IR and IA cost lookups.
-    // IDs were shortened from 'customsearch_trader_screen_lot_cost_*' (Apr 2026) to
-    // fit NetSuite's ~27-char limit on the user-typed portion of saved search IDs.
+    // Lot cost moved to /SuiteScripts/MCGI_LIB_LotCost (Task 8, 2026-06-11) —
+    // FIFO layers per lot+location, validated to the cent vs prod GL. The two
+    // legacy saved searches (customsearch_ts_lot_cost_mtl and _ia_mtl) are no
+    // longer referenced; safe to delete from NS once SBX deploy is verified.
 
     const ITEM_RECORD_TYPE_MAPPING = {
         Assembly:          'assemblyitem',
@@ -143,7 +145,9 @@ define([
             // sales orders — without the prefix NetSuite returns the (empty) body value
             // and allocatedPO falls through to the em-dash fallback, which makes the
             // AvailableTab drawer skip these rows entirely.
-            if (searchId === OUTBOUND_SEARCH_ID) {
+            // In-transit needs it too, so PO Allocation can pre-commit against billed-
+            // but-not-received POs (PO lines carry the segment; Transfer Order lines '').
+            if (searchId === OUTBOUND_SEARCH_ID || searchId === IN_TRANSIT_SEARCH_ID) {
                 s.columns.push(search.createColumn({ name: 'line.cseg_po_segment_gl' }));
             }
             _detailSearchCache[searchId] = {
@@ -168,6 +172,11 @@ define([
             // Used in row construction to display Date and Vendor for IA rows.
             s.columns.push(search.createColumn({ name: 'custbody4' }));
             s.columns.push(search.createColumn({ name: 'custbody_lot_supplier' }));
+            // PO segment on the source transaction line. Present on IRs (copied from
+            // the originating PO line) and on IAs (set directly per MGSL accounting).
+            // Used by PO Allocation to match received-segment availability without
+            // running its own SuiteQL — see plans/for-po-allocation-sbx-transient.
+            s.columns.push(search.createColumn({ name: 'cseg_po_segment_gl' }));
             // NOTE: Inventory Status filter rolled back 2026-05-19 after prod outage.
             // `search.createColumn({ name: 'inventorystatus', join: 'inventoryDetail' })`
             // throws "invalid column" in prod (likely because the Inventory Status
@@ -193,6 +202,97 @@ define([
             summary: 'GROUP',
         }));
         return s;
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  Active inventory holds — customrecord_mgsl_inventory_hold
+    //
+    //  Marc-Antoine creates hold records to pull stock off the trader screen
+    //  before posting an Inventory Adjustment. Each active hold = (item, location,
+    //  lot, packs). The MR aggregates them in getInputData and subtracts in the
+    //  reduce phase's on-hand processing.
+    //
+    //  Status filtering is done in JS rather than via N/search filter because
+    //  the SDF customlist value's internal ID isn't known at deploy time and
+    //  the volume is low (Marc said "quelques fois par semaine").
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const loadActiveHolds = (myCache) => {
+        var holdsMap = {};
+        var holdCount = 0;
+
+        // Capture previous holds keys BEFORE overwriting. When a hold is created
+        // or lifted/deleted, the affected (item, location) needs to be re-processed
+        // in DELTA mode even if no transactions touched it — otherwise the cached
+        // On Hand stays stale. The dirty-keys union (previous ∪ current) catches
+        // both directions.
+        var previousKeys = {};
+        try {
+            var prevRaw = myCache.get({ key: CacheKeysMTL.ACTIVE_HOLDS });
+            if (prevRaw) {
+                var prevMap = JSON.parse(prevRaw);
+                Object.keys(prevMap).forEach(function (k) { previousKeys[k] = true; });
+            }
+        } catch (e) {
+            log.debug('MTL Cache', 'loadActiveHolds: no previous holds map (' + e.message + ')');
+        }
+
+        try {
+            var s = search.create({
+                type: 'customrecord_mgsl_inventory_hold',
+                columns: [
+                    search.createColumn({ name: 'custrecord_mgsl_hold_item' }),
+                    search.createColumn({ name: 'custrecord_mgsl_hold_location' }),
+                    search.createColumn({ name: 'custrecord_mgsl_hold_lot' }),
+                    search.createColumn({ name: 'custrecord_mgsl_hold_packs' }),
+                    search.createColumn({ name: 'custrecord_mgsl_hold_status' }),
+                ],
+            });
+            s.run().each(function (r) {
+                var statusText = r.getText({ name: 'custrecord_mgsl_hold_status' });
+                if (statusText !== 'Active') return true;
+                var itemId  = r.getValue({ name: 'custrecord_mgsl_hold_item' });
+                var locId   = r.getValue({ name: 'custrecord_mgsl_hold_location' });
+                var lotName = r.getText({ name: 'custrecord_mgsl_hold_lot' });
+                var packs   = parseFloat(r.getValue({ name: 'custrecord_mgsl_hold_packs' })) || 0;
+                if (!itemId || !locId || !lotName || packs <= 0) return true;
+                var key = itemId + '|' + locId;
+                if (!holdsMap[key]) holdsMap[key] = {};
+                holdsMap[key][lotName] = (holdsMap[key][lotName] || 0) + packs;
+                holdCount++;
+                return true;
+            });
+            log.audit('MTL Cache', 'Active holds loaded: ' + holdCount + ' records across ' +
+                Object.keys(holdsMap).length + ' (item,loc) keys');
+            myCache.put({
+                key:   CacheKeysMTL.ACTIVE_HOLDS,
+                value: JSON.stringify(holdsMap),
+                ttl:   CacheKeysMTL.TTL_LAST_RUN,
+            });
+        } catch (e) {
+            log.error('MTL Cache', 'loadActiveHolds failed: ' + e.message);
+        }
+
+        var dirtyKeys = {};
+        Object.keys(holdsMap).forEach(function (k) { dirtyKeys[k] = true; });
+        Object.keys(previousKeys).forEach(function (k) { dirtyKeys[k] = true; });
+
+        return { holdsMap: holdsMap, dirtyKeys: dirtyKeys };
+    };
+
+    // Reduce-phase lazy loader — reads the holds map from NS Cache, caches at
+    // module scope so subsequent invocations in the same VM share it.
+    var _activeHoldsMap = null;
+    const getActiveHoldsMap = () => {
+        if (_activeHoldsMap !== null) return _activeHoldsMap;
+        try {
+            var raw = CacheClient.getCache().get({ key: CacheKeysMTL.ACTIVE_HOLDS });
+            _activeHoldsMap = raw ? JSON.parse(raw) : {};
+        } catch (e) {
+            log.error('MTL Cache', 'getActiveHoldsMap failed: ' + e.message);
+            _activeHoldsMap = {};
+        }
+        return _activeHoldsMap;
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -234,6 +334,7 @@ define([
             mbfPrice:       roundToTwoDecimals(rawRate / exchRate),
             currency:       CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
             allocatedPO:    r.getText({ name: 'line.cseg_po_segment_gl' }) || '\u2014',
+            allocatedSegmentId: r.getValue({ name: 'line.cseg_po_segment_gl' }) || '',
             lotNumber:      r.getValue({ name: 'serialnumber' }) || '\u2014',
         };
     };
@@ -263,6 +364,14 @@ define([
             piecesPerPack: ppp,
             mbfPrice:      roundToTwoDecimals(rawRate / exchRate),
             currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
+            // PO Allocation pre-commits against in-transit POs (billed, not yet
+            // received) like on-order — but only when the row carries the PO line's
+            // segment. `line.cseg_po_segment_gl` is pushed onto the search in
+            // getDetailSearch (same as outbound); PO lines return the segment, Transfer
+            // Order lines return '' → PO Allocation skips them.
+            segmentId:     safeGetValue(r, { name: 'line.cseg_po_segment_gl' }) || '',
+            poId:          docId,
+            poDate:        safeGetValue(r, { name: 'trandate' }) || '',
         };
     };
 
@@ -294,6 +403,12 @@ define([
             piecesPerPack: ppp,
             mbfPrice:      price,
             currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency', summary: 'GROUP' })] || r.getText({ name: 'currency', summary: 'GROUP' }) || '',
+            // PO Allocation consumes the cache for unreceived segments. segmentId
+            // (the cseg_po_segment_gl internal id on the PO line) is the join key
+            // back to the SO line; poId + poDate drive PO Allocation's FIFO sort.
+            segmentId:     r.getValue({ name: 'internalid', join: 'line.cseg_po_segment_gl', summary: 'GROUP' }) || '',
+            poId:          docId,
+            poDate:        r.getValue({ name: 'trandate', summary: 'GROUP' }) || '',
         };
     };
 
@@ -335,6 +450,7 @@ define([
             mbfPrice:      roundToTwoDecimals(rawRate / exchRate),
             currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
             allocatedPO:   r.getText({ name: 'line.cseg_po_segment_gl' }) || '\u2014',
+            allocatedSegmentId: r.getValue({ name: 'line.cseg_po_segment_gl' }) || '',
         };
     };
 
@@ -491,123 +607,69 @@ define([
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  applyLotCost — segment-aware origin + GL aggregation
+    //  applyLotCost — delegates to MCGI_LIB_LotCost (Task 8, 2026-06-11)
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    //  Per On Hand row:
-    //   - Origin (row.tranId, row.tranType) was computed in the reduce loop's
-    //     segment-aware pass: the first positive transaction of the lot's
-    //     current uninterrupted positive run (post-last-drain).
-    //   - For IR origin: sum GL on inventory asset → cost per unit / xr
-    //   - For IA origin: sum GL in USD book → cost per unit (USD), mirror to mbfPrice
-    //   - For any lookup miss: lotCost = null (→ dash in UI). Legitimate 0 preserved.
+    //  The shared lot cost engine validated to the cent against prod GL on
+    //  2026-06-11 uses FIFO LAYERS PER LOT + LOCATION (not single-origin cost,
+    //  which was the falsified model the inline saved-search version used).
+    //
+    //  Two passes:
+    //    1. Primary book (CAD) — fills `row.lotCost` for every lot using the
+    //       weighted average across remaining FIFO layers.
+    //    2. USD secondary book (book=6) — IA-origin lots only. MGSL accounting
+    //       convention is to value IA-created stock in USD secondary book; the
+    //       legacy Trader Screen displayed IA-origin lots in USD. Preserving
+    //       that here also preserves Task 2 PO Allocation's iaIsUsd detection
+    //       (MSL_LIB_POAllocationCore reads r.tranType === 'inventoryadjustment'
+    //       && r.currency === 'USD' at L1705 to flip its rate lookup).
 
-    const resolveLotCostByOriginIR = (originIrIds) => {
-        var result = {};  // `${irId}__${itemId}` → costPerUnit in txn currency
-        if (!originIrIds || originIrIds.length === 0) return result;
-        try {
-            var glSearch = search.load({ id: LOT_COST_SEARCH_ID });
-            glSearch.filters.push(search.createFilter({
-                name: 'internalid', operator: search.Operator.ANYOF, values: originIrIds
-            }));
-            glSearch.run().each(function (r) {
-                var irId  = r.getValue({ name: 'internalid', summary: 'GROUP' });
-                var item  = r.getValue({ name: 'internalid', join: 'item', summary: 'GROUP' });
-                var xr    = parseFloat(r.getValue({ name: 'exchangerate', summary: 'MAX' })) || 1;
-                var gl    = parseFloat(r.getValue({ name: 'debitamount', summary: 'SUM' })) || 0;
-                var qty   = parseFloat(r.getValue({
-                    name: 'formulanumeric', summary: 'SUM',
-                    formula: 'CASE WHEN {quantity} > 0 THEN {quantity} ELSE 0 END'
-                })) || 0;
-                if (irId && item && qty > 0) {
-                    var perUnit = (gl / qty) / (xr > 0 ? xr : 1);
-                    result[irId + '__' + item] = roundToTwoDecimals(perUnit);
-                }
-                return true;
-            });
-        } catch (e) {
-            log.error('MTL lot cost GL lookup', 'irs=' + originIrIds.join(',') + ' ERROR: ' + e.message);
-        }
-        return result;
-    };
-
-    const resolveLotCostByOriginIA = (originIaIds) => {
-        var result = {};  // `${iaId}__${itemId}` → costPerUnit USD (already in USD from book filter)
-        if (!originIaIds || originIaIds.length === 0) return result;
-        try {
-            var glSearch = search.load({ id: LOT_COST_IA_SEARCH_ID });
-            glSearch.filters.push(search.createFilter({
-                name: 'internalid', operator: search.Operator.ANYOF, values: originIaIds
-            }));
-            glSearch.run().each(function (r) {
-                var iaId = r.getValue({ name: 'internalid', summary: 'GROUP' });
-                var item = r.getValue({ name: 'internalid', join: 'item', summary: 'GROUP' });
-                // IMPORTANT: 'debitamount' must be JOINED to 'accountingTransaction' to be book-aware.
-                // Unjoined 'debitamount' always returns Primary Book amount regardless of book filter.
-                // We filter to USD Accounting Book (id=6), so the joined debitamount returns USD values.
-                var gl   = parseFloat(r.getValue({
-                    name: 'debitamount',
-                    join: 'accountingTransaction',
-                    summary: 'SUM'
-                })) || 0;
-                var qty  = parseFloat(r.getValue({
-                    name: 'formulanumeric', summary: 'SUM',
-                    formula: 'CASE WHEN {quantity} > 0 THEN {quantity} ELSE 0 END'
-                })) || 0;
-                if (iaId && item && qty > 0) {
-                    // USD book amount / qty = USD per unit directly; no xr math needed
-                    result[iaId + '__' + item] = roundToTwoDecimals(gl / qty);
-                }
-                return true;
-            });
-        } catch (e) {
-            log.error('MTL IA lot cost USD lookup', 'ias=' + originIaIds.join(',') + ' ERROR: ' + e.message);
-        }
-        return result;
-    };
-
-    const applyLotCost = (onHand, itemId) => {
-        // The reduce loop has already computed each row's segment-aware origin
-        // (row.tranId + row.tranType point to the first positive transaction
-        // in the lot's current uninterrupted positive run). Use those directly
-        // — no need to re-resolve origin here.
+    const applyLotCost = (onHand, locationId) => {
         if (!onHand || onHand.length === 0) return;
 
-        var originIrSet = {};
-        var originIaSet = {};
-        onHand.forEach(function (row) {
-            if (!row.tranId) return;
-            if (row.tranType === 'itemreceipt')              originIrSet[row.tranId] = true;
-            else if (row.tranType === 'inventoryadjustment') originIaSet[row.tranId] = true;
-        });
+        // Default null so a library failure leaves a clean "—" in the UI
+        // rather than carrying over stale values.
+        onHand.forEach(function (row) { row.lotCost = null; });
 
-        var costMapIR = resolveLotCostByOriginIR(Object.keys(originIrSet));
-        var costMapIA = resolveLotCostByOriginIA(Object.keys(originIaSet));
+        var allLotIds = onHand
+            .filter(function (r) { return r.lotInternalId; })
+            .map(function (r) { return r.lotInternalId; });
+        if (allLotIds.length === 0) return;
 
-        onHand.forEach(function (row) {
-            if (!row.tranId) { row.lotCost = null; return; }
-            var key = row.tranId + '__' + itemId;
-            if (row.tranType === 'itemreceipt') {
-                row.lotCost = (costMapIR[key] !== undefined) ? costMapIR[key] : null;
-            } else if (row.tranType === 'inventoryadjustment') {
-                var iaCost = costMapIA[key];
-                row.lotCost = (iaCost !== undefined) ? iaCost : null;
-                // For IA origins: reduce loop left mbfPrice=0 / currency=''. After
-                // USD GL lookup, mirror lotCost into mbfPrice and stamp USD currency
-                // for consistent display.
-                //
-                // ASSUMPTION (CWP MTL specific): every IA on this subsidiary posts in
-                // CAD primary, USD secondary book. The IA saved search filters to USD
-                // book → values are USD by construction. Hardcoding 'USD' is correct
-                // for this MR file (mtl variant only).
-                if (iaCost !== undefined) {
-                    row.mbfPrice = iaCost;
+        // ── Pass 1: primary book (CAD) ───────────────────────────────────────
+        try {
+            var primaryCosts = LotCostLib.getLotCostsAtLocation(allLotIds, locationId);
+            onHand.forEach(function (row) {
+                if (row.lotInternalId && primaryCosts[row.lotInternalId] != null) {
+                    row.lotCost = primaryCosts[row.lotInternalId];
+                }
+            });
+        } catch (e) {
+            log.error('MTL applyLotCost', 'primary call failed loc=' + locationId + ': ' + e.message);
+            return; // skip the USD pass if primary failed
+        }
+
+        // ── Pass 2: USD secondary book — IA-origin lots only ────────────────
+        var iaLotIds = onHand
+            .filter(function (r) { return r.tranType === 'inventoryadjustment' && r.lotInternalId; })
+            .map(function (r) { return r.lotInternalId; });
+        if (iaLotIds.length === 0) return;
+
+        try {
+            var usdCosts = LotCostLib.getLotCostsAtLocation(iaLotIds, locationId, { book: USD_ACCOUNTING_BOOK_ID });
+            onHand.forEach(function (row) {
+                if (row.tranType !== 'inventoryadjustment' || !row.lotInternalId) return;
+                var usd = usdCosts[row.lotInternalId];
+                if (usd != null) {
+                    row.lotCost  = usd;
+                    row.mbfPrice = usd;
                     row.currency = 'USD';
                 }
-            } else {
-                row.lotCost = null;
-            }
-        });
+            });
+        } catch (e) {
+            // Don't undo Pass 1's results — primary-book CAD stays in place.
+            log.error('MTL applyLotCost', 'USD call failed loc=' + locationId + ': ' + e.message);
+        }
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -656,10 +718,20 @@ define([
                 status:        'On Hand',
                 packsAvail:    packsAvail,
                 piecesPerPack: lot.piecesPerPack,
+                // PO Allocation keys allocations off these (segment / lot / source
+                // txn). The trader AvailableTab ignores the extra fields; carrying
+                // them lets PO Alloc consume this reconciled `available` row directly
+                // instead of re-deriving availability per-lot (which drops outbound
+                // stranded on depleted sibling lots → over-statement).
+                segmentId:     lot.segmentId || '',
+                lotInternalId: lot.lotInternalId || '',
+                poId:          lot.tranId || '',
+                tranType:      lot.tranType || '',
             });
         });
 
-        // On Order rows — include as-is
+        // On Order rows — include as-is, carrying segmentId/poId/poDate so PO
+        // Allocation can identify and FIFO-sort these unreceived-PO rows.
         onOrder.forEach((row) => {
             if ((row.packs || 0) <= 0) return;
             available.push({
@@ -671,10 +743,16 @@ define([
                 packsAvail:    row.packs,
                 piecesPerPack: row.piecesPerPack,
                 mbfPrice:      row.mbfPrice,
+                segmentId:     row.segmentId || '',
+                poId:          row.poId || '',
+                poDate:        row.poDate || '',
             });
         });
 
-        // In Transit rows — include as-is
+        // In Transit rows — include as-is, carrying segmentId/poId/poDate so PO
+        // Allocation can pre-commit against in-transit POs (billed, not yet received),
+        // the same way it does On Order. Transfer-Order in-transit rows have an empty
+        // segmentId and are skipped by PO Allocation.
         inTransit.forEach((row) => {
             if ((row.packs || 0) <= 0) return;
             available.push({
@@ -686,6 +764,9 @@ define([
                 packsAvail:    row.packs,
                 piecesPerPack: row.piecesPerPack,
                 mbfPrice:      row.mbfPrice,
+                segmentId:     row.segmentId || '',
+                poId:          row.poId || '',
+                poDate:        row.poDate || '',
             });
         });
 
@@ -982,6 +1063,15 @@ define([
             }
         }
 
+        // ── Load active inventory holds → NS Cache (read by reduce) ───────────
+        var holdsResult = loadActiveHolds(myCache);
+
+        // Diagnostic: list every holds dirty key, regardless of FULL/DELTA path.
+        // Placed BEFORE the FULL early-return so it fires in both modes.
+        if (Object.keys(holdsResult.dirtyKeys).length > 0) {
+            log.audit('MTL Cache', 'Holds dirtyKeys=[' + Object.keys(holdsResult.dirtyKeys).join(', ') + ']');
+        }
+
         var isFullMode = forceFull || !lastRunStr;
         log.audit('MTL Cache', 'getInputData: forceFull=' + forceFull + ' lastRunStr=' + (lastRunStr || '(empty)') + ' isFullMode=' + isFullMode);
 
@@ -1062,6 +1152,29 @@ define([
                 log.debug('MTL Cache', 'Delta search error for type ' + tranType + ': ' + e.message);
             }
         });
+
+        // ── Seed pairs with holds dirty keys ─────────────────────────────────
+        // Holds dirty keys = (current active holds) ∪ (previous run's active holds).
+        // Both directions matter:
+        //   - New hold created → key gets seeded so MR recomputes On Hand with subtraction
+        //   - Hold lifted/deleted → key was in previous run, now isn't; still needs
+        //     re-processing so the cached On Hand reflects the un-subtracted value.
+        // Without this seed, DELTA mode would silently ignore (item, location) keys
+        // whose only change is a hold being created/lifted (no transactions touched them).
+        var holdSeedCount = 0;
+        Object.keys(holdsResult.dirtyKeys).forEach(function (holdKey) {
+            var parts = holdKey.split('|');
+            if (parts.length !== 2) return;
+            var pairKey = parts[0] + '__' + parts[1];
+            if (!pairs[pairKey]) {
+                pairs[pairKey] = { itemId: parts[0], locationId: parts[1] };
+                pairCount++;
+                holdSeedCount++;
+            }
+        });
+        if (holdSeedCount > 0) {
+            log.audit('MTL Cache', 'getInputData: DELTA seeded ' + holdSeedCount + ' pairs from holds dirty keys');
+        }
 
         log.audit('MTL Cache', 'getInputData: DELTA pairCount=' + pairCount + ' threshold=' + deltaThreshold);
 
@@ -1188,6 +1301,7 @@ define([
                 var colPackQtyFormula = null;
                 var lotPppMap = {};
                 var lotFbmMap = {};
+                var lotSegmentMap = {};
                 var rawRows  = [];
 
                 mySearch.filters.push(
@@ -1232,6 +1346,13 @@ define([
                         lotPppMap[lotNumber] = ppp;
                         lotFbmMap[lotNumber] = fbm;
                     }
+                    // First-additive-wins: capture the lot's origin PO/IA segment for
+                    // PO Allocation. Empty values intentionally don't latch — lets a
+                    // later row with a real value win if the first additive lacks it.
+                    var rawSeg = result.getValue({ name: 'cseg_po_segment_gl' }) || '';
+                    if (isAdditive && rawSeg && !lotSegmentMap[lotNumber]) {
+                        lotSegmentMap[lotNumber] = rawSeg;
+                    }
 
                     // Stash every field pass 2 will need so we don't have to hold the
                     // search Result reference across iterations.
@@ -1258,6 +1379,7 @@ define([
                         exchangerate:        parseFloat(result.getValue({ name: 'exchangerate' })) || 1,
                         currencyText:        result.getText({ name: 'currency' }),
                         custcol3:            result.getValue({ name: 'custcol3' }) || '',
+                        segmentId:           result.getValue({ name: 'cseg_po_segment_gl' }) || '',
                     });
                     return true;
                 });
@@ -1375,15 +1497,80 @@ define([
                         tranType:      origin.tranType,
                         packsOnHand:   packs,
                         piecesPerPack: pppToUse,
-                        mbfPrice:      origin.tranType === 'itemreceipt'
+                        fbmFactor:     fbmToUse,
+                        // Seed mbfPrice/currency from primary-book rate for all
+                        // additive origin types (IR / IA / CM). Without seeding,
+                        // a CM-origin lot (customer returns into stock) would show
+                        // $0 MBF Price next to a real Lot Cost from applyLotCost.
+                        // applyLotCost overrides to USD for IA-origin lots when the
+                        // USD secondary-book lookup succeeds.
+                        mbfPrice:      (origin.tranType === 'itemreceipt' || origin.tranType === 'inventoryadjustment' || origin.tranType === 'creditmemo')
                             ? roundToTwoDecimals(origin.rate / (origin.exchangerate > 0 ? origin.exchangerate : 1))
                             : 0,
-                        currency:      origin.tranType === 'itemreceipt'
+                        currency:      (origin.tranType === 'itemreceipt' || origin.tranType === 'inventoryadjustment' || origin.tranType === 'creditmemo')
                             ? (CURRENCY_TO_ISO[origin.currencyText] || origin.currencyText || '')
                             : '',
                         reloadId:      origin.custcol3,
+                        segmentId:     lotSegmentMap[row.lotNumber] || origin.segmentId || row.segmentId || '',
                     });
                 });
+
+                // ── Apply active holds: subtract held packs AND FBM per lot ────
+                // The hold record names a specific (item, location, lot) and a qty
+                // in packs. We subtract from both the lot's packsOnHand AND the
+                // summary row's quantityFBM so the "On Hand (MBF)" column stays
+                // coherent with "On Hand (packs)" — Marc-Antoine 2026-05-26
+                // feedback. Floor at 0; the ghost-lot filter below drops any
+                // lot whose on-hand went to zero.
+                var holdsMap       = getActiveHoldsMap();
+                var holdsForThisKey = holdsMap[itemId + '|' + locationId] || {};
+                var holdsLotsAffected = 0;
+                var holdsPacksRemoved = 0;
+                var holdsFBMRemoved   = 0;
+                itemData.forEach(function (row) {
+                    var heldPacks = holdsForThisKey[row.lotNumber] || 0;
+                    if (heldPacks > 0) {
+                        var before = row.packsOnHand || 0;
+                        var after  = Math.max(0, before - heldPacks);
+                        var actualPacksRemoved = before - after;
+                        holdsPacksRemoved += actualPacksRemoved;
+                        row.packsOnHand = after;
+
+                        // Convert removed packs back to FBM for the summary MBF.
+                        // packs = (FBM * 1000) / (PPP * fbmFactor)  →
+                        // FBM    = (packs * PPP * fbmFactor) / 1000
+                        // Use row.fbmFactor (mirrors the same fallback chain as
+                        // packs computation: lotFbmMap latch first, row.fbm
+                        // fallback if Pass 1 never latched the lot).
+                        var ppp       = row.piecesPerPack || 0;
+                        var fbmFactor = row.fbmFactor || 0;
+                        if (ppp > 0 && fbmFactor > 0) {
+                            holdsFBMRemoved += (actualPacksRemoved * ppp * fbmFactor) / 1000;
+                        }
+                        holdsLotsAffected++;
+                    }
+                });
+                if (holdsFBMRemoved > 0) {
+                    summaryRow.quantityFBM = Math.max(
+                        0,
+                        roundToTwoDecimals((summaryRow.quantityFBM || 0) - holdsFBMRemoved)
+                    );
+                }
+                if (holdsLotsAffected > 0) {
+                    log.debug('MTL reduce', 'Holds applied: item=' + itemId + ' loc=' + locationId +
+                        ' lotsAffected=' + holdsLotsAffected +
+                        ' packsRemoved=' + roundToTwoDecimals(holdsPacksRemoved) +
+                        ' fbmRemoved=' + roundToTwoDecimals(holdsFBMRemoved));
+                }
+                // Diagnostic: active hold(s) exist for this (item, location) but
+                // none of their lot names matched a row in itemData. Dumps both
+                // sides so we can spot the mismatch (typo, encoding, drained lot
+                // filtered by ghost-lot pass, etc.).
+                if (holdsLotsAffected === 0 && Object.keys(holdsForThisKey).length > 0) {
+                    log.audit('MTL reduce', 'Holds NO-MATCH: item=' + itemId + ' loc=' + locationId +
+                        ' | activeHoldLots=[' + Object.keys(holdsForThisKey).join(', ') + ']' +
+                        ' | itemDataLots=[' + itemData.map(function (r) { return r.lotNumber; }).join(', ') + ']');
+                }
 
                 // Ghost lot filter
                 var filtered = itemData.filter(function (row) { return Math.round(row.packsOnHand) > 0; });
@@ -1417,8 +1604,8 @@ define([
         applyVendor(committed, vendorByPO);
         applyVendor(outbound,  vendorByPO);
 
-        // ── Lot Cost: origin trace + GL aggregation (Option B) ────────────────
-        applyLotCost(onHand, itemId);
+        // ── Lot Cost: FIFO layers per lot+location via MCGI_LIB_LotCost ──────
+        applyLotCost(onHand, locationId);
 
         // ── Compute totals from detail arrays ─────────────────────────────────
         var onHandTotal    = roundToTwoDecimals(onHand.reduce(function (s, r) { return s + (r.packsOnHand || 0); }, 0));
@@ -1552,6 +1739,40 @@ define([
             inTransit: inTransit,
             available: available,
         };
+
+        // ── DEBUG: field-shape check for PO Allocation contract — verify the
+        // new fields (segmentId on onHand, allocatedSegmentId on committed/outbound,
+        // mbfPrice/currency on IA onHand rows) are populated. Remove once verified.
+        if (reduceInvokeCount <= 10 || reduceInvokeCount % 50 === 0) {
+            var sampleOH = (onHand.length > 0) ? onHand[0] : null;
+            var sampleCM = (committed.length > 0) ? committed[0] : null;
+            var sampleOB = (outbound.length > 0) ? outbound[0] : null;
+            var sampleIA = null;
+            for (var iSI = 0; iSI < onHand.length; iSI++) {
+                if (onHand[iSI].tranType === 'inventoryadjustment') { sampleIA = onHand[iSI]; break; }
+            }
+            var ohSegPop = onHand.filter(function (r) { return r && r.segmentId; }).length;
+            var ohLotPop = onHand.filter(function (r) { return r && r.lotInternalId; }).length;
+            var cmSegPop = committed.filter(function (r) { return r && r.allocatedSegmentId; }).length;
+            var obSegPop = outbound.filter(function (r) { return r && r.allocatedSegmentId; }).length;
+            log.audit('MTL field check', '#' + reduceInvokeCount + ' key=' + key +
+                ' | onHand: ' + ohSegPop + '/' + onHand.length + ' have segmentId, ' +
+                ohLotPop + '/' + onHand.length + ' have lotInternalId' +
+                ' | committed: ' + cmSegPop + '/' + committed.length + ' have allocatedSegmentId' +
+                ' | outbound: ' + obSegPop + '/' + outbound.length + ' have allocatedSegmentId' +
+                (sampleOH ? ' | OH[0]: segmentId=' + (sampleOH.segmentId || '(blank)') +
+                            ' lotInternalId=' + (sampleOH.lotInternalId || '(blank)') +
+                            ' tranType=' + sampleOH.tranType +
+                            ' mbfPrice=' + sampleOH.mbfPrice +
+                            ' currency=' + (sampleOH.currency || '(blank)') : '') +
+                (sampleIA ? ' | IA[first]: mbfPrice=' + sampleIA.mbfPrice +
+                            ' currency=' + (sampleIA.currency || '(blank)') +
+                            ' lotCost=' + sampleIA.lotCost : '') +
+                (sampleCM ? ' | CM[0]: allocatedSegmentId=' + (sampleCM.allocatedSegmentId || '(blank)') +
+                            ' allocatedPO=' + sampleCM.allocatedPO : '') +
+                (sampleOB ? ' | OB[0]: allocatedSegmentId=' + (sampleOB.allocatedSegmentId || '(blank)') +
+                            ' allocatedPO=' + sampleOB.allocatedPO : ''));
+        }
 
         // ── Write detail to cache ─────────────────────────────────────────────
         var myCache   = CacheClient.getCache();

@@ -46,6 +46,14 @@ define([
                     return formula.indexOf('tolocation.internalid') === -1;
                 });
             }
+            // PO Allocation needs the line-level PO segment on committed/outbound rows
+            // so it can match SO commits to a specific PO segment without running its
+            // own SuiteQL — see plans/for-po-allocation-sbx-transient.
+            // In-transit too: it lets PO Allocation pre-commit against billed-but-not-
+            // received POs (PO lines carry the segment; Transfer Order lines return '').
+            if (searchId === COMMITTED_SEARCH_ID || searchId === OUTBOUND_SEARCH_ID || searchId === IN_TRANSIT_SEARCH_ID) {
+                s.columns.push(search.createColumn({ name: 'line.cseg_po_segment_gl' }));
+            }
             _detailSearchCache[searchId] = {
                 search: s,
                 baseFilterLen: s.filters.length,
@@ -72,6 +80,11 @@ define([
                 formula: "CASE WHEN {type} = 'Inventory Adjustment' THEN CASE WHEN {quantity} > 0 THEN ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {quantity} < 0 THEN -ABS(NVL({custcol_mgsl_packqty}, 0)) ELSE 0 END WHEN {type} = 'Item Receipt' THEN ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {type} = 'Item Fulfillment' THEN -ABS(NVL({custcol_mgsl_packqty}, 0)) WHEN {type} = 'Credit Memo' THEN ABS(NVL({custcol_mgsl_packqty}, 0)) ELSE 0 END",
             });
             s.columns.push(colAdjValue);
+            // PO segment on the source transaction line. Present on IRs (copied from
+            // the originating PO line) and on IAs (set directly). Used by PO Allocation
+            // to match received-segment availability without running its own SuiteQL —
+            // see plans/for-po-allocation-sbx-transient.
+            s.columns.push(search.createColumn({ name: 'cseg_po_segment_gl' }));
             _onHandCache = {
                 search: s,
                 colAdjValue: colAdjValue,
@@ -474,6 +487,8 @@ define([
         const entityId = r.getValue({ name: 'entity' });
         const ppp = parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) || parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
         return {
+            docId: docId,
+            lineSeq: safeGetValue(r, { name: 'linesequencenumber' }),
             docNum: r.getValue({ name: 'tranid' }),
             docUrl: getRecordUrl(docId, 'salesorder'),
             customerName: r.getText({ name: 'entity' }),
@@ -484,6 +499,9 @@ define([
             piecesPerPack: ppp,
             pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece' })) || 0),
             rate: roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
+            lotNumber: safeGetValue(r, { name: 'serialnumber' }) || '-',
+            allocatedPO: safeGetText(r, { name: 'line.cseg_po_segment_gl' }) || '-',
+            allocatedSegmentId: safeGetValue(r, { name: 'line.cseg_po_segment_gl' }) || '',
         };
     };
 
@@ -491,7 +509,10 @@ define([
         const docId = r.id;
         const entityId = r.getValue({ name: 'entity' });
         const ppp = parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) || parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
+        const lotId = safeGetValue(r, { name: 'inventorynumber', join: 'inventoryDetail' }) || '';
         return {
+            docId: docId,
+            lineSeq: safeGetValue(r, { name: 'linesequencenumber' }),
             docNum: r.getValue({ name: 'tranid' }),
             docUrl: getRecordUrl(docId, 'salesorder'),
             customerName: r.getText({ name: 'entity' }),
@@ -501,6 +522,10 @@ define([
             piecesPerPack: ppp,
             pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece' })) || 0),
             rate: roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
+            lotNumber: safeGetText(r, { name: 'inventorynumber', join: 'inventoryDetail' }) || '-',
+            lotId: lotId,
+            allocatedPO: safeGetText(r, { name: 'line.cseg_po_segment_gl' }) || '-',
+            allocatedSegmentId: safeGetValue(r, { name: 'line.cseg_po_segment_gl' }) || '',
         };
     };
 
@@ -526,6 +551,12 @@ define([
             piecesPerPack: ppp,
             pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece', summary: 'GROUP' })) || 0),
             rate: rate,
+            // PO Allocation consumes the cache for unreceived segments. segmentId
+            // is the cseg_po_segment_gl internal id on the PO line — join key back
+            // to the SO line. poId + poDate drive PO Allocation's FIFO sort.
+            segmentId: safeGetValue(r, { name: 'internalid', join: 'line.cseg_po_segment_gl', summary: 'GROUP' }) || '',
+            poId: docId,
+            poDate: safeGetValue(r, { name: 'trandate', summary: 'GROUP' }) || '',
         };
     };
 
@@ -553,6 +584,14 @@ define([
             piecesPerPack: ppp,
             pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece' })) || 0),
             rate: roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
+            // PO Allocation can pre-commit against in-transit POs (billed, not yet
+            // received) the same way it does on-order — but only when the row carries
+            // the PO line's segment. `line.cseg_po_segment_gl` is pushed onto the search
+            // in getDetailSearch (same as committed/outbound); PO lines return the
+            // segment, Transfer Order lines return '' → PO Allocation skips them.
+            segmentId: safeGetValue(r, { name: 'line.cseg_po_segment_gl' }) || '',
+            poId: docId,
+            poDate: safeGetValue(r, { name: 'trandate' }) || '',
         };
     };
 
@@ -666,10 +705,12 @@ define([
                         vendor: result.getText({ name: 'mainname' }),
                         vendorUrl: getRecordUrl(vendorId, 'vendor'),
                         lotNo: lotNumber || '-',
+                        lotInternalId: result.getValue({ name: 'inventorynumber', join: 'inventoryDetail' }) || '',
                         packQty: packs,
                         piecesPerPack: piecesPerPack,
                         pricePerPiece: piecePrice,
                         avgPrice: price,
+                        segmentId: safeGetValue(result, { name: 'cseg_po_segment_gl' }) || '',
                     });
                     return true;
                 });

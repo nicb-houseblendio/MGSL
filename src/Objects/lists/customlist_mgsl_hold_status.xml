@@ -1,0 +1,16 @@
+<customlist scriptid="customlist_mgsl_hold_status">
+  <name>MGSL Hold Status</name>
+  <description>MGSL Inventory Hold status values. Active = hold is in effect (trader screen deducts qty). Lifted = hold ended (no effect on trader screen). Lifted records can stay for audit history; only Active records actively subtract from On Hand.</description>
+  <isinactive>F</isinactive>
+  <isordered>T</isordered>
+  <customvalues>
+    <customvalue scriptid="val_active">
+      <value>Active</value>
+      <isinactive>F</isinactive>
+    </customvalue>
+    <customvalue scriptid="val_lifted">
+      <value>Lifted</value>
+      <isinactive>F</isinactive>
+    </customvalue>
+  </customvalues>
+</customlist>
