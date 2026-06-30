@@ -3,9 +3,10 @@
  * @NModuleScope SameAccount
  * @description PO Allocation view of the Trader Screen cache.
  *
- * Reads the buckets PO Allocation needs (onHand + committed + outbound + onOrder)
- * from MGSL_TRADERSCREEN_CACHE. onOrder feeds the unreceived-segment list so
- * PO Allocation can render its full segment chooser from cache alone.
+ * Reads the buckets PO Allocation needs (onHand + committed + outbound + onOrder
+ * + inTransit) from MGSL_TRADERSCREEN_CACHE. onOrder and inTransit feed the
+ * unreceived-segment list so PO Allocation can render its full segment chooser
+ * (open POs AND billed-not-received/in-transit POs) from cache alone.
  *
  * PO Allocation imports via absolute path:
  *   /SuiteScripts/mcgi_services/trader_screen/shared/poAllocationView
@@ -41,7 +42,7 @@ define([
      * @param {string|number} subsidiaryId
      * @param {string|number} itemId
      * @param {string|number} locationId
-     * @returns {{onHand: Array, committed: Array, outbound: Array, onOrder: Array, lastUpdated: string, cacheVersion: number} | null}
+     * @returns {{onHand: Array, committed: Array, outbound: Array, onOrder: Array, inTransit: Array, available: Array, lastUpdated: string, cacheVersion: number} | null}
      */
     const getReceivedDetailByItemLocation = (subsidiaryId, itemId, locationId) => {
         if (!itemId || !locationId) return null;
@@ -58,7 +59,7 @@ define([
 
             // Overflow fallback — MR splits per-bucket when payload exceeds size limit
             if (!detail) {
-                const buckets = ['onHand', 'committed', 'outbound', 'onOrder', 'available'];
+                const buckets = ['onHand', 'committed', 'outbound', 'onOrder', 'inTransit', 'available'];
                 const merged  = {};
                 let anyFound  = false;
                 buckets.forEach((b) => {
@@ -91,6 +92,10 @@ define([
                 committed:    Array.isArray(detail.committed) ? detail.committed : [],
                 outbound:     Array.isArray(detail.outbound)  ? detail.outbound  : [],
                 onOrder:      Array.isArray(detail.onOrder)   ? detail.onOrder   : [],
+                // In-transit (billed-but-not-received) POs — PO Allocation pre-commits
+                // against these like on-order. IND consumes this raw array; MTL also
+                // surfaces them as status='In Transit' rows inside `available` below.
+                inTransit:    Array.isArray(detail.inTransit) ? detail.inTransit : [],
                 // MTL emits `available` as an array of source rows (one per stock
                 // source, with status='On Order' / 'On Hand' / 'In Transit' /
                 // 'Committed'). IND emits it as a scalar — `Array.isArray` keeps

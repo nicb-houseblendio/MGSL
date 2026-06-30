@@ -49,7 +49,9 @@ define([
             // PO Allocation needs the line-level PO segment on committed/outbound rows
             // so it can match SO commits to a specific PO segment without running its
             // own SuiteQL — see plans/for-po-allocation-sbx-transient.
-            if (searchId === COMMITTED_SEARCH_ID || searchId === OUTBOUND_SEARCH_ID) {
+            // In-transit too: it lets PO Allocation pre-commit against billed-but-not-
+            // received POs (PO lines carry the segment; Transfer Order lines return '').
+            if (searchId === COMMITTED_SEARCH_ID || searchId === OUTBOUND_SEARCH_ID || searchId === IN_TRANSIT_SEARCH_ID) {
                 s.columns.push(search.createColumn({ name: 'line.cseg_po_segment_gl' }));
             }
             _detailSearchCache[searchId] = {
@@ -582,6 +584,14 @@ define([
             piecesPerPack: ppp,
             pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece' })) || 0),
             rate: roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
+            // PO Allocation can pre-commit against in-transit POs (billed, not yet
+            // received) the same way it does on-order — but only when the row carries
+            // the PO line's segment. `line.cseg_po_segment_gl` is pushed onto the search
+            // in getDetailSearch (same as committed/outbound); PO lines return the
+            // segment, Transfer Order lines return '' → PO Allocation skips them.
+            segmentId: safeGetValue(r, { name: 'line.cseg_po_segment_gl' }) || '',
+            poId: docId,
+            poDate: safeGetValue(r, { name: 'trandate' }) || '',
         };
     };
 

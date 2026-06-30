@@ -143,7 +143,9 @@ define([
             // sales orders — without the prefix NetSuite returns the (empty) body value
             // and allocatedPO falls through to the em-dash fallback, which makes the
             // AvailableTab drawer skip these rows entirely.
-            if (searchId === OUTBOUND_SEARCH_ID) {
+            // In-transit needs it too, so PO Allocation can pre-commit against billed-
+            // but-not-received POs (PO lines carry the segment; Transfer Order lines '').
+            if (searchId === OUTBOUND_SEARCH_ID || searchId === IN_TRANSIT_SEARCH_ID) {
                 s.columns.push(search.createColumn({ name: 'line.cseg_po_segment_gl' }));
             }
             _detailSearchCache[searchId] = {
@@ -269,6 +271,14 @@ define([
             piecesPerPack: ppp,
             mbfPrice:      roundToTwoDecimals(rawRate / exchRate),
             currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
+            // PO Allocation pre-commits against in-transit POs (billed, not yet
+            // received) like on-order — but only when the row carries the PO line's
+            // segment. `line.cseg_po_segment_gl` is pushed onto the search in
+            // getDetailSearch (same as outbound); PO lines return the segment, Transfer
+            // Order lines return '' → PO Allocation skips them.
+            segmentId:     safeGetValue(r, { name: 'line.cseg_po_segment_gl' }) || '',
+            poId:          docId,
+            poDate:        safeGetValue(r, { name: 'trandate' }) || '',
         };
     };
 
@@ -691,7 +701,10 @@ define([
             });
         });
 
-        // In Transit rows — include as-is
+        // In Transit rows — include as-is, carrying segmentId/poId/poDate so PO
+        // Allocation can pre-commit against in-transit POs (billed, not yet received),
+        // the same way it does On Order. Transfer-Order in-transit rows have an empty
+        // segmentId and are skipped by PO Allocation.
         inTransit.forEach((row) => {
             if ((row.packs || 0) <= 0) return;
             available.push({
@@ -703,6 +716,9 @@ define([
                 packsAvail:    row.packs,
                 piecesPerPack: row.piecesPerPack,
                 mbfPrice:      row.mbfPrice,
+                segmentId:     row.segmentId || '',
+                poId:          row.poId || '',
+                poDate:        row.poDate || '',
             });
         });
 
