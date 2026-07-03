@@ -4,6 +4,7 @@
     </configuration>
     <files>
         <path>~/FileCabinet/SuiteScripts/mcgi_services/trader_screen/*</path>
+        <path>~/FileCabinet/SuiteScripts/mcgi_services/inventory_hold/*</path>
     </files>
     <objects>
         <path>~/Objects/*</path>

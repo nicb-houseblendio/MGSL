@@ -1,0 +1,24 @@
+<usereventscript scriptid="customscript_mgsl_hold_validate_ue">
+  <description>Validates the MGSL Inventory Hold record on save: rejects if packs_on_hold exceeds current gross stock minus other active holds at the (item, location, lot) combo. Uses fresh SuiteQL (no MR cache dependency).</description>
+  <isinactive>F</isinactive>
+  <name>MGSL Inventory Hold - Validate UE</name>
+  <notifyadmins>F</notifyadmins>
+  <notifyemails></notifyemails>
+  <notifyowner>T</notifyowner>
+  <scriptfile>[/SuiteScripts/mcgi_services/inventory_hold/mgsl_hold_validate_ue.js]</scriptfile>
+  <scriptdeployments>
+    <scriptdeployment scriptid="customdeploy_mgsl_hold_validate_ue">
+      <allemployees>T</allemployees>
+      <allpartners>F</allpartners>
+      <allroles>T</allroles>
+      <audslctrole></audslctrole>
+      <eventtype></eventtype>
+      <isdeployed>T</isdeployed>
+      <loglevel>DEBUG</loglevel>
+      <recordtype>[scriptid=customrecord_mgsl_inventory_hold]</recordtype>
+      <runasrole>ADMINISTRATOR</runasrole>
+      <status>RELEASED</status>
+      <title>MGSL Inventory Hold - Validate UE</title>
+    </scriptdeployment>
+  </scriptdeployments>
+</usereventscript>

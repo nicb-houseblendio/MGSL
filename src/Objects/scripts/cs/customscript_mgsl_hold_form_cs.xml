@@ -1,0 +1,24 @@
+<clientscript scriptid="customscript_mgsl_hold_form_cs">
+  <description>Filters the Lot dropdown on the MGSL Inventory Hold form by selected (Item, Location), and only shows lots with positive on-hand at that location.</description>
+  <isinactive>F</isinactive>
+  <name>MGSL Inventory Hold - Form CS</name>
+  <notifyadmins>F</notifyadmins>
+  <notifyemails></notifyemails>
+  <notifyowner>T</notifyowner>
+  <scriptfile>[/SuiteScripts/mcgi_services/inventory_hold/mgsl_hold_form_cs.js]</scriptfile>
+  <scriptdeployments>
+    <scriptdeployment scriptid="customdeploy_mgsl_hold_form_cs">
+      <allemployees>T</allemployees>
+      <allpartners>F</allpartners>
+      <allroles>T</allroles>
+      <audslctrole></audslctrole>
+      <eventtype></eventtype>
+      <isdeployed>T</isdeployed>
+      <loglevel>DEBUG</loglevel>
+      <recordtype>[scriptid=customrecord_mgsl_inventory_hold]</recordtype>
+      <runasrole>ADMINISTRATOR</runasrole>
+      <status>RELEASED</status>
+      <title>MGSL Inventory Hold - Form CS</title>
+    </scriptdeployment>
+  </scriptdeployments>
+</clientscript>
