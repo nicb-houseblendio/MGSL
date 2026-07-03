@@ -679,6 +679,15 @@ define([
                 status:        'On Hand',
                 packsAvail:    packsAvail,
                 piecesPerPack: lot.piecesPerPack,
+                // PO Allocation keys allocations off these (segment / lot / source
+                // txn). The trader AvailableTab ignores the extra fields; carrying
+                // them lets PO Alloc consume this reconciled `available` row directly
+                // instead of re-deriving availability per-lot (which drops outbound
+                // stranded on depleted sibling lots → over-statement).
+                segmentId:     lot.segmentId || '',
+                lotInternalId: lot.lotInternalId || '',
+                poId:          lot.tranId || '',
+                tranType:      lot.tranType || '',
             });
         });
 
