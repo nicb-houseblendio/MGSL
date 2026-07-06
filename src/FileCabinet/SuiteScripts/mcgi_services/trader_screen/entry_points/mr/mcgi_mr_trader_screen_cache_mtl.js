@@ -23,10 +23,13 @@ define([
 
     const MTL_SUBSIDIARY_ID = 5;
     const MIN_INTERVAL_MS   = 120000; // 2 minutes — minimum gap between real processing runs
-    // MGSL USD secondary accounting book ID. IA-origin lots are displayed in USD
-    // per MGSL accounting convention; applyLotCost queries MCGI_LIB_LotCost
-    // with this book id to get USD rates. Update if NS book numbering changes.
-    const USD_ACCOUNTING_BOOK_ID = 6;
+    // MGSL USD secondary accounting book ID — overridable per deployment via
+    // the `custscript_ts_mtl_usd_book_id` script parameter, since the id
+    // differs between environments (sandbox = 6, prod = 2 as of 2026-06-25).
+    // The constant below is the fallback if the parameter is unset or unreadable.
+    // Run `SELECT id, name FROM accountingbook WHERE name LIKE '%USD%'` to
+    // confirm the correct id in any new environment.
+    const USD_ACCOUNTING_BOOK_ID_DEFAULT = 6;
 
     const SUMMARY_SEARCH_ID    = 'customsearch_suitelet_all_items_search_m';
     const ON_HAND_SEARCH_ID    = 'customsearch_mgsl_trader_onhand_tran_mtl';
@@ -617,15 +620,25 @@ define([
     //  Two passes:
     //    1. Primary book (CAD) — fills `row.lotCost` for every lot using the
     //       weighted average across remaining FIFO layers.
-    //    2. USD secondary book (book=6) — IA-origin lots only. MGSL accounting
-    //       convention is to value IA-created stock in USD secondary book; the
-    //       legacy Trader Screen displayed IA-origin lots in USD. Preserving
-    //       that here also preserves Task 2 PO Allocation's iaIsUsd detection
-    //       (MSL_LIB_POAllocationCore reads r.tranType === 'inventoryadjustment'
-    //       && r.currency === 'USD' at L1705 to flip its rate lookup).
+    //    2. USD secondary book — applied to every lot the origin walk
+    //       already marked `row.currency === 'USD'`. Previously this pass
+    //       filtered on `r.tranType === 'inventoryadjustment'`, which
+    //       silently skipped IR-origin lots at USD locations: their
+    //       Pass-1 CAD weighted average leaked through under a USD badge
+    //       (Camille's lot 112233 / 558899 / 8897 reports, sbx 2026-06-25).
+    //       The origin walk (line ~1510) already chooses the right
+    //       currency from `origin.currencyText` for every additive origin
+    //       type — let Pass 2 follow that signal instead of guessing from
+    //       rowtype.
 
     const applyLotCost = (onHand, locationId) => {
         if (!onHand || onHand.length === 0) return;
+
+        // Resolve USD book id from script parameter (env-specific) with a
+        // safe fallback to the sandbox value. Parsed once per applyLotCost
+        // invocation; param value is stable across a single MR run.
+        var usdBookId = parseInt(getScriptParam('custscript_ts_mtl_usd_book_id', USD_ACCOUNTING_BOOK_ID_DEFAULT), 10)
+                     || USD_ACCOUNTING_BOOK_ID_DEFAULT;
 
         // Default null so a library failure leaves a clean "—" in the UI
         // rather than carrying over stale values.
@@ -649,23 +662,39 @@ define([
             return; // skip the USD pass if primary failed
         }
 
-        // ── Pass 2: USD secondary book — IA-origin lots only ────────────────
-        var iaLotIds = onHand
-            .filter(function (r) { return r.tranType === 'inventoryadjustment' && r.lotInternalId; })
+        // ── Pass 2: USD secondary book — every lot the origin walk marked USD
+        var usdLotIds = onHand
+            .filter(function (r) { return r.currency === 'USD' && r.lotInternalId; })
             .map(function (r) { return r.lotInternalId; });
-        if (iaLotIds.length === 0) return;
+        if (usdLotIds.length === 0) return;
 
         try {
-            var usdCosts = LotCostLib.getLotCostsAtLocation(iaLotIds, locationId, { book: USD_ACCOUNTING_BOOK_ID });
+            var usdCosts = LotCostLib.getLotCostsAtLocation(usdLotIds, locationId, { book: usdBookId });
+            var nullLotIds = [];
             onHand.forEach(function (row) {
-                if (row.tranType !== 'inventoryadjustment' || !row.lotInternalId) return;
+                if (row.currency !== 'USD' || !row.lotInternalId) return;
                 var usd = usdCosts[row.lotInternalId];
                 if (usd != null) {
                     row.lotCost  = usd;
                     row.mbfPrice = usd;
-                    row.currency = 'USD';
+                    // row.currency already 'USD' from the origin walk; no need to set
+                } else {
+                    // USD lookup returned null for a USD-currency lot.
+                    // Pass 1 CAD value stays in row.lotCost under a USD badge —
+                    // same shape as the original Bug 1. Log so it's observable
+                    // (silent value/badge mismatches are the failure mode this
+                    // whole patch was designed to surface).
+                    nullLotIds.push(row.lotInternalId);
                 }
             });
+            if (nullLotIds.length) {
+                log.audit('MTL applyLotCost',
+                    'USD lookup returned null for ' + nullLotIds.length +
+                    ' USD-currency lot(s) at loc=' + locationId +
+                    ' book=' + usdBookId +
+                    ' (Pass 1 CAD retained; investigate book id or missing USD GL). lotIds=[' +
+                    nullLotIds.join(',') + ']');
+            }
         } catch (e) {
             // Don't undo Pass 1's results — primary-book CAD stays in place.
             log.error('MTL applyLotCost', 'USD call failed loc=' + locationId + ': ' + e.message);
@@ -1885,6 +1914,7 @@ define([
                         custscript_ts_mtl_subsidiary_id:      scriptObj.getParameter({ name: 'custscript_ts_mtl_subsidiary_id' }) || MTL_SUBSIDIARY_ID,
                         custscript_ts_mtl_force_full_rebuild:  false,
                         custscript_ts_mtl_delta_threshold:     scriptObj.getParameter({ name: 'custscript_ts_mtl_delta_threshold' }) || 500,
+                        custscript_ts_mtl_usd_book_id:         scriptObj.getParameter({ name: 'custscript_ts_mtl_usd_book_id' }) || USD_ACCOUNTING_BOOK_ID_DEFAULT,
                     },
                 });
                 var taskId = mrTask.submit();
@@ -2054,6 +2084,7 @@ define([
                     custscript_ts_mtl_subsidiary_id:      scriptObj.getParameter({ name: 'custscript_ts_mtl_subsidiary_id' }) || MTL_SUBSIDIARY_ID,
                     custscript_ts_mtl_force_full_rebuild:  false,
                     custscript_ts_mtl_delta_threshold:     scriptObj.getParameter({ name: 'custscript_ts_mtl_delta_threshold' }) || 500,
+                    custscript_ts_mtl_usd_book_id:         scriptObj.getParameter({ name: 'custscript_ts_mtl_usd_book_id' }) || USD_ACCOUNTING_BOOK_ID_DEFAULT,
                 },
             });
             var taskId = mrTask.submit();

@@ -88,6 +88,33 @@
       <setting></setting>
       <storevalue>T</storevalue>
     </scriptcustomfield>
+    <scriptcustomfield scriptid="custscript_ts_mtl_usd_book_id">
+      <accesslevel>2</accesslevel>
+      <applyformatting>T</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue>6</defaultvalue>
+      <description>USD secondary accounting book id. Differs per environment (sandbox = 6, production = 2 as of 2026-06-25). Set per deployment so applyLotCost Pass 2 queries the right book.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>INTEGER</fieldtype>
+      <help>Accounting book internal id to query for USD lot cost. Run `SELECT id, name FROM accountingbook WHERE name LIKE '%USD%'` in the target env to confirm. Default 6 matches sandbox.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>USD Accounting Book ID</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
   </scriptcustomfields>
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploy_mcgi_mr_trader_cache_mtl">
@@ -96,6 +123,13 @@
       <custscript_ts_mtl_subsidiary_id>5</custscript_ts_mtl_subsidiary_id>
       <custscript_ts_mtl_force_full_rebuild>F</custscript_ts_mtl_force_full_rebuild>
       <custscript_ts_mtl_delta_threshold>500</custscript_ts_mtl_delta_threshold>
+      <!-- custscript_ts_mtl_usd_book_id intentionally omitted from the
+           deployment override so each environment keeps its own value
+           (sbx=6, prod=2). The field-level defaultvalue (6) applies on
+           first deploy to a new environment; admin sets prod to 2 once
+           via NS UI. Subsequent SDF deploys preserve the deployment
+           record's value because this tag is absent. -->
+
       <isdeployed>T</isdeployed>
       <loglevel>DEBUG</loglevel>
       <queueallstagesatonce>T</queueallstagesatonce>
