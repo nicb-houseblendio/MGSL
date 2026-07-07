@@ -620,16 +620,17 @@ define([
     //  Two passes:
     //    1. Primary book (CAD) — fills `row.lotCost` for every lot using the
     //       weighted average across remaining FIFO layers.
-    //    2. USD secondary book — applied to every lot the origin walk
-    //       already marked `row.currency === 'USD'`. Previously this pass
-    //       filtered on `r.tranType === 'inventoryadjustment'`, which
-    //       silently skipped IR-origin lots at USD locations: their
-    //       Pass-1 CAD weighted average leaked through under a USD badge
-    //       (Camille's lot 112233 / 558899 / 8897 reports, sbx 2026-06-25).
-    //       The origin walk (line ~1510) already chooses the right
-    //       currency from `origin.currencyText` for every additive origin
-    //       type — let Pass 2 follow that signal instead of guessing from
-    //       rowtype.
+    //    2. USD secondary book — applied to a lot when EITHER:
+    //         • it is IA-origin (`tranType === 'inventoryadjustment'`) — MGSL
+    //           convention values IA-created stock in the USD secondary book
+    //           regardless of the IA's own booking currency (Marc-Antoine
+    //           2026-07-07: IA-CWP lots booked in CAD were displaying CAD), OR
+    //         • the origin walk marked it `currency === 'USD'` (IR-origin lots
+    //           at USD locations — Camille's 112233 / 558899 / 8897, 2026-06-25).
+    //       History: the original pass keyed on tranType===IA ONLY (missed
+    //       Camille's IR-USD lots); the 2026-06-25 fix switched to currency
+    //       ONLY (broke Marc-Antoine's IA-CAD lots). BOTH are required — Pass 2
+    //       is the UNION of the two, never one replacing the other.
 
     const applyLotCost = (onHand, locationId) => {
         if (!onHand || onHand.length === 0) return;
@@ -662,35 +663,42 @@ define([
             return; // skip the USD pass if primary failed
         }
 
-        // ── Pass 2: USD secondary book — every lot the origin walk marked USD
-        var usdLotIds = onHand
-            .filter(function (r) { return r.currency === 'USD' && r.lotInternalId; })
-            .map(function (r) { return r.lotInternalId; });
+        // ── Pass 2: USD secondary book — IA-origin lots (MGSL convention) OR
+        //    lots the origin walk marked currency==='USD'. Keys on
+        //    `originTranType` (the STABLE segment-origin type captured at build),
+        //    NOT `tranType`: the IR-precedence backfill (~L1511) rewrites
+        //    `tranType`→'itemreceipt' for mixed IA+IR lots, which would hide
+        //    IA-origin lots from this rule (R46450-0022, Marc-Antoine 2026-07-07).
+        //    Shared predicate so the filter and the apply-loop below can't drift.
+        var needsUsd = function (r) {
+            return r.lotInternalId && (r.originTranType === 'inventoryadjustment' || r.currency === 'USD');
+        };
+        var usdLotIds = onHand.filter(needsUsd).map(function (r) { return r.lotInternalId; });
         if (usdLotIds.length === 0) return;
 
         try {
             var usdCosts = LotCostLib.getLotCostsAtLocation(usdLotIds, locationId, { book: usdBookId });
             var nullLotIds = [];
             onHand.forEach(function (row) {
-                if (row.currency !== 'USD' || !row.lotInternalId) return;
+                if (!needsUsd(row)) return;
                 var usd = usdCosts[row.lotInternalId];
                 if (usd != null) {
                     row.lotCost  = usd;
                     row.mbfPrice = usd;
-                    // row.currency already 'USD' from the origin walk; no need to set
+                    row.currency = 'USD';   // IA-origin rows arrive as CAD — flip badge to match the USD value
                 } else {
-                    // USD lookup returned null for a USD-currency lot.
-                    // Pass 1 CAD value stays in row.lotCost under a USD badge —
-                    // same shape as the original Bug 1. Log so it's observable
-                    // (silent value/badge mismatches are the failure mode this
-                    // whole patch was designed to surface).
+                    // No USD cost for a lot we expected to value in USD. We do
+                    // NOT flip the badge here: IA rows keep their CAD badge (value
+                    // + badge agree); origin-USD rows keep the USD badge the walk
+                    // set (CAD value under USD badge — the mismatch we surface).
+                    // Either way log it so a missing USD GL / wrong book stays visible.
                     nullLotIds.push(row.lotInternalId);
                 }
             });
             if (nullLotIds.length) {
                 log.audit('MTL applyLotCost',
                     'USD lookup returned null for ' + nullLotIds.length +
-                    ' USD-currency lot(s) at loc=' + locationId +
+                    ' USD-valued lot(s) at loc=' + locationId +
                     ' book=' + usdBookId +
                     ' (Pass 1 CAD retained; investigate book id or missing USD GL). lotIds=[' +
                     nullLotIds.join(',') + ']');
@@ -1540,6 +1548,12 @@ define([
                         lotInternalId: origin.lotId,
                         tranId:        origin.tranInternalId,
                         tranType:      origin.tranType,
+                        // Stable copy of the segment-origin type for applyLotCost's
+                        // USD rule. The IR-precedence backfill (~L1511) can rewrite
+                        // `tranType`→'itemreceipt' for mixed IA+IR lots; this field is
+                        // never touched there, so the USD rule stays correct
+                        // (R46450-0022, Marc-Antoine 2026-07-07).
+                        originTranType: origin.tranType,
                         packsOnHand:   packs,
                         piecesPerPack: pppToUse,
                         fbmFactor:     fbmToUse,
