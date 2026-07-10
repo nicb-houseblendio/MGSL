@@ -50,7 +50,8 @@ define([
             // so it can match SO commits to a specific PO segment without running its
             // own SuiteQL — see plans/for-po-allocation-sbx-transient.
             // In-transit too: it lets PO Allocation pre-commit against billed-but-not-
-            // received POs (PO lines carry the segment; Transfer Order lines return '').
+            // received rows. PO and (now) Transfer Order lines both carry the segment
+            // (TOs stamped by MSL_UE_allocationSegmentSync); segment-less rows are skipped.
             if (searchId === COMMITTED_SEARCH_ID || searchId === OUTBOUND_SEARCH_ID || searchId === IN_TRANSIT_SEARCH_ID) {
                 s.columns.push(search.createColumn({ name: 'line.cseg_po_segment_gl' }));
             }
@@ -135,6 +136,8 @@ define([
         inventoryItem: 'inventoryitem',
         InvtPart: 'inventoryitem',
         ItemRcpt: 'itemreceipt',
+        TrnfrOrd: 'transferorder',
+        'Transfer Order': 'transferorder',
         Build: 'assemblybuild',
         invwksht: 'inventoryworksheet',
         'Inventory Item': 'inventoryitem',
@@ -584,11 +587,13 @@ define([
             piecesPerPack: ppp,
             pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece' })) || 0),
             rate: roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
-            // PO Allocation can pre-commit against in-transit POs (billed, not yet
+            // PO Allocation pre-commits against in-transit rows (billed, not yet
             // received) the same way it does on-order — but only when the row carries
-            // the PO line's segment. `line.cseg_po_segment_gl` is pushed onto the search
-            // in getDetailSearch (same as committed/outbound); PO lines return the
-            // segment, Transfer Order lines return '' → PO Allocation skips them.
+            // a segment. `line.cseg_po_segment_gl` is pushed onto the search in
+            // getDetailSearch (same as committed/outbound). Transfer Order lines now
+            // carry the segment too (stamped by MSL_UE_allocationSegmentSync), so their
+            // in-transit stock is allocatable like a PO. Any row still lacking a segment
+            // is skipped downstream in the core lib (addUnreceivedRows).
             segmentId: safeGetValue(r, { name: 'line.cseg_po_segment_gl' }) || '',
             poId: docId,
             poDate: safeGetValue(r, { name: 'trandate' }) || '',

@@ -47,6 +47,8 @@ define([
         InvtPart:          'inventoryitem',
         'Inventory Item':  'inventoryitem',
         inventoryItem:     'inventoryitem',
+        TrnfrOrd:          'transferorder',
+        'Transfer Order':  'transferorder',
     };
 
     // Virtual locations — physical country is irrelevant (no address).
@@ -149,9 +151,16 @@ define([
             // and allocatedPO falls through to the em-dash fallback, which makes the
             // AvailableTab drawer skip these rows entirely.
             // In-transit needs it too, so PO Allocation can pre-commit against billed-
-            // but-not-received POs (PO lines carry the segment; Transfer Order lines '').
+            // but-not-received rows. PO and (now) Transfer Order lines both carry the
+            // segment (TOs stamped by MSL_UE_allocationSegmentSync); segment-less rows skip.
             if (searchId === OUTBOUND_SEARCH_ID || searchId === IN_TRANSIT_SEARCH_ID) {
                 s.columns.push(search.createColumn({ name: 'line.cseg_po_segment_gl' }));
+            }
+            // In-transit `type` drives the doc-link record type in buildInTransitRow
+            // (PO → purchaseorder, TO → transferorder). Pushed defensively so the row
+            // link is correct regardless of whether the saved search returns `type`.
+            if (searchId === IN_TRANSIT_SEARCH_ID) {
+                s.columns.push(search.createColumn({ name: 'type' }));
             }
             _detailSearchCache[searchId] = {
                 search: s,
@@ -352,6 +361,7 @@ define([
         }
         var packs    = roundToTwoDecimals(parseFloat(colInTransitAdditional ? r.getValue(colInTransitAdditional) : 0) || 0);
         var docId    = r.id;
+        var docType  = r.getValue({ name: 'type' });
         var vendorId = r.getValue({ name: 'mainname' });
         var ppp      = parseFloat(r.getValue({ name: 'custcol_mgsl_ppp' })) ||
                        parseFloat(r.getValue({ name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
@@ -359,7 +369,7 @@ define([
         var exchRate = parseFloat(r.getValue({ name: 'exchangerate' })) || 1;
         return {
             docNumber:     r.getValue({ name: 'tranid' }),
-            docUrl:        getRecordUrl(docId, 'purchaseorder'),
+            docUrl:        getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'purchaseorder'),
             shipWeek:      r.getValue({ name: 'custbody_ship_week' }) || '',
             vendor:        r.getText({ name: 'mainname' }),
             vendorUrl:     getRecordUrl(vendorId, 'vendor'),
@@ -367,11 +377,13 @@ define([
             piecesPerPack: ppp,
             mbfPrice:      roundToTwoDecimals(rawRate / exchRate),
             currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
-            // PO Allocation pre-commits against in-transit POs (billed, not yet
-            // received) like on-order — but only when the row carries the PO line's
-            // segment. `line.cseg_po_segment_gl` is pushed onto the search in
-            // getDetailSearch (same as outbound); PO lines return the segment, Transfer
-            // Order lines return '' → PO Allocation skips them.
+            // PO Allocation pre-commits against in-transit rows (billed, not yet
+            // received) like on-order — but only when the row carries a segment.
+            // `line.cseg_po_segment_gl` is pushed onto the search in getDetailSearch
+            // (same as outbound). Transfer Order lines now carry the segment too
+            // (stamped by MSL_UE_allocationSegmentSync), so their in-transit stock is
+            // allocatable like a PO. Any row still lacking a segment is skipped
+            // downstream in the core lib (addUnreceivedRows).
             segmentId:     safeGetValue(r, { name: 'line.cseg_po_segment_gl' }) || '',
             poId:          docId,
             poDate:        safeGetValue(r, { name: 'trandate' }) || '',
@@ -787,9 +799,10 @@ define([
         });
 
         // In Transit rows — include as-is, carrying segmentId/poId/poDate so PO
-        // Allocation can pre-commit against in-transit POs (billed, not yet received),
-        // the same way it does On Order. Transfer-Order in-transit rows have an empty
-        // segmentId and are skipped by PO Allocation.
+        // Allocation can pre-commit against in-transit rows (billed, not yet received),
+        // the same way it does On Order. Transfer-Order in-transit rows now carry a
+        // segment too (stamped by MSL_UE_allocationSegmentSync) and are allocatable;
+        // any row still lacking a segment is skipped downstream by PO Allocation.
         inTransit.forEach((row) => {
             if ((row.packs || 0) <= 0) return;
             available.push({
