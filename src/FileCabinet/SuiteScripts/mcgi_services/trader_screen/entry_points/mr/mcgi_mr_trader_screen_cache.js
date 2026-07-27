@@ -13,7 +13,8 @@ define([
     '../../shared/cacheKeys',
     '../../shared/cacheClient',
     '../../shared/urlResolver',
-], (search, cache, log, runtime, task, query, CacheKeys, CacheClient, UrlResolver) => {
+    '/SuiteScripts/MCGI_LIB_LotCost',
+], (search, cache, log, runtime, task, query, CacheKeys, CacheClient, UrlResolver, LotCostLib) => {
     const { TTL_SUMMARY, TTL_LAST_RUN, buildDetailKey, buildDetailBucketKey } = CacheKeys;
     const { getRecordUrl } = UrlResolver;
 
@@ -54,6 +55,13 @@ define([
             // (TOs stamped by MSL_UE_allocationSegmentSync); segment-less rows are skipped.
             if (searchId === COMMITTED_SEARCH_ID || searchId === OUTBOUND_SEARCH_ID || searchId === IN_TRANSIT_SEARCH_ID) {
                 s.columns.push(search.createColumn({ name: 'line.cseg_po_segment_gl' }));
+            }
+            // Lot (inventoryDetail.inventorynumber) + source `location` let
+            // buildInTransitRow price a Transfer Order row from its transferred lot's
+            // cost (TO lines have rate=0). PO in-transit rows have no lot → unaffected.
+            if (searchId === IN_TRANSIT_SEARCH_ID) {
+                s.columns.push(search.createColumn({ name: 'inventorynumber', join: 'inventoryDetail' }));
+                s.columns.push(search.createColumn({ name: 'location' }));
             }
             _detailSearchCache[searchId] = {
                 search: s,
@@ -577,6 +585,26 @@ define([
         const docId = r.id;
         const vendorId = r.getValue({ name: 'mainname' });
         const ppp = parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) || parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
+        // Cost: PO in-transit rows carry the PO line rate (core lib uses `rate` as
+        // avgCostPerUnit). Transfer Order lines have rate=0, so price the row from the
+        // transferred lot's cost (rule: lot → lot cost, no lot → $0), looked up at the
+        // lot's SOURCE location (`location` = from side). Same shared engine the MTL
+        // on-hand path uses.
+        let rate = roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0);
+        const lotId = safeGetValue(r, { name: 'inventorynumber', join: 'inventoryDetail' }) || '';
+        if (lotId) {
+            const srcLoc = safeGetValue(r, { name: 'location' }) || '';
+            let lotCost = null;
+            if (srcLoc) {
+                try {
+                    const costs = LotCostLib.getLotCostsAtLocation([lotId], srcLoc);
+                    if (costs && costs[lotId] != null) lotCost = costs[lotId];
+                } catch (e) {
+                    log.error('IND In Transit lot cost', 'lot=' + lotId + ' loc=' + srcLoc + ': ' + e.message);
+                }
+            }
+            rate = roundToTwoDecimals(lotCost != null ? lotCost : 0);
+        }
         return {
             docNum: r.getValue({ name: 'tranid' }),
             docUrl: getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'purchaseorder'),
@@ -586,7 +614,7 @@ define([
             packQty: roundToTwoDecimals(parseFloat(formulaValues.inTransit) || 0),
             piecesPerPack: ppp,
             pricePerPiece: roundToTwoDecimals(parseFloat(safeGetValue(r, { name: 'custcol_prixpiece' })) || 0),
-            rate: roundToTwoDecimals(parseFloat(r.getValue({ name: 'rate' })) || 0),
+            rate: rate,
             // PO Allocation pre-commits against in-transit rows (billed, not yet
             // received) the same way it does on-order — but only when the row carries
             // a segment. `line.cseg_po_segment_gl` is pushed onto the search in

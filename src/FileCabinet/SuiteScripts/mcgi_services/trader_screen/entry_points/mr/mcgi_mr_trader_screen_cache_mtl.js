@@ -159,8 +159,13 @@ define([
             // In-transit `type` drives the doc-link record type in buildInTransitRow
             // (PO → purchaseorder, TO → transferorder). Pushed defensively so the row
             // link is correct regardless of whether the saved search returns `type`.
+            // The lot (inventoryDetail.inventorynumber) + source `location` let
+            // buildInTransitRow price a Transfer Order row from its transferred lot's
+            // cost (TO lines have rate=0). PO in-transit rows have no lot → unaffected.
             if (searchId === IN_TRANSIT_SEARCH_ID) {
                 s.columns.push(search.createColumn({ name: 'type' }));
+                s.columns.push(search.createColumn({ name: 'inventorynumber', join: 'inventoryDetail' }));
+                s.columns.push(search.createColumn({ name: 'location' }));
             }
             _detailSearchCache[searchId] = {
                 search: s,
@@ -367,6 +372,26 @@ define([
                        parseFloat(r.getValue({ name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
         var rawRate  = parseFloat(r.getValue({ name: 'rate' })) || 0;
         var exchRate = parseFloat(r.getValue({ name: 'exchangerate' })) || 1;
+        // Cost: PO in-transit rows carry the PO line rate. Transfer Order lines have
+        // rate=0, so price the row from the transferred lot's cost (rule: lot → lot
+        // cost, no lot → $0). The lot's cost basis is at its SOURCE location (`location`
+        // = the from side; the reduce key's location is the TO destination). Reuse the
+        // shared lot-cost engine the on-hand path uses (applyLotCost).
+        var mbfPrice = roundToTwoDecimals(rawRate / exchRate);
+        var lotId    = r.getValue({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
+        if (lotId) {
+            var srcLoc = r.getValue({ name: 'location' }) || '';
+            var lotCost = null;
+            if (srcLoc) {
+                try {
+                    var costs = LotCostLib.getLotCostsAtLocation([lotId], srcLoc);
+                    if (costs && costs[lotId] != null) lotCost = costs[lotId];
+                } catch (e) {
+                    log.error('MTL In Transit lot cost', 'lot=' + lotId + ' loc=' + srcLoc + ': ' + e.message);
+                }
+            }
+            mbfPrice = roundToTwoDecimals(lotCost != null ? lotCost : 0);
+        }
         return {
             docNumber:     r.getValue({ name: 'tranid' }),
             docUrl:        getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'purchaseorder'),
@@ -375,7 +400,7 @@ define([
             vendorUrl:     getRecordUrl(vendorId, 'vendor'),
             packs:         packs,
             piecesPerPack: ppp,
-            mbfPrice:      roundToTwoDecimals(rawRate / exchRate),
+            mbfPrice:      mbfPrice,
             currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
             // PO Allocation pre-commits against in-transit rows (billed, not yet
             // received) like on-order — but only when the row carries a segment.
