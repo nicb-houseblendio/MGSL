@@ -758,6 +758,87 @@ define([
                     return true;
                 });
             }
+            // In Transit = PO saved search (above; its TO support is inert — the
+            // search filters and the "In Transit *Additional" formula reference
+            // custbody_po_intransit_journal / custbody_po_is_agency, neither of
+            // which is applied to Transfer Orders, and the non-agency quantity
+            // branch is billed-driven, which TOs never are; verified 2026-07-28)
+            // + TO transit computed from the dest-keyed TO line search:
+            //     transit = shipped (source twins) − received (dest row)
+            // per entered line, walking the seq triplets. Math-driven — nonzero
+            // exactly between Item Fulfillment and Item Receipt, no status tokens
+            // involved. Rows key at the DESTINATION (PO parity: In Transit shows
+            // where goods are headed) and carry segmentId so PO Allocation can
+            // pre-commit against them (Nic's engine, addUnreceivedRows).
+            if (searchId === IN_TRANSIT_SEARCH_ID) {
+                var tRaw = [];
+                createTOLineSearch(itemId, locationId, 'dest').run().each(function (r) {
+                    var tShippedCol = null;
+                    r.columns.forEach(function (col) {
+                        if (col.label === 'Shipped Pack Quantity') tShippedCol = col;
+                    });
+                    tRaw.push({
+                        docId:     r.getValue({ name: 'internalid' }),
+                        lineSeq:   parseInt(r.getValue({ name: 'linesequencenumber' }), 10) || 0,
+                        qty:       parseFloat(r.getValue({ name: 'quantity' })) || 0,
+                        shipped:   Math.abs(roundToTwoDecimals(parseFloat(tShippedCol ? r.getValue(tShippedCol) : 0) || 0)),
+                        docNumber: r.getValue({ name: 'tranid' }),
+                        shipWeek:  r.getValue({ name: 'custbody_ship_week' }) || '',
+                        ppp:       parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) ||
+                                   parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0,
+                        segmentId: r.getValue({ name: 'line.cseg_po_segment_gl' }) || '',
+                        poDate:    r.getValue({ name: 'trandate' }) || '',
+                    });
+                    return true;
+                });
+                if (tRaw.length) {
+                    tRaw.sort(function (x, y) {
+                        if (String(x.docId) !== String(y.docId)) return String(x.docId) < String(y.docId) ? -1 : 1;
+                        return x.lineSeq - y.lineSeq;
+                    });
+                    var ti = 0;
+                    while (ti < tRaw.length) {
+                        var t0 = tRaw[ti];
+                        if (t0.qty >= 0) { ti++; continue; } // orphan dest row — triplet walk starts on source twins
+                        var consumed = 1;
+                        var twin = null, destRow = null;
+                        var tNext = tRaw[ti + 1];
+                        if (tNext && String(tNext.docId) === String(t0.docId) &&
+                            tNext.lineSeq === t0.lineSeq + 1 && tNext.qty < 0) {
+                            twin = tNext;
+                            consumed++;
+                        }
+                        var tAfter = tRaw[ti + consumed];
+                        if (tAfter && String(tAfter.docId) === String(t0.docId) &&
+                            tAfter.lineSeq === t0.lineSeq + consumed && tAfter.qty > 0) {
+                            destRow = tAfter;
+                            consumed++;
+                        }
+                        var shippedPk  = Math.max(t0.shipped, twin ? twin.shipped : 0);
+                        var receivedPk = destRow ? destRow.shipped : 0;
+                        var transitPk  = roundToTwoDecimals(shippedPk - receivedPk);
+                        ti += consumed;
+                        if (transitPk <= 0) continue;
+                        rawCount++;
+                        rows.push({
+                            docNumber:     t0.docNumber,
+                            docUrl:        getRecordUrl(t0.docId, 'transferorder'),
+                            shipWeek:      t0.shipWeek,
+                            vendor:        lookupTOSourceName(t0.docId),
+                            vendorUrl:     '',
+                            packs:         transitPk,
+                            piecesPerPack: t0.ppp,
+                            // Price display deferred to TO spec item 4.
+                            mbfPrice:      0,
+                            currency:      '',
+                            segmentId:     t0.segmentId || (twin ? twin.segmentId : '') || '',
+                            poId:          t0.docId,
+                            poDate:        t0.poDate,
+                            isTO:          true,
+                        });
+                    }
+                }
+            }
             // On Order = PO saved search (above, untouched) + inbound-TO rows at
             // the destination (spec point B: dest must see the TO coming from
             // creation, and PO Allocation can reserve against it pre-receipt).
