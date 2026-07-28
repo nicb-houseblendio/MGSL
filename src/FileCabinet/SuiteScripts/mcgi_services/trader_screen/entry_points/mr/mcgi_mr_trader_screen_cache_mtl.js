@@ -230,12 +230,17 @@ define([
                 // saved search's (0 + x) idiom. Label is what buildCommittedRow
                 // scans for on TO rows. Known limit: on a PARTIALLY fulfilled TO the
                 // shadow twin that carries no shiprecv still reports the full
-                // remainder, so the pair no longer collapses and packs overcount
-                // until fulfillment completes — acceptable v1, revisit with live data.
+                // remainder — collapseTOShadowLines uses "Shipped Pack Quantity" to
+                // identify and drop that stale twin.
                 search.createColumn({
                     name:    'formulanumeric',
                     label:   'Open Pack Quantity',
                     formula: 'CASE WHEN NVL({quantity},0) = 0 THEN 0 ELSE NVL({custcol_mgsl_packqty},0) * (ABS({quantity}) - ABS(NVL({quantityshiprecv},0))) / ABS({quantity}) END',
+                }),
+                search.createColumn({
+                    name:    'formulanumeric',
+                    label:   'Shipped Pack Quantity',
+                    formula: 'CASE WHEN NVL({quantity},0) = 0 THEN 0 ELSE NVL({custcol_mgsl_packqty},0) * ABS(NVL({quantityshiprecv},0)) / ABS({quantity}) END',
                 }),
             ],
         });
@@ -410,6 +415,7 @@ define([
         var exchRate = parseFloat(r.getValue({ name: 'exchangerate' })) || 1;
         var customer    = r.getText({ name: 'entity' });
         var customerUrl = getRecordUrl(entityId, 'customer');
+        var toShippedPacks = 0;
         if (isTO) {
             // TOs commit at their SOURCE only (Julie's TO spec 2026-07-27, point A);
             // the destination side is On Order (spec point B), so reject rows whose
@@ -419,21 +425,37 @@ define([
             var destLocId = r.getValue({ name: 'transferlocation' });
             if (destLocId && String(destLocId) === String(locationId)) return null;
             // Commit only pre-fulfillment TOs. Once fulfilled (pendingReceipt and
-            // later), the source stock is gone and In Transit takes over — line-level
-            // fulfillment math is unreliable on TO shadow lines, so gate on status.
-            var statusRef = r.getValue({ name: 'statusref' });
-            if (['pendingApproval', 'pendingFulfillment', 'partiallyFulfilled'].indexOf(statusRef) === -1) return null;
-            // Unfulfilled remainder from the TO search's own formula column — scan
-            // per row (TO rows are rare; module-cached column objects belong to the
-            // committed SAVED search and cannot be reused across search objects).
-            var toOpenCol = null;
+            // later), the source stock is gone and In Transit takes over. Compare
+            // case-insensitively — only 'pendingFulfillment' is live-verified — and
+            // log any token outside both the open and known-done lists so a
+            // mismatched status vanishes loudly instead of silently.
+            var statusRefRaw = r.getValue({ name: 'statusref' });
+            var statusRef = String(statusRefRaw || '').toLowerCase();
+            if (['pendingapproval', 'pendingfulfillment', 'partiallyfulfilled'].indexOf(statusRef) === -1) {
+                if (['pendingreceipt', 'partiallyreceived', 'received', 'closed', 'rejected', 'cancelled'].indexOf(statusRef) === -1) {
+                    log.audit('MTL committed TO status skipped',
+                        'doc=' + r.getValue({ name: 'tranid' }) + ' statusref=' + statusRefRaw);
+                }
+                return null;
+            }
+            // Remainder / shipped packs from the TO search's own formula columns —
+            // scan per row (TO rows are rare; module-cached column objects belong to
+            // the committed SAVED search and cannot be reused across search objects).
+            var toOpenCol = null, toShippedCol = null;
             r.columns.forEach(function (col) {
                 if (col.label === 'Open Pack Quantity') toOpenCol = col;
+                if (col.label === 'Shipped Pack Quantity') toShippedCol = col;
             });
             packsCommitted = Math.abs(roundToTwoDecimals(
                 parseFloat(toOpenCol ? r.getValue(toOpenCol) : 0) || 0
             ));
-            if (packsCommitted <= 0) return null; // nothing left to fulfill
+            toShippedPacks = Math.abs(roundToTwoDecimals(
+                parseFloat(toShippedCol ? r.getValue(toShippedCol) : 0) || 0
+            ));
+            // Zero-remainder rows that DID ship survive as tombstones —
+            // collapseTOShadowLines needs them to kill the stale shadow twin, and
+            // filters them out afterwards.
+            if (packsCommitted <= 0 && toShippedPacks <= 0) return null;
             // TOs have no entity — show the destination as the counterparty.
             customer    = '→ ' + (r.getText({ name: 'transferlocation' }) || '');
             customerUrl = '';
@@ -449,12 +471,16 @@ define([
             shipWeek:       r.getValue({ name: 'custbody_ship_week' }) || '',
             packsCommitted: packsCommitted,
             piecesPerPack:  ppp,
-            mbfPrice:       roundToTwoDecimals(rawRate / exchRate),
-            currency:       CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || '',
+            // TO price display is deferred to TO spec item 4 (secondary-book lot
+            // cost) \u2014 the TO line rate is not a price traders should act on.
+            mbfPrice:       isTO ? 0 : roundToTwoDecimals(rawRate / exchRate),
+            currency:       isTO ? '' : (CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || ''),
             allocatedPO:    r.getText({ name: 'line.cseg_po_segment_gl' }) || '\u2014',
             allocatedSegmentId: r.getValue({ name: 'line.cseg_po_segment_gl' }) || '',
             lotNumber:      r.getValue({ name: 'serialnumber' }) || '\u2014',
             isTO:           isTO,
+            // Transient \u2014 consumed and deleted by collapseTOShadowLines.
+            toShippedPacks: isTO ? toShippedPacks : undefined,
         };
     };
 
@@ -710,27 +736,69 @@ define([
     //  with DISTINCT linesequencenumbers and identical values (verified on TO01:
     //  transactionline pairs lseq 1+2 and 4+5, both -7.056 @ loc 222). If the
     //  transaction search returns both, dedupeByLine keeps both (its key is
-    //  docId+lineSeq) and the committed total doubles. Collapse TO rows on
-    //  (docId, lotNumber, packsCommitted) instead. SO rows pass through untouched
-    //  — two SO lines with identical values are legitimate and must never merge.
+    //  docId+lineSeq) and the committed total doubles. Three passes, TO rows only
+    //  (SO rows pass through untouched — two SO lines with identical values are
+    //  legitimate and must never merge):
+    //    1. Merge identical signatures (docId, lot, packs, shipped) — the untouched
+    //       shadow pair.
+    //    2. Kill stale twins: on partial fulfillment only ONE twin carries
+    //       shiprecv; the other still reports the FULL line quantity. For every
+    //       shipped row, remove one unshipped row whose packs equal that row's
+    //       full quantity (open + shipped).
+    //    3. Drop zero-remainder tombstones (fully shipped lines kept alive only so
+    //       pass 2 could use them) and strip the transient toShippedPacks field.
     //  Known limit: a TO with the same item entered twice at identical qty+lot
     //  collapses to one row; logged so it stays visible if it ever happens.
     const collapseTOShadowLines = (rows) => {
         if (!rows || rows.length === 0) return rows;
-        var seen = {};
         var dropped = 0;
+        // Pass 1 — identical-signature merge
+        var seen = {};
         var out = rows.filter(function (r) {
             if (!r.isTO) return true;
-            var sig = String(r.docId) + '|' + String(r.lotNumber) + '|' + String(r.packsCommitted);
+            var sig = String(r.docId) + '|' + String(r.lotNumber) + '|' +
+                      String(r.packsCommitted) + '|' + String(r.toShippedPacks || 0);
             if (seen[sig]) { dropped++; return false; }
             seen[sig] = true;
             return true;
         });
+        // Pass 2 — stale-twin elimination per (docId, lot) group
+        var groups = {};
+        out.forEach(function (r) {
+            if (!r.isTO) return;
+            var g = String(r.docId) + '|' + String(r.lotNumber);
+            (groups[g] = groups[g] || []).push(r);
+        });
+        Object.keys(groups).forEach(function (g) {
+            groups[g].forEach(function (r) {
+                var shipped = r.toShippedPacks || 0;
+                if (shipped <= 0) return;
+                var fullPacks = roundToTwoDecimals((r.packsCommitted || 0) + shipped);
+                for (var i = 0; i < groups[g].length; i++) {
+                    var cand = groups[g][i];
+                    if (cand !== r && !cand._staleTwin && (cand.toShippedPacks || 0) <= 0 &&
+                        Math.abs((cand.packsCommitted || 0) - fullPacks) < 0.01) {
+                        cand._staleTwin = true;
+                        dropped++;
+                        break;
+                    }
+                }
+            });
+        });
+        // Pass 3 — drop stale twins + tombstones, strip transients
+        var finalRows = out.filter(function (r) {
+            if (!r.isTO) return true;
+            if (r._staleTwin) return false;
+            return (r.packsCommitted || 0) > 0;
+        });
+        finalRows.forEach(function (r) {
+            if (r.isTO) { delete r.toShippedPacks; delete r._staleTwin; }
+        });
         if (dropped > 0) {
             log.audit('MTL committed', 'collapseTOShadowLines: dropped ' + dropped +
-                ' duplicate TO source-line row(s)');
+                ' duplicate/stale TO source-line row(s)');
         }
-        return out;
+        return finalRows;
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1305,7 +1373,13 @@ define([
 
     const getInputData = () => {
         var subsidiaryId = getScriptParam('custscript_ts_mtl_subsidiary_id', MTL_SUBSIDIARY_ID);
-        var forceFull    = getScriptParam('custscript_ts_mtl_force_full_rebuild', false);
+        // Normalize to a real boolean — getParameter can surface checkbox values as
+        // strings ('T'/'true'), and a truthy STRING here silently forces a full
+        // rebuild AND disables the 2-min throttle (`!forceFull` is false for any
+        // non-empty string). Sandbox 2026-07-28: deployment had the box checked (T),
+        // producing nonstop ~90s full rebuilds all day.
+        var forceFullRaw = getScriptParam('custscript_ts_mtl_force_full_rebuild', false);
+        var forceFull    = forceFullRaw === true || forceFullRaw === 'T' || forceFullRaw === 'true';
         var deltaThreshold = getScriptParam('custscript_ts_mtl_delta_threshold', 500);
 
 
@@ -1331,7 +1405,7 @@ define([
         }
 
         var isFullMode = forceFull || !lastRunStr;
-        log.audit('MTL Cache', 'getInputData: forceFull=' + forceFull + ' lastRunStr=' + (lastRunStr || '(empty)') + ' isFullMode=' + isFullMode);
+        log.audit('MTL Cache', 'getInputData: forceFull=' + forceFull + ' (raw=' + forceFullRaw + ':' + (typeof forceFullRaw) + ') lastRunStr=' + (lastRunStr || '(empty)') + ' isFullMode=' + isFullMode);
 
         // ── Full mode ─────────────────────────────────────────────────────────
         if (isFullMode) {
@@ -1385,6 +1459,25 @@ define([
         var pairs = {};
         var pairCount = 0;
 
+        // A plain ['lastmodifieddate','onorafter', <value>] filter errors on this
+        // tenant for BOTH Date objects and N/format-rendered strings ("unexpected
+        // SuiteScript error" — every delta type search had failed identically since
+        // inception; isolated live 2026-07-28: the same search minus this one filter
+        // works). Use a formula filter with an explicit TO_DATE mask instead —
+        // deterministic, independent of the account's date-format preferences.
+        // Timezone: the string is rendered at fixed UTC-8 (earliest plausible
+        // interpretation of {lastmodifieddate}) plus a 3h back-buffer, so any skew
+        // can only WIDEN the window (harmless re-rebuild of extra keys), never push
+        // it forward (silently missed changes).
+        var winDate = new Date(lastRunDate.getTime() - 3 * 60 * 60 * 1000 - 8 * 60 * 60 * 1000);
+        var pad2 = function (n) { return (n < 10 ? '0' : '') + n; };
+        var winStr = winDate.getUTCFullYear() + '-' + pad2(winDate.getUTCMonth() + 1) + '-' + pad2(winDate.getUTCDate()) +
+                     ' ' + pad2(winDate.getUTCHours()) + ':' + pad2(winDate.getUTCMinutes());
+        var deltaWindowFilter = [
+            "formulanumeric: CASE WHEN {lastmodifieddate} >= TO_DATE('" + winStr + "','YYYY-MM-DD HH24:MI') THEN 1 ELSE 0 END",
+            'equalto', '1',
+        ];
+
         tranTypes.forEach((tranType) => {
             try {
                 var txnSearch = search.create({
@@ -1392,7 +1485,7 @@ define([
                     filters: [
                         ['subsidiary', 'anyof', String(subsidiaryId)],
                         'AND',
-                        ['lastmodifieddate', 'onorafter', lastRunDate],
+                        deltaWindowFilter,
                     ],
                     columns: [
                         search.createColumn({ name: 'item' }),
@@ -1411,7 +1504,8 @@ define([
                     }
                 });
             } catch (e) {
-                log.debug('MTL Cache', 'Delta search error for type ' + tranType + ': ' + e.message);
+                log.debug('MTL Cache', 'Delta search error for type ' + tranType + ': ' +
+                    (e.name || '(no name)') + ' | ' + (e.message || '(no message)'));
             }
         });
 
