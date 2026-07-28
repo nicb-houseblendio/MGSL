@@ -54,6 +54,9 @@ define([], () => {
         // MTL fields: docId, lineSeq, docNumber, docUrl, customer, customerUrl,
         //   soCreationDate, shipWeek, packsCommitted, piecesPerPack, mbfPrice,
         //   currency, allocatedPO, allocatedSegmentId, lotNumber, lotUrl (added later)
+        // MTL also emits Transfer Order rows (committed at SOURCE location, spec
+        //   2026-07-27): isTO=true, customer = "→ <destination location>", no
+        //   customerUrl, packsCommitted = unfulfilled remainder.
         // IND fields: docId, lineSeq, docNum, docUrl, customerName, customerUrl,
         //   tranDate, expectedShipDate, packCommitted, piecesPerPack, pricePerPiece,
         //   rate, lotNumber, allocatedPO, allocatedSegmentId
@@ -63,7 +66,7 @@ define([], () => {
             'soCreationDate', 'tranDate', 'shipWeek', 'expectedShipDate',
             'packsCommitted', 'packCommitted', 'piecesPerPack',
             'mbfPrice', 'pricePerPiece', 'rate', 'currency',
-            'allocatedPO', 'allocatedSegmentId', 'lotNumber', 'lotUrl',
+            'allocatedPO', 'allocatedSegmentId', 'lotNumber', 'lotUrl', 'isTO',
         ],
         // outbound row — per IF line (MTL is dedupeByLine'd; IND is per-lot fan).
         // MTL fields: docId, lineSeq, docNumber, docUrl, lotNumber, lotUrl, lotId,

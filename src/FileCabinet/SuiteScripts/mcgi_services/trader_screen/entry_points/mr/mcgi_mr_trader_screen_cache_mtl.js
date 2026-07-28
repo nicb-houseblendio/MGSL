@@ -167,6 +167,16 @@ define([
                 s.columns.push(search.createColumn({ name: 'inventorynumber', join: 'inventoryDetail' }));
                 s.columns.push(search.createColumn({ name: 'location' }));
             }
+            // Committed also carries Transfer Order rows (Julie's TO spec 2026-07-27,
+            // point A) — but NOT via this saved search: its formula filters kill every
+            // TO row (verified 2026-07-28 — {custbody_mgsl_carrier} is not applied to
+            // TOs and a formula referencing an inapplicable field fails the row, even
+            // from inside an OR branch NetSuite still evaluates for the row). TOs come
+            // from a separate from-scratch search — see createCommittedTOSearch. Here
+            // only push `type` so buildCommittedRow can tell the two row kinds apart.
+            if (searchId === COMMITTED_SEARCH_ID) {
+                s.columns.push(search.createColumn({ name: 'type' }));
+            }
             _detailSearchCache[searchId] = {
                 search: s,
                 baseFilterLen: s.filters.length,
@@ -176,6 +186,60 @@ define([
         entry.search.filters.length = entry.baseFilterLen;
         return entry.search;
     }
+
+    // ── Committed: Transfer Order side ─────────────────────────────────────────
+    // TOs cannot ride the committed saved search (its SO-shaped formulas fail on
+    // TO rows — see getDetailSearch), so they get a minimal from-scratch search.
+    // Shape verified live 2026-07-28 (TO01): each TO item line surfaces as TWO
+    // identical negative rows at the source location (shadow pair, distinct
+    // lineseq) plus one positive row at the destination; buildCommittedRow rejects
+    // the destination row and collapseTOShadowLines merges the pair. Open/closed
+    // gating is statusref-based in the builder — line-level fulfillment math is
+    // unreliable on shadow pairs.
+    const createCommittedTOSearch = (itemId, locationId) => {
+        return search.create({
+            type: 'transaction',
+            filters: [
+                ['type', 'anyof', 'TrnfrOrd'], 'AND',
+                ['mainline', 'is', 'F'], 'AND',
+                ['subsidiary', 'anyof', String(MTL_SUBSIDIARY_ID)], 'AND',
+                ['closed', 'is', 'F'], 'AND',
+                ['item.type', 'anyof', 'Assembly', 'InvtPart'], 'AND',
+                ['item', 'anyof', itemId], 'AND',
+                ['location', 'anyof', locationId],
+            ],
+            columns: [
+                search.createColumn({ name: 'internalid' }),
+                search.createColumn({ name: 'linesequencenumber' }),
+                search.createColumn({ name: 'tranid' }),
+                search.createColumn({ name: 'trandate' }),
+                search.createColumn({ name: 'custbody_ship_week' }),
+                search.createColumn({ name: 'rate' }),
+                search.createColumn({ name: 'exchangerate' }),
+                search.createColumn({ name: 'currency' }),
+                search.createColumn({ name: 'custcol_mgsl_ppp' }),
+                search.createColumn({ name: 'custitem_mgsl_ppp', join: 'item' }),
+                search.createColumn({ name: 'line.cseg_po_segment_gl' }),
+                search.createColumn({ name: 'serialnumber' }),
+                search.createColumn({ name: 'type' }),
+                search.createColumn({ name: 'statusref' }),
+                search.createColumn({ name: 'transferlocation' }),
+                // Unfulfilled remainder in packs, sign-safe: source-side {quantity}
+                // is negative while {quantityshiprecv} comes back positive (verified
+                // on TO02), so work in ABS space. NVL-guarded — NULL breaks the
+                // saved search's (0 + x) idiom. Label is what buildCommittedRow
+                // scans for on TO rows. Known limit: on a PARTIALLY fulfilled TO the
+                // shadow twin that carries no shiprecv still reports the full
+                // remainder, so the pair no longer collapses and packs overcount
+                // until fulfillment completes — acceptable v1, revisit with live data.
+                search.createColumn({
+                    name:    'formulanumeric',
+                    label:   'Open Pack Quantity',
+                    formula: 'CASE WHEN NVL({quantity},0) = 0 THEN 0 ELSE NVL({custcol_mgsl_packqty},0) * (ABS({quantity}) - ABS(NVL({quantityshiprecv},0))) / ABS({quantity}) END',
+                }),
+            ],
+        });
+    };
 
     // On Hand gets its own cache — adds trandate ASC sort column
     var _onHandMtlCache = null;
@@ -321,29 +385,66 @@ define([
     var colOpenQty             = null;
 
     // ── Committed ─────────────────────────────────────────────────────────────
-    const buildCommittedRow = (r) => {
-        if (!colPackCommitted) {
-            r.columns.forEach((col) => {
-                if (col.label === 'Pack Committed') colPackCommitted = col;
-            });
-            if (!colPackCommitted) log.error('MTL Committed', 'Formula column "Pack Committed" not found');
+    const buildCommittedRow = (r, itemId, locationId) => {
+        var docType = r.getValue({ name: 'type' });
+        var isTO    = docType === 'TrnfrOrd' || docType === 'Transfer Order';
+        var packsCommitted = 0;
+        if (!isTO) {
+            // SO rows come from the committed saved search — its column objects are
+            // stable, cache the formula column ref at module scope as before.
+            if (!colPackCommitted) {
+                r.columns.forEach((col) => {
+                    if (col.label === 'Pack Committed') colPackCommitted = col;
+                });
+                if (!colPackCommitted) log.error('MTL Committed', 'Formula column "Pack Committed" not found');
+            }
+            packsCommitted = roundToTwoDecimals(
+                parseFloat(colPackCommitted ? r.getValue(colPackCommitted) : 0) || 0
+            );
         }
-        var packsCommitted = roundToTwoDecimals(
-            parseFloat(colPackCommitted ? r.getValue(colPackCommitted) : 0) || 0
-        );
         var docId    = r.getValue({ name: 'internalid' });
         var entityId = r.getValue({ name: 'entity' });
         var ppp      = parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) ||
                        parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0;
         var rawRate  = parseFloat(r.getValue({ name: 'rate' })) || 0;
         var exchRate = parseFloat(r.getValue({ name: 'exchangerate' })) || 1;
+        var customer    = r.getText({ name: 'entity' });
+        var customerUrl = getRecordUrl(entityId, 'customer');
+        if (isTO) {
+            // TOs commit at their SOURCE only (Julie's TO spec 2026-07-27, point A);
+            // the destination side is On Order (spec point B), so reject rows whose
+            // to-location IS the reduce key's location (a TO line surfaces at both
+            // ends — verified live: two negative rows at source + one positive at
+            // destination).
+            var destLocId = r.getValue({ name: 'transferlocation' });
+            if (destLocId && String(destLocId) === String(locationId)) return null;
+            // Commit only pre-fulfillment TOs. Once fulfilled (pendingReceipt and
+            // later), the source stock is gone and In Transit takes over — line-level
+            // fulfillment math is unreliable on TO shadow lines, so gate on status.
+            var statusRef = r.getValue({ name: 'statusref' });
+            if (['pendingApproval', 'pendingFulfillment', 'partiallyFulfilled'].indexOf(statusRef) === -1) return null;
+            // Unfulfilled remainder from the TO search's own formula column — scan
+            // per row (TO rows are rare; module-cached column objects belong to the
+            // committed SAVED search and cannot be reused across search objects).
+            var toOpenCol = null;
+            r.columns.forEach(function (col) {
+                if (col.label === 'Open Pack Quantity') toOpenCol = col;
+            });
+            packsCommitted = Math.abs(roundToTwoDecimals(
+                parseFloat(toOpenCol ? r.getValue(toOpenCol) : 0) || 0
+            ));
+            if (packsCommitted <= 0) return null; // nothing left to fulfill
+            // TOs have no entity — show the destination as the counterparty.
+            customer    = '→ ' + (r.getText({ name: 'transferlocation' }) || '');
+            customerUrl = '';
+        }
         return {
             docId:          docId,
             lineSeq:        r.getValue({ name: 'linesequencenumber' }),
             docNumber:      r.getValue({ name: 'tranid' }),
-            docUrl:         getRecordUrl(docId, 'salesorder'),
-            customer:       r.getText({ name: 'entity' }),
-            customerUrl:    getRecordUrl(entityId, 'customer'),
+            docUrl:         getRecordUrl(docId, isTO ? (ITEM_RECORD_TYPE_MAPPING[docType] || 'transferorder') : 'salesorder'),
+            customer:       customer,
+            customerUrl:    customerUrl,
             soCreationDate: r.getValue({ name: 'trandate' }),
             shipWeek:       r.getValue({ name: 'custbody_ship_week' }) || '',
             packsCommitted: packsCommitted,
@@ -353,6 +454,7 @@ define([
             allocatedPO:    r.getText({ name: 'line.cseg_po_segment_gl' }) || '\u2014',
             allocatedSegmentId: r.getValue({ name: 'line.cseg_po_segment_gl' }) || '',
             lotNumber:      r.getValue({ name: 'serialnumber' }) || '\u2014',
+            isTO:           isTO,
         };
     };
 
@@ -509,10 +611,21 @@ define([
             );
             s.run().each(function (r) {
                 rawCount++;
-                var row = rowBuilder(r);
+                var row = rowBuilder(r, itemId, locationId);
                 if (row) rows.push(row);
                 return true;
             });
+            // Committed = SO saved search (above, untouched) + from-scratch TO
+            // search — the saved search's formulas fail on TO rows, so TOs need
+            // their own query (see createCommittedTOSearch).
+            if (searchId === COMMITTED_SEARCH_ID) {
+                createCommittedTOSearch(itemId, locationId).run().each(function (r) {
+                    rawCount++;
+                    var row = rowBuilder(r, itemId, locationId);
+                    if (row) rows.push(row);
+                    return true;
+                });
+            }
         } catch (e) {
             log.error('MTL runDetailSearch', searchId + ' ERROR for item=' + itemId + ' loc=' + locationId + ': ' + e.message);
         }
@@ -587,6 +700,37 @@ define([
             }
             return out;
         });
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  collapseTOShadowLines — one committed row per real TO line
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    //  A Transfer Order item line is stored as TWO source-side transaction lines
+    //  with DISTINCT linesequencenumbers and identical values (verified on TO01:
+    //  transactionline pairs lseq 1+2 and 4+5, both -7.056 @ loc 222). If the
+    //  transaction search returns both, dedupeByLine keeps both (its key is
+    //  docId+lineSeq) and the committed total doubles. Collapse TO rows on
+    //  (docId, lotNumber, packsCommitted) instead. SO rows pass through untouched
+    //  — two SO lines with identical values are legitimate and must never merge.
+    //  Known limit: a TO with the same item entered twice at identical qty+lot
+    //  collapses to one row; logged so it stays visible if it ever happens.
+    const collapseTOShadowLines = (rows) => {
+        if (!rows || rows.length === 0) return rows;
+        var seen = {};
+        var dropped = 0;
+        var out = rows.filter(function (r) {
+            if (!r.isTO) return true;
+            var sig = String(r.docId) + '|' + String(r.lotNumber) + '|' + String(r.packsCommitted);
+            if (seen[sig]) { dropped++; return false; }
+            seen[sig] = true;
+            return true;
+        });
+        if (dropped > 0) {
+            log.audit('MTL committed', 'collapseTOShadowLines: dropped ' + dropped +
+                ' duplicate TO source-line row(s)');
+        }
+        return out;
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1111,6 +1255,44 @@ define([
                 }
             });
         });
+        // TO committed rows ride a from-scratch search (createCommittedTOSearch),
+        // invisible to the SO-only committed saved search above — seed open-TO
+        // keys separately so an item whose only MTL activity is a TO still gets a
+        // summary row. Seeds both endpoints; dest keys are harmless (the committed
+        // builder rejects dest rows) and pre-stage spec point B (On Order at dest).
+        try {
+            var toKeys = {};
+            search.create({
+                type: 'transaction',
+                filters: [
+                    ['type', 'anyof', 'TrnfrOrd'], 'AND',
+                    ['mainline', 'is', 'F'], 'AND',
+                    ['subsidiary', 'anyof', String(MTL_SUBSIDIARY_ID)], 'AND',
+                    ['closed', 'is', 'F'], 'AND',
+                    ['item.type', 'anyof', 'Assembly', 'InvtPart'],
+                ],
+                columns: ['item', 'location'],
+            }).run().each(function (r) {
+                var tItem = r.getValue({ name: 'item' });
+                var tLoc  = r.getValue({ name: 'location' });
+                if (tItem && tLoc) toKeys[tItem + '__' + tLoc] = { itemId: String(tItem), locationId: String(tLoc) };
+                return true;
+            });
+            Object.keys(toKeys).forEach(function (k) {
+                if (!fullInput[k]) {
+                    var tp = toKeys[k];
+                    var tRow = synthesizeSummaryRow(tp.itemId, tp.locationId, locationCache);
+                    if (tRow) {
+                        fullInput[k] = JSON.stringify(tRow);
+                        seedAdded++;
+                    } else {
+                        seedFailed++;
+                    }
+                }
+            });
+        } catch (toSeedErr) {
+            log.error('MTL Cache', 'applyVisibilityPatch open-TO seed failed: ' + toSeedErr.message);
+        }
         log.audit('MTL Cache', 'applyVisibilityPatch: summaryKeys=' + summaryKeyCount +
                   ' seedAdded=' + seedAdded + ' seedFailed=' + seedFailed +
                   ' total=' + Object.keys(fullInput).length);
@@ -1125,6 +1307,7 @@ define([
         var subsidiaryId = getScriptParam('custscript_ts_mtl_subsidiary_id', MTL_SUBSIDIARY_ID);
         var forceFull    = getScriptParam('custscript_ts_mtl_force_full_rebuild', false);
         var deltaThreshold = getScriptParam('custscript_ts_mtl_delta_threshold', 500);
+
 
         var myCache    = CacheClient.getCache();
         var lastRunStr = myCache.get({ key: CacheKeysMTL.LAST_RUN });
@@ -1194,6 +1377,10 @@ define([
             search.Type.ITEM_RECEIPT,
             search.Type.ITEM_FULFILLMENT,
             search.Type.INVENTORY_ADJUSTMENT,
+            // TOs commit stock at source (committed bucket) — without this a new
+            // or edited TO reaches the cache only on a FULL rebuild. (IND has had
+            // TRANSFER_ORDER in its delta list since the TO in-transit work.)
+            search.Type.TRANSFER_ORDER,
         ];
         var pairs = {};
         var pairCount = 0;
@@ -1695,6 +1882,8 @@ define([
         // Collapse lot-fanout rows so each SO line is counted once
         committed = dedupeByLine(committed, 'committed');
         outbound  = dedupeByLine(outbound,  'outbound');
+        // Collapse TO shadow-line pairs so each TO line is counted once
+        committed = collapseTOShadowLines(committed);
 
         // ── Resolve allocated-PO vendor for committed + outbound rows ─────────
         var vendorByPO = resolveAllocatedPOVendors(committed, outbound);
