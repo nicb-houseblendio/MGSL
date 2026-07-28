@@ -865,76 +865,69 @@ define([
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  collapseTOShadowLines — one committed row per real TO line
+    //  collapseTOShadowLines — one row per real TO line (committed AND on-order)
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    //  A Transfer Order item line is stored as TWO source-side transaction lines
-    //  with DISTINCT linesequencenumbers and identical values (verified on TO01:
-    //  transactionline pairs lseq 1+2 and 4+5, both -7.056 @ loc 222). If the
-    //  transaction search returns both, dedupeByLine keeps both (its key is
-    //  docId+lineSeq) and the committed total doubles. Three passes, TO rows only
-    //  (SO rows pass through untouched — two SO lines with identical values are
-    //  legitimate and must never merge):
-    //    1. Merge identical signatures (docId, lot, packs, shipped) — the untouched
-    //       shadow pair.
-    //    2. Kill stale twins: on partial fulfillment only ONE twin carries
-    //       shiprecv; the other still reports the FULL line quantity. For every
-    //       shipped row, remove one unshipped row whose packs equal that row's
-    //       full quantity (open + shipped).
-    //    3. Drop zero-remainder tombstones (fully shipped lines kept alive only so
-    //       pass 2 could use them) and strip the transient toShippedPacks field.
-    //  Known limit: a TO with the same item entered twice at identical qty+lot
-    //  collapses to one row; logged so it stays visible if it ever happens.
+    //  A Transfer Order item line is stored as a seq TRIPLET: two source-side
+    //  twins at (n, n+1) plus the destination row at (n+2) — verified on TO01
+    //  (1,2,3 / 4,5,6) and TO02 (1,2,3). The twins are NOT identical: only one
+    //  carries quantityshiprecv, and when a lot is assigned (inventory detail)
+    //  only one carries the lot (live-verified 2026-07-28 — a signature-based
+    //  collapse double-counted an allocated line). So: pair source twins by
+    //  lineSeq ADJACENCY within a doc and merge each pair —
+    //    packs = the shiprecv-bearing twin's remainder (it decays on partial
+    //            fulfillment; the other twin keeps reporting the full quantity),
+    //    lot / allocation fields = whichever twin carries them.
+    //  A fully-shipped line pairs to remainder 0 and drops (In Transit takes
+    //  over). Adjacency pairing also means two REAL lines with identical values
+    //  never merge — each owns its own seq triplet. SO rows pass through
+    //  untouched.
     const collapseTOShadowLines = (rows) => {
         if (!rows || rows.length === 0) return rows;
-        var dropped = 0;
-        // Pass 1 — identical-signature merge
-        var seen = {};
-        var out = rows.filter(function (r) {
-            if (!r.isTO) return true;
-            var sig = String(r.docId) + '|' + String(r.lotNumber) + '|' +
-                      String(r.packsCommitted) + '|' + String(r.toShippedPacks || 0);
-            if (seen[sig]) { dropped++; return false; }
-            seen[sig] = true;
-            return true;
+        var soRows = [], toRows = [];
+        rows.forEach(function (r) { (r.isTO ? toRows : soRows).push(r); });
+        if (!toRows.length) return rows;
+        toRows.sort(function (a, b) {
+            if (String(a.docId) !== String(b.docId)) return String(a.docId) < String(b.docId) ? -1 : 1;
+            return (parseInt(a.lineSeq, 10) || 0) - (parseInt(b.lineSeq, 10) || 0);
         });
-        // Pass 2 — stale-twin elimination per (docId, lot) group
-        var groups = {};
-        out.forEach(function (r) {
-            if (!r.isTO) return;
-            var g = String(r.docId) + '|' + String(r.lotNumber);
-            (groups[g] = groups[g] || []).push(r);
-        });
-        Object.keys(groups).forEach(function (g) {
-            groups[g].forEach(function (r) {
-                var shipped = r.toShippedPacks || 0;
-                if (shipped <= 0) return;
-                var fullPacks = roundToTwoDecimals((r.packsCommitted || 0) + shipped);
-                for (var i = 0; i < groups[g].length; i++) {
-                    var cand = groups[g][i];
-                    if (cand !== r && !cand._staleTwin && (cand.toShippedPacks || 0) <= 0 &&
-                        Math.abs((cand.packsCommitted || 0) - fullPacks) < 0.01) {
-                        cand._staleTwin = true;
-                        dropped++;
-                        break;
-                    }
+        var merged = [];
+        var pairedCount = 0;
+        for (var i = 0; i < toRows.length; i++) {
+            var a = toRows[i];
+            var b = (i + 1 < toRows.length) ? toRows[i + 1] : null;
+            var isPair = b && String(b.docId) === String(a.docId) &&
+                (parseInt(b.lineSeq, 10) || 0) === (parseInt(a.lineSeq, 10) || 0) + 1;
+            if (isPair) {
+                var shippedTwin = (b.toShippedPacks || 0) > 0 ? b : a;
+                a.packsCommitted = shippedTwin.packsCommitted;
+                a.toShippedPacks = Math.max(a.toShippedPacks || 0, b.toShippedPacks || 0);
+                if ((!a.lotNumber || a.lotNumber === '—') && b.lotNumber && b.lotNumber !== '—') {
+                    a.lotNumber = b.lotNumber;
                 }
-            });
-        });
-        // Pass 3 — drop stale twins + tombstones, strip transients
-        var finalRows = out.filter(function (r) {
-            if (!r.isTO) return true;
-            if (r._staleTwin) return false;
-            return (r.packsCommitted || 0) > 0;
-        });
-        finalRows.forEach(function (r) {
-            if (r.isTO) { delete r.toShippedPacks; delete r._staleTwin; }
-        });
-        if (dropped > 0) {
-            log.audit('MTL committed', 'collapseTOShadowLines: dropped ' + dropped +
-                ' duplicate/stale TO source-line row(s)');
+                if ((!a.allocatedPO || a.allocatedPO === '—') && b.allocatedPO && b.allocatedPO !== '—') {
+                    a.allocatedPO = b.allocatedPO;
+                }
+                if (!a.allocatedSegmentId && b.allocatedSegmentId) {
+                    a.allocatedSegmentId = b.allocatedSegmentId;
+                }
+                merged.push(a);
+                pairedCount++;
+                i++; // consume the twin
+            } else {
+                // Unpaired source row — unexpected anatomy; keep it and log so a
+                // layout change (NS altering the seq triplet) stays visible.
+                log.audit('MTL TO collapse', 'unpaired source row doc=' + a.docNumber +
+                    ' lineSeq=' + a.lineSeq + ' — seq-triplet anatomy may have changed');
+                merged.push(a);
+            }
         }
-        return finalRows;
+        var finalTO = merged.filter(function (r) { return (r.packsCommitted || 0) > 0; });
+        finalTO.forEach(function (r) { delete r.toShippedPacks; delete r._staleTwin; });
+        if (pairedCount > 0 && reduceInvokeCount <= 5) {
+            log.debug('MTL TO collapse', 'merged ' + pairedCount + ' shadow pair(s)');
+        }
+        return soRows.concat(finalTO);
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
