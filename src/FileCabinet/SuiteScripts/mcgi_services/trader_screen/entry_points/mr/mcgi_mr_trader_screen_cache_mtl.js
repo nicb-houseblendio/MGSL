@@ -23,6 +23,12 @@ define([
 
     const MTL_SUBSIDIARY_ID = 5;
     const MIN_INTERVAL_MS   = 120000; // 2 minutes — minimum gap between real processing runs
+    // Force a FULL rebuild at least this often. Deltas keep changed keys fresh
+    // within ~2 min, but quiet keys' detail entries only get rewritten on a FULL
+    // (TTL_DETAIL must outlive this with margin), and the delta type list can't
+    // see everything (e.g. assembly builds move on-hand without any of the six
+    // delta transaction types changing).
+    const FULL_REFRESH_MS   = 60 * 60 * 1000; // 1 hour
     // MGSL USD secondary accounting book ID — overridable per deployment via
     // the `custscript_ts_mtl_usd_book_id` script parameter, since the id
     // differs between environments (sandbox = 6, prod = 2 as of 2026-06-25).
@@ -1533,12 +1539,19 @@ define([
             log.audit('MTL Cache', 'Holds dirtyKeys=[' + Object.keys(holdsResult.dirtyKeys).join(', ') + ']');
         }
 
-        var isFullMode = forceFull || !lastRunStr;
-        log.audit('MTL Cache', 'getInputData: forceFull=' + forceFull + ' (raw=' + forceFullRaw + ':' + (typeof forceFullRaw) + ') lastRunStr=' + (lastRunStr || '(empty)') + ' isFullMode=' + isFullMode);
+        // Hourly FULL backstop — see FULL_REFRESH_MS. Missing/invalid LAST_FULL
+        // counts as due (first run after deploy heals all expired detail keys).
+        var lastFullStr = myCache.get({ key: CacheKeysMTL.LAST_FULL });
+        var sinceFullMs = lastFullStr ? (Date.now() - new Date(lastFullStr).getTime()) : NaN;
+        var fullDue = isNaN(sinceFullMs) || sinceFullMs > FULL_REFRESH_MS;
+
+        var isFullMode = forceFull || !lastRunStr || fullDue;
+        log.audit('MTL Cache', 'getInputData: forceFull=' + forceFull + ' (raw=' + forceFullRaw + ':' + (typeof forceFullRaw) + ') lastRunStr=' + (lastRunStr || '(empty)') + ' fullDue=' + fullDue + ' isFullMode=' + isFullMode);
 
         // ── Full mode ─────────────────────────────────────────────────────────
         if (isFullMode) {
             myCache.put({ key: CacheKeysMTL.LAST_INPUT_MODE, value: 'FULL', ttl: CacheKeysMTL.TTL_LAST_RUN });
+            myCache.put({ key: CacheKeysMTL.LAST_FULL, value: new Date().toISOString(), ttl: CacheKeysMTL.TTL_LAST_RUN });
             var mySearch = loadSummarySearch();
             var fullInput = {};
             var paged = mySearch.runPaged({ pageSize: 1000 });
@@ -1563,6 +1576,7 @@ define([
         if (!lastRunDate) {
             log.audit('MTL Cache', 'getInputData: invalid lastRunDate, falling back to FULL');
             myCache.put({ key: CacheKeysMTL.LAST_INPUT_MODE, value: 'FULL', ttl: CacheKeysMTL.TTL_LAST_RUN });
+            myCache.put({ key: CacheKeysMTL.LAST_FULL, value: new Date().toISOString(), ttl: CacheKeysMTL.TTL_LAST_RUN });
             var mySearch2 = loadSummarySearch();
             var fullInput2 = {};
             runPagedAll(mySearch2).forEach((result) => {
@@ -1677,6 +1691,7 @@ define([
         if (pairCount > deltaThreshold) {
             log.audit('MTL Cache', 'getInputData: DELTA->FULL fallback (pairCount=' + pairCount + ')');
             myCache.put({ key: CacheKeysMTL.LAST_INPUT_MODE, value: 'FULL', ttl: CacheKeysMTL.TTL_LAST_RUN });
+            myCache.put({ key: CacheKeysMTL.LAST_FULL, value: new Date().toISOString(), ttl: CacheKeysMTL.TTL_LAST_RUN });
             var mySearch3 = loadSummarySearch();
             var fullInput3 = {};
             runPagedAll(mySearch3).forEach((result) => {
@@ -2297,7 +2312,7 @@ define([
                     myCache.put({
                         key:   CacheKeysMTL.buildDetailBucketKey(itemId, locationId, bucket),
                         value: JSON.stringify(detailPayload[bucket]),
-                        ttl:   CacheKeysMTL.TTL_SUMMARY,
+                        ttl:   CacheKeysMTL.TTL_DETAIL,
                     });
                 }
             });
@@ -2305,10 +2320,13 @@ define([
                 log.audit('MTL reduce', '#' + reduceInvokeCount + ' OVERFLOW detail write: ' + sizeBytes + ' bytes -> per-bucket split');
             }
         } else {
+            // TTL_DETAIL, not TTL_SUMMARY: detail is rewritten only when this key
+            // is rebuilt; under real DELTA mode quiet keys go hours between
+            // rebuilds and a 30-min TTL killed their drawers (Julie, 2026-07-28).
             myCache.put({
                 key:   detKey,
                 value: detailJson,
-                ttl:   CacheKeysMTL.TTL_SUMMARY,
+                ttl:   CacheKeysMTL.TTL_DETAIL,
             });
             if (reduceInvokeCount <= 5 || reduceInvokeCount % 20 === 0) {
                 log.debug('MTL reduce', '#' + reduceInvokeCount + ' detail write: key=' + detKey + ' size=' + sizeBytes + 'B avail=' + available.length + ' rows');
