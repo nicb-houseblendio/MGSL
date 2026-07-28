@@ -90,12 +90,16 @@ define([], () => {
         //   piecesPerPack, mbfPrice, currency
         // IND fields: docNum, docUrl, vendorName, vendorUrl, shipDate, packQty,
         //   piecesPerPack, pricePerPiece, rate
+        // MTL also emits inbound Transfer Order rows at the DESTINATION (spec
+        //   2026-07-27 point B): isTO=true, vendor = source location name,
+        //   packs = unfulfilled remainder, segmentId/poId/poDate for PO Allocation.
         onOrder: [
             'docNumber', 'docNum', 'docUrl',
             'vendor', 'vendorName', 'vendorUrl',
             'shipWeek', 'shipDate',
             'packs', 'packQty', 'piecesPerPack',
             'mbfPrice', 'pricePerPiece', 'rate', 'currency',
+            'segmentId', 'poId', 'poDate', 'isTO',
         ],
         // inTransit row — per PO/TO transit. Not consumed by PO Allocation under
         // the hybrid path.

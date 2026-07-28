@@ -79,6 +79,37 @@ define([
     const roundToTwoDecimals = (num) => Math.round((parseFloat(num) || 0) * 100) / 100;
     const safeGetValue = (r, opts) => { try { return r.getValue(opts); } catch (e) { return ''; } };
 
+    // Location id → name, cached per execution (used by TO rows, which are rare).
+    var _locNameCache = {};
+    const lookupLocationName = (locId) => {
+        if (!locId) return '';
+        if (_locNameCache[locId] === undefined) {
+            try {
+                var f = search.lookupFields({ type: 'location', id: locId, columns: ['name'] });
+                _locNameCache[locId] = (f && f.name) || '';
+            } catch (e) {
+                _locNameCache[locId] = '';
+            }
+        }
+        return _locNameCache[locId];
+    };
+
+    // TO id → source location name (header field), cached per execution.
+    var _toSourceNameCache = {};
+    const lookupTOSourceName = (toId) => {
+        if (!toId) return '';
+        if (_toSourceNameCache[toId] === undefined) {
+            try {
+                var f = search.lookupFields({ type: 'transferorder', id: toId, columns: ['location'] });
+                var v = f && f.location;
+                _toSourceNameCache[toId] = Array.isArray(v) && v.length ? (v[0].text || '') : '';
+            } catch (e) {
+                _toSourceNameCache[toId] = '';
+            }
+        }
+        return _toSourceNameCache[toId];
+    };
+
     const getScriptParam = (name, defaultValue) => {
         try {
             var val = runtime.getCurrentScript().getParameter({ name: name });
@@ -172,7 +203,7 @@ define([
             // TO row (verified 2026-07-28 — {custbody_mgsl_carrier} is not applied to
             // TOs and a formula referencing an inapplicable field fails the row, even
             // from inside an OR branch NetSuite still evaluates for the row). TOs come
-            // from a separate from-scratch search — see createCommittedTOSearch. Here
+            // from a separate from-scratch search — see createTOLineSearch. Here
             // only push `type` so buildCommittedRow can tell the two row kinds apart.
             if (searchId === COMMITTED_SEARCH_ID) {
                 s.columns.push(search.createColumn({ name: 'type' }));
@@ -187,16 +218,22 @@ define([
         return entry.search;
     }
 
-    // ── Committed: Transfer Order side ─────────────────────────────────────────
-    // TOs cannot ride the committed saved search (its SO-shaped formulas fail on
-    // TO rows — see getDetailSearch), so they get a minimal from-scratch search.
+    // ── Transfer Order line search (Committed at source / On Order at dest) ────
+    // TOs cannot ride the SO-shaped saved searches (their formulas fail on TO
+    // rows — see getDetailSearch), so they get a minimal from-scratch search.
     // Shape verified live 2026-07-28 (TO01): each TO item line surfaces as TWO
     // identical negative rows at the source location (shadow pair, distinct
-    // lineseq) plus one positive row at the destination; buildCommittedRow rejects
-    // the destination row and collapseTOShadowLines merges the pair. Open/closed
-    // gating is statusref-based in the builder — line-level fulfillment math is
-    // unreliable on shadow pairs.
-    const createCommittedTOSearch = (itemId, locationId) => {
+    // lineseq) plus one positive row at the destination; the row builders reject
+    // the destination-positive row and collapseTOShadowLines merges the pair.
+    // Open/closed gating is statusref-based in the builders — line-level
+    // fulfillment math is unreliable on shadow pairs.
+    //
+    // side 'source' keys the search by line location (Committed at the source,
+    // spec point A); side 'dest' keys it by transferlocation (On Order at the
+    // destination, spec point B) — the SOURCE-side rows still carry the
+    // remainder/shipped math, so both sides compute from the same rows and stay
+    // numerically consistent.
+    const createTOLineSearch = (itemId, locationId, side) => {
         return search.create({
             type: 'transaction',
             filters: [
@@ -206,11 +243,14 @@ define([
                 ['closed', 'is', 'F'], 'AND',
                 ['item.type', 'anyof', 'Assembly', 'InvtPart'], 'AND',
                 ['item', 'anyof', itemId], 'AND',
-                ['location', 'anyof', locationId],
+                side === 'dest'
+                    ? ['transferlocation', 'anyof', locationId]
+                    : ['location', 'anyof', locationId],
             ],
             columns: [
                 search.createColumn({ name: 'internalid' }),
                 search.createColumn({ name: 'linesequencenumber' }),
+                search.createColumn({ name: 'quantity' }),
                 search.createColumn({ name: 'tranid' }),
                 search.createColumn({ name: 'trandate' }),
                 search.createColumn({ name: 'custbody_ship_week' }),
@@ -580,6 +620,66 @@ define([
         };
     };
 
+    // ── On Order: Transfer Order side (spec point B — dest sees the TO coming) ─
+    // Consumes the dest-keyed TO line search (createTOLineSearch 'dest'), which
+    // returns the SOURCE-side rows of inbound TOs. Emits committed-shaped
+    // intermediate rows so dedupeByLine + collapseTOShadowLines apply unchanged;
+    // runDetailSearch adapts survivors to the On Order row shape. Numbers mirror
+    // Committed-at-source by construction: pending TO → full packs On Order at
+    // dest; partial fulfillment → the unfulfilled remainder (the shipped part is
+    // In Transit territory).
+    const buildOnOrderTORow = (r, itemId, locationId) => {
+        // Keep only source-side rows: they carry the remainder/shipped math.
+        // Primary discriminator is the quantity SIGN (source rows negative, the
+        // dest row positive — verified live on TO01/TO02); the location check is
+        // belt-and-suspenders because {location} returns '' on the
+        // transferlocation-keyed search.
+        if ((parseFloat(r.getValue({ name: 'quantity' })) || 0) > 0) return null;
+        var lineLoc = r.getValue({ name: 'location' });
+        if (lineLoc && String(lineLoc) === String(locationId)) return null;
+        var statusRefRaw = r.getValue({ name: 'statusref' });
+        var statusRef = String(statusRefRaw || '').toLowerCase();
+        if (['pendingapproval', 'pendingfulfillment', 'partiallyfulfilled'].indexOf(statusRef) === -1) {
+            if (['pendingreceipt', 'partiallyreceived', 'received', 'closed', 'rejected', 'cancelled'].indexOf(statusRef) === -1) {
+                log.audit('MTL onOrder TO status skipped',
+                    'doc=' + r.getValue({ name: 'tranid' }) + ' statusref=' + statusRefRaw);
+            }
+            return null;
+        }
+        var toOpenCol = null, toShippedCol = null;
+        r.columns.forEach(function (col) {
+            if (col.label === 'Open Pack Quantity') toOpenCol = col;
+            if (col.label === 'Shipped Pack Quantity') toShippedCol = col;
+        });
+        var openPacks = Math.abs(roundToTwoDecimals(
+            parseFloat(toOpenCol ? r.getValue(toOpenCol) : 0) || 0
+        ));
+        var shippedPacks = Math.abs(roundToTwoDecimals(
+            parseFloat(toShippedCol ? r.getValue(toShippedCol) : 0) || 0
+        ));
+        if (openPacks <= 0 && shippedPacks <= 0) return null;
+        var docId = r.getValue({ name: 'internalid' });
+        return {
+            docId:          docId,
+            lineSeq:        r.getValue({ name: 'linesequencenumber' }),
+            docNumber:      r.getValue({ name: 'tranid' }),
+            docUrl:         getRecordUrl(docId, 'transferorder'),
+            // "Vendor" for an inbound TO = the location it ships FROM. Line-level
+            // {location} is empty on the transferlocation-keyed search, so resolve
+            // from the TO header (loc-to-loc TOs have a single source location).
+            vendor:         lookupTOSourceName(docId) || lookupLocationName(r.getValue({ name: 'location' })),
+            shipWeek:       r.getValue({ name: 'custbody_ship_week' }) || '',
+            packsCommitted: openPacks,
+            toShippedPacks: shippedPacks,
+            piecesPerPack:  parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) ||
+                            parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0,
+            lotNumber:      r.getValue({ name: 'serialnumber' }) || '—',
+            allocatedSegmentId: r.getValue({ name: 'line.cseg_po_segment_gl' }) || '',
+            poDate:         r.getValue({ name: 'trandate' }) || '',
+            isTO:           true,
+        };
+    };
+
     // ── Outbound ──────────────────────────────────────────────────────────────
     // Per Marc-Antoine (May 2026): a SO line moves to Outbound when EITHER
     //   (a) the custom carrier field is filled  (Julie's original rule), OR
@@ -643,14 +743,50 @@ define([
             });
             // Committed = SO saved search (above, untouched) + from-scratch TO
             // search — the saved search's formulas fail on TO rows, so TOs need
-            // their own query (see createCommittedTOSearch).
+            // their own query (see createTOLineSearch).
             if (searchId === COMMITTED_SEARCH_ID) {
-                createCommittedTOSearch(itemId, locationId).run().each(function (r) {
+                createTOLineSearch(itemId, locationId, 'source').run().each(function (r) {
                     rawCount++;
                     var row = rowBuilder(r, itemId, locationId);
                     if (row) rows.push(row);
                     return true;
                 });
+            }
+            // On Order = PO saved search (above, untouched) + inbound-TO rows at
+            // the destination (spec point B: dest must see the TO coming from
+            // creation, and PO Allocation can reserve against it pre-receipt).
+            // Full TO pipeline runs here: build → lot-fanout dedupe → shadow/stale
+            // collapse → adapt to the On Order row shape.
+            if (searchId === ON_ORDER_SEARCH_ID) {
+                var toRaw = [];
+                createTOLineSearch(itemId, locationId, 'dest').run().each(function (r) {
+                    rawCount++;
+                    var row = buildOnOrderTORow(r, itemId, locationId);
+                    if (row) toRaw.push(row);
+                    return true;
+                });
+                if (toRaw.length) {
+                    toRaw = dedupeByLine(toRaw, 'onOrderTO');
+                    toRaw = collapseTOShadowLines(toRaw);
+                    toRaw.forEach(function (t) {
+                        rows.push({
+                            docNumber:     t.docNumber,
+                            docUrl:        t.docUrl,
+                            vendor:        t.vendor,
+                            vendorUrl:     '',
+                            shipWeek:      t.shipWeek,
+                            packs:         t.packsCommitted,
+                            piecesPerPack: t.piecesPerPack,
+                            // Price display deferred to TO spec item 4.
+                            mbfPrice:      0,
+                            currency:      '',
+                            segmentId:     t.allocatedSegmentId || '',
+                            poId:          t.docId,
+                            poDate:        t.poDate || '',
+                            isTO:          true,
+                        });
+                    });
+                }
             }
         } catch (e) {
             log.error('MTL runDetailSearch', searchId + ' ERROR for item=' + itemId + ' loc=' + locationId + ': ' + e.message);
@@ -1323,7 +1459,7 @@ define([
                 }
             });
         });
-        // TO committed rows ride a from-scratch search (createCommittedTOSearch),
+        // TO committed/on-order rows ride a from-scratch search (createTOLineSearch),
         // invisible to the SO-only committed saved search above — seed open-TO
         // keys separately so an item whose only MTL activity is a TO still gets a
         // summary row. Seeds both endpoints; dest keys are harmless (the committed
