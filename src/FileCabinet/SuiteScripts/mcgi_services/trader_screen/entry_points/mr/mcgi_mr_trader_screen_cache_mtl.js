@@ -105,20 +105,89 @@ define([
         return _locNameCache[locId];
     };
 
-    // TO id → source location name (header field), cached per execution.
-    var _toSourceNameCache = {};
-    const lookupTOSourceName = (toId) => {
-        if (!toId) return '';
-        if (_toSourceNameCache[toId] === undefined) {
+    // TO id → source location {id, name} (header field), cached per execution.
+    var _toSourceCache = {};
+    const lookupTOSource = (toId) => {
+        if (!toId) return { id: '', name: '' };
+        if (_toSourceCache[toId] === undefined) {
             try {
                 var f = search.lookupFields({ type: 'transferorder', id: toId, columns: ['location'] });
                 var v = f && f.location;
-                _toSourceNameCache[toId] = Array.isArray(v) && v.length ? (v[0].text || '') : '';
+                _toSourceCache[toId] = Array.isArray(v) && v.length
+                    ? { id: String(v[0].value || ''), name: v[0].text || '' }
+                    : { id: '', name: '' };
             } catch (e) {
-                _toSourceNameCache[toId] = '';
+                _toSourceCache[toId] = { id: '', name: '' };
             }
         }
-        return _toSourceNameCache[toId];
+        return _toSourceCache[toId];
+    };
+    const lookupTOSourceName = (toId) => lookupTOSource(toId).name;
+
+    // Pre-receipt TO price: the lot's USD secondary-book value at the TO's SOURCE
+    // location (Julie 2026-07-29 — traders want the cost before selecting an
+    // inbound lot). Freight lands only at receipt, so this shows her "100"; the
+    // "110" appears once received (applyLotCost + originIsTO). Cached per
+    // (lot, source); returns 0 on any miss — blank is honest, invented isn't.
+    // The dest-keyed (transferlocation-filtered) search returns '' for the
+    // inventoryDetail join (same tenant quirk as {location}), so resolve the
+    // line's lot from a SOURCE-keyed search per (TO, item); if the value join is
+    // empty there too, resolve the serialnumber NAME via an inventorynumber
+    // search. Cached per (TO, item).
+    var _toLineLotCache = {};
+    const getTOLineLotId = (toId, itemId, srcLocId) => {
+        if (!toId || !itemId || !srcLocId) return '';
+        var key = String(toId) + '__' + String(itemId);
+        if (_toLineLotCache[key] !== undefined) return _toLineLotCache[key];
+        var lotId = '', lotName = '';
+        try {
+            createTOLineSearch(itemId, srcLocId, 'source').run().each(function (r) {
+                if (String(r.getValue({ name: 'internalid' })) !== String(toId)) return true;
+                lotId = lotId || safeGetValue(r, { name: 'inventorynumber', join: 'inventoryDetail' }) || '';
+                var nm = r.getValue({ name: 'serialnumber' }) || '';
+                if (nm && nm !== '—') lotName = lotName || nm;
+                return !lotId;
+            });
+            if (!lotId && lotName) {
+                search.create({
+                    type: 'inventorynumber',
+                    filters: [['inventorynumber', 'is', lotName]],
+                    columns: ['internalid'],
+                }).run().each(function (r) {
+                    lotId = r.getValue({ name: 'internalid' });
+                    return false;
+                });
+            }
+        } catch (e) {
+            log.debug('MTL TO lot price', 'line-lot resolution failed to=' + toId + ' item=' + itemId + ': ' + e.message);
+        }
+        _toLineLotCache[key] = lotId || '';
+        return _toLineLotCache[key];
+    };
+
+    var _toLotUsdCache = {};
+    var _usdBookIdCached = null;
+    const getTOLotUsdPriceAtSource = (lotId, toId, itemId) => {
+        if (!toId) return 0;
+        var src = lookupTOSource(toId);
+        if (!src.id) return 0;
+        if (!lotId) lotId = getTOLineLotId(toId, itemId, src.id);
+        if (!lotId) return 0;
+        var key = String(lotId) + '__' + src.id;
+        if (_toLotUsdCache[key] === undefined) {
+            try {
+                if (_usdBookIdCached === null) {
+                    _usdBookIdCached = parseInt(getScriptParam('custscript_ts_mtl_usd_book_id', USD_ACCOUNTING_BOOK_ID_DEFAULT), 10) || USD_ACCOUNTING_BOOK_ID_DEFAULT;
+                }
+                var costs = LotCostLib.getLotCostsAtLocation([lotId], src.id, { book: _usdBookIdCached });
+                _toLotUsdCache[key] = (costs && costs[lotId] != null) ? roundToTwoDecimals(costs[lotId]) : 0;
+                log.debug('MTL TO lot price', 'lot=' + lotId + ' src=' + src.id + ' book=' + _usdBookIdCached + ' → ' + _toLotUsdCache[key]);
+            } catch (e) {
+                log.debug('MTL TO lot price', 'lot=' + lotId + ' src=' + src.id + ': ' + e.message);
+                _toLotUsdCache[key] = 0;
+            }
+        }
+        return _toLotUsdCache[key];
     };
 
     const getScriptParam = (name, defaultValue) => {
@@ -272,6 +341,9 @@ define([
                 search.createColumn({ name: 'custitem_mgsl_ppp', join: 'item' }),
                 search.createColumn({ name: 'line.cseg_po_segment_gl' }),
                 search.createColumn({ name: 'serialnumber' }),
+                // Lot internal id — prices pre-receipt TO rows from the lot's USD
+                // value at the source location (Julie 2026-07-29).
+                search.createColumn({ name: 'inventorynumber', join: 'inventoryDetail' }),
                 search.createColumn({ name: 'type' }),
                 search.createColumn({ name: 'statusref' }),
                 search.createColumn({ name: 'transferlocation' }),
@@ -685,6 +757,7 @@ define([
             piecesPerPack:  parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) ||
                             parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0,
             lotNumber:      r.getValue({ name: 'serialnumber' }) || '—',
+            lotId:          r.getValue({ name: 'inventorynumber', join: 'inventoryDetail' }) || '',
             allocatedSegmentId: r.getValue({ name: 'line.cseg_po_segment_gl' }) || '',
             poDate:         r.getValue({ name: 'trandate' }) || '',
             isTO:           true,
@@ -792,6 +865,7 @@ define([
                         ppp:       parseFloat(safeGetValue(r, { name: 'custcol_mgsl_ppp' })) ||
                                    parseFloat(safeGetValue(r, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0,
                         segmentId: r.getValue({ name: 'line.cseg_po_segment_gl' }) || '',
+                        lotId:     safeGetValue(r, { name: 'inventorynumber', join: 'inventoryDetail' }) || '',
                         poDate:    r.getValue({ name: 'trandate' }) || '',
                     });
                     return true;
@@ -822,9 +896,13 @@ define([
                         var shippedPk  = Math.max(t0.shipped, twin ? twin.shipped : 0);
                         var receivedPk = destRow ? destRow.shipped : 0;
                         var transitPk  = roundToTwoDecimals(shippedPk - receivedPk);
+                        var transitLot = t0.lotId || (twin ? twin.lotId : '') || (destRow ? destRow.lotId : '');
                         ti += consumed;
                         if (transitPk <= 0) continue;
                         rawCount++;
+                        // Price = the shipped lot's USD value at the source (freight
+                        // lands only at receipt, so this is pre-freight — by design).
+                        var transitUsd = getTOLotUsdPriceAtSource(transitLot, t0.docId, itemId);
                         rows.push({
                             docNumber:     t0.docNumber,
                             docUrl:        getRecordUrl(t0.docId, 'transferorder'),
@@ -833,9 +911,8 @@ define([
                             vendorUrl:     '',
                             packs:         transitPk,
                             piecesPerPack: t0.ppp,
-                            // Price display deferred to TO spec item 4.
-                            mbfPrice:      0,
-                            currency:      '',
+                            mbfPrice:      transitUsd,
+                            currency:      transitUsd > 0 ? 'USD' : '',
                             segmentId:     t0.segmentId || (twin ? twin.segmentId : '') || '',
                             poId:          t0.docId,
                             poDate:        t0.poDate,
@@ -861,6 +938,9 @@ define([
                     toRaw = dedupeByLine(toRaw, 'onOrderTO');
                     toRaw = collapseTOShadowLines(toRaw);
                     toRaw.forEach(function (t) {
+                        // Price = the assigned lot's USD value at the source (no lot
+                        // assigned yet → no honest number → 0/blank).
+                        var usdPrice = getTOLotUsdPriceAtSource(t.lotId, t.docId, itemId);
                         rows.push({
                             docNumber:     t.docNumber,
                             docUrl:        t.docUrl,
@@ -869,9 +949,8 @@ define([
                             shipWeek:      t.shipWeek,
                             packs:         t.packsCommitted,
                             piecesPerPack: t.piecesPerPack,
-                            // Price display deferred to TO spec item 4.
-                            mbfPrice:      0,
-                            currency:      '',
+                            mbfPrice:      usdPrice,
+                            currency:      usdPrice > 0 ? 'USD' : '',
                             segmentId:     t.allocatedSegmentId || '',
                             poId:          t.docId,
                             poDate:        t.poDate || '',
@@ -996,6 +1075,9 @@ define([
                 a.toShippedPacks = Math.max(a.toShippedPacks || 0, b.toShippedPacks || 0);
                 if ((!a.lotNumber || a.lotNumber === '—') && b.lotNumber && b.lotNumber !== '—') {
                     a.lotNumber = b.lotNumber;
+                }
+                if (!a.lotId && b.lotId) {
+                    a.lotId = b.lotId;
                 }
                 if ((!a.allocatedPO || a.allocatedPO === '—') && b.allocatedPO && b.allocatedPO !== '—') {
                     a.allocatedPO = b.allocatedPO;
