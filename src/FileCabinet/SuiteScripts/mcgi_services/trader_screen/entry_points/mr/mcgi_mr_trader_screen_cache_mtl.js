@@ -149,9 +149,11 @@ define([
                 return !lotId;
             });
             if (!lotId && lotName) {
+                // Item filter matters: lot NAMES are only unique per item in NS —
+                // a name-only match could resolve another item's lot.
                 search.create({
                     type: 'inventorynumber',
-                    filters: [['inventorynumber', 'is', lotName]],
+                    filters: [['inventorynumber', 'is', lotName], 'AND', ['item', 'anyof', itemId]],
                     columns: ['internalid'],
                 }).run().each(function (r) {
                     lotId = r.getValue({ name: 'internalid' });
@@ -594,9 +596,10 @@ define([
             shipWeek:       r.getValue({ name: 'custbody_ship_week' }) || '',
             packsCommitted: packsCommitted,
             piecesPerPack:  ppp,
-            // TO price display is deferred to TO spec item 4 (secondary-book lot
-            // cost) \u2014 the TO line rate is not a price traders should act on.
-            mbfPrice:       isTO ? 0 : roundToTwoDecimals(rawRate / exchRate),
+            // TO committed rows show no price (null \u2192 '\u2014' in the drawer; 0 would
+            // render "$0.00") \u2014 the TO line rate is not a price traders should act
+            // on. Pre-receipt pricing lives on the dest On Order / In Transit rows.
+            mbfPrice:       isTO ? null : roundToTwoDecimals(rawRate / exchRate),
             currency:       isTO ? '' : (CURRENCY_TO_ISO[r.getText({ name: 'currency' })] || r.getText({ name: 'currency' }) || ''),
             allocatedPO:    r.getText({ name: 'line.cseg_po_segment_gl' }) || '\u2014',
             allocatedSegmentId: r.getValue({ name: 'line.cseg_po_segment_gl' }) || '',
@@ -911,7 +914,7 @@ define([
                             vendorUrl:     '',
                             packs:         transitPk,
                             piecesPerPack: t0.ppp,
-                            mbfPrice:      transitUsd,
+                            mbfPrice:      transitUsd > 0 ? transitUsd : null,
                             currency:      transitUsd > 0 ? 'USD' : '',
                             segmentId:     t0.segmentId || (twin ? twin.segmentId : '') || '',
                             poId:          t0.docId,
@@ -949,7 +952,9 @@ define([
                             shipWeek:      t.shipWeek,
                             packs:         t.packsCommitted,
                             piecesPerPack: t.piecesPerPack,
-                            mbfPrice:      usdPrice,
+                            // null, not 0: the drawer renders null as '—' (no data)
+                            // and 0 as "$0.00" — the very display Julie flagged.
+                            mbfPrice:      usdPrice > 0 ? usdPrice : null,
                             currency:      usdPrice > 0 ? 'USD' : '',
                             segmentId:     t.allocatedSegmentId || '',
                             poId:          t.docId,
