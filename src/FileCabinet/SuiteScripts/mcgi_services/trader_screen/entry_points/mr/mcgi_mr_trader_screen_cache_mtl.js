@@ -1140,8 +1140,13 @@ define([
         //    `tranType`→'itemreceipt' for mixed IA+IR lots, which would hide
         //    IA-origin lots from this rule (R46450-0022, Marc-Antoine 2026-07-07).
         //    Shared predicate so the filter and the apply-loop below can't drift.
+        // UNION of three conditions — never let one replace another (July 7
+        // regression lesson): IA-origin lots (MGSL convention), lots the origin
+        // walk marked USD, and TO-received lots (spec item 4, 2026-07-29: the
+        // transfer's IR posts CAD in the primary book, so a US lot arrived at the
+        // destination showing CAD — Julie's T003/ante-2 screenshot).
         var needsUsd = function (r) {
-            return r.lotInternalId && (r.originTranType === 'inventoryadjustment' || r.currency === 'USD');
+            return r.lotInternalId && (r.originTranType === 'inventoryadjustment' || r.currency === 'USD' || r.originIsTO);
         };
         var usdLotIds = onHand.filter(needsUsd).map(function (r) { return r.lotInternalId; });
         if (usdLotIds.length === 0) return;
@@ -2086,7 +2091,10 @@ define([
                         docNumber:     origin.docNumber,
                         docUrl:        getRecordUrl(origin.tranInternalId, origin.tranType),
                         poNumber:      stripPrefix(origin.createdFromText),
-                        poUrl:         (origin.tranType === 'itemreceipt' && origin.createdFromId) ? getRecordUrl(origin.createdFromId, 'purchaseorder') : '',
+                        poUrl:         (origin.tranType === 'itemreceipt' && origin.createdFromId)
+                            ? getRecordUrl(origin.createdFromId,
+                                /transfer\s*order/i.test(String(origin.createdFromText || '')) ? 'transferorder' : 'purchaseorder')
+                            : '',
                         date:          (origin.tranType === 'inventoryadjustment'
                                         ? (origin.custbody4 || origin.trandate)
                                         : origin.trandate),
@@ -2103,6 +2111,14 @@ define([
                         // never touched there, so the USD rule stays correct
                         // (R46450-0022, Marc-Antoine 2026-07-07).
                         originTranType: origin.tranType,
+                        // TO-origin discriminator for applyLotCost's USD rule (TO spec
+                        // item 4: a transferred lot keeps its USD secondary-book value
+                        // at the destination). originTranType is 'itemreceipt' for
+                        // BOTH TO and PO receipts, so key on the receipt's created-from
+                        // doc instead. Stable — captured once at build, like
+                        // originTranType.
+                        originIsTO: origin.tranType === 'itemreceipt' &&
+                            /transfer\s*order/i.test(String(origin.createdFromText || '')),
                         packsOnHand:   packs,
                         piecesPerPack: pppToUse,
                         fbmFactor:     fbmToUse,
