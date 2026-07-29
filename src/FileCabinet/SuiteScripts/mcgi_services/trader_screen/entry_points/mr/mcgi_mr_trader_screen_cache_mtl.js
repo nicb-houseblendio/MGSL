@@ -22,7 +22,12 @@ define([
     // ═══════════════════════════════════════════════════════════════════════════
 
     const MTL_SUBSIDIARY_ID = 5;
-    const MIN_INTERVAL_MS   = 120000; // 2 minutes — minimum gap between real processing runs
+    // Minimum gap between real processing runs. 60s, not 120s: a working DELTA
+    // run costs ~5s (vs the ~60s FULLs this throttle was sized for), and at 120s
+    // the worst-case save→screen latency compounded to ~4 min (throttle + run +
+    // 60s frontend poll — Julie, 2026-07-29). At 60s the pipeline delivers in
+    // ~1.5–2.5 min, matching the screen's freshness promise.
+    const MIN_INTERVAL_MS   = 60000; // 1 minute
     // Force a FULL rebuild at least this often. Deltas keep changed keys fresh
     // within ~2 min, but quiet keys' detail entries only get rewritten on a FULL
     // (TTL_DETAIL must outlive this with margin), and the delta type list can't
