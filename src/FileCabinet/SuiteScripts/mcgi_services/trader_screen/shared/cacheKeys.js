@@ -10,6 +10,7 @@ define([], () => {
     const TS_SUMMARY = 'TS_SUMMARY';
     const TS_DETAIL_PREFIX = 'TS_DETAIL__';
     const TS_LAST_RUN_TIMESTAMP = 'TS_LAST_RUN_TIMESTAMP';
+    const TS_LAST_FULL_TIMESTAMP = 'TS_LAST_FULL_TIMESTAMP';
     const TS_SUMMARY_CHUNK_PREFIX = 'TS_SUMMARY_CHUNK__';
     const TS_REDUCE_BATCH_PREFIX = 'TS_RB__';
     const REDUCE_BATCH_COUNT = 20;
@@ -17,6 +18,12 @@ define([], () => {
     const MAX_CACHE_VALUE_BYTES = 450 * 1024;
 
     const TTL_SUMMARY = 1800;
+    // Detail entries are rewritten only when their (item, location) key is
+    // rebuilt; under real DELTA mode quiet keys go hours between rebuilds, so
+    // this must outlive the hourly FULL-refresh backstop with margin (the 30-min
+    // TTL killed quiet keys' drawers on MTL once the full-rebuild churn stopped,
+    // 2026-07-28).
+    const TTL_DETAIL = 14400;
     const TTL_LAST_RUN = 86400;
 
     const buildDetailKey = (itemId, locationId) =>
@@ -40,12 +47,14 @@ define([], () => {
         TS_SUMMARY,
         TS_DETAIL_PREFIX,
         TS_LAST_RUN_TIMESTAMP,
+        TS_LAST_FULL_TIMESTAMP,
         TS_SUMMARY_CHUNK_PREFIX,
         TS_REDUCE_BATCH_PREFIX,
         REDUCE_BATCH_COUNT,
         TS_SUMMARY_DATA_PREFIX,
         MAX_CACHE_VALUE_BYTES,
         TTL_SUMMARY,
+        TTL_DETAIL,
         TTL_LAST_RUN,
         buildDetailKey,
         buildDetailBucketKey,

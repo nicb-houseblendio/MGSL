@@ -15,7 +15,14 @@ define([
     '../../shared/urlResolver',
     '/SuiteScripts/MCGI_LIB_LotCost',
 ], (search, cache, log, runtime, task, query, CacheKeys, CacheClient, UrlResolver, LotCostLib) => {
-    const { TTL_SUMMARY, TTL_LAST_RUN, buildDetailKey, buildDetailBucketKey } = CacheKeys;
+    const { TTL_SUMMARY, TTL_DETAIL, TTL_LAST_RUN, buildDetailKey, buildDetailBucketKey } = CacheKeys;
+
+    // Cache-health constants ported from the MTL MR (2026-07-29). The self-
+    // reschedule loop spins continuously; the throttle gates real work, and the
+    // hourly FULL refreshes quiet keys' detail entries (rewritten only when their
+    // key rebuilds) and covers transaction types the delta list can't see.
+    const MIN_INTERVAL_MS = 60000;            // 1 minute between real processing runs
+    const FULL_REFRESH_MS = 60 * 60 * 1000;   // force a FULL at least hourly
     const { getRecordUrl } = UrlResolver;
 
     const ITEM_DATA_SEARCH_ID = 'customsearch_suitelet_all_items_search_n';
@@ -275,7 +282,11 @@ define([
      */
     const getInputData = () => {
         const subsidiaryId = getScriptParam('custscript_ts_subsidiary_id', null);
-        const forceFull = getScriptParam('custscript_ts_force_full_rebuild', false);
+        // Normalize to a real boolean — getParameter can surface the checkbox as
+        // the STRING 'false' (truthy!), which forced a FULL rebuild every run and
+        // disabled throttling on the MTL MR until 2026-07-28. Same bug here.
+        const forceFullRaw = getScriptParam('custscript_ts_force_full_rebuild', false);
+        const forceFull = forceFullRaw === true || forceFullRaw === 'T' || forceFullRaw === 'true';
         const deltaThreshold = getScriptParam('custscript_ts_delta_fallback_threshold', 500);
 
         if (!subsidiaryId) {
@@ -286,9 +297,26 @@ define([
         const myCache = CacheClient.getCache();
         const lastRunStr = myCache.get({ key: CacheKeys.TS_LAST_RUN_TIMESTAMP });
 
-        const isFullMode = forceFull || !lastRunStr;
+        // Throttle: skip processing if less than MIN_INTERVAL_MS since last run.
+        if (!forceFull && lastRunStr) {
+            const elapsed = Date.now() - new Date(lastRunStr).getTime();
+            if (!isNaN(elapsed) && elapsed < MIN_INTERVAL_MS) {
+                log.debug('MCGI_MR_TraderScreenCache', 'getInputData: throttled — ' + Math.round(elapsed / 1000) + 's since last run, min=' + (MIN_INTERVAL_MS / 1000) + 's');
+                return {};
+            }
+        }
+
+        // Hourly FULL backstop — missing/invalid LAST_FULL counts as due, so the
+        // first run after deploy refreshes every detail key.
+        const lastFullStr = myCache.get({ key: CacheKeys.TS_LAST_FULL_TIMESTAMP });
+        const sinceFullMs = lastFullStr ? (Date.now() - new Date(lastFullStr).getTime()) : NaN;
+        const fullDue = isNaN(sinceFullMs) || sinceFullMs > FULL_REFRESH_MS;
+
+        const isFullMode = forceFull || !lastRunStr || fullDue;
+        log.audit('MCGI_MR_TraderScreenCache', 'getInputData: forceFull=' + forceFull + ' (raw=' + forceFullRaw + ':' + (typeof forceFullRaw) + ') fullDue=' + fullDue + ' isFullMode=' + isFullMode);
 
         if (isFullMode) {
+            myCache.put({ key: CacheKeys.TS_LAST_FULL_TIMESTAMP, value: new Date().toISOString(), ttl: TTL_LAST_RUN });
             const mySearch = search.load({ id: ITEM_DATA_SEARCH_ID });
             const filters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
             filters.push('AND', ['inventorylocation.subsidiary', 'anyof', subsidiaryId]);
@@ -334,6 +362,7 @@ define([
             lastRunDate = null;
         }
         if (!lastRunDate) {
+            myCache.put({ key: CacheKeys.TS_LAST_FULL_TIMESTAMP, value: new Date().toISOString(), ttl: TTL_LAST_RUN });
             const mySearch = search.load({ id: ITEM_DATA_SEARCH_ID });
             const flbkFilters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
             flbkFilters.push('AND', ['inventorylocation.subsidiary', 'anyof', subsidiaryId]);
@@ -359,6 +388,21 @@ define([
         const pairs = {};
         let pairCount = 0;
 
+        // A plain ['lastmodifieddate','onorafter', <value>] filter errors on this
+        // tenant for BOTH Date objects and formatted strings — every delta type
+        // search had failed silently since inception (root-caused on the MTL MR,
+        // 2026-07-28). Formula filter with an explicit TO_DATE mask instead,
+        // rendered at fixed UTC-8 minus a 3h buffer so timezone skew can only
+        // WIDEN the window, never push it forward.
+        const winDate = new Date(lastRunDate.getTime() - 3 * 60 * 60 * 1000 - 8 * 60 * 60 * 1000);
+        const pad2 = (n) => (n < 10 ? '0' : '') + n;
+        const winStr = winDate.getUTCFullYear() + '-' + pad2(winDate.getUTCMonth() + 1) + '-' + pad2(winDate.getUTCDate()) +
+                       ' ' + pad2(winDate.getUTCHours()) + ':' + pad2(winDate.getUTCMinutes());
+        const deltaWindowFilter = [
+            "formulanumeric: CASE WHEN {lastmodifieddate} >= TO_DATE('" + winStr + "','YYYY-MM-DD HH24:MI') THEN 1 ELSE 0 END",
+            'equalto', '1',
+        ];
+
         tranTypes.forEach((tranType) => {
             try {
                 const tranSearch = search.create({
@@ -366,7 +410,7 @@ define([
                     filters: [
                         ['subsidiary', 'anyof', subsidiaryId],
                         'AND',
-                        ['lastmodifieddate', 'onorafter', lastRunDate],
+                        deltaWindowFilter,
                     ],
                     columns: [
                         search.createColumn({ name: 'item', join: 'item' }),
@@ -389,7 +433,24 @@ define([
             }
         });
 
-        if (pairCount > deltaThreshold || pairCount === 0) {
+        if (pairCount === 0) {
+            // Nothing changed — refresh LAST_RUN so the throttle stays current and
+            // skip processing. (Previously 0 pairs fell back to a FULL rebuild,
+            // which — combined with the broken delta filter above — meant every
+            // "delta" run was actually a full. Quiet keys' detail entries are
+            // protected by TTL_DETAIL + the hourly FULL backstop.)
+            myCache.put({
+                key: CacheKeys.TS_LAST_RUN_TIMESTAMP,
+                value: new Date().toISOString(),
+                ttl: TTL_LAST_RUN,
+            });
+            log.audit('MCGI_MR_TraderScreenCache', 'getInputData: DELTA 0 changes, LAST_RUN refreshed');
+            return {};
+        }
+
+        if (pairCount > deltaThreshold) {
+            log.audit('MCGI_MR_TraderScreenCache', 'getInputData: DELTA->FULL fallback (pairCount=' + pairCount + ')');
+            myCache.put({ key: CacheKeys.TS_LAST_FULL_TIMESTAMP, value: new Date().toISOString(), ttl: TTL_LAST_RUN });
             const mySearch = search.load({ id: ITEM_DATA_SEARCH_ID });
             const threshFilters = mySearch.filterExpression ? mySearch.filterExpression.concat() : [];
             threshFilters.push('AND', ['inventorylocation.subsidiary', 'anyof', subsidiaryId]);
@@ -792,15 +853,18 @@ define([
                     myCache.put({
                         key: buildDetailBucketKey(itemId, locationId, bucket),
                         value: JSON.stringify(detailPayload[bucket]),
-                        ttl: TTL_SUMMARY,
+                        ttl: TTL_DETAIL,
                     });
                 }
             });
         } else {
+            // TTL_DETAIL, not TTL_SUMMARY: detail is rewritten only when this key
+            // is rebuilt; under real DELTA mode quiet keys go hours between
+            // rebuilds and a 30-min TTL kills their drawers (MTL, 2026-07-28).
             myCache.put({
                 key: detailKey,
                 value: detailJson,
-                ttl: TTL_SUMMARY,
+                ttl: TTL_DETAIL,
             });
         }
 
@@ -820,11 +884,14 @@ define([
         if (context.inputSummary.error) {
             log.error({ title: 'Input Error', details: context.inputSummary.error });
         }
+        let mapErrorCount = 0, reduceErrorCount = 0;
         context.mapSummary.errors.iterator().each(function (key, error) {
+            mapErrorCount++;
             log.error({ title: `Map Error for key: ${key}`, details: error });
             return true;
         });
         context.reduceSummary.errors.iterator().each(function (key, error) {
+            reduceErrorCount++;
             log.error({ title: `Reduce Error for key: ${key}`, details: error });
             return true;
         });
@@ -845,6 +912,31 @@ define([
             return true;
         });
         log.audit('MCGI_MR_TraderScreenCache', 'summarize: reduceKeysCount=' + reduceKeysCount + ', outputRows=' + allRows.length);
+
+        // Throttled/no-change run guard (ported from MTL): no output + no errors →
+        // preserve the cache untouched and just re-queue the loop. Without this,
+        // an empty run falls into the NO-MERGE branch below and overwrites
+        // TS_SUMMARY with an empty array.
+        if (allRows.length === 0 && !context.inputSummary.error && mapErrorCount === 0 && reduceErrorCount === 0) {
+            log.debug('MCGI_MR_TraderScreenCache', 'summarize: throttled/no-change (no-op), duration=' + (Date.now() - startTime) + 'ms');
+            try {
+                const mrTaskNoop = task.create({
+                    taskType: task.TaskType.MAP_REDUCE,
+                    scriptId: runtime.getCurrentScript().id,
+                    deploymentId: runtime.getCurrentScript().deploymentId,
+                    params: {
+                        custscript_ts_subsidiary_id: getScriptParam('custscript_ts_subsidiary_id', null),
+                        custscript_ts_force_full_rebuild: false,
+                        custscript_ts_delta_fallback_threshold: getScriptParam('custscript_ts_delta_fallback_threshold', 500),
+                    },
+                });
+                const noopTaskId = mrTaskNoop.submit();
+                log.debug('MCGI_MR_TraderScreenCache', 'Self-rescheduled (throttled). taskId=' + noopTaskId);
+            } catch (e) {
+                log.error('MCGI_MR_TraderScreenCache', 'Self-reschedule (throttled) failed: ' + e.message);
+            }
+            return;
+        }
 
         const existingSummary = myCache.get({ key: CacheKeys.TS_SUMMARY });
         log.audit('MCGI_MR_TraderScreenCache', 'summarize: existingSummary present=' + !!existingSummary + ', existingSummaryLen=' + (existingSummary ? existingSummary.length : 0));
