@@ -17,7 +17,15 @@ define([], () => {
     const TS_SUMMARY_DATA_PREFIX = 'TS_SUMMARY_DATA__';
     const MAX_CACHE_VALUE_BYTES = 450 * 1024;
 
-    const TTL_SUMMARY = 1800;
+    // TS_SUMMARY (+ its chunks) and TS_META live under this TTL, and summarize
+    // only rewrites them on a run that produced output. Under real DELTA mode a
+    // quiet subsidiary produces no output for hours — every run is "DELTA 0
+    // changes" — so a 30-min TTL let both keys expire with nothing rebuilding
+    // them, and the screen answered "Cache is being rebuilt, try again shortly"
+    // until the next hourly FULL (Julie, sandbox 2026-07-31). Must outlive the
+    // MR's FULL backstop (FULL_REFRESH_MS, 1h) with margin — same reasoning that
+    // took TTL_DETAIL to 4h.
+    const TTL_SUMMARY = 14400;
     // Detail entries are rewritten only when their (item, location) key is
     // rebuilt; under real DELTA mode quiet keys go hours between rebuilds, so
     // this must outlive the hourly FULL-refresh backstop with margin (the 30-min

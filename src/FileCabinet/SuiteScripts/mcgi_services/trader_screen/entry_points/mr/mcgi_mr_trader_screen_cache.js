@@ -101,6 +101,18 @@ define([
             // to match received-segment availability without running its own SuiteQL —
             // see plans/for-po-allocation-sbx-transient.
             s.columns.push(search.createColumn({ name: 'cseg_po_segment_gl' }));
+            // PPP sources, read as PLAIN columns so line-level and item-level stay
+            // distinguishable. Deliberately NOT the saved search's 'Piece per Package
+            // (PPP)' formula column: that formula collapses the two
+            // (custcol_mgsl_ppp → NVL → item.custitem_mgsl_ppp), so when the line
+            // value is empty it hands back the item's nominal PPP with no way to tell
+            // — and the item nominal then silently outranks the lot name. Lot
+            // SO-IND-246357-2.625-308 is exactly that case: 308 pieces/pack per the
+            // lot name, item nominal 342, and trusting the collapsed value turned a
+            // clean 3.00 packs into 2.70 (prod audit, 2026-07-31). Reading them apart
+            // also drops the dependency on that column's label.
+            s.columns.push(search.createColumn({ name: 'custcol_mgsl_ppp' }));
+            s.columns.push(search.createColumn({ name: 'custitem_mgsl_ppp', join: 'item' }));
             _onHandCache = {
                 search: s,
                 colAdjValue: colAdjValue,
@@ -170,6 +182,23 @@ define([
     };
 
     const roundToTwoDecimals = num => Math.round((parseFloat(num) || 0) * 100) / 100;
+
+    // Smallest on-hand pack quantity still worth showing. Guards the ghost-lot
+    // filter against float residue (1 - 1 = 1e-16) without rounding real partial
+    // packs away — see the On Hand builder's filter comment.
+    const PACK_EPSILON = 0.005;
+
+    /**
+     * Legacy PPP source, kept as a last-resort fallback: NetSuite-generated lot
+     * names end in the pack's piece count ('Remanufacturing Order
+     * #RO-IND-499-1-14552' → 14552). Vendor-named lots ('347516-Dion') don't
+     * match — those must come from the saved search's PPP column instead.
+     * Returns 0 (not 1) on no match; a bogus PPP of 1 turns packs into pieces.
+     */
+    const pppFromLotName = (lotName) => {
+        const m = String(lotName || '').match(/-(\d+(?:\.\d+)?)$/);
+        return m ? Number(m[1]) : 0;
+    };
 
     const getScriptParam = (name, defaultValue) => {
         try {
@@ -287,7 +316,17 @@ define([
         // disabled throttling on the MTL MR until 2026-07-28. Same bug here.
         const forceFullRaw = getScriptParam('custscript_ts_force_full_rebuild', false);
         const forceFull = forceFullRaw === true || forceFullRaw === 'T' || forceFullRaw === 'true';
-        const deltaThreshold = getScriptParam('custscript_ts_delta_fallback_threshold', 500);
+        // Default 150, not 500. Above this many changed pairs, one paged FULL is both
+        // faster and safer than N sequential per-pair searches — the crossover for
+        // prod IND is ~100 pairs (a full's getInputData measured ~19s vs ~0.19s per
+        // pair). Measured real traffic is 22-41 pairs per delta window, so this only
+        // ever fires on an abnormal burst (bulk import, migration), which is exactly
+        // when an unbounded loop in a non-yielding phase must not be reachable.
+        // Hardcoded rather than left to the script parameter because the parameter
+        // lives on the script RECORD (an SDF object) and prod has only ever received
+        // scoped file:uploads — so it may not exist there. If it does exist and is
+        // set, it still wins.
+        const deltaThreshold = getScriptParam('custscript_ts_delta_fallback_threshold', 150);
 
         if (!subsidiaryId) {
             log.error('MCGI_MR_TraderScreenCache', 'custscript_ts_subsidiary_id is required');
@@ -716,11 +755,28 @@ define([
         });
         if (!summaryRow) return;
 
-        // On Hand: replicates MCGI_SSU_OnHand.js (v1) logic exactly.
-        // Uses inventoryDetail.inventorynumber (getText) for lot name,
-        // inventoryDetail.quantity for per-lot base unit qty,
-        // converts to packs via: (qty * 1000) / (PPP * FBM_per_piece).
-        // Aggregates by lot name, filters qty > 0.
+        // On Hand: derived from MCGI_SSU_OnHand.js (v1). Uses
+        // inventoryDetail.inventorynumber (getText) for lot name,
+        // inventoryDetail.quantity for per-lot base unit qty, converts to packs
+        // via: (qty * 1000) / (PPP * FBM_per_piece), aggregates by lot name.
+        //
+        // PPP source corrected 2026-07-31. v1 mined PPP out of the lot NAME and
+        // defaulted to 1 when the name didn't end in a number. NS-generated reman
+        // lots do end in the pack's piece count, but vendor-named lots don't:
+        // '347516-Dion' fell through to PPP=1, so packs came out as pieces —
+        // CHW6683+GRO/Prevost showed 37 packs for a 1-pack lot (Marc-Antoine).
+        // The line's own custcol_mgsl_ppp is authoritative (37 there), and it's what
+        // every other tab already reads (buildCommittedRow et al). The lot name is
+        // kept as the next fallback, not discarded — a prod audit of all 1,554
+        // stocked IND lot/locations found the two sources agree everywhere except
+        // this one lot, so the corrected chain moves exactly one row.
+        //
+        // Two passes, because PPP must be latched per LOT, not read per row:
+        // line-level custcol_mgsl_ppp drifts on IF lines (they inherit the SO's
+        // commitment PPP, not the lot's received PPP), which would under-deduct
+        // packs. v1's lot-name scrape was immune by construction; the latch
+        // restores that. Latching on the fly in one pass isn't enough — an IF can
+        // sort before its lot's IR (2,063 such combos found on MTL, 2026-05-11).
         const onHand = (() => {
             try {
                 var cached = getOnHandSearch();
@@ -734,89 +790,144 @@ define([
                 var poPricing = getPoPricingForItem(itemId);
                 var seenLots = {};
                 var itemData = [];
+                var rawRows = [];
+                var lotPppMap = {};
+
+                // ── Pass 1: drain the search, latch each lot's PPP ────────────
                 mySearch.run().each(function (result) {
                     var lotNumber = result.getText({ name: 'inventorynumber', join: 'inventoryDetail' }) || '';
-                    var volPCFBM = parseFloat(result.getValue({ name: 'custitem_mgsl_fbm', join: 'item' })) || 0;
+                    if (!lotNumber) return true; // skip rows without lot number
+
                     var itemTranQty = parseFloat(result.getValue(colAdjValue)) || 0;
-                    var invDetailQty = parseFloat(result.getValue({ name: 'quantity', join: 'inventoryDetail' })) || 0;
                     var tranType = result.recordType;
+                    var linePpp = parseFloat(safeGetValue(result, { name: 'custcol_mgsl_ppp' })) || 0;
+                    var isAdditive = tranType === 'itemreceipt' || tranType === 'creditmemo' ||
+                                     (tranType === 'inventoryadjustment' && itemTranQty > 0);
+
+                    // First-additive-wins: the lot's authoritative PPP is the one
+                    // it was received/adjusted IN at, never an outbound line's.
+                    if (isAdditive && linePpp > 0 && !lotPppMap[lotNumber]) {
+                        lotPppMap[lotNumber] = linePpp;
+                    }
+
+                    rawRows.push({
+                        lotNumber: lotNumber,
+                        lotId: result.getValue({ name: 'inventorynumber', join: 'inventoryDetail' }) || '',
+                        volPCFBM: parseFloat(result.getValue({ name: 'custitem_mgsl_fbm', join: 'item' })) || 0,
+                        itemTranQty: itemTranQty,
+                        invDetailQty: parseFloat(result.getValue({ name: 'quantity', join: 'inventoryDetail' })) || 0,
+                        tranType: tranType,
+                        linePpp: linePpp,
+                        itemPpp: parseFloat(safeGetValue(result, { name: 'custitem_mgsl_ppp', join: 'item' })) || 0,
+                        docType: result.getValue({ name: 'type' }),
+                        docTypeText: result.getText({ name: 'type' }),
+                        docId: result.getValue({ name: 'internalid' }),
+                        docNum: result.getValue({ name: 'tranid' }),
+                        reloadId: safeGetValue(result, { name: 'custcol3' }) || '',
+                        createdFromId: safeGetValue(result, { name: 'createdfrom' }) || '',
+                        createdFromText: safeGetText(result, { name: 'createdfrom' }) || '',
+                        trandate: result.getValue({ name: 'trandate' }),
+                        vendorId: result.getValue({ name: 'mainname' }),
+                        vendorText: result.getText({ name: 'mainname' }),
+                        rate: parseFloat(result.getValue({ name: 'rate' })) || 0,
+                        segmentId: safeGetValue(result, { name: 'cseg_po_segment_gl' }) || '',
+                    });
+                    return true;
+                });
+
+                // ── Pass 2: aggregate with the complete latch map ─────────────
+                var zeroPppLots = {};
+                rawRows.forEach(function (row) {
+                    // Latched lot PPP → this line's PPP → lot-name suffix → item
+                    // nominal. The lot name outranks the item field deliberately: it
+                    // describes THIS pack, the item field is only a nominal default. For
+                    // a reman lot the suffix IS the pack ('…-1-14552') where the item
+                    // nominal is 1 (14552× inflation), and on
+                    // SO-IND-246357-2.625-308 the suffix is 308 against a nominal 342.
+                    // Every fallback is constant per lot, so a lot's rows stay coherent
+                    // with each other even if the latch never populated.
+                    var piecesPerPack = lotPppMap[row.lotNumber] || row.linePpp ||
+                                        pppFromLotName(row.lotNumber) || row.itemPpp;
+                    if (!piecesPerPack) zeroPppLots[row.lotNumber] = true;
 
                     // Determine signed qty from inventoryDetail base units (v1 logic)
                     var qty = 0;
-                    if (tranType === 'itemreceipt' || (tranType === 'inventoryadjustment' && itemTranQty > 0) || tranType === 'creditmemo') {
-                        qty = invDetailQty;
-                    } else if (tranType === 'itemfulfillment' || (tranType === 'inventoryadjustment' && itemTranQty < 0)) {
-                        qty = -Math.abs(invDetailQty);
-                    }
-
-                    // Extract PPP from lot number string (last number after last hyphen)
-                    var piecesPerPack = 1;
-                    if (lotNumber) {
-                        var match = lotNumber.match(/-(\d+(?:\.\d+)?)$/);
-                        if (match) piecesPerPack = Number(match[1]);
-                    } else {
-                        return true; // skip rows without lot number
+                    if (row.tranType === 'itemreceipt' || (row.tranType === 'inventoryadjustment' && row.itemTranQty > 0) || row.tranType === 'creditmemo') {
+                        qty = row.invDetailQty;
+                    } else if (row.tranType === 'itemfulfillment' || (row.tranType === 'inventoryadjustment' && row.itemTranQty < 0)) {
+                        qty = -Math.abs(row.invDetailQty);
                     }
 
                     // Convert base units to packs
-                    var packs = (volPCFBM > 0 && piecesPerPack > 0) ? (qty * 1000) / (piecesPerPack * volPCFBM) : 0;
+                    var packs = (row.volPCFBM > 0 && piecesPerPack > 0) ? (qty * 1000) / (piecesPerPack * row.volPCFBM) : 0;
 
                     // Aggregate by lot
-                    if (lotNumber && seenLots[lotNumber] !== undefined) {
-                        itemData[seenLots[lotNumber]].packQty += packs;
-                        return true;
+                    if (seenLots[row.lotNumber] !== undefined) {
+                        itemData[seenLots[row.lotNumber]].packQty += packs;
+                        return;
                     }
-                    if (lotNumber) {
-                        seenLots[lotNumber] = itemData.length;
-                    }
-
-                    var docType = result.getValue({ name: 'type' });
-                    var docId = result.getValue({ name: 'internalid' });
-                    var vendorId = result.getValue({ name: 'mainname' });
+                    seenLots[row.lotNumber] = itemData.length;
 
                     // PO pricing: look up via createdfrom + PPP match
-                    var createdfromId = result.getValue({ name: 'createdfrom' }) || '';
-                    var poData = createdfromId ? poPricing[createdfromId + '_' + piecesPerPack] : null;
+                    var poData = row.createdFromId ? poPricing[row.createdFromId + '_' + piecesPerPack] : null;
                     var price, piecePrice;
                     if (poData && poData.rate > 0) {
                         price = roundToTwoDecimals(poData.rate);
                         piecePrice = poData.prixPiece > 0
                             ? roundToTwoDecimals(poData.prixPiece)
-                            : (volPCFBM > 0 ? roundToTwoDecimals(price * volPCFBM / 1000) : 0);
+                            : (row.volPCFBM > 0 ? roundToTwoDecimals(price * row.volPCFBM / 1000) : 0);
                     } else {
-                        price = roundToTwoDecimals(parseFloat(result.getValue({ name: 'rate' })) || 0);
-                        piecePrice = volPCFBM > 0 ? roundToTwoDecimals(price * volPCFBM / 1000) : 0;
+                        price = roundToTwoDecimals(row.rate);
+                        piecePrice = row.volPCFBM > 0 ? roundToTwoDecimals(price * row.volPCFBM / 1000) : 0;
                     }
 
                     itemData.push({
-                        docType: result.getText({ name: 'type' }),
-                        docNum: result.getValue({ name: 'tranid' }),
-                        docUrl: getRecordUrl(docId, ITEM_RECORD_TYPE_MAPPING[docType] || 'transaction'),
-                        reloadId: safeGetValue(result, { name: 'custcol3' }) || '',
-                        poWoNumber: safeGetText(result, { name: 'createdfrom' }) || safeGetValue(result, { name: 'createdfrom' }) || '',
-                        poWoUrl: getRecordUrl(safeGetValue(result, { name: 'createdfrom' }), 'purchaseorder'),
-                        receiptDate: result.getValue({ name: 'trandate' }),
-                        vendor: result.getText({ name: 'mainname' }),
-                        vendorUrl: getRecordUrl(vendorId, 'vendor'),
-                        lotNo: lotNumber || '-',
-                        lotInternalId: result.getValue({ name: 'inventorynumber', join: 'inventoryDetail' }) || '',
+                        docType: row.docTypeText,
+                        docNum: row.docNum,
+                        docUrl: getRecordUrl(row.docId, ITEM_RECORD_TYPE_MAPPING[row.docType] || 'transaction'),
+                        reloadId: row.reloadId,
+                        poWoNumber: row.createdFromText || row.createdFromId || '',
+                        poWoUrl: getRecordUrl(row.createdFromId, 'purchaseorder'),
+                        receiptDate: row.trandate,
+                        vendor: row.vendorText,
+                        vendorUrl: getRecordUrl(row.vendorId, 'vendor'),
+                        lotNo: row.lotNumber || '-',
+                        lotInternalId: row.lotId,
                         packQty: packs,
                         piecesPerPack: piecesPerPack,
                         pricePerPiece: piecePrice,
                         avgPrice: price,
-                        segmentId: safeGetValue(result, { name: 'cseg_po_segment_gl' }) || '',
+                        segmentId: row.segmentId,
                     });
-                    return true;
                 });
-                // Filter out lots with net qty <= 0 (v1 line 255-257)
-                return itemData.filter(function (row) { return Math.round(row.packQty) > 0; });
+
+                // A lot with no PPP from any source computes 0 packs and drops out
+                // below — loud, because it means both the line column and the item
+                // field are empty and the lot name carries no suffix.
+                var zeroPppNames = Object.keys(zeroPppLots);
+                if (zeroPppNames.length) {
+                    log.audit('MCGI_MR_TraderScreenCache',
+                        'On Hand: PPP unresolved for item=' + itemId + ' loc=' + locationId +
+                        ' lots=' + JSON.stringify(zeroPppNames.slice(0, 5)));
+                }
+
+                // Drop lots whose net on-hand is gone. Epsilon, not Math.round():
+                // rounding silently hid every partially-shipped lot with under half
+                // a pack left. Reman lots are exactly 1 pack by construction (the
+                // lot name's PPP is the whole pack), so RO-IND-499-1-14552 — 3.054
+                // of its 14.552 MBF left, 0.21 pack — never appeared at all
+                // (Marc-Antoine 2026-07-31).
+                return itemData.filter(function (row) { return row.packQty > PACK_EPSILON; });
             } catch (e) {
                 log.error('MCGI_MR_TraderScreenCache', 'On Hand detail error: ' + e.message);
                 return [];
             }
         })();
         if (onHand.length > 0) {
-            const fbmOnHand = Math.round(
+            // roundToTwoDecimals, not Math.round: an item whose only stock is a
+            // partial pack would otherwise report On Hand 0 in the grid while the
+            // drawer lists the lot (2026-07-31).
+            const fbmOnHand = roundToTwoDecimals(
                 onHand.reduce(function (sum, row) { return sum + row.packQty; }, 0)
             );
             summaryRow.onHand = fbmOnHand;
@@ -913,12 +1024,33 @@ define([
         });
         log.audit('MCGI_MR_TraderScreenCache', 'summarize: reduceKeysCount=' + reduceKeysCount + ', outputRows=' + allRows.length);
 
-        // Throttled/no-change run guard (ported from MTL): no output + no errors →
-        // preserve the cache untouched and just re-queue the loop. Without this,
-        // an empty run falls into the NO-MERGE branch below and overwrites
-        // TS_SUMMARY with an empty array.
-        if (allRows.length === 0 && !context.inputSummary.error && mapErrorCount === 0 && reduceErrorCount === 0) {
-            log.debug('MCGI_MR_TraderScreenCache', 'summarize: throttled/no-change (no-op), duration=' + (Date.now() - startTime) + 'ms');
+        // Zero-output guard: preserve the cache untouched and just re-queue the loop.
+        // Without this, an empty run falls into the NO-MERGE branch below and
+        // overwrites TS_SUMMARY with an empty array — the screen then shows zero
+        // rows, which reads as "no inventory" rather than "cache unavailable".
+        //
+        // Deliberately does NOT require an error-free run (2026-07-31). The ported
+        // MTL version also demanded no map/reduce/input errors, which meant the one
+        // case that most needs protecting — a run that produced nothing BECAUSE it
+        // threw — sailed past the guard and blanked the summary. A getInputData
+        // failure (e.g. the per-pair delta loop exceeding governance on a bulk-import
+        // day) would take the trader screen to zero rows until the next successful
+        // FULL. Errors are still counted and logged above; they just no longer license
+        // an empty write. Zero output is never a legitimate reason to blank a
+        // non-empty summary.
+        if (allRows.length === 0) {
+            // A throttled/no-change run is routine and stays at debug. Zero output
+            // *after errors* is the case the guard was widened to cover — say so
+            // loudly, or a failing delta loop hides behind a benign "no-op" line.
+            if (context.inputSummary.error || mapErrorCount > 0 || reduceErrorCount > 0) {
+                log.error('MCGI_MR_TraderScreenCache',
+                    'summarize: zero output AFTER ERRORS — cache PRESERVED, not blanked' +
+                    ' (inputError=' + !!context.inputSummary.error +
+                    ' mapErrors=' + mapErrorCount +
+                    ' reduceErrors=' + reduceErrorCount + ')');
+            } else {
+                log.debug('MCGI_MR_TraderScreenCache', 'summarize: throttled/no-change (no-op), duration=' + (Date.now() - startTime) + 'ms');
+            }
             try {
                 const mrTaskNoop = task.create({
                     taskType: task.TaskType.MAP_REDUCE,

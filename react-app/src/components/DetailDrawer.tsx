@@ -102,6 +102,18 @@ const COLUMN_MAP: Record<DetailType, ColDef[]> = {
   available: [],
 };
 
+// Pack counts are whole numbers in the common case, but a partially-shipped lot
+// leaves a fraction of a pack on hand (reman lots are 1 pack by construction, so
+// any remainder is < 1). Math.round() rendered those as "0"; show 2 decimals only
+// when there is a real fraction, so the usual integers don't all gain a ".00".
+function formatPackQty(val: number): string {
+  // `|| 0` normalizes -0, which Intl renders as "-0" since ES2020.
+  const rounded = Math.round(val * 100) / 100 || 0;
+  return Number.isInteger(rounded)
+    ? rounded.toLocaleString(undefined, { maximumFractionDigits: 0 })
+    : rounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function makeDescription(row: SummaryRow): string {
   const parts: string[] = [];
   if (row.species) parts.push(row.species);
@@ -203,7 +215,7 @@ export const DetailDrawer = ({
                     ? 'N/A'
                     : isMBF
                       ? (Math.round(headerTotal * 10) / 10).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-                      : Math.round(headerTotal).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      : formatPackQty(headerTotal)}
                 </div>
               </div>
             )}
@@ -419,7 +431,7 @@ const DetailTable = ({ rows, columns, meta, uom, mbfFactor }: DetailTableProps) 
                           ? isQtyCol && isMBF
                             ? (Math.round(val * 10) / 10).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
                             : col.format === 'int'
-                              ? Math.round(val).toLocaleString(undefined, { maximumFractionDigits: 0 })
+                              ? formatPackQty(val)
                               : col.format === 'currency'
                                 ? `$${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                                 : val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -457,7 +469,7 @@ const DetailTable = ({ rows, columns, meta, uom, mbfFactor }: DetailTableProps) 
                     ? 'N/A'
                     : isMBF
                       ? (Math.round((totals[col.id] || 0) * 10) / 10).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-                      : Math.round(totals[col.id] || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      : formatPackQty(totals[col.id] || 0)}
                 </span>
               ) : null}
             </td>

@@ -59,8 +59,15 @@ const INT_UOMS = new Set(['Packs', 'TL']);
 const formatQty = (n: number, uom?: string): string => {
   if (n === 0) return '0';
   if (!uom || INT_UOMS.has(uom)) {
-    const rounded = Math.round(n);
-    return rounded.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    // Packs are whole numbers in the common case, but a partially-shipped lot
+    // leaves a fraction on hand. Math.round() showed those as "0" in the grid
+    // while the detail drawer listed the lot — show 2 decimals only when there is
+    // a real fraction, so the usual integers stay clean (2026-07-31). `|| 0`
+    // normalizes -0, which Intl would otherwise render as "-0".
+    const rounded = Math.round(n * 100) / 100 || 0;
+    return Number.isInteger(rounded)
+      ? rounded.toLocaleString(undefined, { maximumFractionDigits: 0 })
+      : rounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
   const rounded = Math.round(n * 10) / 10;
   return rounded.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
