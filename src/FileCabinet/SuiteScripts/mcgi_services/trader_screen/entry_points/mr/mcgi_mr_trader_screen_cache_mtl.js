@@ -1381,29 +1381,72 @@ define([
             }
         });
 
-        // ── Reconcile: deduct only ALLOCATED committed + all outbound from On Hand ─
-        // Unallocated SOs appear as separate rows so the trader can decide allocation.
-        var ohContribTarget = roundToTwoDecimals(Math.max(0,
-            onHand.reduce(function (s, r) { return s + (r.packsOnHand || 0); }, 0) -
-            allocatedCommittedTotal -
-            outbound.reduce(function (s, r) { return s + (r.packs || 0); }, 0)
-        ));
-        var ohContribActual = roundToTwoDecimals(
-            available.filter(function (r) { return r.status === 'On Hand'; })
-                .reduce(function (s, r) { return s + (r.packsAvail || 0); }, 0)
-        );
-        var excess = roundToTwoDecimals(ohContribActual - ohContribTarget);
-        if (excess > 0) {
-            var onHandAvail = available
-                .filter(function (r) { return r.status === 'On Hand'; })
-                .sort(function (a, b) { return b.packsAvail - a.packsAvail; });
-            var rem = excess;
-            for (var i = 0; i < onHandAvail.length && rem > 0; i++) {
-                var ded = Math.min(onHandAvail[i].packsAvail, rem);
-                onHandAvail[i].packsAvail = roundToTwoDecimals(onHandAvail[i].packsAvail - ded);
-                rem = roundToTwoDecimals(rem - ded);
+        // ── Reconcile PER (PO, ppp) GROUP (was item-wide) ─────────────────────
+        // Deduct ALLOCATED (lot-bearing) committed + all outbound from On Hand,
+        // SCOPED to the (PO, ppp) group each reservation belongs to — the same
+        // grouping the trader Available tab (buildPOGroups) nets by. Ends the
+        // item-wide cross-group bleed where one PO's stranded/composite/no-lot
+        // reservation was clawed off an unrelated PO's on-hand lots (SS241412
+        // EMCU drop; SS2816 on-order-outbound claw onto an on-hand PO). A
+        // reservation whose lotNumber is a surviving on-hand lot is attributed to
+        // that lot's group (already deducted per-lot above); a stranded/composite/
+        // no-lot one is attributed by its allocatedPO — landing nowhere when that
+        // PO has no on-hand supply (on-order POs net via the unreceived path).
+        // Unallocated (lot '—') committed stays a separate negative row below.
+        var groupKeyOf = function (poNumber, docNumber, ppp) {
+            var po = (poNumber && poNumber !== '—') ? poNumber : (docNumber || '');
+            return po + '|' + (ppp || 0);
+        };
+        var groupOnHand = {};   // (PO,ppp) -> sum of raw on-hand packs
+        var lotGroup = {};      // surviving on-hand lotNumber -> (PO,ppp)
+        onHand.forEach(function (lot) {
+            var gk = groupKeyOf(lot.poNumber, lot.docNumber, lot.piecesPerPack);
+            groupOnHand[gk] = (groupOnHand[gk] || 0) + (lot.packsOnHand || 0);
+            if (lot.lotNumber && lot.lotNumber !== '—') lotGroup[lot.lotNumber] = gk;
+        });
+        var groupReserved = {}; // (PO,ppp) -> lot-bearing committed + all outbound attributed to the group
+        var addReserved = function (gk, qty) {
+            if (gk in groupOnHand) groupReserved[gk] = (groupReserved[gk] || 0) + (qty || 0);
+        };
+        committed.forEach(function (row) {
+            if (!row.lotNumber || row.lotNumber === '—') return;   // unallocated -> negative row, not deducted
+            var gk = lotGroup[row.lotNumber];
+            if (gk === undefined) gk = groupKeyOf(row.allocatedPO, '', row.piecesPerPack);
+            addReserved(gk, row.packsCommitted);
+        });
+        outbound.forEach(function (row) {
+            var gk = (row.lotNumber && row.lotNumber !== '—') ? lotGroup[row.lotNumber] : undefined;
+            if (gk === undefined) gk = groupKeyOf(row.allocatedPO, '', row.piecesPerPack);
+            addReserved(gk, row.packs);
+        });
+        var onHandByGroup = {};
+        available.forEach(function (r) {
+            if (r.status !== 'On Hand') return;
+            var gk = groupKeyOf(r.poNumber, r.docNumber, r.piecesPerPack);
+            (onHandByGroup[gk] = onHandByGroup[gk] || []).push(r);
+        });
+        var droppedRows = [];
+        Object.keys(onHandByGroup).forEach(function (gk) {
+            var rows = onHandByGroup[gk];
+            var actual = roundToTwoDecimals(rows.reduce(function (s, r) { return s + (r.packsAvail || 0); }, 0));
+            var target = roundToTwoDecimals(Math.max(0, (groupOnHand[gk] || 0) - (groupReserved[gk] || 0)));
+            var excess = roundToTwoDecimals(actual - target);
+            if (excess > 0) {
+                rows.sort(function (a, b) { return b.packsAvail - a.packsAvail; });
+                var rem = excess;
+                for (var i = 0; i < rows.length && rem > 0; i++) {
+                    var ded = Math.min(rows[i].packsAvail, rem);
+                    rows[i].packsAvail = roundToTwoDecimals(rows[i].packsAvail - ded);
+                    rem = roundToTwoDecimals(rem - ded);
+                }
+                // Drop depleted rows within THIS group only (was an item-wide
+                // filter): a 0-pack outbound-consumed row in an untouched group
+                // now stays visible.
+                rows.forEach(function (r) { if ((r.packsAvail || 0) <= 0) droppedRows.push(r); });
             }
-            available = available.filter(function (r) { return r.packsAvail > 0; });
+        });
+        if (droppedRows.length) {
+            available = available.filter(function (r) { return droppedRows.indexOf(r) < 0; });
         }
 
         // ── Unallocated committed SOs — distinct rows with negative packsAvail ──
