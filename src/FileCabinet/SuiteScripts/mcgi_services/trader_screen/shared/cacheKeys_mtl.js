@@ -10,7 +10,18 @@ define([], () => {
     const TS_MTL_DETAIL_PREFIX       = 'TS_MTL_DETAIL__';
     const TS_MTL_SUMMARY_DATA_PREFIX = 'TS_MTL_SUMMARY_DATA_';
 
-    const TTL_SUMMARY           = 1800;        // 30 min (rewritten every MR run)
+    // Was 1800 (30 min), annotated "rewritten every MR run" — which stopped being
+    // true once deltas started working (2026-07-28). A run with pairCount === 0
+    // returns early and never rewrites SUMMARY/META, so any stretch quieter than the
+    // TTL expired them and the screen fell back to "cache is being rebuilt" until the
+    // next hourly FULL. Must outlive the FULL_REFRESH_MS backstop with margin, same
+    // reasoning as TTL_DETAIL below. IND shipped this 2026-07-31.
+    //
+    // It also closes a truncation path the summarize shrink guard structurally cannot:
+    // once SUMMARY has expired there is no cached row count left to compare against,
+    // so the guard disarms (hasCache === false) and the next small DELTA legitimately
+    // replaces the entire summary with its handful of rows.
+    const TTL_SUMMARY           = 14400;       // 4h
     // Detail entries are rewritten only when their (item, location) key is
     // rebuilt. Under real DELTA mode (working since 2026-07-28) quiet keys are
     // not rebuilt for hours, so their TTL must outlive the hourly FULL-refresh

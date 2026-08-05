@@ -34,6 +34,18 @@ define([
     // see everything (e.g. assembly builds move on-hand without any of the six
     // delta transaction types changing).
     const FULL_REFRESH_MS   = 60 * 60 * 1000; // 1 hour
+    // ── Shrink guard thresholds (see summarize) ───────────────────────────────
+    // Arms only once the cached summary is substantial enough that a collapse is
+    // unambiguous. MTL carries ~452 rows in prod and ~200 in sandbox; a healthy
+    // MTL summary has never been anywhere near 20 rows.
+    const SHRINK_GUARD_MIN_ROWS  = 20;
+    // Trip when the incoming set is under half the cached set. Every truncation
+    // actually observed was far below this (prod 27/452 = 0.06, sandbox 3/200 =
+    // 0.015), and MTL shedding more than half its stocked item/location pairs
+    // inside one hourly window is not a real business event. Erring high is
+    // deliberate: a false trip costs stale rows plus a loud error, while a missed
+    // catch costs the user their data.
+    const SHRINK_GUARD_MAX_RATIO = 0.5;
     // MGSL USD secondary accounting book ID — overridable per deployment via
     // the `custscript_ts_mtl_usd_book_id` script parameter, since the id
     // differs between environments (sandbox = 6, prod = 2 as of 2026-06-25).
@@ -2645,6 +2657,32 @@ define([
     //  summarize — merge, chunked summary write, meta, self-reschedule
     // ═══════════════════════════════════════════════════════════════════════════
 
+    // Reassemble the cached summary into a row array, transparently handling the
+    // chunked representation ({chunked:true,chunkCount:N} + TS_MTL_SUMMARY_DATA_<i>).
+    // Returns null when there is nothing usable to read — callers must distinguish
+    // "no cached summary" from "an empty one".
+    const readSummaryRows = (myCache, existingSummary) => {
+        if (!existingSummary) return null;
+        try {
+            var parsed = JSON.parse(existingSummary);
+            if (parsed && parsed.chunked && parsed.chunkCount) {
+                var rows = [];
+                for (var ci = 0; ci < parsed.chunkCount; ci++) {
+                    var chunkStr = myCache.get({ key: CacheKeysMTL.buildSummaryDataKey(ci) });
+                    if (chunkStr) {
+                        var chunkRows = JSON.parse(chunkStr);
+                        if (Array.isArray(chunkRows)) rows.push.apply(rows, chunkRows);
+                    }
+                }
+                return rows;
+            }
+            if (Array.isArray(parsed)) return parsed;
+        } catch (e) {
+            log.debug('MTL Cache', 'Existing summary parse error: ' + e.message);
+        }
+        return null;
+    };
+
     const summarize = (context) => {
         var startTime = Date.now();
         var myCache = CacheClient.getCache();
@@ -2706,17 +2744,22 @@ define([
             return;
         }
 
-        // FULL: trust allRows (canonical set from summary search). Merging with existing
-        // produces "ghost" rows for items the search no longer returns — their detail
-        // expires on TTL but summary keeps them alive forever, causing DETAIL_CACHE_MISS.
-        // DELTA: merge required since allRows only contains changed items.
+        // ── 1. Gather ─────────────────────────────────────────────────────────
+        // FULL: allRows is the canonical set from the summary search, so it may replace
+        // the cache outright. Merging on a FULL leaves "ghost" rows for items the search
+        // no longer returns — their detail expires on TTL but the summary keeps them
+        // alive forever, causing DETAIL_CACHE_MISS on click.
+        // DELTA: merge required, since allRows only contains the changed items.
         var lastInputMode = myCache.get({ key: CacheKeysMTL.LAST_INPUT_MODE }) || 'FULL';
-        var existingSummary = myCache.get({ key: CacheKeysMTL.SUMMARY });
-        log.debug('MTL Cache', 'summarize: lastInputMode=' + lastInputMode +
-            ' existingSummary present=' + !!existingSummary +
-            (existingSummary ? ' length=' + existingSummary.length : ''));
-        var mergedRows = allRows;
-        var lastRunMode = 'FULL';
+        var existingRows  = readSummaryRows(myCache, myCache.get({ key: CacheKeysMTL.SUMMARY }));
+        // forceFull comes from the script PARAMETER, deliberately not from the cache: the
+        // param lives on the script/task record, which is a reliable channel, unlike the
+        // phase-to-phase cache handoff that causes the bug guarded against below. It is
+        // also why the operator override still works when nothing else is trustworthy.
+        // Same string-truthy normalization as getInputData — the checkbox surfaces as the
+        // STRING 'false', which is truthy.
+        var sgForceRaw  = getScriptParam('custscript_ts_mtl_force_full_rebuild', false);
+        var sgForceFull = sgForceRaw === true || sgForceRaw === 'T' || sgForceRaw === 'true';
 
         var lastMeta = myCache.get({ key: CacheKeysMTL.META });
         var cacheVersion = 1;
@@ -2724,45 +2767,68 @@ define([
             try { cacheVersion = (JSON.parse(lastMeta).cacheVersion || 0) + 1; } catch (e) {}
         }
 
-        if (lastInputMode === 'DELTA' && existingSummary && allRows.length > 0) {
-            try {
-                var parsed = JSON.parse(existingSummary);
-                var existingRows = null;
-                if (parsed && parsed.chunked && parsed.chunkCount) {
-                    // Reassemble chunked summary before merging
-                    existingRows = [];
-                    for (var ci = 0; ci < parsed.chunkCount; ci++) {
-                        var chunkStr = myCache.get({ key: CacheKeysMTL.buildSummaryDataKey(ci) });
-                        if (chunkStr) {
-                            var chunkRows = JSON.parse(chunkStr);
-                            if (Array.isArray(chunkRows)) existingRows.push.apply(existingRows, chunkRows);
-                        }
-                    }
-                } else if (Array.isArray(parsed)) {
-                    existingRows = parsed;
-                }
-                if (existingRows && existingRows.length > 0) {
-                    var byKey = {};
-                    existingRows.forEach(function (r) {
-                        if (r && r.internalId && r.locationId) byKey[r.internalId + '__' + r.locationId] = r;
-                    });
-                    allRows.forEach(function (r) {
-                        if (r && r.internalId && r.locationId) byKey[r.internalId + '__' + r.locationId] = r;
-                    });
-                    mergedRows = Object.values(byKey);
-                    lastRunMode = 'DELTA';
-                }
-            } catch (e) {
-                log.debug('MTL Cache', 'Existing summary parse error: ' + e.message);
-            }
-        } else {
-            // Dedupe
-            var byKey2 = {};
-            mergedRows.forEach(function (r) {
-                if (r && r.internalId && r.locationId) byKey2[r.internalId + '__' + r.locationId] = r;
-            });
-            mergedRows = Object.values(byKey2);
+        log.debug('MTL Cache', 'summarize: lastInputMode=' + lastInputMode +
+            ' existingRows=' + (existingRows ? existingRows.length : 'null') +
+            ' allRows=' + allRows.length + ' forceFull=' + sgForceFull);
+
+        // ── 2. Decide: may this run's rows REPLACE the cache? ─────────────────
+        // Replacing is the destructive option, so it must be justified. A FULL run is
+        // canonical and earns the right; anything else merges. Uncertainty merges —
+        // note the `|| 'FULL'` default above used to mean an unreadable mode key
+        // resolved toward WIPING the cache, which is backwards for a cache.
+        var hasCache   = !!(existingRows && existingRows.length > 0);
+        var mayReplace = !hasCache || sgForceFull || lastInputMode === 'FULL';
+        var shrinkGuardTripped = false;
+
+        // ── Shrink guard ──────────────────────────────────────────────────────
+        // The mode reaches summarize through N/cache, which gives no read-your-write
+        // guarantee between MR phases; a stale read returns the PREVIOUS run's value. So
+        // a DELTA that follows a FULL can read 'FULL', take the replace path, and
+        // overwrite the entire summary with its handful of changed rows. Measured in
+        // sandbox 2026-07-27..08-03: 22 truncation events across 7,873 runs, 21 of the 22
+        // on the run immediately after a FULL (1.2% of FULLs vs 0.02% of DELTAs — a 60x
+        // enrichment, exactly the signature of a stale read returning the prior value).
+        // Median episode ran ~50 min until the hourly FULL repaired it. Prod hit it on
+        // 2026-07-31: 452 rows -> 27, leaving a US-only location dropdown (Julie, 13:14 ET).
+        //
+        // So: withdraw the right to replace when the shrink is implausible. Keyed on the
+        // OUTCOME rather than the mode, which makes it cause-agnostic and also closes a
+        // second hole for free — an ERRORED run with zero output slips past the no-op
+        // guard above (which requires an error-free run) and would otherwise blank the
+        // summary; here allRows.length === 0 trips the ratio test and the cache survives.
+        //
+        // It MERGES rather than rejects: rejecting would freeze a legitimately shrinking
+        // summary forever. Stale-but-complete beats silently-truncated, and a real shrink
+        // is one forced rebuild away — which is why sgForceFull bypasses the guard.
+        if (mayReplace && !sgForceFull && hasCache &&
+            existingRows.length >= SHRINK_GUARD_MIN_ROWS &&
+            allRows.length < existingRows.length * SHRINK_GUARD_MAX_RATIO) {
+            mayReplace = false;
+            shrinkGuardTripped = true;
+            log.error('MTL Cache', 'summarize: SHRINK GUARD — refusing to replace ' +
+                existingRows.length + ' cached rows with ' + allRows.length +
+                ' (ratio=' + (allRows.length / existingRows.length).toFixed(3) +
+                ', mode=' + lastInputMode + ', mapErrors=' + mapErrors +
+                ', reduceErrors=' + reduceErrors + ', inputError=' + !!context.inputSummary.error +
+                '). Merging instead. If the shrink is real, run once with ' +
+                'custscript_ts_mtl_force_full_rebuild checked.');
         }
+
+        // ── 3. Combine: one path, no branching ────────────────────────────────
+        // A single merge/dedupe path. The old code built this map twice — once in the
+        // DELTA branch, once in the else — which is why the replace path silently skipped
+        // dedupe whenever the existing-summary parse failed.
+        var byKey = {};
+        if (!mayReplace) {
+            existingRows.forEach(function (r) {
+                if (r && r.internalId && r.locationId) byKey[r.internalId + '__' + r.locationId] = r;
+            });
+        }
+        allRows.forEach(function (r) {   // this run's rows always win on collision
+            if (r && r.internalId && r.locationId) byKey[r.internalId + '__' + r.locationId] = r;
+        });
+        var mergedRows  = Object.values(byKey);
+        var lastRunMode = mayReplace ? 'FULL' : 'DELTA';
 
         var now    = new Date();
         var nowIso = now.toISOString();
@@ -2825,6 +2891,7 @@ define([
                 lastRunTimestamp:  nowIso,
                 summaryChunkCount: summaryChunkCount,
                 deltaCount:        lastRunMode === 'DELTA' ? allRows.length : undefined,
+                shrinkGuard:       shrinkGuardTripped || undefined,
                 uniquePOs:         uniquePOs,
             }),
             ttl: CacheKeysMTL.TTL_SUMMARY,
