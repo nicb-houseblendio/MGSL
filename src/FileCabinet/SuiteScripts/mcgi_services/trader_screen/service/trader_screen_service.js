@@ -293,10 +293,29 @@ define([
                 ' metaRowCount=' + (meta.rowCount || 0) + ' chunks=' + chunkCount +
                 ' chunksMissing=' + chunksMissing + ' cacheVersion=' + (meta.cacheVersion || 0) +
                 ' greaterThanZero=' + ((params || {}).greaterThanZero !== false);
+            // NOTE ON LEVELS: this deployment runs at loglevel=ERROR
+            // (customdeploy_mcgi_rl_traderapi), so log.audit/log.debug are DISCARDED —
+            // which is why this service had logged literally zero lines in production.
+            // Anything that must survive has to be log.error. The audit line below is
+            // kept for the day the deployment's log level is raised to AUDIT, but do not
+            // rely on it: raising it needs a change to the deployment record, and prod
+            // has only ever received scoped file:upload, which never touches objects.
+            //
             // A chunk that failed to read, or a reassembled row count well under what the
             // MR says it wrote, means the screen is being served a truncated dataset.
             if (chunksMissing > 0 || (meta.rowCount && rows.length < meta.rowCount * 0.5)) {
                 log.error('trader_screen_service', 'getSummary: TRUNCATED READ — ' + svcState);
+            } else if (rows.length > 100 && filtered.length < 10) {
+                // The reported-but-undiagnosed case: cache is healthy yet the screen gets
+                // almost nothing, so the loss is in the FILTERS, not the cache. Marc-Antoine
+                // 2026-08-05 ("on voit juste 3-4 items") could not be explained after the
+                // fact precisely because this path was silent — the cache held 1,195 rows
+                // and every cache-side check looked clean. Logged at error level because
+                // audit would be discarded at this deployment's log level.
+                log.error('trader_screen_service',
+                    'getSummary: SERVED ALMOST NOTHING from a healthy cache — filters are ' +
+                    'dropping nearly every row — ' + svcState +
+                    ' filters=' + JSON.stringify(params || {}));
             } else {
                 log.audit('trader_screen_service', 'getSummary: ' + svcState);
             }
