@@ -482,8 +482,17 @@ define([
         // that throws is not a debug-level event: it silently drops every change of that
         // transaction type until the next hourly FULL, and if ALL of them fail the cache
         // stops updating entirely while still reporting healthy "DELTA 0 changes" runs.
+        // AUDIT, not ERROR, deliberately. This currently fires on EVERY run (all six
+        // searches fail), so error level would add ~353 lines/day to prod's error log —
+        // and if the deployment has "Notify Owner on Error" set, that is ~353 emails/day.
+        // NetSuite does not expose notifyowner via SuiteQL, so it cannot be ruled out.
+        // Nothing is lost: AUDIT is fully queryable
+        //   SELECT ... FROM scriptnote WHERE detail LIKE '%DELTA SEARCHES FAILED%'
+        // and debug level was already queryable — what hid this bug was that nobody
+        // looked, not the level. Once the join:'item' column is fixed and failures become
+        // rare rather than constant, promoting this to error would be appropriate.
         if (deltaFailures.length > 0) {
-            log.error('MCGI_MR_TraderScreenCache',
+            log.audit('MCGI_MR_TraderScreenCache',
                 'getInputData: ' + deltaFailures.length + '/' + tranTypes.length +
                 ' DELTA SEARCHES FAILED — changes of these types are invisible until the ' +
                 'hourly FULL: ' + deltaFailures.join(' | '));

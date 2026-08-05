@@ -2805,13 +2805,29 @@ define([
             allRows.length < existingRows.length * SHRINK_GUARD_MAX_RATIO) {
             mayReplace = false;
             shrinkGuardTripped = true;
-            log.error('MTL Cache', 'summarize: SHRINK GUARD — refusing to replace ' +
+            var sgMsg = 'summarize: SHRINK GUARD — refusing to replace ' +
                 existingRows.length + ' cached rows with ' + allRows.length +
                 ' (ratio=' + (allRows.length / existingRows.length).toFixed(3) +
                 ', mode=' + lastInputMode + ', mapErrors=' + mapErrors +
                 ', reduceErrors=' + reduceErrors + ', inputError=' + !!context.inputSummary.error +
                 '). Merging instead. If the shrink is real, run once with ' +
-                'custscript_ts_mtl_force_full_rebuild checked.');
+                'custscript_ts_mtl_force_full_rebuild checked.';
+            // Level is chosen by CAUSE, not by "this seems important".
+            // A stale-mode read is routine — measured at ~3/hour in sandbox — and stays
+            // AUDIT: at error level it would add ~80 lines/day to prod's error log and, if
+            // the deployment has "Notify Owner on Error" set, email every one. NetSuite
+            // does not expose notifyowner via SuiteQL, so that cannot be ruled out, and a
+            // guard that spams the team is a guard someone switches off. Nothing is lost —
+            // SuiteQL reads AUDIT identically:
+            //   SELECT ... FROM scriptnote WHERE detail LIKE '%SHRINK GUARD%'
+            // ERROR is reserved for the abnormal variant: the guard catching a run that
+            // genuinely FAILED (errored with zero/partial output), which is rare and does
+            // warrant waking someone.
+            if (mapErrors > 0 || reduceErrors > 0 || context.inputSummary.error) {
+                log.error('MTL Cache', sgMsg);
+            } else {
+                log.audit('MTL Cache', sgMsg);
+            }
         }
 
         // ── 3. Combine: one path, no branching ────────────────────────────────
