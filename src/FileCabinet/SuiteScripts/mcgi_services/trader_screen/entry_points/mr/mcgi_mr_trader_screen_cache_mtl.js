@@ -199,6 +199,62 @@ define([
         } catch (e) { return defaultValue; }
     };
 
+    // ── Cache-export toggle (custscript_ts_mtl_export_cache) ──────────────────
+    // When checked on the deployment, reduce logs a timestamped per-(PO,ppp)
+    // availability audit per (item, location): does the cached On-Hand available
+    // equal onHand − (committed + outbound) for each PO group? Lets the whole
+    // cache be validated at large from the script execution log (export the log
+    // to CSV; filter the title "MTL CACHE EXPORT MISMATCH"). Read once per VM;
+    // getScriptParam returns false when the param is undefined, so shipping this
+    // before the param exists is harmless. Turn the param off after grabbing the
+    // export — while on, every run logs (delta = changed items; full = all).
+    var _exportCacheOn = null;
+    const isExportCacheOn = () => {
+        if (_exportCacheOn === null) {
+            var v = getScriptParam('custscript_ts_mtl_export_cache', false);
+            _exportCacheOn = v === true || v === 'T' || v === 'true';
+        }
+        return _exportCacheOn;
+    };
+    const buildCacheExportAudit = (itemId, locationId, onHand, committed, outbound, available) => {
+        var gkey = function (po, doc, ppp) {
+            return ((po && po !== '—') ? po : (doc || '')) + '|' + (ppp || 0);
+        };
+        var oh = {}, res = {}, av = {};
+        onHand.forEach(function (r) {
+            var k = gkey(r.poNumber, r.docNumber, r.piecesPerPack);
+            oh[k] = (oh[k] || 0) + (r.packsOnHand || 0);
+        });
+        committed.forEach(function (r) {
+            if (!r.allocatedPO || r.allocatedPO === '—') return;
+            var k = gkey(r.allocatedPO, '', r.piecesPerPack);
+            res[k] = (res[k] || 0) + (r.packsCommitted || 0);
+        });
+        outbound.forEach(function (r) {
+            if (!r.allocatedPO || r.allocatedPO === '—') return;
+            var k = gkey(r.allocatedPO, '', r.piecesPerPack);
+            res[k] = (res[k] || 0) + (r.packs || 0);
+        });
+        available.forEach(function (r) {
+            if (r.status !== 'On Hand') return;
+            var k = gkey(r.poNumber, r.docNumber, r.piecesPerPack);
+            av[k] = (av[k] || 0) + (r.packsAvail || 0);
+        });
+        var perPO = [];
+        var mismatches = 0;
+        Object.keys(oh).forEach(function (k) {
+            var onh = roundToTwoDecimals(oh[k]);
+            var rsv = roundToTwoDecimals(res[k] || 0);
+            var avl = roundToTwoDecimals(av[k] || 0);
+            var exp = roundToTwoDecimals(Math.max(0, onh - rsv));   // carve-outs C1/C2 will legitimately differ
+            var delta = roundToTwoDecimals(avl - exp);
+            var mm = Math.abs(delta) > 0.01;
+            if (mm) mismatches++;
+            perPO.push({ g: k, onHand: onh, reserved: rsv, avail: avl, expected: exp, delta: delta, mismatch: mm });
+        });
+        return { item: String(itemId), loc: String(locationId), at: new Date().toISOString(), groups: perPO.length, mismatches: mismatches, perPO: perPO };
+    };
+
     // Dimension parsers — handle plain floats, simple fractions (1/2), mixed (3 1/2)
     const parseDim = (val, fallback) => {
         if (!val) return fallback;
@@ -2485,6 +2541,17 @@ define([
 
         // ── Build Available tab ───────────────────────────────────────────────
         var available = buildAvailable(onHand, committed, outbound, onOrder, inTransit);
+
+        // ── Optional cache export (toggle) — log a timestamped per-PO availability
+        // audit so the whole cache can be validated at large from the exec log. ──
+        if (isExportCacheOn()) {
+            try {
+                var _cacheAudit = buildCacheExportAudit(itemId, locationId, onHand, committed, outbound, available);
+                log.audit('MTL CACHE EXPORT' + (_cacheAudit.mismatches > 0 ? ' MISMATCH' : ''), JSON.stringify(_cacheAudit));
+            } catch (eExport) {
+                log.error('MTL CACHE EXPORT', 'audit failed item=' + itemId + ' loc=' + locationId + ': ' + eExport.message);
+            }
+        }
 
         // ── Detail payload — 6 buckets (IND has 5; MTL adds available) ────────
         var detailPayload = {
