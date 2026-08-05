@@ -246,17 +246,26 @@ define([
             const myCache = getMyCache();
             const summaryStr = myCache.get({ key: CacheKeys.TS_SUMMARY });
             if (!summaryStr) {
+                // Previously a SILENT return. This is the exact path that renders the
+                // "Cache is being refreshed" banner, so when a trader reports an empty
+                // screen there was no server-side record that it had even happened.
+                log.error('trader_screen_service', 'getSummary: CACHE_MISS — TS_SUMMARY absent');
                 return { error: 'CACHE_MISS', message: 'Cache is being refreshed. Try again shortly.' };
             }
             const parsed = JSON.parse(summaryStr);
             let rows;
+            let chunkCount = 0;
+            let chunksMissing = 0;
             if (parsed && parsed.chunked && parsed.chunkCount) {
+                chunkCount = parsed.chunkCount;
                 rows = [];
                 for (let i = 0; i < parsed.chunkCount; i++) {
                     const chunkStr = myCache.get({ key: CacheKeys.buildSummaryDataKey(i) });
                     if (chunkStr) {
                         const chunkRows = JSON.parse(chunkStr);
                         if (Array.isArray(chunkRows)) rows.push.apply(rows, chunkRows);
+                    } else {
+                        chunksMissing++;
                     }
                 }
             } else {
@@ -273,6 +282,23 @@ define([
                     meta = JSON.parse(metaStr);
                 } catch (e) {
                 }
+            }
+
+            // One line per request describing what the screen was actually served. The
+            // service used to log only inside catch blocks, so a healthy-but-wrong
+            // response left no trace at all — prod had logged literally zero lines when
+            // a trader reported seeing only 3-4 items (2026-08-05), making the report
+            // impossible to diagnose after the fact.
+            const svcState = 'rowsInCache=' + rows.length + ' rowsServed=' + filtered.length +
+                ' metaRowCount=' + (meta.rowCount || 0) + ' chunks=' + chunkCount +
+                ' chunksMissing=' + chunksMissing + ' cacheVersion=' + (meta.cacheVersion || 0) +
+                ' greaterThanZero=' + ((params || {}).greaterThanZero !== false);
+            // A chunk that failed to read, or a reassembled row count well under what the
+            // MR says it wrote, means the screen is being served a truncated dataset.
+            if (chunksMissing > 0 || (meta.rowCount && rows.length < meta.rowCount * 0.5)) {
+                log.error('trader_screen_service', 'getSummary: TRUNCATED READ — ' + svcState);
+            } else {
+                log.audit('trader_screen_service', 'getSummary: ' + svcState);
             }
 
             return {

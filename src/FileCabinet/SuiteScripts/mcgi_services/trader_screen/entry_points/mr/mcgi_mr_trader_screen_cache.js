@@ -426,6 +426,11 @@ define([
 
         const pairs = {};
         let pairCount = 0;
+        // Collected so a failing delta search is reported ONCE per run at error level
+        // rather than six times at debug. Every one of these six searches has been
+        // throwing since inception and nobody saw it, because the catch below logged
+        // at debug: 2,118 failures in prod on 2026-08-05 alone (= 6 x 353 runs).
+        const deltaFailures = [];
 
         // A plain ['lastmodifieddate','onorafter', <value>] filter errors on this
         // tenant for BOTH Date objects and formatted strings — every delta type
@@ -468,9 +473,29 @@ define([
                     }
                 });
             } catch (e) {
+                deltaFailures.push(tranType + ' (' + (e.name || 'no name') + ': ' + (e.message || 'no message') + ')');
                 log.debug('MCGI_MR_TraderScreenCache', 'Delta search error for type ' + tranType + ': ' + e.message);
             }
         });
+
+        // One aggregated error line per run instead of six debug lines. A delta search
+        // that throws is not a debug-level event: it silently drops every change of that
+        // transaction type until the next hourly FULL, and if ALL of them fail the cache
+        // stops updating entirely while still reporting healthy "DELTA 0 changes" runs.
+        if (deltaFailures.length > 0) {
+            log.error('MCGI_MR_TraderScreenCache',
+                'getInputData: ' + deltaFailures.length + '/' + tranTypes.length +
+                ' DELTA SEARCHES FAILED — changes of these types are invisible until the ' +
+                'hourly FULL: ' + deltaFailures.join(' | '));
+        }
+
+        // Unconditional, so a delta path that finds nothing is distinguishable from one
+        // that never ran. IND previously logged pairCount ONLY inside the DELTA->FULL
+        // fallback branch, which is exactly why all six searches could fail forever
+        // without anyone noticing.
+        log.audit('MCGI_MR_TraderScreenCache',
+            'getInputData: DELTA pairCount=' + pairCount + ' threshold=' + deltaThreshold +
+            ' searchFailures=' + deltaFailures.length + '/' + tranTypes.length);
 
         if (pairCount === 0) {
             // Nothing changed — refresh LAST_RUN so the throttle stays current and
