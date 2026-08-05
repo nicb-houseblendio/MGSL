@@ -293,6 +293,14 @@ define([
                 ' metaRowCount=' + (meta.rowCount || 0) + ' chunks=' + chunkCount +
                 ' chunksMissing=' + chunksMissing + ' cacheVersion=' + (meta.cacheVersion || 0) +
                 ' greaterThanZero=' + ((params || {}).greaterThanZero !== false);
+            // Mirrors every discriminating key applyFilters() acts on. greaterThanZero is
+            // deliberately excluded: it defaults to true on every request, so counting it
+            // would mean no request is ever "unfiltered". Keep this list in sync with
+            // applyFilters — a key added there but missed here reintroduces false errors.
+            const p = params || {};
+            const isUnfiltered = ['location', 'item', 'species', 'thickness', 'width', 'length',
+                'grade', 'finition', 'humidity', 'plannage', 'etampage', 'autres', 'country',
+                'vendor', 'po'].every(function (k) { return !p[k]; });
             // NOTE ON LEVELS: this deployment runs at loglevel=ERROR
             // (customdeploy_mcgi_rl_traderapi), so log.audit/log.debug are DISCARDED —
             // which is why this service had logged literally zero lines in production.
@@ -305,16 +313,21 @@ define([
             // MR says it wrote, means the screen is being served a truncated dataset.
             if (chunksMissing > 0 || (meta.rowCount && rows.length < meta.rowCount * 0.5)) {
                 log.error('trader_screen_service', 'getSummary: TRUNCATED READ — ' + svcState);
-            } else if (rows.length > 100 && filtered.length < 10) {
-                // The reported-but-undiagnosed case: cache is healthy yet the screen gets
-                // almost nothing, so the loss is in the FILTERS, not the cache. Marc-Antoine
-                // 2026-08-05 ("on voit juste 3-4 items") could not be explained after the
-                // fact precisely because this path was silent — the cache held 1,195 rows
-                // and every cache-side check looked clean. Logged at error level because
-                // audit would be discarded at this deployment's log level.
+            } else if (isUnfiltered && rows.length > 100 && filtered.length < 10) {
+                // The reported-but-undiagnosed case: an UNFILTERED request against a healthy
+                // cache that still yields almost nothing. Marc-Antoine 2026-08-05 ("on voit
+                // juste 3-4 items") could not be explained after the fact precisely because
+                // this path was silent — the cache held 1,195 rows and every cache-side
+                // check looked clean. Logged at error level because audit is discarded at
+                // this deployment's log level.
+                //
+                // isUnfiltered is load-bearing, NOT a nicety: a trader narrowing to one SKU
+                // or a small location legitimately returns <10 rows, and without this gate
+                // every such request would log an error. That would bury real errors under
+                // routine traffic — the exact failure this logging exists to prevent.
                 log.error('trader_screen_service',
-                    'getSummary: SERVED ALMOST NOTHING from a healthy cache — filters are ' +
-                    'dropping nearly every row — ' + svcState +
+                    'getSummary: SERVED ALMOST NOTHING on an UNFILTERED request against a ' +
+                    'healthy cache — ' + svcState +
                     ' filters=' + JSON.stringify(params || {}));
             } else {
                 log.audit('trader_screen_service', 'getSummary: ' + svcState);
