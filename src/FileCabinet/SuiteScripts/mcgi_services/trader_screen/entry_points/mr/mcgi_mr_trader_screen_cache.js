@@ -6,7 +6,7 @@
  *
  * @param {number} custscript_ts_subsidiary_id - CWP Industriel Inc. subsidiary internal ID (required)
  * @param {boolean} custscript_ts_force_full_rebuild - Force full rebuild (default: false)
- * @param {number} custscript_ts_delta_fallback_threshold - Fall back to full rebuild if delta pairs > this (default: 500)
+ * @param {number} custscript_ts_delta_fallback_threshold - Fall back to full rebuild if delta pairs > this (default: DELTA_THRESHOLD_DEFAULT)
  */
 define([
     'N/search', 'N/cache', 'N/log', 'N/runtime', 'N/task', 'N/query',
@@ -188,6 +188,86 @@ define([
     // packs away — see the On Hand builder's filter comment.
     const PACK_EPSILON = 0.005;
 
+    // ── Run-mode handoff ──────────────────────────────────────────────────────
+    // summarize must know whether its input was a FULL (canonical — safe to replace
+    // the cache) or a DELTA (partial — must merge). MTL passes that through N/cache,
+    // which has no read-your-write guarantee between MR phases: a stale read returns
+    // the PREVIOUS run's value, so a DELTA following a FULL reads 'FULL', replaces the
+    // whole summary with its handful of rows, and the screen loses most of its
+    // inventory (prod 2026-07-31: 452 rows -> 27). IND has no such key yet, so rather
+    // than import the bug we stamp the mode onto the rows themselves — it then travels
+    // getInputData -> map -> reduce -> summarize through MR's OWN output store, which
+    // is race-free by construction.
+    //
+    // _m is stripped in summarize before the summary is written, so it never reaches
+    // the cached payload or the UI. Safe to carry: reduce passes summaryRow straight to
+    // context.write (:1016) and never puts it in the detail cache.
+    const MODE_FULL = 'F';
+    const MODE_DELTA = 'D';
+    const encodeRow = (row, mode) => {
+        row._m = mode;
+        return JSON.stringify(row);
+    };
+
+    // Reassemble the cached summary, handling BOTH representations. Above
+    // MAX_CACHE_VALUE_BYTES the summary is stored as a pointer
+    // {"chunked":true,"chunkCount":N} plus TS_SUMMARY_DATA__<i> keys — and IND prod is
+    // chunked today (822 KB / 3 chunks over a 450 KB limit). summarize previously did a
+    // bare JSON.parse + Array.isArray, so the pointer failed the check and the merge was
+    // silently skipped. The reading side (trader_screen_service.js) has always handled
+    // chunks; only the writer was blind. Returns null when there is nothing usable, so
+    // callers can tell "no cached summary" from "an empty one".
+    const readSummaryRows = (myCache) => {
+        const raw = myCache.get({ key: CacheKeys.TS_SUMMARY });
+        if (!raw) return null;
+        try {
+            const parsed = JSON.parse(raw);
+            if (parsed && parsed.chunked && parsed.chunkCount) {
+                const rows = [];
+                let missing = 0;
+                for (let i = 0; i < parsed.chunkCount; i++) {
+                    const chunkStr = myCache.get({ key: CacheKeys.buildSummaryDataKey(i) });
+                    if (chunkStr) {
+                        const chunkRows = JSON.parse(chunkStr);
+                        if (Array.isArray(chunkRows)) rows.push.apply(rows, chunkRows);
+                    } else {
+                        missing++;
+                    }
+                }
+                if (missing > 0) {
+                    log.audit('MCGI_MR_TraderScreenCache',
+                        'summarize: ' + missing + '/' + parsed.chunkCount +
+                        ' summary chunks missing — reassembled ' + rows.length + ' rows');
+                }
+                return rows;
+            }
+            if (Array.isArray(parsed)) return parsed;
+        } catch (e) {
+            log.audit('MCGI_MR_TraderScreenCache', 'summarize: existing summary parse error: ' + e.message);
+        }
+        return null;
+    };
+
+    // Above this many changed (item, location) pairs, a delta stops being cheaper than a
+    // FULL and we rebuild instead. Single source of truth: getInputData defaulted to 150
+    // while both self-reschedules passed 500, and because a rescheduled task's params
+    // override the deployment, the effective value drifted to 500 after the first chained
+    // run — the intended cap never applied. Prod logs showed threshold=500 throughout.
+    // 150 is the deliberate value: the delta path runs ONE search per pair, so 500 pairs
+    // would mean 500 searches inside a single getInputData.
+    const DELTA_THRESHOLD_DEFAULT = 150;
+
+    // ── Shrink guard thresholds ───────────────────────────────────────────────
+    // Backstop for anything the stamped mode cannot cover — a pre-deploy task still
+    // queued with unstamped rows, or a run that errored into partial output. IND prod
+    // carries ~1,195 rows; it has never been near 20.
+    const SHRINK_GUARD_MIN_ROWS = 20;
+    // Trip when the incoming set is under half the cached set. A real IND summary does
+    // not lose half its stocked item/locations inside one hourly window. Erring high is
+    // deliberate: a false trip costs stale rows plus a log line, a missed catch costs
+    // the user their inventory.
+    const SHRINK_GUARD_MAX_RATIO = 0.5;
+
     /**
      * Legacy PPP source, kept as a last-resort fallback: NetSuite-generated lot
      * names end in the pack's piece count ('Remanufacturing Order
@@ -326,7 +406,7 @@ define([
         // lives on the script RECORD (an SDF object) and prod has only ever received
         // scoped file:uploads — so it may not exist there. If it does exist and is
         // set, it still wins.
-        const deltaThreshold = getScriptParam('custscript_ts_delta_fallback_threshold', 150);
+        const deltaThreshold = getScriptParam('custscript_ts_delta_fallback_threshold', DELTA_THRESHOLD_DEFAULT);
 
         if (!subsidiaryId) {
             log.error('MCGI_MR_TraderScreenCache', 'custscript_ts_subsidiary_id is required');
@@ -377,7 +457,7 @@ define([
                     searchPage.data.forEach((result) => {
                         const row = buildSummaryRow(result, subsidiaryId);
                         const k = row.internalId + '__' + row.locationId;
-                        fullInput[k] = JSON.stringify(row);
+                        fullInput[k] = encodeRow(row, MODE_FULL);
                         rowsProcessed++;
                     });
                 });
@@ -410,7 +490,7 @@ define([
             runPagedAll(mySearch).forEach((result) => {
                 const row = buildSummaryRow(result, subsidiaryId);
                 const k = row.internalId + '__' + row.locationId;
-                fullInput[k] = JSON.stringify(row);
+                fullInput[k] = encodeRow(row, MODE_FULL);
             });
             return fullInput;
         }
@@ -457,12 +537,25 @@ define([
                         deltaWindowFilter,
                     ],
                     columns: [
-                        search.createColumn({ name: 'item', join: 'item' }),
+                        // NOT { name:'item', join:'item' } — that asks for the `item`
+                        // field ON the joined item record, which does not exist, and
+                        // every one of these six searches threw
+                        // SSS_INVALID_SRCH_COL since inception (prod 2026-08-05:
+                        // 2,118 failures = 6 x 353 runs). The catch logged at debug, so
+                        // pairCount was always 0, every run became a no-op, and the cache
+                        // only ever refreshed on the hourly FULL — Marc-Antoine's "le
+                        // cache qui ne roule pas". `item` is a plain transaction-line
+                        // column; MTL has always used it unjoined and its deltas work.
+                        search.createColumn({ name: 'item' }),
                         search.createColumn({ name: 'location' }),
                     ],
                 });
                 runPagedAll(tranSearch).forEach((r) => {
-                    const itemId = r.getValue({ name: 'item', join: 'item' });
+                    // Must match the column above exactly. Leaving join:'item' here while
+                    // fixing only the column returns undefined, so itemId is falsy, no
+                    // pairs are collected, and pairCount stays 0 forever — the same
+                    // outcome as today but with NO error logged at all. Strictly worse.
+                    const itemId = r.getValue({ name: 'item' });
                     const locId = r.getValue({ name: 'location' });
                     if (itemId && locId) {
                         const k = itemId + '__' + locId;
@@ -506,6 +599,37 @@ define([
             'getInputData: DELTA pairCount=' + pairCount + ' threshold=' + deltaThreshold +
             ' searchFailures=' + deltaFailures.length + '/' + tranTypes.length);
 
+        // PARTIAL failure only — deliberately not "any failure".
+        //
+        // Partial is the dangerous case, and it only becomes reachable now that the
+        // searches work: if five of six succeed, pairCount is non-zero so the run looks
+        // healthy, yet every change of the sixth type is silently dropped. One extra FULL
+        // is a cheap price for not serving quietly-wrong data.
+        //
+        // TOTAL failure is handled differently on purpose. Forcing a FULL there would run
+        // one every ~60s instead of hourly — a ~60x load increase — and it is exactly the
+        // state prod is in TODAY (all six failing), so an unlucky deploy would turn a
+        // quiet bug into a hammering one. Total failure instead falls through to the
+        // pairCount===0 no-op and relies on the hourly FULL backstop, which bounds
+        // staleness at 1h: no worse than today's behaviour, and now logged loudly.
+        if (deltaFailures.length > 0 && deltaFailures.length < tranTypes.length) {
+            log.audit('MCGI_MR_TraderScreenCache',
+                'getInputData: DELTA->FULL fallback — ' + deltaFailures.length + '/' +
+                tranTypes.length + ' searches failed, delta would be partially blind');
+            myCache.put({ key: CacheKeys.TS_LAST_FULL_TIMESTAMP, value: new Date().toISOString(), ttl: TTL_LAST_RUN });
+            const failSearch = search.load({ id: ITEM_DATA_SEARCH_ID });
+            const failFilters = failSearch.filterExpression ? failSearch.filterExpression.concat() : [];
+            failFilters.push('AND', ['inventorylocation.subsidiary', 'anyof', subsidiaryId]);
+            failSearch.filterExpression = failFilters;
+            const failInput = {};
+            runPagedAll(failSearch).forEach((result) => {
+                const row = buildSummaryRow(result, subsidiaryId);
+                failInput[row.internalId + '__' + row.locationId] = encodeRow(row, MODE_FULL);
+            });
+            log.audit('MCGI_MR_TraderScreenCache', 'getInputData: FULL fallback rows=' + Object.keys(failInput).length);
+            return failInput;
+        }
+
         if (pairCount === 0) {
             // Nothing changed — refresh LAST_RUN so the throttle stays current and
             // skip processing. (Previously 0 pairs fell back to a FULL rebuild,
@@ -532,7 +656,7 @@ define([
             runPagedAll(mySearch).forEach((result) => {
                 const row = buildSummaryRow(result, subsidiaryId);
                 const k = row.internalId + '__' + row.locationId;
-                fullInput[k] = JSON.stringify(row);
+                fullInput[k] = encodeRow(row, MODE_FULL);
             });
             return fullInput;
         }
@@ -554,7 +678,7 @@ define([
             const results = runPagedAll(itemsSearch, 5);
             if (results.length > 0) {
                 const row = buildSummaryRow(results[0], subsidiaryId);
-                inputData[k] = JSON.stringify(row);
+                inputData[k] = encodeRow(row, MODE_DELTA);
             }
         });
 
@@ -1093,7 +1217,7 @@ define([
                     params: {
                         custscript_ts_subsidiary_id: getScriptParam('custscript_ts_subsidiary_id', null),
                         custscript_ts_force_full_rebuild: false,
-                        custscript_ts_delta_fallback_threshold: getScriptParam('custscript_ts_delta_fallback_threshold', 500),
+                        custscript_ts_delta_fallback_threshold: getScriptParam('custscript_ts_delta_fallback_threshold', DELTA_THRESHOLD_DEFAULT),
                     },
                 });
                 const noopTaskId = mrTaskNoop.submit();
@@ -1104,12 +1228,10 @@ define([
             return;
         }
 
-        const existingSummary = myCache.get({ key: CacheKeys.TS_SUMMARY });
-        log.audit('MCGI_MR_TraderScreenCache', 'summarize: existingSummary present=' + !!existingSummary + ', existingSummaryLen=' + (existingSummary ? existingSummary.length : 0));
-        let mergedRows = allRows;
+        // ── 1. Gather ─────────────────────────────────────────────────────────
+        const existingRows = readSummaryRows(myCache);
         const lastMeta = myCache.get({ key: CacheKeys.TS_META });
         let cacheVersion = 1;
-        let lastRunMode = 'FULL';
         if (lastMeta) {
             try {
                 const meta = JSON.parse(lastMeta);
@@ -1117,41 +1239,64 @@ define([
             } catch (e) {
             }
         }
+        // From the script PARAMETER, not the cache: the param lives on the script record,
+        // a reliable channel, and it must keep working when nothing else is trustworthy.
+        // Same string-truthy normalisation as getInputData — the checkbox arrives as the
+        // STRING 'false', which is truthy.
+        const sgRaw = getScriptParam('custscript_ts_force_full_rebuild', false);
+        const sgForceFull = sgRaw === true || sgRaw === 'T' || sgRaw === 'true';
 
-        if (existingSummary && allRows.length > 0) {
-            try {
-                const existingRows = JSON.parse(existingSummary);
-                log.audit('MCGI_MR_TraderScreenCache', 'summarize: MERGE branch, existingRows.length=' + (Array.isArray(existingRows) ? existingRows.length : 'not-array'));
-                if (Array.isArray(existingRows)) {
-                    const byKey = {};
-                    existingRows.forEach((r) => {
-                        if (r && r.internalId && r.locationId) {
-                            byKey[r.internalId + '__' + r.locationId] = r;
-                        }
-                    });
-                    allRows.forEach((r) => {
-                        if (r && r.internalId && r.locationId) {
-                            byKey[r.internalId + '__' + r.locationId] = r;
-                        }
-                    });
-                    mergedRows = Object.values(byKey);
-                    lastRunMode = 'DELTA';
-                    log.audit('MCGI_MR_TraderScreenCache', 'summarize: after merge byKey.size=' + Object.keys(byKey).length + ', mergedRows.length=' + mergedRows.length);
-                }
-            } catch (e) {
-                log.debug('MCGI_MR_TraderScreenCache', 'Existing summary parse error: ' + e.message);
-            }
-        } else {
-            log.audit('MCGI_MR_TraderScreenCache', 'summarize: NO-MERGE branch (existingSummary=' + !!existingSummary + ', allRows.length=' + allRows.length + ')');
-            const byKey = {};
-            mergedRows.forEach((r) => {
-                if (r && r.internalId && r.locationId) {
-                    byKey[r.internalId + '__' + r.locationId] = r;
-                }
-            });
-            mergedRows = Object.values(byKey);
-            log.audit('MCGI_MR_TraderScreenCache', 'summarize: after dedupe byKey.size=' + Object.keys(byKey).length + ', mergedRows.length=' + mergedRows.length);
+        // ── 2. Decide: may this run's rows REPLACE the cache? ─────────────────
+        // Mode comes from the DATA (stamped in getInputData), not from N/cache, so it
+        // cannot go stale. Rows with no stamp are treated as FULL — that only happens
+        // for a task queued before this deploy, and the shrink guard below covers it.
+        const modeIsFull = !(allRows.length > 0 && allRows[0] && allRows[0]._m === MODE_DELTA);
+        const hasCache = !!(existingRows && existingRows.length > 0);
+        let mayReplace = !hasCache || sgForceFull || modeIsFull;
+        let shrinkGuardTripped = false;
+
+        // Replacing on a FULL is REQUIRED, not merely allowed: merging would keep rows
+        // the saved search no longer returns, and those ghosts outlive their detail
+        // entries, so clicking one gives DETAIL_CACHE_MISS. Until now IND merged on every
+        // run and only pruned by accident — the chunked summary failed Array.isArray, so
+        // FULLs fell through to the replace path. Reading chunks correctly (below) would
+        // have silently turned every FULL into a merge and resurrected ghosts forever;
+        // that is why the chunk fix and the mode fix had to land together.
+        if (mayReplace && !sgForceFull && hasCache &&
+            existingRows.length >= SHRINK_GUARD_MIN_ROWS &&
+            allRows.length < existingRows.length * SHRINK_GUARD_MAX_RATIO) {
+            mayReplace = false;
+            shrinkGuardTripped = true;
+            log.audit('MCGI_MR_TraderScreenCache',
+                'summarize: SHRINK GUARD — refusing to replace ' + existingRows.length +
+                ' cached rows with ' + allRows.length +
+                ' (ratio=' + (allRows.length / existingRows.length).toFixed(3) +
+                ', stampedMode=' + (allRows[0] ? (allRows[0]._m || 'none') : 'none') +
+                ', mapErrors=' + mapErrorCount + ', reduceErrors=' + reduceErrorCount +
+                '). Merging instead. If the shrink is real, run once with ' +
+                'custscript_ts_force_full_rebuild checked.');
         }
+
+        log.audit('MCGI_MR_TraderScreenCache',
+            'summarize: mode=' + (modeIsFull ? 'FULL' : 'DELTA') +
+            ' existingRows=' + (existingRows ? existingRows.length : 'null') +
+            ' allRows=' + allRows.length + ' action=' + (mayReplace ? 'REPLACE' : 'MERGE') +
+            ' forceFull=' + sgForceFull + ' shrinkGuard=' + shrinkGuardTripped);
+
+        // ── 3. Combine: one path, no branching ────────────────────────────────
+        const byKey = {};
+        if (!mayReplace) {
+            existingRows.forEach((r) => {
+                if (r && r.internalId && r.locationId) byKey[r.internalId + '__' + r.locationId] = r;
+            });
+        }
+        allRows.forEach((r) => {   // this run's rows always win on collision
+            if (r && r.internalId && r.locationId) byKey[r.internalId + '__' + r.locationId] = r;
+        });
+        let mergedRows = Object.values(byKey);
+        const lastRunMode = mayReplace ? 'FULL' : 'DELTA';
+        // Strip the transport-only stamp so it never reaches the cached payload or the UI.
+        mergedRows.forEach((r) => { if (r && r._m) delete r._m; });
 
         const now = new Date();
         const nowIso = now.toISOString();
@@ -1231,7 +1376,7 @@ define([
                 params: {
                     custscript_ts_subsidiary_id: getScriptParam('custscript_ts_subsidiary_id', null),
                     custscript_ts_force_full_rebuild: false,
-                    custscript_ts_delta_fallback_threshold: getScriptParam('custscript_ts_delta_fallback_threshold', 500),
+                    custscript_ts_delta_fallback_threshold: getScriptParam('custscript_ts_delta_fallback_threshold', DELTA_THRESHOLD_DEFAULT),
                 },
             });
             var taskId = mrTask.submit();
