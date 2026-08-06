@@ -34,6 +34,12 @@ define([
     // see everything (e.g. assembly builds move on-hand without any of the six
     // delta transaction types changing).
     const FULL_REFRESH_MS   = 60 * 60 * 1000; // 1 hour
+    // Below this many packs a lot counts as empty. Same value as the IND MR, where it
+    // replaced a Math.round() that was hiding partially-consumed lots (2026-07-31).
+    // Exists only to absorb floating-point residue from (qty*1000)/(ppp*fbm) — it must
+    // stay far below any real quantity, never near half a pack.
+    const PACK_EPSILON = 0.005;
+
     // ── Shrink guard thresholds (see summarize) ───────────────────────────────
     // Arms only once the cached summary is substantial enough that a collapse is
     // unambiguous. MTL carries ~452 rows in prod and ~200 in sandbox; a healthy
@@ -2394,8 +2400,23 @@ define([
                         ' | itemDataLots=[' + itemData.map(function (r) { return r.lotNumber; }).join(', ') + ']');
                 }
 
-                // Ghost lot filter
-                var filtered = itemData.filter(function (row) { return Math.round(row.packsOnHand) > 0; });
+                // Ghost lot filter — drop lots that are actually EMPTY, nothing more.
+                //
+                // Was Math.round(row.packsOnHand) > 0, which discards anything under HALF
+                // a pack. That contradicts the intent stated above ("drops any lot whose
+                // on-hand went to zero") and silently hides real inventory: a lot drawn
+                // down to 0.4 packs disappears from the drawer while its stock still
+                // exists. IND had the identical bug — it hid a remanufacturing order with
+                // 3.054 of 14.552 MBF remaining (0.2099 pack) until Marc-Antoine reported
+                // it missing on 2026-07-31; fixed there with the same epsilon.
+                //
+                // Epsilon rather than > 0 because packs is floating-point division
+                // (qty * 1000) / (ppp * fbmFactor), so a fully-consumed lot can land on
+                // 1e-15 instead of exactly 0. A prod audit of all 200 stocked MTL
+                // lot/locations found 13 below the epsilon totalling nothing usable, and
+                // ZERO between the epsilon and 0.5 — so this change is inert today and
+                // only starts mattering as lots deplete through that band.
+                var filtered = itemData.filter(function (row) { return (row.packsOnHand || 0) > PACK_EPSILON; });
                 if (reduceInvokeCount <= 3 || reduceInvokeCount % 50 === 0) {
                     log.debug('MTL reduce', 'OnHand item=' + itemId + ' loc=' + locationId +
                         ' | searchRows=' + _ohRowCount + ' uniqueLots=' + Object.keys(seenLots).length +
