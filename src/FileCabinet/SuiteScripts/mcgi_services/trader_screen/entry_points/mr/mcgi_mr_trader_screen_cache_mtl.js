@@ -2461,7 +2461,17 @@ define([
         var availableTotal = roundToTwoDecimals(onHandTotal - committedTotal - outboundTotal + onOrderTotal + inTransitTotal);
 
         // ── Override summary row fields from detail totals ─────────────────────
-        summaryRow.onHand    = Math.round(onHandTotal);
+        // onHandTotal, NOT Math.round(onHandTotal). The rounding contradicted the
+        // line directly above it — availableTotal is derived from the UNROUNDED
+        // total — so the grid served rows that cannot be added up: Tradepoint
+        // Terminal held 0.78 pack of SS2612EUKDHTS4SPW and displayed "On Hand 1,
+        // Committed 0, Available 0.78" (prod, 2026-08-07). It also rounded partial
+        // packs UP, overstating stock on a trading screen, and any total landing in
+        // (PACK_EPSILON, 0.5) rendered as On Hand 0 while the drawer still listed
+        // the lot — the same defect the ghost-lot epsilon above fixes at lot level,
+        // and the one Marc-Antoine reported on IND on 2026-07-31. IND has always
+        // done it this way (mcgi_mr_trader_screen_cache.js, summaryRow.onHand).
+        summaryRow.onHand    = onHandTotal;
         summaryRow.committed = committedTotal;
         summaryRow.outbound  = outboundTotal;
         summaryRow.onOrder   = onOrderTotal;

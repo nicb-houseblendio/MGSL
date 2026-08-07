@@ -301,13 +301,14 @@ define([
             const isUnfiltered = ['location', 'item', 'species', 'thickness', 'width', 'length',
                 'grade', 'finition', 'humidity', 'plannage', 'etampage', 'autres', 'country',
                 'vendor', 'po'].every(function (k) { return !p[k]; });
-            // NOTE ON LEVELS: this deployment runs at loglevel=ERROR
-            // (customdeploy_mcgi_rl_traderapi), so log.audit/log.debug are DISCARDED —
-            // which is why this service had logged literally zero lines in production.
-            // Anything that must survive has to be log.error. The audit line below is
-            // kept for the day the deployment's log level is raised to AUDIT, but do not
-            // rely on it: raising it needs a change to the deployment record, and prod
-            // has only ever received scoped file:upload, which never touches objects.
+            // NOTE ON LEVELS: customdeploy_mcgi_rl_traderapi ran at loglevel=ERROR when
+            // this logging was written, discarding log.audit/log.debug — which is why the
+            // service had logged literally zero lines in production. As of 2026-08-07 both
+            // prod and sandbox deployment 1 read loglevel=DEBUG, so the audit line below
+            // now survives. Do NOT take that as licence to downgrade the two log.error
+            // calls: Log Level lives on the deployment record, prod has only ever received
+            // scoped file:upload (which never touches SDF objects), so nothing in this repo
+            // pins it and it can be turned back to ERROR from the UI without warning.
             //
             // A chunk that failed to read, or a reassembled row count well under what the
             // MR says it wrote, means the screen is being served a truncated dataset.
@@ -318,8 +319,9 @@ define([
                 // cache that still yields almost nothing. Marc-Antoine 2026-08-05 ("on voit
                 // juste 3-4 items") could not be explained after the fact precisely because
                 // this path was silent — the cache held 1,195 rows and every cache-side
-                // check looked clean. Logged at error level because audit is discarded at
-                // this deployment's log level.
+                // check looked clean. Kept at error level: the deployment's Log Level is a
+                // UI setting no repo change pins (see the note above), so a condition that
+                // must never be silent cannot rely on audit surviving.
                 //
                 // isUnfiltered is load-bearing, NOT a nicety: a trader narrowing to one SKU
                 // or a small location legitimately returns <10 rows, and without this gate
