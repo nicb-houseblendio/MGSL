@@ -328,6 +328,12 @@ define([
             if (searchId === ON_ORDER_SEARCH_ID) {
                 s.columns.push(search.createColumn({ name: 'exchangerate', summary: 'MAX' }));
                 s.columns.push(search.createColumn({ name: 'currency', summary: 'GROUP' }));
+                // Purchase Orders may carry the allocation segment on the BODY
+                // (stamped by MSL_UE_allocationSegmentSync) even when the item line
+                // is blank. Pushed separately from the saved search's line-segment
+                // join so buildOnOrderRow can apply line-first, body-second
+                // precedence — see the segmentId note there.
+                s.columns.push(search.createColumn({ name: 'cseg_po_segment_gl', summary: 'GROUP' }));
             } else {
                 s.columns.push(search.createColumn({ name: 'exchangerate' }));
                 s.columns.push(search.createColumn({ name: 'currency' }));
@@ -761,6 +767,10 @@ define([
         var rawRate  = parseFloat(r.getValue({ name: 'rate', summary: 'MAX' })) || 0;
         var exchRate = parseFloat(r.getValue({ name: 'exchangerate', summary: 'MAX' })) || 1;
         var price    = roundToTwoDecimals(rawRate / exchRate);
+        var lineSegmentId = r.getValue({
+            name: 'internalid', join: 'line.cseg_po_segment_gl', summary: 'GROUP'
+        }) || '';
+        var bodySegmentId = r.getValue({ name: 'cseg_po_segment_gl', summary: 'GROUP' }) || '';
         return {
             docNumber:     r.getValue({ name: 'tranid', summary: 'GROUP' }),
             docUrl:        getRecordUrl(docId, 'purchaseorder'),
@@ -772,9 +782,14 @@ define([
             mbfPrice:      price,
             currency:      CURRENCY_TO_ISO[r.getText({ name: 'currency', summary: 'GROUP' })] || r.getText({ name: 'currency', summary: 'GROUP' }) || '',
             // PO Allocation consumes the cache for unreceived segments. segmentId
-            // (the cseg_po_segment_gl internal id on the PO line) is the join key
-            // back to the SO line; poId + poDate drive PO Allocation's FIFO sort.
-            segmentId:     r.getValue({ name: 'internalid', join: 'line.cseg_po_segment_gl', summary: 'GROUP' }) || '',
+            // (the cseg_po_segment_gl internal id) is the join key back to the SO
+            // line; poId + poDate drive PO Allocation's FIFO sort.
+            //
+            // Line first, then the PO BODY as a fallback: the segment-sync UE stamps
+            // the body, and a PO whose item line was never stamped would otherwise
+            // resolve to '' and drop out of allocation entirely. Mirrors the live
+            // SuiteQL NVL(line, body) rule.
+            segmentId:     lineSegmentId || bodySegmentId,
             poId:          docId,
             poDate:        r.getValue({ name: 'trandate', summary: 'GROUP' }) || '',
         };
