@@ -24,12 +24,14 @@ const FILTER_LABELS: Record<string, string> = {
   country: 'COUNTRY',
   vendor: 'VENDOR',
   po: 'PO',
+  containerNo: 'CONTAINER #',
 };
 
 const FILTER_PLACEHOLDERS: Record<string, string> = {
   location: 'All locations',
   vendor: 'All vendors',
   po: 'All POs',
+  containerNo: 'All containers',
 };
 
 const FILTER_TO_API: Record<string, string> = {
@@ -50,6 +52,7 @@ const FILTER_TO_API: Record<string, string> = {
   country: 'country',
   vendor: 'vendor',
   po: 'po',
+  containerNo: 'containerNo',
 };
 
 export type FilterOptions = Record<string, { value: string; label: string }[]>;

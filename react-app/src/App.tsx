@@ -16,11 +16,16 @@ import { InventoryTableMTL } from '@/components/InventoryTableMTL';
 import { DetailDrawerMTL } from '@/components/DetailDrawerMTL';
 import { PriceListModal } from '@/components/PriceListModal';
 import { exportToExcelMTL } from '@/lib/exportMTL';
+import { ArchScreen } from '@/components/ArchScreen';
+import { ARCH_UOMS } from '@/lib/archUom';
+import { ARCH_IS_DEMO_DATA } from '@/hooks/useArchSummaryData';
 
+// ARCH is board-foot native: no packs, no PPP, no MBF. Cubic metres exist only
+// because European packing lists arrive metric (1 m³ = 423 BF).
 const DEFAULT_UOM_CONFIG: Record<string, string[]> = {
   'CWP IND': ['Packs'],
   'CWP MTL': ['Packs'],
-  'CWP ARCH': ['Cubic meters (m³)', 'Packs'],
+  'CWP ARCH': ARCH_UOMS,
 };
 
 const defaultFilters: FilterState = {};
@@ -43,20 +48,23 @@ function TraderScreenContent() {
     : DEFAULT_UOM_CONFIG;
   const CWP_VIEWS = Object.keys(uomConfig);
 
-  // Map subsidiary to default view tab
-  // CWP MTL (5) children: 9501-3413 Quebec (11), Produits de Bois CWP (8), Elim MTL Conso (10)
-  // CWP IND (7) children: CWP Architectural (9), Premier Pallets (15), Delaware Ops (14),
-  //   Elim Delaware Conso (16), Bois ETCO 2014 (17), Elim Industriel Conso (18)
+  // Map subsidiary to default view tab.
+  // Verified against NetSuite 2026-08-12 — CWP MTL (5) is the parent of IND (7),
+  // PBF (8), ARC (9), ELIM (10) and 9501 (11); ARC is a SIBLING of IND, not a
+  // child of it. 9 previously landed on the IND view, which showed a trader IND
+  // data under an ARCH label.
   const SUBSIDIARY_TO_VIEW: Record<string, string> = {
     '5': 'CWP MTL', '8': 'CWP MTL', '10': 'CWP MTL', '11': 'CWP MTL',
-    '7': 'CWP IND', '9': 'CWP IND', '14': 'CWP IND', '15': 'CWP IND', '16': 'CWP IND', '17': 'CWP IND', '18': 'CWP IND',
+    '7': 'CWP IND', '14': 'CWP IND', '15': 'CWP IND', '16': 'CWP IND', '17': 'CWP IND', '18': 'CWP IND',
+    '9': 'CWP ARCH',
   };
   const defaultView = SUBSIDIARY_TO_VIEW[subsidiaryId] && CWP_VIEWS.includes(SUBSIDIARY_TO_VIEW[subsidiaryId])
     ? SUBSIDIARY_TO_VIEW[subsidiaryId]
     : CWP_VIEWS[0] || 'CWP IND';
   const [activeView, setActiveView] = React.useState(defaultView);
   const isMTL = activeView === 'CWP MTL';
-  const effectiveSubsidiaryId = isMTL ? '5' : (subsidiaryId || 'default');
+  const isARCH = activeView === 'CWP ARCH';
+  const effectiveSubsidiaryId = isMTL ? '5' : isARCH ? '9' : (subsidiaryId || 'default');
 
   const {
     allRows,
@@ -68,7 +76,9 @@ function TraderScreenContent() {
     getTotals,
     getTotalsMBF,
     getFilterOptions,
-  } = useSummaryData(effectiveSubsidiaryId);
+    // Passing '' suppresses the fetch (the hook guards on a truthy id) — ARCH has
+    // no RESTlet to call, and firing a summary request for it would only 503.
+  } = useSummaryData(isARCH ? '' : effectiveSubsidiaryId);
 
   const {
     refreshState,
@@ -85,11 +95,27 @@ function TraderScreenContent() {
     onFetchComplete: () => {},
   });
 
+  /**
+   * Units offered for the active view.
+   *
+   * ARCH does NOT take this from the server. `uomConfig` comes from the RESTlet,
+   * which reads an optional `custscript_ts_uom_config_json` script parameter that
+   * is not tracked in this repo and historically listed MBF and Packs for ARCH.
+   * The ARCH screen can only compute BF and m³ — handed "Packs" it would render
+   * board-foot figures under a Packs label with a BF suffix, which is silently
+   * wrong data rather than a visible failure. Pin it to what the code can
+   * actually convert; IND and MTL keep their server-driven behaviour untouched.
+   */
+  const uomOptionsFor = React.useCallback(
+    (view: string): string[] => (view === 'CWP ARCH' ? ARCH_UOMS : uomConfig[view] || ['Packs']),
+    [uomConfig]
+  );
+
   const [uom, setUom] = React.useState('Packs');
   React.useEffect(() => {
-    const options = uomConfig[activeView] || ['Packs'];
+    const options = uomOptionsFor(activeView);
     setUom((prev) => options.includes(prev) ? prev : options[0]);
-  }, [activeView, uomConfig]);
+  }, [activeView, uomOptionsFor]);
   const [filters, setFilters] = React.useState<FilterState>(defaultFilters);
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [detailParams, setDetailParams] = React.useState<{
@@ -219,7 +245,7 @@ function TraderScreenContent() {
   const displayError = error || refreshError;
 
   const today = typeof window !== 'undefined' ? new Date().toLocaleDateString('en-CA', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }) : '';
-  const uomOptions = uomConfig[activeView] || ['Packs'];
+  const uomOptions = uomOptionsFor(activeView);
 
   return (
     <div
@@ -298,7 +324,21 @@ function TraderScreenContent() {
           </div>
           <div className="w-px h-5 bg-white/15" />
           <span className="text-white text-[11px]">{today}</span>
-          {meta?.lastUpdated && (() => {
+          {/* ARCH runs on local demo data — say so, and never show the IND/MTL
+              cache timestamp next to it (meta persists from the previous view). */}
+          {isARCH && ARCH_IS_DEMO_DATA && (
+            <>
+              <div className="w-px h-5 bg-white/15" />
+              <span
+                className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                style={{ background: 'rgba(200,160,53,0.30)', color: '#FFFFFF' }}
+                title="CWP ARCH has no data in NetSuite yet — this screen is running on local demo data"
+              >
+                Demo data
+              </span>
+            </>
+          )}
+          {!isARCH && meta?.lastUpdated && (() => {
             const badgeState = getLastUpdatedBadgeState(meta.lastUpdated);
             const badgeColor = badgeState === 'ok' ? 'rgba(76,175,80,0.25)' : badgeState === 'stale' ? 'rgba(255,183,77,0.25)' : 'rgba(239,83,80,0.25)';
             const textColor = '#FFFFFF';
@@ -319,8 +359,11 @@ function TraderScreenContent() {
             variant="ghost"
             size="icon"
             onClick={() => void doRefresh()}
-            disabled={refreshState === 'checking' || refreshState === 'fetching'}
-            className="h-8 w-8 text-white hover:bg-white/10"
+            // No cache behind ARCH — refreshing would fire a summary request with
+            // no subsidiary id.
+            disabled={isARCH || refreshState === 'checking' || refreshState === 'fetching'}
+            title={isARCH ? 'Not applicable — CWP ARCH is running on demo data' : 'Refresh'}
+            className="h-8 w-8 text-white hover:bg-white/10 disabled:opacity-40"
           >
             <RefreshCw className={`h-4 w-4 ${(refreshState === 'checking' || refreshState === 'fetching') ? 'animate-spin' : ''}`} />
           </Button>
@@ -344,12 +387,12 @@ function TraderScreenContent() {
           className="px-4 py-2 text-xs font-semibold rounded-t-md transition-all text-[var(--navy)]"
           style={{ background: 'var(--background)' }}
         >
-          Inventory
+          {isARCH ? 'Hardwood' : 'Inventory'}
         </button>
       </div>
 
-      {/* New version banner */}
-      {newVersionAvailable && (
+      {/* New version banner — cache-driven, so not applicable to ARCH */}
+      {!isARCH && newVersionAvailable && (
         <div className="flex items-center justify-between bg-green/10 text-green px-4 py-2 text-sm border-b border-green/20 flex-shrink-0">
           <span>New data available.</span>
           <div className="flex gap-2">
@@ -363,6 +406,13 @@ function TraderScreenContent() {
         </div>
       )}
 
+      {/* CWP ARCH owns its own data hook, grid, detail modal and export — see
+          components/ArchScreen.tsx. Keeping it behind one branch leaves the
+          IND/MTL render path below completely untouched. */}
+      {isARCH ? (
+        <ArchScreen uom={uom} />
+      ) : (
+      <>
       {/* Filters */}
       <div className="px-4 pt-3 flex-shrink-0">
         <FilterPanel
@@ -463,6 +513,8 @@ function TraderScreenContent() {
           onOpenChange={setPriceListOpen}
           rows={filteredRows}
         />
+      )}
+      </>
       )}
     </div>
   );

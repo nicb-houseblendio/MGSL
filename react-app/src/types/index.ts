@@ -64,6 +64,8 @@ export interface FilterState {
   country?: string[];
   vendor?: string[];
   po?: string[];
+  /** CWP ARCH only — container is a lot-level attribute, not an item-level one. */
+  containerNo?: string[];
 }
 
 export interface NetSuiteContext {

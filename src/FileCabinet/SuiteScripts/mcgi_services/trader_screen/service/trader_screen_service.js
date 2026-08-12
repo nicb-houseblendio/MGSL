@@ -177,10 +177,14 @@ define([
         return handler(dataIn);
     };
 
+    // CWP ARCH (hardwood) is BOARD-FOOT native - no packs, no PPP, no MBF. Cubic
+    // metres are offered only because European packing lists arrive metric
+    // (1 m3 = 423 BF). Offering Packs/MBF here would let a trader pick a unit the
+    // screen cannot compute. Confirmed by Marc-Antoine on the 2026-08-11 call.
     const DEFAULT_UOM_CONFIG = {
         'CWP IND': ['MBF', 'Packs'],
         'CWP MTL': ['MBF', 'Packs', 'TL'],
-        'CWP ARCH': ['MBF', 'Cubic meters (m\u00B3)', 'Packs'],
+        'CWP ARCH': ['BF', 'Cubic meters (m\u00B3)'],
     };
 
     const handleGetContext = () => {

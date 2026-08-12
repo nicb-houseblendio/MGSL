@@ -15,7 +15,8 @@ export type FilterKey =
   | 'category'
   | 'country'
   | 'vendor'
-  | 'po';
+  | 'po'
+  | 'containerNo';
 
 export interface BusinessConfig {
   filters: FilterKey[];
@@ -44,9 +45,18 @@ export const BUSINESS_CONFIG: Record<string, BusinessConfig> = {
     ],
     columns: ['width', 'length', 'onHand', 'committed', 'outbound', 'inTransit', 'available'],
   },
+  // Hardwood: no width/length columns (variable within a bundle — that is what the
+  // tally is for) and no packs. Container is a LOT attribute, filtered per lot.
   CWP_ARCH: {
-    filters: ['location', 'species', 'thickness', 'category'],
-    columns: ['width', 'length', 'onHand', 'committed', 'outbound', 'inTransit', 'available'],
+    filters: ['location', 'containerNo', 'species', 'thickness', 'category', 'grade'],
+    columns: [
+      'available',
+      'onHand',
+      'reserve',
+      'readyToBuild',
+      'inTransit',
+      'onOrder',
+    ],
   },
 };
 

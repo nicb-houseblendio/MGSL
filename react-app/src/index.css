@@ -28,6 +28,8 @@
     --metric-outbound: #B22222;
     --metric-onorder: #0D47A1;
     --metric-intransit: #4A148C;
+    /* CWP ARCH only — hardwood has a Ready to Build bucket IND/MTL do not. */
+    --metric-readytobuild: #00838F;
     /* ShadCN compatibility */
     --background-shadcn: 220 20% 96%;
     --foreground: 220 30% 10%;
@@ -66,6 +68,7 @@
     --metric-outbound: #EF5350;
     --metric-onorder: #42A5F5;
     --metric-intransit: #AB47BC;
+    --metric-readytobuild: #26C6DA;
     --background-shadcn: 220 30% 8%;
     --foreground: 210 40% 98%;
     --card: 220 30% 12%;
