@@ -2,10 +2,15 @@ import * as React from 'react';
 import { FilterPanel } from '@/components/FilterPanel';
 import { InventoryTableARCH, selectedArchRows } from '@/components/InventoryTableARCH';
 import { DetailDrawerARCH } from '@/components/DetailDrawerARCH';
+import { SOCartBar } from '@/components/arch/SOCartBar';
+import { SOWizard } from '@/components/arch/SOWizard';
+import { ArchOrderDraftDialog } from '@/components/arch/ArchOrderDraftDialog';
+import { lotQuantity } from '@/lib/archLots';
 import { useArchSummaryData } from '@/hooks/useArchSummaryData';
 import { exportToExcelARCH } from '@/lib/exportARCH';
 import type { FilterState } from '@/types';
 import type { ArchSummaryRow, ArchDetailKey } from '@/types/arch';
+import type { ArchCartLine, ArchOrderDraft } from '@/types/archOrder';
 
 /**
  * CWP ARCH (hardwood) trader screen.
@@ -33,6 +38,59 @@ export const ArchScreen = ({ uom }: ArchScreenProps) => {
   // keeps showing pre-refresh figures after the data reloads — harmless while the
   // source is a fixed fixture, wrong the moment the real RESTlet is wired in.
   const [detail, setDetail] = React.useState<{ detailKey: string; bucket: ArchDetailKey } | null>(null);
+
+  /* ── Sales order cart ────────────────────────────────────────────────────
+   * Held here rather than in the modal so a trader can tick bundles across
+   * several items, closing and reopening detail modals, and keep the selection.
+   * ---------------------------------------------------------------------- */
+  const [cart, setCart] = React.useState<ArchCartLine[]>([]);
+  const [wizardOpen, setWizardOpen] = React.useState(false);
+  const [createdDraft, setCreatedDraft] = React.useState<ArchOrderDraft | null>(null);
+
+  const cartLotNos = React.useMemo(() => new Set(cart.map((l) => l.lotNo)), [cart]);
+
+  const handleAddToCart = React.useCallback(
+    (row: ArchSummaryRow, lotNos: string[], bucket: ArchDetailKey) => {
+      setCart((prev) => {
+        const byKey = new Map(prev.map((l) => [l.key, l]));
+        lotNos.forEach((lotNo) => {
+          const lot = row.lots.find((l) => l.lotNo === lotNo);
+          if (!lot) return;
+          const key = `${row.internalId}|${bucket}|${lotNo}`;
+          byKey.set(key, {
+            key,
+            internalId: row.internalId,
+            itemCode: row.itemCode,
+            description: row.description,
+            locationName: row.locationName,
+            lotNo,
+            containerNo: lot.containerNo,
+            // Board feet this bundle can contribute FROM THE BUCKET it was picked
+            // in — on the Available view that is the uncommitted remainder, not
+            // the full on-hand figure.
+            bf: lotQuantity(lot, bucket),
+            costPerBF: row.avgCostBF,
+            bucket,
+          });
+        });
+        return [...byKey.values()];
+      });
+    },
+    []
+  );
+
+  const removeCartLine = React.useCallback(
+    (key: string) => setCart((prev) => prev.filter((l) => l.key !== key)),
+    []
+  );
+
+  const handleCreateOrder = React.useCallback((draft: ArchOrderDraft) => {
+    // No NetSuite write yet — see the note in SOWizard. Surface the draft so the
+    // flow can be reviewed end to end, and clear the cart as a real create would.
+    setCreatedDraft(draft);
+    setWizardOpen(false);
+    setCart([]);
+  }, []);
 
   const rowSelectionRef = React.useRef<Record<string, boolean>>({});
   const handleSelectionChange = React.useCallback((selection: Record<string, boolean>) => {
@@ -96,6 +154,8 @@ export const ArchScreen = ({ uom }: ArchScreenProps) => {
 
   return (
     <>
+      <SOCartBar cart={cart} onOpenWizard={() => setWizardOpen(true)} onClear={() => setCart([])} />
+
       <div className="px-4 pt-3 flex-shrink-0">
         <FilterPanel
           filters={filters}
@@ -151,7 +211,22 @@ export const ArchScreen = ({ uom }: ArchScreenProps) => {
           row={detailRow}
           triggerBucket={detail.bucket}
           uom={uom}
+          onAddToCart={handleAddToCart}
+          cartLotNos={cartLotNos}
         />
+      )}
+
+      <SOWizard
+        open={wizardOpen}
+        cart={cart}
+        onClose={() => setWizardOpen(false)}
+        onRemoveLine={removeCartLine}
+        onCreate={handleCreateOrder}
+        onAddMoreItems={() => setWizardOpen(false)}
+      />
+
+      {createdDraft && (
+        <ArchOrderDraftDialog draft={createdDraft} onClose={() => setCreatedDraft(null)} />
       )}
     </>
   );

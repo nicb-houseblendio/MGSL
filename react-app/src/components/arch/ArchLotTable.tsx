@@ -22,9 +22,13 @@ interface ArchLotTableProps {
   uom: string;
   showReserved: boolean;
   onToggleReserved: () => void;
-  /** Lot numbers currently ticked. Lifted so the SO cart can read it in a later phase. */
+  /** Lot numbers currently ticked. Lifted so the SO cart can read it. */
   selected: Set<string>;
   onSelectionChange: (next: Set<string>) => void;
+  /** Add the ticked bundles to the sales order cart. */
+  onAddToCart?: (lotNos: string[], bucket: ArchDetailKey) => void;
+  /** Lot numbers already in the cart, so the button can read as added. */
+  cartLotNos?: Set<string>;
 }
 
 interface LeadColumn {
@@ -67,6 +71,8 @@ export const ArchLotTable = ({
   onToggleReserved,
   selected,
   onSelectionChange,
+  onAddToCart,
+  cartLotNos,
 }: ArchLotTableProps) => {
   const [tallyOpen, setTallyOpen] = React.useState<string | null>(null);
   const [tallyImages, setTallyImages] = React.useState<Record<string, string>>({});
@@ -287,6 +293,50 @@ export const ArchLotTable = ({
                   {formatBF(reservedTotal)} <span style={{ fontSize: 9.5, opacity: 0.7 }}>BF</span>
                 </span>
               </button>
+            )}
+
+            {/* Add to SO — only on views a trader can actually sell from. */}
+            {isSellableView && onAddToCart && (
+              <>
+                <span style={{ width: 1, height: 20, background: '#E2E8F0', flexShrink: 0 }} />
+                {(() => {
+                  const ticked = lots.filter((l) => selected.has(l.lotNo) && !isLotLocked(l));
+                  const allAdded =
+                    ticked.length > 0 && ticked.every((l) => cartLotNos?.has(l.lotNo));
+                  const disabled = ticked.length === 0 || allAdded;
+                  return (
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => onAddToCart(ticked.map((l) => l.lotNo), bucket)}
+                      title={
+                        allAdded
+                          ? 'These bundles are already on the order'
+                          : ticked.length === 0
+                            ? 'Tick one or more bundles first'
+                            : undefined
+                      }
+                      style={{
+                        padding: '6px 16px',
+                        borderRadius: 7,
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        cursor: disabled ? 'not-allowed' : 'pointer',
+                        border: `1px solid ${disabled ? '#9DB0A4' : ARCH_SURFACE.green}`,
+                        background: allAdded ? '#fff' : disabled ? '#9DB0A4' : ARCH_SURFACE.green,
+                        color: allAdded ? ARCH_SURFACE.green : '#fff',
+                        opacity: disabled && !allAdded ? 0.7 : 1,
+                      }}
+                    >
+                      <span style={{ fontSize: 13, lineHeight: 1 }}>{allAdded ? '✓' : '＋'}</span>
+                      {allAdded ? 'Added to SO' : `Add to SO${ticked.length ? ` (${ticked.length})` : ''}`}
+                    </button>
+                  );
+                })()}
+              </>
             )}
           </div>
         </div>

@@ -13,12 +13,10 @@ import type { ArchSummaryRow, ArchDetailKey } from '@/types/arch';
  * move between On Hand / Ready to Build / In Transit / On Order without closing,
  * and a lot table underneath.
  *
- * Two buckets do not get their own tab on purpose:
- *  - Reserved  — it is a subset of On Hand, surfaced by the "Show reserved"
- *                toggle inside the On Hand view rather than as a separate pile.
- *  - Available — a calculated balance, not a place stock sits. Clicking it opens
- *                On Hand, which is where the sellable bundles actually are.
- * Clicking either column on the grid therefore lands on the On Hand tab.
+ * Every grid column has a tab except Reserved, which is a subset of On Hand and
+ * is surfaced by the "Show reserved" toggle there instead of as a separate pile.
+ * That rule matters: a click on any quantity must land on a view that actually
+ * contains the number that was clicked.
  */
 
 interface DetailDrawerARCHProps {
@@ -28,6 +26,10 @@ interface DetailDrawerARCHProps {
   /** Bucket the user clicked on the grid. */
   triggerBucket: ArchDetailKey;
   uom: string;
+  /** Add ticked bundles to the sales order cart. */
+  onAddToCart?: (row: ArchSummaryRow, lotNos: string[], bucket: ArchDetailKey) => void;
+  /** Lot numbers already on the order. */
+  cartLotNos?: Set<string>;
 }
 
 const TABS: { key: ArchDetailKey; label: string }[] = [
@@ -52,7 +54,15 @@ const TABS: { key: ArchDetailKey; label: string }[] = [
 const resolveTab = (bucket: ArchDetailKey): ArchDetailKey =>
   bucket === 'reserve' ? 'onHand' : bucket;
 
-export const DetailDrawerARCH = ({ open, onOpenChange, row, triggerBucket, uom }: DetailDrawerARCHProps) => {
+export const DetailDrawerARCH = ({
+  open,
+  onOpenChange,
+  row,
+  triggerBucket,
+  uom,
+  onAddToCart,
+  cartLotNos,
+}: DetailDrawerARCHProps) => {
   const [activeBucket, setActiveBucket] = React.useState<ArchDetailKey>(() => resolveTab(triggerBucket));
   // Land with reserved expanded when that is the column the trader actually clicked.
   const [showReserved, setShowReserved] = React.useState(triggerBucket === 'reserve');
@@ -195,6 +205,8 @@ export const DetailDrawerARCH = ({ open, onOpenChange, row, triggerBucket, uom }
               onToggleReserved={() => setShowReserved((v) => !v)}
               selected={selected}
               onSelectionChange={setSelected}
+              onAddToCart={onAddToCart ? (lotNos, bucket) => onAddToCart(row, lotNos, bucket) : undefined}
+              cartLotNos={cartLotNos}
             />
           )}
         </div>
