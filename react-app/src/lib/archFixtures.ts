@@ -40,7 +40,17 @@ const SPECIES = [
 ];
 
 const THICKNESSES = ['4/4', '5/4', '6/4', '8/4', '12/4', '16/4'];
-const CATEGORIES = ['Dimensional', 'Panel', 'Trim', 'Engineered', 'Specialty'];
+/**
+ * The real values of the Item Category segment (`csegitem_category`), read from
+ * the sandbox on 2026-08-13.
+ *
+ * Marc-Antoine settled which segment the Category filter points at: "Category :
+ * oui prend celui de Julie", i.e. the Item Category segment she created, NOT the
+ * `csegother` the Order-to-Cash diagram maps it to — that one holds Angle Cut,
+ * Corebox and Lattage, which are not categories at all. These five were invented
+ * before anyone had looked.
+ */
+const CATEGORIES = ['Decking', 'Lumber', 'Ovals', 'Veneer'];
 const GRADES = ['FAS', 'Sel & Btr', '#1 Common', 'Prime', 'Veneer Grade'];
 const GRAINS = ['Quarter Cut', 'Flat Cut', 'Rift Cut', 'Mixed Grain'];
 const CONTAINER_PREFIXES = ['MEDU', 'BMOU', 'MSCU', 'TCLU', 'CMAU', 'HLXU'];

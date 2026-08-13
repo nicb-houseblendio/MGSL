@@ -9,8 +9,8 @@ import { seededRandom } from '@/lib/archLots';
 import type { ArchSplitBundle, ArchSplitEntry, ArchSplitJob, ArchSplitOutcome } from '@/types/archSplit';
 
 /**
- * How far customer + inventory may drift from the measured bundle before the row
- * is flagged.
+ * How far the re-tally may drift from the system's figure for the bundle before
+ * the row is flagged.
  *
  * NOT a validation failure — a genuine re-tally legitimately disagrees with the
  * supplier's figure, which is the entire reason this screen exists. It flags for
@@ -33,65 +33,56 @@ const num = (v: string): number => {
  */
 export const entryKey = (soNo: string, lotNo: string): string => `${soNo}|${lotNo}`;
 
-export const emptyEntry = (bundle: ArchSplitBundle): ArchSplitEntry => ({
-  // Pre-fill the measured figure with what the system believes, since that is
-  // usually close and saves typing. The worker overwrites it with the re-tally.
-  measuredBF: String(bundle.systemBF),
-  customerBF: '',
-  inventoryBF: '',
-});
+export const emptyEntry = (): ArchSplitEntry => ({ customerBF: '', inventoryBF: '' });
 
 export const entryTouched = (e: ArchSplitEntry): boolean =>
   e.customerBF.trim() !== '' || e.inventoryBF.trim() !== '';
 
 export const entryComplete = (e: ArchSplitEntry): boolean =>
-  e.customerBF.trim() !== '' && e.inventoryBF.trim() !== '' && e.measuredBF.trim() !== '';
+  e.customerBF.trim() !== '' && e.inventoryBF.trim() !== '';
 
 export interface SplitRowState {
+  /** customer + inventory: what the bundle actually held, derived not entered. */
   measured: number;
   customer: number;
   inventory: number;
-  /** customer + inventory */
-  accounted: number;
-  /** accounted − measured. Positive means more came out than went in. */
+  /** measured − the system's figure. Positive means it re-tallied heavy. */
   discrepancy: number;
   discrepancyPct: number;
-  /** Outside tolerance — worth a second look before saving. */
+  /** Outside tolerance against the system figure — worth a second look. */
   flagged: boolean;
-  /** Physically impossible input: a non-positive bundle, or a negative part. */
+  /** Physically impossible input. */
   invalid: boolean;
   complete: boolean;
   touched: boolean;
 }
 
-export const evaluateEntry = (e: ArchSplitEntry): SplitRowState => {
-  const measured = num(e.measuredBF);
+/**
+ * @param systemBF what the system believes the bundle holds, the reference the
+ *   re-tally is compared against. Passed in rather than stored on the entry: the
+ *   worker never types it, so it is not part of what they keyed in.
+ */
+export const evaluateEntry = (e: ArchSplitEntry, systemBF: number): SplitRowState => {
   const customer = num(e.customerBF);
   const inventory = num(e.inventoryBF);
-  const accounted = customer + inventory;
-  const discrepancy = accounted - measured;
+  const measured = customer + inventory;
   const touched = entryTouched(e);
   const complete = entryComplete(e);
-  const discrepancyPct = measured > 0 ? discrepancy / measured : 0;
-  // A bundle cannot hold nothing, neither part can be negative, and a split that
-  // gives the customer nothing is not a split. Without this the discrepancy maths
-  // degenerates: measured = 0 made discrepancyPct = 0, so `flagged` stayed false
-  // and a row reading 0 / 0 / 0 rendered as "Balances" in green. A customer
-  // portion of 0 balances perfectly too, and is just as wrong.
-  //
-  // ⚠️ The customer <= 0 rule is OUR reading, not the client's. If "we couldn't
-  // fill any of it" is a real warehouse outcome, this becomes a warning rather
-  // than a block — it's on the question list for Marc-Antoine.
-  const invalid = touched && (measured <= 0 || customer <= 0 || inventory < 0);
+  const discrepancy = measured - systemBF;
+  const discrepancyPct = systemBF > 0 ? discrepancy / systemBF : 0;
+
+  // Neither part can be negative, and a split that gives the customer nothing is
+  // a cancellation, not a split — it would otherwise balance perfectly and show
+  // green. Whether that last rule is right is still open with the client.
+  const invalid = touched && (customer <= 0 || inventory < 0);
 
   return {
     measured,
     customer,
     inventory,
-    accounted,
     discrepancy,
     discrepancyPct,
-    flagged: touched && !invalid && measured > 0 && Math.abs(discrepancyPct) > SPLIT_VARIANCE_TOLERANCE,
+    flagged: touched && !invalid && systemBF > 0 && Math.abs(discrepancyPct) > SPLIT_VARIANCE_TOLERANCE,
     invalid,
     complete,
     touched,
@@ -119,14 +110,14 @@ export const nextSplitLotNo = (lotNo: string, priorSplits = 0): string => `${lot
 
 /** What completing this row should do in NetSuite. */
 export const splitOutcome = (bundle: ArchSplitBundle, e: ArchSplitEntry): ArchSplitOutcome => {
-  const s = evaluateEntry(e);
+  const s = evaluateEntry(e, bundle.systemBF);
   return {
     lotNo: bundle.lotNo,
     soLineBF: s.customer,
     originalLotBF: s.customer,
     newLotBF: s.inventory,
     newLotNo: nextSplitLotNo(bundle.lotNo),
-    systemVarianceBF: s.measured - bundle.systemBF,
+    systemVarianceBF: s.discrepancy,
   };
 };
 
@@ -242,17 +233,24 @@ export const traderInitials = (trader: string): string =>
     .join('') || '?';
 
 /**
- * Stable avatar colour per trader.
+ * Avatar colours, assigned so that no two traders in the same list collide.
  *
- * Hashed from the name rather than assigned by index, so a trader keeps the same
- * colour when the queue is filtered or reordered. An index-based palette would
- * recolour everyone as soon as one row was searched away.
+ * A pure name hash was the first attempt and it failed immediately on the real
+ * roster: Christopher Pajot and Melissa De Castro both landed on #15803D, so two
+ * of four traders were indistinguishable on a screen whose entire job is "whose
+ * order is this". Assign by position in the sorted roster instead, which
+ * guarantees distinctness up to the palette size, and sort so the mapping is
+ * stable when the queue is filtered or reordered.
  */
-export const traderColor = (trader: string): string => {
-  const palette = ['#B91C1C', '#15803D', '#1D4ED8', '#A16207', '#7E22CE', '#0F766E'];
-  let h = 0;
-  for (let i = 0; i < (trader || '').length; i++) h = (h * 31 + trader.charCodeAt(i)) >>> 0;
-  return palette[h % palette.length];
+const AVATAR_PALETTE = ['#B91C1C', '#15803D', '#1D4ED8', '#A16207', '#7E22CE', '#0F766E', '#BE185D', '#0369A1'];
+
+export const traderColorMap = (traders: string[]): Record<string, string> => {
+  const roster = [...new Set(traders.filter(Boolean))].sort();
+  const map: Record<string, string> = {};
+  roster.forEach((t, i) => {
+    map[t] = AVATAR_PALETTE[i % AVATAR_PALETTE.length];
+  });
+  return map;
 };
 
 /** "Jul 17" — the ship-week column. */

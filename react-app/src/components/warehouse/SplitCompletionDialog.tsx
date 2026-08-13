@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { formatBF } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
-import { evaluateEntry, entryComplete, jobRequestedBF, SPLIT_VARIANCE_TOLERANCE } from '@/lib/archSplit';
+import { evaluateEntry, entryComplete, jobRequestedBF, jobSystemBF, SPLIT_VARIANCE_TOLERANCE } from '@/lib/archSplit';
 import type { ArchSplitEntry, ArchSplitJob } from '@/types/archSplit';
 
 /**
@@ -14,15 +14,15 @@ import type { ArchSplitEntry, ArchSplitJob } from '@/types/archSplit';
  * its own hint text: "Lot BF and SO BF are shown for reference. Enter the
  * customer bundle and the inventory bundle for each lift."
  *
- * Lot BF stays editable, as it is in the prototype, because a re-tally can
- * legitimately disagree with the figure on file and that difference is the whole
- * reason the bundle was locked. It is styled as secondary so nobody feels obliged
- * to touch it. Whether it should be an input at all is question 8 with
- * Marc-Antoine; until he answers, the prototype's design stands.
+ * Lot BF is STATIC. Marc-Antoine confirmed on 2026-08-13 that only two values are
+ * entered, so the bundle total is the sum of the two piles and there is nothing
+ * for a third input to hold. It was previously editable and pre-filled from the
+ * system, which made it a trap: leave it alone and the screen reported a
+ * discrepancy that was not one.
  *
  * Saving is never blocked by a discrepancy — a worker who measured correctly must
  * be able to record what they measured. It IS blocked by figures that cannot be
- * true: a bundle of zero, a negative part, or an empty customer bundle.
+ * true: a negative part, or an empty customer bundle.
  */
 
 interface SplitCompletionDialogProps {
@@ -75,22 +75,6 @@ const entryInput = (state: 'ok' | 'flag' | 'empty'): React.CSSProperties => ({
   border: `1.5px solid ${state === 'flag' ? '#B91C1C' : state === 'ok' ? ARCH_SURFACE.green : '#CBD5E1'}`,
 });
 
-/** Reference input: pre-filled, rarely touched, visually recessed. */
-const referenceInput: React.CSSProperties = {
-  width: 82,
-  padding: '6px 8px',
-  borderRadius: 7,
-  fontSize: 12,
-  fontWeight: 600,
-  textAlign: 'right',
-  boxSizing: 'border-box',
-  outline: 'none',
-  fontFamily: 'inherit',
-  color: ARCH_SURFACE.textMid,
-  background: '#F1F5F9',
-  border: '1px solid #E2E8F0',
-};
-
 export const SplitCompletionDialog = ({
   job,
   entryFor,
@@ -101,7 +85,7 @@ export const SplitCompletionDialog = ({
 }: SplitCompletionDialogProps) => {
   const rows = job.bundles.map((b) => {
     const entry = entryFor(b.lotNo);
-    return { bundle: b, entry, state: evaluateEntry(entry) };
+    return { bundle: b, entry, state: evaluateEntry(entry, b.systemBF) };
   });
 
   const anyTouched = rows.some((r) => r.state.touched);
@@ -111,12 +95,10 @@ export const SplitCompletionDialog = ({
 
   const tot = rows.reduce(
     (a, r) => ({
-      lot: a.lot + r.state.measured,
-      so: a.so + r.bundle.requestedBF,
       customer: a.customer + r.state.customer,
       inventory: a.inventory + r.state.inventory,
     }),
-    { lot: 0, so: 0, customer: 0, inventory: 0 }
+    { customer: 0, inventory: 0 }
   );
 
   return (
@@ -137,8 +119,8 @@ export const SplitCompletionDialog = ({
 
         <div style={{ padding: '14px 20px', overflowY: 'auto', background: '#fff' }}>
           <div style={{ fontSize: 11.5, color: ARCH_SURFACE.textMid, marginBottom: 10 }}>
-            <strong>Lot BF</strong> et <strong>SO BF</strong> sont affichés pour référence. Entre le{' '}
-            <strong>bundle client</strong> et le <strong>bundle inventaire</strong> pour chaque lift.
+            <strong>Lot BF</strong> and <strong>SO BF</strong> are shown for reference. Enter the{' '}
+            <strong>customer bundle</strong> and the <strong>inventory bundle</strong> for each lift.
           </div>
 
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -146,11 +128,11 @@ export const SplitCompletionDialog = ({
               <tr style={{ borderBottom: '1px solid #E2E8F0' }}>
                 <th style={{ ...th, textAlign: 'left', width: 30 }} />
                 <th style={{ ...th, textAlign: 'left' }}>Bundle</th>
-                <th style={{ ...th, textAlign: 'left' }}>Description</th>
+                <th style={{ ...th, textAlign: 'left' }}>Item description</th>
                 <th style={{ ...th, textAlign: 'right' }}>Lot BF</th>
                 <th style={{ ...th, textAlign: 'right' }}>SO BF</th>
-                <th style={{ ...th, textAlign: 'right' }}>Bundle client</th>
-                <th style={{ ...th, textAlign: 'right' }}>Bundle inventaire</th>
+                <th style={{ ...th, textAlign: 'right' }}>Customer bundle</th>
+                <th style={{ ...th, textAlign: 'right' }}>Inventory bundle</th>
                 <th style={{ ...th, textAlign: 'right' }}>Total</th>
               </tr>
             </thead>
@@ -186,16 +168,11 @@ export const SplitCompletionDialog = ({
                         </span>
                       </td>
                       <td style={{ ...cell, color: ARCH_SURFACE.textMid }}>{bundle.itemDescription}</td>
-                      <td style={{ ...cell, textAlign: 'right' }}>
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          value={entry.measuredBF}
-                          onChange={(e) => onChange(bundle.lotNo, { measuredBF: e.target.value })}
-                          aria-label={`Lot BF ${bundle.lotNo}`}
-                          className="font-mono"
-                          style={referenceInput}
-                        />
+                      <td
+                        style={{ ...cell, textAlign: 'right', fontWeight: 600, color: ARCH_SURFACE.textMid }}
+                        className="font-mono"
+                      >
+                        {formatBF(bundle.systemBF)}
                       </td>
                       <td style={{ ...cell, textAlign: 'right', fontWeight: 700 }} className="font-mono">
                         {formatBF(bundle.requestedBF)}
@@ -207,7 +184,7 @@ export const SplitCompletionDialog = ({
                           value={entry.customerBF}
                           onChange={(e) => onChange(bundle.lotNo, { customerBF: e.target.value })}
                           placeholder="0"
-                          aria-label={`Bundle client ${bundle.lotNo}`}
+                          aria-label={`Customer bundle ${bundle.lotNo}`}
                           className="font-mono"
                           style={entryInput(inputState(entry.customerBF))}
                         />
@@ -219,7 +196,7 @@ export const SplitCompletionDialog = ({
                           value={entry.inventoryBF}
                           onChange={(e) => onChange(bundle.lotNo, { inventoryBF: e.target.value })}
                           placeholder="0"
-                          aria-label={`Bundle inventaire ${bundle.lotNo}`}
+                          aria-label={`Inventory bundle ${bundle.lotNo}`}
                           className="font-mono"
                           style={entryInput(inputState(entry.inventoryBF))}
                         />
@@ -228,7 +205,7 @@ export const SplitCompletionDialog = ({
                         style={{ ...cell, textAlign: 'right', fontWeight: 700, color: bad ? '#B91C1C' : ARCH_SURFACE.text }}
                         className="font-mono"
                       >
-                        {state.touched ? formatBF(state.accounted) : '—'}
+                        {state.touched ? formatBF(state.measured) : '—'}
                       </td>
                     </tr>
                     {(state.invalid || state.flagged) && (
@@ -237,23 +214,21 @@ export const SplitCompletionDialog = ({
                         <td colSpan={7} style={{ padding: '0 8px 7px', fontSize: 11 }}>
                           {state.invalid ? (
                             <span style={{ color: '#B91C1C' }}>
-                              <strong>Chiffres impossibles.</strong>{' '}
-                              {state.measured <= 0
-                                ? 'Un bundle peut pas mesurer zéro.'
-                                : state.customer < 0 || state.inventory < 0
-                                  ? 'Les quantités peuvent pas être négatives.'
-                                  : 'Le bundle client est vide, entre ce que le client reçoit vraiment.'}
+                              <strong>Impossible figures.</strong>{' '}
+                              {state.customer < 0 || state.inventory < 0
+                                ? 'Quantities cannot be negative.'
+                                : 'The customer bundle is empty — record what they are actually receiving.'}
                             </span>
                           ) : (
                             <span style={{ color: '#B91C1C' }}>
-                              Écart de{' '}
+                              Re-tallied{' '}
                               <strong className="font-mono">
                                 {state.discrepancy > 0 ? '+' : ''}
                                 {formatBF(state.discrepancy)} BF
                               </strong>{' '}
-                              contre le Lot BF, soit {Math.abs(Math.round(state.discrepancyPct * 100))} %. Au-delà de{' '}
-                              {Math.round(SPLIT_VARIANCE_TOLERANCE * 100)} % ça vaut un second regard, mais tu peux
-                              sauvegarder pareil.
+                              against Lot BF, {Math.abs(Math.round(state.discrepancyPct * 100))}%. Past{' '}
+                              {Math.round(SPLIT_VARIANCE_TOLERANCE * 100)}% it is worth a second look, but you can
+                              still save.
                             </span>
                           )}
                         </td>
@@ -269,10 +244,10 @@ export const SplitCompletionDialog = ({
                 <td style={{ ...cell, fontWeight: 700 }}>Total</td>
                 <td />
                 <td style={{ ...cell, textAlign: 'right', fontWeight: 700, color: ARCH_SURFACE.textMid }} className="font-mono">
-                  {formatBF(tot.lot)}
+                  {formatBF(jobSystemBF(job))}
                 </td>
                 <td style={{ ...cell, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                  {formatBF(tot.so)}
+                  {formatBF(jobRequestedBF(job))}
                 </td>
                 <td style={{ ...cell, textAlign: 'right', fontWeight: 700, paddingRight: 17 }} className="font-mono">
                   {formatBF(tot.customer)}
@@ -307,9 +282,9 @@ export const SplitCompletionDialog = ({
               lineHeight: 1.5,
             }}
           >
-            Sauvegarder enregistre le split et relâche le hold. Ça n'écrit pas encore dans NetSuite : la correction de
-            la ligne de SO et l'inventory adjustment qui splitte le lot restent à valider. L'écran suivant montre
-            exactement ce que ça ferait.
+            Saving records the split and releases the hold. It does not write to NetSuite yet — correcting the sales
+            order line and posting the inventory adjustment that splits the lot are still to be agreed. The next screen
+            shows exactly what it would do.
           </div>
         </div>
 
@@ -350,10 +325,10 @@ export const SplitCompletionDialog = ({
             }}
           >
             {invalidCount > 0
-              ? `${invalidCount} bundle${invalidCount === 1 ? '' : 's'} avec des chiffres impossibles`
+              ? `${invalidCount} bundle${invalidCount === 1 ? '' : 's'} with impossible figures`
               : flaggedCount > 0
-                ? `${flaggedCount} bundle${flaggedCount === 1 ? '' : 's'} hors tolérance`
-                : `${rows.filter((r) => entryComplete(r.entry)).length} sur ${rows.length} saisis`}
+                ? `${flaggedCount} bundle${flaggedCount === 1 ? '' : 's'} outside tolerance`
+                : `${rows.filter((r) => entryComplete(r.entry)).length} of ${rows.length} recorded`}
           </span>
 
           {/* "Close", not "Cancel". Measurements live in WarehouseSplitScreen, so
@@ -375,7 +350,7 @@ export const SplitCompletionDialog = ({
               fontFamily: 'inherit',
             }}
           >
-            Fermer
+            Close
           </button>
 
           <button

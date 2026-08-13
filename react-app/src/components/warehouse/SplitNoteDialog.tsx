@@ -58,7 +58,7 @@ export const SplitNoteDialog = ({ job, notes, onAdd, onClose }: SplitNoteDialogP
         <div style={{ padding: '16px 20px', overflowY: 'auto', background: '#fff' }}>
           {notes.length === 0 ? (
             <div style={{ fontSize: 12.5, color: ARCH_SURFACE.textLight, padding: '10px 0 16px' }}>
-              Aucun commentaire pour l'instant.
+              No comments yet.
             </div>
           ) : (
             <div style={{ marginBottom: 16 }}>
@@ -81,10 +81,10 @@ export const SplitNoteDialog = ({ job, notes, onAdd, onClose }: SplitNoteDialogP
                   <span style={{ fontSize: 12.5, color: ARCH_SURFACE.text, flex: 1 }}>{n.text}</span>
                   {n.emailed && (
                     <span
-                      title={`Envoyé à ${traderEmail(job.trader)}`}
+                      title={`Sent to ${traderEmail(job.trader)}`}
                       style={{ fontSize: 10, color: '#15803D', fontWeight: 700, whiteSpace: 'nowrap' }}
                     >
-                      ✉ envoyé
+                      ✉ sent
                     </span>
                   )}
                 </div>
@@ -95,7 +95,7 @@ export const SplitNoteDialog = ({ job, notes, onAdd, onClose }: SplitNoteDialogP
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder="Ex. bundle 2 arrive court, il manque environ 40 BF"
+            placeholder="e.g. bundle 2 came up short, about 40 BF missing"
             rows={3}
             style={{
               width: '100%',
@@ -126,7 +126,7 @@ export const SplitNoteDialog = ({ job, notes, onAdd, onClose }: SplitNoteDialogP
               checked={emailTrader}
               onChange={(e) => setEmailTrader(e.target.checked)}
             />
-            Envoyer à {job.trader} <span className="font-mono" style={{ fontSize: 11 }}>({traderEmail(job.trader)})</span>
+            Notify {job.trader} <span className="font-mono" style={{ fontSize: 11 }}>({traderEmail(job.trader)})</span>
           </label>
         </div>
 
@@ -154,7 +154,7 @@ export const SplitNoteDialog = ({ job, notes, onAdd, onClose }: SplitNoteDialogP
               cursor: 'pointer',
             }}
           >
-            Fermer
+            Close
           </button>
           <button
             type="button"
@@ -171,7 +171,7 @@ export const SplitNoteDialog = ({ job, notes, onAdd, onClose }: SplitNoteDialogP
               color: empty ? '#A6B4C2' : '#fff',
             }}
           >
-            Ajouter
+            Add
           </button>
         </div>
       </DialogContent>

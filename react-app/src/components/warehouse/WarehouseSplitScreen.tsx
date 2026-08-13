@@ -32,7 +32,7 @@ import {
   jobRequestedBF,
   traderShortName,
   traderInitials,
-  traderColor,
+  traderColorMap,
   shortDate,
   dueInfo,
 } from '@/lib/archSplit';
@@ -72,6 +72,8 @@ const td: React.CSSProperties = {
 
 export const WarehouseSplitScreen = () => {
   const jobs = React.useMemo(() => getSplitJobs(), []);
+  // Colours assigned across the whole roster, so no two traders collide.
+  const traderColors = React.useMemo(() => traderColorMap(jobs.map((j) => j.trader)), [jobs]);
 
   const [entries, setEntries] = React.useState<Record<string, ArchSplitEntry>>({});
   const [notes, setNotes] = React.useState<Record<string, ArchSplitNote[]>>({});
@@ -95,10 +97,8 @@ export const WarehouseSplitScreen = () => {
   }, [toast]);
 
   const entryFor = React.useCallback(
-    (job: ArchSplitJob, lotNo: string): ArchSplitEntry => {
-      const bundle = job.bundles.find((b) => b.lotNo === lotNo)!;
-      return entries[entryKey(job.soNo, lotNo)] || emptyEntry(bundle);
-    },
+    (job: ArchSplitJob, lotNo: string): ArchSplitEntry =>
+      entries[entryKey(job.soNo, lotNo)] || emptyEntry(),
     [entries]
   );
 
@@ -108,12 +108,12 @@ export const WarehouseSplitScreen = () => {
    * the completion dialog refuses to save.
    */
   const entryDone = React.useCallback(
-    (e: ArchSplitEntry) => entryComplete(e) && !evaluateEntry(e).invalid,
+    (e: ArchSplitEntry, systemBF: number) => entryComplete(e) && !evaluateEntry(e, systemBF).invalid,
     []
   );
 
   const jobDone = React.useCallback(
-    (job: ArchSplitJob) => job.bundles.every((b) => entryDone(entryFor(job, b.lotNo))),
+    (job: ArchSplitJob) => job.bundles.every((b) => entryDone(entryFor(job, b.lotNo), b.systemBF)),
     [entryFor, entryDone]
   );
   const jobStarted = React.useCallback(
@@ -126,10 +126,9 @@ export const WarehouseSplitScreen = () => {
   const handleChange = React.useCallback(
     (soNo: string, lotNo: string, patch: Partial<ArchSplitEntry>) => {
       const job = jobs.find((j) => j.soNo === soNo);
-      const bundle = job?.bundles.find((b) => b.lotNo === lotNo);
-      if (!bundle) return;
+      if (!job?.bundles.some((b) => b.lotNo === lotNo)) return;
       const k = entryKey(soNo, lotNo);
-      setEntries((prev) => ({ ...prev, [k]: { ...(prev[k] || emptyEntry(bundle)), ...patch } }));
+      setEntries((prev) => ({ ...prev, [k]: { ...(prev[k] || emptyEntry()), ...patch } }));
     },
     [jobs]
   );
@@ -150,13 +149,13 @@ export const WarehouseSplitScreen = () => {
   const handleSave = React.useCallback(() => {
     const job = jobs.find((j) => j.soNo === openJob);
     if (!job) return;
-    const complete = job.bundles.filter((b) => entryDone(entryFor(job, b.lotNo)));
+    const complete = job.bundles.filter((b) => entryDone(entryFor(job, b.lotNo), b.systemBF));
     setOpenJob(null);
     if (complete.length === job.bundles.length) {
       setResult({ job, outcomes: job.bundles.map((b) => splitOutcome(b, entryFor(job, b.lotNo))) });
     } else {
       const left = job.bundles.length - complete.length;
-      setToast(`Progrès enregistré sur ${job.soNo} — ${left} bundle${left === 1 ? '' : 's'} à saisir`);
+      setToast(`Progress saved on ${job.soNo} — ${left} bundle${left === 1 ? '' : 's'} still to record`);
     }
   }, [jobs, openJob, entryFor, entryDone]);
 
@@ -166,7 +165,7 @@ export const WarehouseSplitScreen = () => {
       setNotes((prev) => ({ ...prev, [soNo]: [...(prev[soNo] || []), { date, text, emailed }] }));
       if (emailed) {
         const job = jobs.find((j) => j.soNo === soNo);
-        setToast(`Commentaire envoyé à ${job?.trader || 'le trader'}`);
+        setToast(`Comment sent to ${job?.trader || 'the trader'}`);
       }
     },
     [jobs]
@@ -206,8 +205,8 @@ export const WarehouseSplitScreen = () => {
   const renderRow = (job: ArchSplitJob, i: number) => {
     const isDone = jobDone(job);
     const started = jobStarted(job);
-    const remaining = job.bundles.filter((b) => !entryDone(entryFor(job, b.lotNo))).length;
-    const flagged = job.bundles.filter((b) => evaluateEntry(entryFor(job, b.lotNo)).flagged).length;
+    const remaining = job.bundles.filter((b) => !entryDone(entryFor(job, b.lotNo), b.systemBF)).length;
+    const flagged = job.bundles.filter((b) => evaluateEntry(entryFor(job, b.lotNo), b.systemBF).flagged).length;
     const due = dueInfo(job.shipDate);
     const jobNotes = notes[job.soNo] || [];
     const latest = jobNotes.length ? jobNotes[jobNotes.length - 1].text : '';
@@ -230,7 +229,7 @@ export const WarehouseSplitScreen = () => {
                 width: 18,
                 height: 18,
                 borderRadius: '50%',
-                background: traderColor(job.trader),
+                background: traderColors[job.trader] || '#64748B',
                 color: '#fff',
                 fontSize: 8.5,
                 fontWeight: 700,
@@ -290,12 +289,12 @@ export const WarehouseSplitScreen = () => {
             {isDone
               ? '✓ Split done'
               : started
-                ? `Continuer (${remaining})`
+                ? `Continue (${remaining})`
                 : `Enter split (${job.bundles.length})`}
           </button>
           {flagged > 0 && !isDone && (
             <div style={{ fontSize: 9.5, color: '#B91C1C', fontWeight: 700, marginTop: 3 }}>
-              {flagged} à vérifier
+              {flagged} to check
             </div>
           )}
         </td>
@@ -312,16 +311,16 @@ export const WarehouseSplitScreen = () => {
             color: jobNotes.length ? TODO.dark : '#1A6FE0',
           }}
           onClick={() => setNoteJob(job.soNo)}
-          title={jobNotes.length ? latest : 'Ajouter un commentaire'}
+          title={jobNotes.length ? latest : 'Add a comment'}
         >
-          {jobNotes.length ? latest : '＋ Comment'}
+          {jobNotes.length ? latest : '+ Comment'}
         </td>
         <td style={{ ...td, textAlign: 'center' }}>
           <button
             type="button"
             onClick={() => setPrintJob(job.soNo)}
-            aria-label={`Imprimer le work order de ${job.soNo}`}
-            title="Work order et tags"
+            aria-label={`Print work order for ${job.soNo}`}
+            title="Work order and tags"
             style={{
               border: 'none',
               background: 'none',
@@ -345,7 +344,9 @@ export const WarehouseSplitScreen = () => {
     list: ArchSplitJob[]
   ) => {
     if (list.length === 0) return null;
-    const isCollapsed = collapsed[key];
+    // An active search forces the group open. Collapsed + searching showed the
+    // band with a matching count and no rows under it, which reads as broken.
+    const isCollapsed = collapsed[key] && !search.trim();
     return (
       <tbody key={key}>
         <tr>
@@ -384,8 +385,11 @@ export const WarehouseSplitScreen = () => {
     );
   };
 
+  // `color` is set here on purpose. In dark OS mode the inherited body colour is
+  // near-white, which on this deliberately light surface renders text invisible.
+  // It has already bitten twice: the ARCH detail modal, then the split dialog.
   return (
-    <div style={{ background: '#EEF1F6', minHeight: '100vh', fontFamily: 'inherit' }}>
+    <div style={{ background: '#EEF1F6', minHeight: '100vh', fontFamily: 'inherit', color: ARCH_SURFACE.text }}>
       {/* Top bar */}
       <div
         style={{
@@ -426,7 +430,7 @@ export const WarehouseSplitScreen = () => {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Rechercher par #SO, client, trader…"
+          placeholder="Search by #SO, customer, trader…"
           style={{
             flex: '0 1 420px',
             margin: '0 auto',
@@ -444,7 +448,7 @@ export const WarehouseSplitScreen = () => {
         <div style={{ textAlign: 'right', color: '#AFC2D6', fontSize: 10.5, lineHeight: 1.35 }}>
           <div>{today}</div>
           <div style={{ color: '#fff', fontWeight: 700 }}>
-            {pending.length} split{pending.length === 1 ? '' : 's'} à faire
+            {pending.length} split{pending.length === 1 ? '' : 's'} to do
           </div>
         </div>
       </div>
@@ -459,7 +463,7 @@ export const WarehouseSplitScreen = () => {
           background: '#EEF1F6',
         }}
       >
-        <span style={{ fontSize: 12.5, fontWeight: 700, color: ARCH_SURFACE.text }}>Splits à faire</span>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: ARCH_SURFACE.text }}>Splits to do</span>
         <span
           style={{
             fontSize: 10.5,
@@ -470,7 +474,7 @@ export const WarehouseSplitScreen = () => {
             borderRadius: 10,
           }}
         >
-          {pending.length} en attente
+          {pending.length} pending
         </span>
         <button
           type="button"
@@ -487,10 +491,10 @@ export const WarehouseSplitScreen = () => {
             fontFamily: 'inherit',
           }}
         >
-          {allCollapsed ? 'Tout ouvrir' : 'Tout replier'}
+          {allCollapsed ? 'Expand all' : 'Collapse all'}
         </button>
         <span style={{ marginLeft: 'auto', fontSize: 11, color: ARCH_SURFACE.textLight }}>
-          Seules les commandes qui demandent un split apparaissent ici
+          Only orders that require a split appear here
         </span>
         <span
           style={{
@@ -503,7 +507,7 @@ export const WarehouseSplitScreen = () => {
             borderRadius: 9,
           }}
         >
-          Données de démo
+          Demo data
         </span>
       </div>
 
@@ -514,24 +518,24 @@ export const WarehouseSplitScreen = () => {
             <thead>
               <tr>
                 <th style={{ ...th, textAlign: 'left', paddingLeft: 14 }}>#SO</th>
-                <th style={{ ...th, textAlign: 'center' }}>Client</th>
+                <th style={{ ...th, textAlign: 'center' }}>Customer</th>
                 <th style={{ ...th, textAlign: 'center' }}>Species</th>
                 <th style={{ ...th, textAlign: 'center' }}>Trader</th>
-                <th style={{ ...th, textAlign: 'right' }}>Qté (BF)</th>
+                <th style={{ ...th, textAlign: 'right' }}>Qty (BF)</th>
                 <th style={{ ...th, textAlign: 'center' }}>Bundles</th>
-                <th style={{ ...th, textAlign: 'center' }}>Ship week</th>
+                <th style={{ ...th, textAlign: 'center' }}>Ship Week</th>
                 <th style={{ ...th, textAlign: 'center' }}>Split</th>
-                <th style={{ ...th, textAlign: 'center' }}>Commentaire</th>
+                <th style={{ ...th, textAlign: 'center' }}>Comment</th>
                 <th style={{ ...th, textAlign: 'center' }}>Print</th>
               </tr>
             </thead>
-            {renderGroup('todo', 'Splits à faire', TODO, pending)}
-            {renderGroup('done', 'Splits complétés', DONE, done)}
+            {renderGroup('todo', 'Splits to do', TODO, pending)}
+            {renderGroup('done', 'Splits completed', DONE, done)}
             {pending.length === 0 && done.length === 0 && (
               <tbody>
                 <tr>
                   <td colSpan={10} style={{ padding: '40px 0', textAlign: 'center', color: ARCH_SURFACE.textLight, fontSize: 12.5 }}>
-                    {search.trim() ? 'Aucun résultat pour cette recherche.' : 'Aucun split à faire.'}
+                    {search.trim() ? 'No results for this search.' : 'No splits to do.'}
                   </td>
                 </tr>
               </tbody>

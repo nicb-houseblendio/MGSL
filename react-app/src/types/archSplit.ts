@@ -15,20 +15,15 @@
  * manière différente, c'est un peu subjectif"), so even the supplier's figure for
  * the bundle is not authoritative once it is opened.
  *
- * Hence THREE numbers per bundle, not one:
- *   measuredBF   — what the bundle actually held, once opened and re-tallied
+ * Hence two entered numbers per bundle, and a third that is derived:
  *   customerBF   — what the customer receives
  *   inventoryBF  — what goes back on the floor as a new bundle
- * with customerBF + inventoryBF reconciling to measuredBF within a tolerance.
+ * with their sum being what the bundle actually held, compared against the
+ * system's figure to surface a re-tally variance.
  *
- * The client prototype (`warehouse_split_poc`) frames those three differently and
- * its framing wins, because it is what the warehouse was shown: Lot BF and SO BF
- * are *reference* columns, and the worker enters only the customer bundle and the
- * inventory bundle. Its own hint text says so, verbatim: "Lot BF and SO BF are
- * shown for reference. Enter the customer bundle and the inventory bundle for
- * each lift." `measuredBF` stays editable (the prototype's is too) but is styled
- * as reference rather than as a primary input. Whether it should exist at all is
- * question 8 with Marc-Antoine.
+ * The client prototype agrees, in its own hint text: "Lot BF and SO BF are shown
+ * for reference. Enter the customer bundle and the inventory bundle for each
+ * lift."
  */
 
 export interface ArchSplitBundle {
@@ -65,9 +60,18 @@ export interface ArchSplitJob {
   bundles: ArchSplitBundle[];
 }
 
-/** What the warehouse worker keys in. Strings so a field can be empty mid-edit. */
+/**
+ * What the warehouse worker keys in. Strings so a field can be empty mid-edit.
+ *
+ * TWO values, not three. Marc-Antoine confirmed 2026-08-13 ("Oui d'accord avec
+ * ça"): the worker measures the two piles in front of him and the bundle total is
+ * their sum. Once a bundle is split there is no whole bundle left to measure, so
+ * a third input could only ever hold the system figure or the sum of these two —
+ * it never carried an observation. It was also pre-filled from the system, which
+ * made it a trap: leave it alone and the screen reported a discrepancy that
+ * wasn't one.
+ */
 export interface ArchSplitEntry {
-  measuredBF: string;
   customerBF: string;
   inventoryBF: string;
 }
