@@ -394,8 +394,8 @@ function TraderScreenContent() {
       <div className="flex gap-0.5 px-6 flex-shrink-0" style={{ background: 'var(--navy-mid)', paddingTop: 0, paddingBottom: 0 }}>
         {isARCH ? (
           ([
-            ['inventory', 'Hardwood'],
-            ['orders', 'Open Sales Orders'],
+            ['inventory', '📦 Hardwood'],
+            ['orders', '📋 Open Sales Orders'],
           ] as const).map(([key, label]) => (
             <button
               key={key}

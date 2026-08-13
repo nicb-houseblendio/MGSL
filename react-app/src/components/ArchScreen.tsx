@@ -215,6 +215,8 @@ export const ArchScreen = ({ uom, tab = 'inventory' }: ArchScreenProps) => {
           activeView="CWP ARCH"
           openTrigger={filterOpenTrigger}
           defaultOpen
+          cartCount={cart.length}
+          onOpenCart={() => setWizardOpen(true)}
         />
       </div>
       )}

@@ -69,6 +69,12 @@ interface FilterPanelProps {
   openTrigger?: number;
   /** Start expanded. ARCH only — the prototype shows its filters open. */
   defaultOpen?: boolean;
+  /**
+   * ARCH only: the sales-order cart button that lives in this bar in the
+   * prototype. Absent for IND and MTL, which have no cart, so nothing renders.
+   */
+  cartCount?: number;
+  onOpenCart?: () => void;
 }
 
 export const FilterPanel = ({
@@ -82,6 +88,8 @@ export const FilterPanel = ({
   activeView,
   openTrigger,
   defaultOpen = false,
+  cartCount,
+  onOpenCart,
 }: FilterPanelProps) => {
   const { subsidiaryName } = useNetSuite();
   const config = getBusinessConfig(activeView || subsidiaryName);
@@ -165,6 +173,40 @@ export const FilterPanel = ({
                 ))}
               </div>
               <div className="flex items-end gap-2 shrink-0">
+                {/* Cart lives in the filter bar in the prototype, always visible
+                    with its count, and turns green once something is in it. Our
+                    banner only appeared when the cart was non-empty, so there was
+                    no way in to the builder from an empty cart. */}
+                {onOpenCart && (
+                  <button
+                    type="button"
+                    onClick={onOpenCart}
+                    title="Build a new sales order"
+                    className="h-10 px-2.5 rounded-md inline-flex items-center gap-1.5 text-base font-bold"
+                    style={{
+                      border: `1.5px solid ${cartCount ? '#1E6B47' : '#CBD5E1'}`,
+                      background: cartCount ? '#E8F5EF' : 'transparent',
+                      color: cartCount ? '#1E6B47' : '#3D5166',
+                    }}
+                  >
+                    🛒
+                    <span
+                      className="font-mono inline-flex items-center justify-center"
+                      style={{
+                        minWidth: 18,
+                        height: 18,
+                        padding: '0 5px',
+                        borderRadius: 9,
+                        fontSize: 10.5,
+                        fontWeight: 800,
+                        background: cartCount ? '#1E6B47' : '#CBD5E1',
+                        color: '#fff',
+                      }}
+                    >
+                      {cartCount ?? 0}
+                    </span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={onReset}
