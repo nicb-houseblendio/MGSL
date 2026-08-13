@@ -136,7 +136,12 @@ const td: React.CSSProperties = {
 
 const num: React.CSSProperties = { ...td, textAlign: 'right', whiteSpace: 'nowrap' };
 
-export const ArchOpenOrdersView = () => {
+interface ArchOpenOrdersViewProps {
+  /** Open the sales-order builder on this order. */
+  onEditOrder?: (soNo: string) => void;
+}
+
+export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => {
   const orders = React.useMemo(() => getOpenOrders(), []);
   const traderColors = React.useMemo(() => traderColorMap(TRADERS), []);
 
@@ -409,28 +414,50 @@ export const ArchOpenOrdersView = () => {
                               </button>
                             </td>
                             <td style={td}>
-                              <span
+                              {/* The SO number was styled like a link but did
+                                  nothing. It cannot open a NetSuite record —
+                                  these are fixtures — so it toggles the row,
+                                  which is what a trader expects from clicking an
+                                  order anyway. */}
+                              <button
+                                type="button"
+                                onClick={() => setExpanded((e) => ({ ...e, [o.soNo]: !e[o.soNo] }))}
                                 className="font-mono"
-                                style={{ fontWeight: 700, color: '#1A6FE0', fontSize: 11.5 }}
+                                title={isOpen ? 'Hide line items' : 'Show line items'}
+                                style={{
+                                  border: 'none',
+                                  background: 'none',
+                                  padding: 0,
+                                  cursor: 'pointer',
+                                  fontWeight: 700,
+                                  color: '#1A6FE0',
+                                  fontSize: 11.5,
+                                  fontFamily: 'inherit',
+                                }}
                               >
                                 {o.soNo}
-                              </span>
+                              </button>
                               {editable && (
-                                <span
-                                  title="Editing does nothing yet — orders are demo data"
+                                <button
+                                  type="button"
+                                  onClick={() => onEditOrder?.(o.soNo)}
+                                  title={`Add items to ${o.soNo}`}
                                   style={{
                                     marginLeft: 6,
-                                    padding: '1px 6px',
+                                    padding: '2px 7px',
                                     borderRadius: 4,
-                                    fontSize: 9,
+                                    border: '1px solid #D8DFE8',
+                                    fontSize: 9.5,
                                     fontWeight: 700,
-                                    background: '#F1F5F9',
+                                    background: '#fff',
                                     color: ARCH_SURFACE.textMid,
+                                    cursor: 'pointer',
+                                    fontFamily: 'inherit',
                                     verticalAlign: '1px',
                                   }}
                                 >
                                   Edit
-                                </span>
+                                </button>
                               )}
                             </td>
                             <td style={td}>

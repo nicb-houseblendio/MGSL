@@ -56,9 +56,23 @@ export const ArchScreen = ({ uom, tab = 'inventory' }: ArchScreenProps) => {
    * The prototype does the same thing (`soWizardKey`).
    */
   const [wizardKey, setWizardKey] = React.useState(0);
+  /**
+   * Set when the builder is opened from Edit on the Open Sales Orders tab, so it
+   * lands straight on that order instead of asking which one again.
+   */
+  const [editingSO, setEditingSO] = React.useState<string | null>(null);
+
   const closeWizard = React.useCallback(() => {
     setWizardOpen(false);
+    setEditingSO(null);
     setWizardKey((k) => k + 1);
+  }, []);
+
+  const handleEditOrder = React.useCallback((soNo: string) => {
+    setEditingSO(soNo);
+    // Remount, so the wizard re-primes even if it was opened before.
+    setWizardKey((k) => k + 1);
+    setWizardOpen(true);
   }, []);
   const [createdDraft, setCreatedDraft] = React.useState<ArchOrderDraft | null>(null);
 
@@ -120,6 +134,7 @@ export const ArchScreen = ({ uom, tab = 'inventory' }: ArchScreenProps) => {
     // flow can be reviewed end to end, and clear the cart as a real create would.
     setCreatedDraft(draft);
     setWizardOpen(false);
+    setEditingSO(null);
     setWizardKey((k) => k + 1);
     setCart([]);
   }, []);
@@ -211,7 +226,7 @@ export const ArchScreen = ({ uom, tab = 'inventory' }: ArchScreenProps) => {
 
       <main className="flex-1 flex flex-col px-4 pt-3 pb-2 min-h-0 overflow-auto">
         {tab === 'orders' ? (
-          <ArchOpenOrdersView />
+          <ArchOpenOrdersView onEditOrder={handleEditOrder} />
         ) : (
         <div className="relative flex-1 flex flex-col min-h-0">
           {loading && !allRows && (
@@ -261,6 +276,7 @@ export const ArchScreen = ({ uom, tab = 'inventory' }: ArchScreenProps) => {
         onClose={closeWizard}
         onRemoveLine={removeCartLine}
         onCreate={handleCreateOrder}
+        initialExistingSO={editingSO ?? undefined}
         // "Add item" returns to the grid but KEEPS the draft, so it must not bump
         // the key — the trader is coming back to this same order.
         onAddMoreItems={() => setWizardOpen(false)}

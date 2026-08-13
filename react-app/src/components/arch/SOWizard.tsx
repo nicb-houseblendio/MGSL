@@ -74,6 +74,13 @@ interface SOWizardProps {
   onCreate: (draft: ArchOrderDraft) => void;
   /** Return to the grid to pick more lots. */
   onAddMoreItems: () => void;
+  /**
+   * Open straight onto an existing order, skipping the Start step.
+   *
+   * Set by Edit on the Open Sales Orders tab. The trader has already told us
+   * which order they mean, so asking them again on step 1 would be busywork.
+   */
+  initialExistingSO?: string;
 }
 
 /**
@@ -220,7 +227,15 @@ const LotCell = ({ line }: { line: ArchCartLine }) => (
   </td>
 );
 
-export const SOWizard = ({ open, cart, onClose, onRemoveLine, onCreate, onAddMoreItems }: SOWizardProps) => {
+export const SOWizard = ({
+  open,
+  cart,
+  onClose,
+  onRemoveLine,
+  onCreate,
+  onAddMoreItems,
+  initialExistingSO,
+}: SOWizardProps) => {
   const [stepIndex, setStepIndex] = React.useState(0);
   const [mode, setMode] = React.useState<ArchOrderMode>('new');
   const [existingSO, setExistingSO] = React.useState('');
@@ -309,6 +324,20 @@ export const SOWizard = ({ open, cart, onClose, onRemoveLine, onCreate, onAddMor
   const totals = React.useMemo(() => sumEconomics(economics), [economics]);
 
   /* ── Validation ───────────────────────────────────────────────────────────*/
+
+  /**
+   * Preload when opened from Edit. Runs on the value rather than on mount so a
+   * second Edit, on a different order, re-primes the wizard even if React has
+   * kept the instance alive.
+   */
+  React.useEffect(() => {
+    if (!initialExistingSO) return;
+    setMode('existing');
+    applyExistingOrder(initialExistingSO);
+    setStepIndex(1);
+    // applyExistingOrder is recreated every render; depending on it would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialExistingSO]);
 
   const startOk = mode === 'new' || !!existingSO;
   const itemsOk = lines.length > 0;
