@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { FilterPanel } from '@/components/FilterPanel';
 import { InventoryTableARCH, selectedArchRows } from '@/components/InventoryTableARCH';
+import { ArchOpenOrdersView } from '@/components/arch/ArchOpenOrdersView';
 import { DetailDrawerARCH } from '@/components/DetailDrawerARCH';
 import { SOCartBar } from '@/components/arch/SOCartBar';
 import { SOWizard } from '@/components/arch/SOWizard';
@@ -25,9 +26,11 @@ const EMPTY_FILTERS: FilterState = {};
 
 interface ArchScreenProps {
   uom: string;
+  /** Which of the two ARCH tabs to show. Owned by App so this stays mounted. */
+  tab?: 'inventory' | 'orders';
 }
 
-export const ArchScreen = ({ uom }: ArchScreenProps) => {
+export const ArchScreen = ({ uom, tab = 'inventory' }: ArchScreenProps) => {
   const { allRows, loading, error, getFilteredRows, getTotals, getFilterOptions } = useArchSummaryData(true);
 
   const [filters, setFilters] = React.useState<FilterState>(EMPTY_FILTERS);
@@ -185,6 +188,7 @@ export const ArchScreen = ({ uom }: ArchScreenProps) => {
     <>
       <SOCartBar cart={cart} onOpenWizard={() => setWizardOpen(true)} onClear={() => setCart([])} />
 
+      {tab === 'inventory' && (
       <div className="px-4 pt-3 flex-shrink-0">
         <FilterPanel
           filters={filters}
@@ -197,6 +201,7 @@ export const ArchScreen = ({ uom }: ArchScreenProps) => {
           openTrigger={filterOpenTrigger}
         />
       </div>
+      )}
 
       {error && (
         <div className="px-4 pt-2 flex-shrink-0">
@@ -204,7 +209,10 @@ export const ArchScreen = ({ uom }: ArchScreenProps) => {
         </div>
       )}
 
-      <main className="flex-1 flex flex-col px-4 pt-3 pb-2 min-h-0">
+      <main className="flex-1 flex flex-col px-4 pt-3 pb-2 min-h-0 overflow-auto">
+        {tab === 'orders' ? (
+          <ArchOpenOrdersView />
+        ) : (
         <div className="relative flex-1 flex flex-col min-h-0">
           {loading && !allRows && (
             <div
@@ -231,6 +239,7 @@ export const ArchScreen = ({ uom }: ArchScreenProps) => {
             <p className="py-12 text-center text-sm text-[#3D5166]">Loading inventory data…</p>
           ) : null}
         </div>
+        )}
       </main>
 
       {detail && detailRow && (

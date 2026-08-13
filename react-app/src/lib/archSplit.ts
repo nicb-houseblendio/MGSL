@@ -221,38 +221,6 @@ export const jobRequestedBF = (job: ArchSplitJob): number =>
 export const jobSystemBF = (job: ArchSplitJob): number =>
   job.bundles.reduce((s, b) => s + b.systemBF, 0);
 
-/** First name only. The queue is dense and surnames add nothing there. */
-export const traderShortName = (trader: string): string => (trader || '').split(' ')[0] || '—';
-
-export const traderInitials = (trader: string): string =>
-  (trader || '')
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0].toUpperCase())
-    .join('') || '?';
-
-/**
- * Avatar colours, assigned so that no two traders in the same list collide.
- *
- * A pure name hash was the first attempt and it failed immediately on the real
- * roster: Christopher Pajot and Melissa De Castro both landed on #15803D, so two
- * of four traders were indistinguishable on a screen whose entire job is "whose
- * order is this". Assign by position in the sorted roster instead, which
- * guarantees distinctness up to the palette size, and sort so the mapping is
- * stable when the queue is filtered or reordered.
- */
-const AVATAR_PALETTE = ['#B91C1C', '#15803D', '#1D4ED8', '#A16207', '#7E22CE', '#0F766E', '#BE185D', '#0369A1'];
-
-export const traderColorMap = (traders: string[]): Record<string, string> => {
-  const roster = [...new Set(traders.filter(Boolean))].sort();
-  const map: Record<string, string> = {};
-  roster.forEach((t, i) => {
-    map[t] = AVATAR_PALETTE[i % AVATAR_PALETTE.length];
-  });
-  return map;
-};
-
 /** "Jul 17" — the ship-week column. */
 export const shortDate = (iso: string): string => {
   if (!iso) return '—';

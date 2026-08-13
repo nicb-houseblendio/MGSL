@@ -42,6 +42,18 @@ export interface ArchCartLine {
   /** True when the line came from an existing SO rather than the grid. */
   existing?: boolean;
   /**
+   * Fulfillment status of this line on an existing order.
+   *
+   * ⚠️ The client prototype shows per-line statuses including "Ready to Build",
+   * but Marc-Antoine answered on 2026-08-13 that Ready to Build is a HEADER
+   * status ticked manually by the trader. His own diagram also annotates
+   * "sometimes we have some lines on the SO ready to build, but not the full
+   * order". The two do not agree. We mirror the prototype here so he has
+   * something concrete to react to, and the contradiction is on the list to
+   * raise with him.
+   */
+  lineStatus?: ArchOrderStatus;
+  /**
    * Price already agreed on an existing SO line, $/BF.
    * Seeds the Pricing step — without it "add to existing order" dead-ends,
    * because the trader is asked to re-invent a price for stock already sold.
@@ -129,15 +141,20 @@ export interface ArchOrderTotals {
   marginPct: number;
 }
 
+/** Where an order sits in the flow. Drives the pill colour and Edit gating. */
+export type ArchOrderStatus = 'Reserved' | 'Ready to Build' | 'In Transit';
+
 /** An open SO the trader can append lines to. */
 export interface ArchOpenOrder {
   soNo: string;
   customer: string;
+  /** The individual who sold it. Open orders are grouped by this. */
+  trader: string;
   shipTo: string;
   currency: string;
   incoterms: string;
   created: string;
-  status: string;
+  status: ArchOrderStatus;
   /** ISO date already on the order — inherited so the header step is complete. */
   shipDate: string;
   salesTeam: string;

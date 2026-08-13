@@ -11,7 +11,7 @@
 
 import { seededRandom } from '@/lib/archLots';
 import { getArchFixtureRows } from '@/lib/archFixtures';
-import type { ArchCartLine, ArchOpenOrder } from '@/types/archOrder';
+import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archOrder';
 
 export const CUSTOMERS = [
   'Atlas Millwork',
@@ -52,6 +52,14 @@ export const SALES_TEAMS: Record<string, { name: string; pct: number }[]> = {
 };
 
 export const SALES_TEAM_NAMES = Object.keys(SALES_TEAMS);
+
+/**
+ * The individuals who sell. Open orders group by trader, not by sales team, which
+ * is how the prototype presents them.
+ */
+export const TRADERS = ['Alec Wolf', 'Christopher Pajot', 'Léo Dupuis', 'Melissa De Castro', 'Antoine Quimper'];
+
+const ORDER_STATUSES: ArchOrderStatus[] = ['Reserved', 'Ready to Build', 'In Transit'];
 
 const CITIES = [
   'Montréal QC',
@@ -113,10 +121,15 @@ export const getOpenOrders = (): ArchOpenOrder[] => {
   if (cachedOrders) return cachedOrders;
   const rows = getArchFixtureRows();
 
-  cachedOrders = CUSTOMERS.slice(0, 6).map((customer, i) => {
+  cachedOrders = Array.from({ length: 12 }, (_, i) => {
+    const customer = CUSTOMERS[i % CUSTOMERS.length];
     const rng = seededRandom(`arch-open-so|${i}`);
     const randInt = (a: number, b: number) => a + Math.floor(rng() * (b - a + 1));
-    const lineCount = randInt(1, 3);
+    const lineCount = randInt(1, 4);
+    const trader = TRADERS[i % TRADERS.length];
+    // Weighted so most orders are Reserved, which is what a queue of open
+    // orders actually looks like.
+    const status = ORDER_STATUSES[rng() > 0.72 ? (rng() > 0.5 ? 1 : 2) : 0];
 
     const soNo = `SO-${40000 + i * 137 + randInt(0, 99)}`;
     const lines: ArchCartLine[] = [];
@@ -141,6 +154,9 @@ export const getOpenOrders = (): ArchOpenOrder[] => {
         costPerBF: row.avgCostBF,
         bucket: 'onHand',
         existing: true,
+        // A line is at most as far along as its order. An order still Reserved
+        // cannot contain a line already In Transit.
+        lineStatus: status === 'Reserved' ? 'Reserved' : rng() > 0.45 ? status : 'Reserved',
         // Already-sold stock has an agreed price. Seeded a little above lot cost
         // so the margin readout is plausible rather than zero.
         pricePerBF: Math.round((row.avgCostBF * (1.18 + rng() * 0.35)) * 100) / 100,
@@ -163,7 +179,8 @@ export const getOpenOrders = (): ArchOpenOrder[] => {
       salesTeam: salesTeamFor(customer),
       // "Ready to Build" is MGSL's internal status meaning the warehouse can start
       // preparing it — and the point at which the order stops being editable.
-      status: rng() > 0.65 ? 'Ready to Build' : 'Reserved',
+      trader,
+      status,
       lines,
     };
   });

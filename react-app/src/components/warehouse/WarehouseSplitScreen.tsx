@@ -30,12 +30,10 @@ import {
   splitOutcome,
   speciesListOf,
   jobRequestedBF,
-  traderShortName,
-  traderInitials,
-  traderColorMap,
   shortDate,
   dueInfo,
 } from '@/lib/archSplit';
+import { traderShortName, traderInitials, traderColorMap } from '@/lib/archTraders';
 import { SplitCompletionDialog } from '@/components/warehouse/SplitCompletionDialog';
 import { SplitWorkOrder } from '@/components/warehouse/SplitWorkOrder';
 import { SplitNoteDialog } from '@/components/warehouse/SplitNoteDialog';

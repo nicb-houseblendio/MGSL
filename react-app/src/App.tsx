@@ -198,6 +198,15 @@ function TraderScreenContent() {
 
   const [filterOpenTrigger, setFilterOpenTrigger] = React.useState(0);
 
+  /**
+   * ARCH's two tabs, per the client prototype: Hardwood and Open Sales Orders.
+   *
+   * Held here rather than inside ArchScreen because the tab strip is rendered in
+   * this shell, but ArchScreen stays MOUNTED across both tabs so the cart and any
+   * half-built order survive a trip to the orders list and back.
+   */
+  const [archTab, setArchTab] = React.useState<'inventory' | 'orders'>('inventory');
+
   const handleCellFilter = React.useCallback((filterKey: string, value: string) => {
     setFilters(prev => {
       const current = (prev[filterKey as keyof FilterState] as string[]) || [];
@@ -383,13 +392,37 @@ function TraderScreenContent() {
 
       {/* Tabs */}
       <div className="flex gap-0.5 px-6 flex-shrink-0" style={{ background: 'var(--navy-mid)', paddingTop: 0, paddingBottom: 0 }}>
-        <button
-          type="button"
-          className="px-4 py-2 text-xs font-semibold rounded-t-md transition-all text-[var(--navy)]"
-          style={{ background: 'var(--background)' }}
-        >
-          {isARCH ? 'Hardwood' : 'Inventory'}
-        </button>
+        {isARCH ? (
+          ([
+            ['inventory', 'Hardwood'],
+            ['orders', 'Open Sales Orders'],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setArchTab(key)}
+              className="px-4 py-2 text-xs font-semibold rounded-t-md transition-all"
+              // Fixed hex, not var(--navy) on var(--background). Those two are
+              // BOTH dark in dark mode, so the active tab's label disappeared —
+              // the pre-existing single tab had the same latent bug.
+              style={
+                archTab === key
+                  ? { background: '#EEF1F6', color: '#0F2641' }
+                  : { background: 'transparent', color: 'rgba(255,255,255,0.72)' }
+              }
+            >
+              {label}
+            </button>
+          ))
+        ) : (
+          <button
+            type="button"
+            className="px-4 py-2 text-xs font-semibold rounded-t-md transition-all text-[var(--navy)]"
+            style={{ background: 'var(--background)' }}
+          >
+            Inventory
+          </button>
+        )}
       </div>
 
       {/* New version banner — cache-driven, so not applicable to ARCH */}
@@ -411,7 +444,7 @@ function TraderScreenContent() {
           components/ArchScreen.tsx. Keeping it behind one branch leaves the
           IND/MTL render path below completely untouched. */}
       {isARCH ? (
-        <ArchScreen uom={uom} />
+        <ArchScreen uom={uom} tab={archTab} />
       ) : (
       <>
       {/* Filters */}
