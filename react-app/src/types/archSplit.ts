@@ -20,17 +20,37 @@
  *   customerBF   — what the customer receives
  *   inventoryBF  — what goes back on the floor as a new bundle
  * with customerBF + inventoryBF reconciling to measuredBF within a tolerance.
+ *
+ * The client prototype (`warehouse_split_poc`) frames those three differently and
+ * its framing wins, because it is what the warehouse was shown: Lot BF and SO BF
+ * are *reference* columns, and the worker enters only the customer bundle and the
+ * inventory bundle. Its own hint text says so, verbatim: "Lot BF and SO BF are
+ * shown for reference. Enter the customer bundle and the inventory bundle for
+ * each lift." `measuredBF` stays editable (the prototype's is too) but is styled
+ * as reference rather than as a primary input. Whether it should exist at all is
+ * question 8 with Marc-Antoine.
  */
 
 export interface ArchSplitBundle {
   /** Lot number of the bundle being split. */
   lotNo: string;
   itemDescription: string;
+  /** Species alone, for the grouped list on the queue row. */
+  species: string;
   containerNo: string;
   /** Board feet the system currently believes the bundle holds. */
   systemBF: number;
   /** Board feet the trader put on the sales order line — a placeholder target. */
   requestedBF: number;
+}
+
+/** A note left on a split job, optionally emailed to the trader who sold it. */
+export interface ArchSplitNote {
+  /** Short display date, e.g. "Aug 13". */
+  date: string;
+  text: string;
+  /** True when the warehouse asked for the trader to be notified. */
+  emailed: boolean;
 }
 
 /** One sales order with bundles awaiting a physical split. */

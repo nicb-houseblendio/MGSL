@@ -67,7 +67,7 @@ const buildRow = (index: number): ArchSummaryRow => {
   const category = pick(CATEGORIES);
 
   const internalId = String(90000 + index);
-  const itemCode = `ARC-${species
+  const itemCode = `ARCH-${species
     .split(' ')
     .map((w) => w.slice(0, 3).toUpperCase())
     .join('')}-${thickness.replace('/', '')}`;

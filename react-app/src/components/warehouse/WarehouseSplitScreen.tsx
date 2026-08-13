@@ -1,3 +1,22 @@
+/**
+ * Warehouse split checklist.
+ *
+ * A SEPARATE screen from the trader screen, on purpose — "le gars dans
+ * l'entrepôt, on veut pas nécessairement qu'il ait le trader screen, mais qu'il
+ * ait juste l'écran ici" (Marc-Antoine, 2026-08-11). It is served by its own
+ * Suitelet so access can be restricted by role.
+ *
+ * The layout follows the client prototype (`warehouse_split_poc`) rather than
+ * anything invented here: a light, dense table, two collapsible groups for
+ * outstanding and completed splits, and a row per sales order carrying species,
+ * trader, quantity, bundle count and ship week. An earlier version of this screen
+ * used dark cards and was not recognisable as the same design.
+ *
+ * ⚠️ DEMO DATA. Jobs come from `getSplitJobs()`. Real ones come from a saved
+ * search of SO lines flagged as splits, and that flag does not exist in NetSuite
+ * yet.
+ */
+
 import * as React from 'react';
 import { formatBF } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
@@ -7,46 +26,65 @@ import {
   entryComplete,
   entryTouched,
   evaluateEntry,
-  dueInfo,
-  splitOutcome,
   entryKey,
+  splitOutcome,
+  speciesListOf,
+  jobRequestedBF,
+  traderShortName,
+  traderInitials,
+  traderColor,
+  shortDate,
+  dueInfo,
 } from '@/lib/archSplit';
 import { SplitCompletionDialog } from '@/components/warehouse/SplitCompletionDialog';
 import { SplitWorkOrder } from '@/components/warehouse/SplitWorkOrder';
-import type { ArchSplitEntry, ArchSplitJob, ArchSplitOutcome } from '@/types/archSplit';
+import { SplitNoteDialog } from '@/components/warehouse/SplitNoteDialog';
+import type {
+  ArchSplitEntry,
+  ArchSplitJob,
+  ArchSplitNote,
+  ArchSplitOutcome,
+} from '@/types/archSplit';
 
-/**
- * Warehouse bundle-split queue.
- *
- * A SEPARATE screen from the trader screen, on purpose — "le gars dans
- * l'entrepôt, on veut pas nécessairement qu'il ait le trader screen, mais qu'il
- * ait juste l'écran ici". It is deliberately narrow: what has to be split, in
- * what order, and a way to record the result. No pricing, no margins, no
- * customers' commercial terms.
- *
- * Ordered by ship date, because that is the only thing that decides what to cut
- * first. Late jobs surface at the top in red.
- */
+/* ── Palette, lifted from the prototype ─────────────────────────────────────*/
 
-const cardStyle: React.CSSProperties = {
-  border: '1px solid #E2E8F0',
-  borderRadius: 10,
+const TODO = { accent: '#EAB308', soft: '#FEFCE8', head: '#FDF0B8', dark: '#A16207' };
+const DONE = { accent: '#22C55E', soft: '#F0FDF4', head: '#C5EFD3', dark: '#15803D' };
+
+const th: React.CSSProperties = {
+  padding: '9px 10px',
+  fontSize: 10,
+  fontWeight: 700,
+  letterSpacing: '0.06em',
+  textTransform: 'uppercase',
+  color: '#7A8FA3',
   background: '#fff',
-  padding: '13px 15px',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 14,
-  flexWrap: 'wrap',
+  borderBottom: '1px solid #E2E8F0',
+  whiteSpace: 'nowrap',
+};
+
+const td: React.CSSProperties = {
+  padding: '9px 10px',
+  fontSize: 12,
+  color: ARCH_SURFACE.text,
+  verticalAlign: 'middle',
 };
 
 export const WarehouseSplitScreen = () => {
   const jobs = React.useMemo(() => getSplitJobs(), []);
-  const [search, setSearch] = React.useState('');
+
   const [entries, setEntries] = React.useState<Record<string, ArchSplitEntry>>({});
+  const [notes, setNotes] = React.useState<Record<string, ArchSplitNote[]>>({});
   const [openJob, setOpenJob] = React.useState<string | null>(null);
   const [printJob, setPrintJob] = React.useState<string | null>(null);
-  const [showDone, setShowDone] = React.useState(true);
+  const [noteJob, setNoteJob] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<{ job: ArchSplitJob; outcomes: ArchSplitOutcome[] } | null>(null);
+  const [search, setSearch] = React.useState('');
+  const [collapsed, setCollapsed] = React.useState<{ todo: boolean; done: boolean }>({
+    todo: false,
+    done: false,
+  });
+
   // A partial save closed the dialog with no acknowledgement at all, so it read
   // as "nothing happened". Confirm it, and say what is still outstanding.
   const [toast, setToast] = React.useState<string | null>(null);
@@ -66,14 +104,8 @@ export const WarehouseSplitScreen = () => {
 
   /**
    * A bundle counts as recorded only if it is filled in AND the figures are
-   * possible.
-   *
-   * `entryComplete` alone was the wrong test everywhere in this file: the
-   * completion dialog refuses to save a bundle whose figures are impossible
-   * (measured <= 0, a negative part, or an empty customer bundle), but the queue
-   * behind it happily counted the same bundle as done — so a row could read
-   * "✓ Split done" for a split the dialog would not accept. Verified in sandbox:
-   * entering customer = 0 turned the row into "Continue (2 left)" with a tick.
+   * possible. `entryComplete` alone let the queue show "✓ Split done" for a split
+   * the completion dialog refuses to save.
    */
   const entryDone = React.useCallback(
     (e: ArchSplitEntry) => entryComplete(e) && !evaluateEntry(e).invalid,
@@ -102,298 +134,431 @@ export const WarehouseSplitScreen = () => {
     [jobs]
   );
 
+  const handleReset = React.useCallback(
+    (soNo: string) => {
+      const job = jobs.find((j) => j.soNo === soNo);
+      if (!job) return;
+      setEntries((prev) => {
+        const next = { ...prev };
+        job.bundles.forEach((b) => delete next[entryKey(soNo, b.lotNo)]);
+        return next;
+      });
+    },
+    [jobs]
+  );
+
   const handleSave = React.useCallback(() => {
     const job = jobs.find((j) => j.soNo === openJob);
     if (!job) return;
     const complete = job.bundles.filter((b) => entryDone(entryFor(job, b.lotNo)));
     setOpenJob(null);
     if (complete.length === job.bundles.length) {
-      setResult({
-        job,
-        outcomes: job.bundles.map((b) => splitOutcome(b, entryFor(job, b.lotNo))),
-      });
+      setResult({ job, outcomes: job.bundles.map((b) => splitOutcome(b, entryFor(job, b.lotNo))) });
     } else {
       const left = job.bundles.length - complete.length;
-      setToast(`Progress saved on ${job.soNo} — ${left} bundle${left === 1 ? '' : 's'} still to record`);
+      setToast(`Progrès enregistré sur ${job.soNo} — ${left} bundle${left === 1 ? '' : 's'} à saisir`);
     }
-  }, [jobs, openJob, entryFor]);
+  }, [jobs, openJob, entryFor, entryDone]);
 
-  const filtered = React.useMemo(() => {
+  const addNote = React.useCallback(
+    (soNo: string, text: string, emailed: boolean) => {
+      const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      setNotes((prev) => ({ ...prev, [soNo]: [...(prev[soNo] || []), { date, text, emailed }] }));
+      if (emailed) {
+        const job = jobs.find((j) => j.soNo === soNo);
+        setToast(`Commentaire envoyé à ${job?.trader || 'le trader'}`);
+      }
+    },
+    [jobs]
+  );
+
+  /* ── Filtering and grouping ───────────────────────────────────────────────*/
+
+  const visible = React.useMemo(() => {
     const q = search.trim().toLowerCase();
-    return jobs
-      .filter(
-        (j) =>
-          !q ||
-          j.soNo.toLowerCase().includes(q) ||
-          j.customer.toLowerCase().includes(q) ||
-          j.bundles.some((b) => b.lotNo.toLowerCase().includes(q) || b.itemDescription.toLowerCase().includes(q))
-      )
-      // Ship date decides cutting order. Nothing else does.
-      .sort((a, b) => a.shipDate.localeCompare(b.shipDate));
+    if (!q) return jobs;
+    return jobs.filter(
+      (j) =>
+        j.soNo.toLowerCase().includes(q) ||
+        j.customer.toLowerCase().includes(q) ||
+        j.trader.toLowerCase().includes(q) ||
+        speciesListOf(j).toLowerCase().includes(q) ||
+        j.bundles.some((b) => b.lotNo.toLowerCase().includes(q))
+    );
   }, [jobs, search]);
 
-  const pending = filtered.filter((j) => !jobDone(j));
-  const done = filtered.filter((j) => jobDone(j));
+  const pending = visible.filter((j) => !jobDone(j));
+  const done = visible.filter((j) => jobDone(j));
+  const allCollapsed = collapsed.todo && collapsed.done;
 
-  const renderJob = (job: ArchSplitJob) => {
-    const due = dueInfo(job.shipDate);
-    const complete = jobDone(job);
+  const openJobObj = jobs.find((j) => j.soNo === openJob) || null;
+  const printJobObj = jobs.find((j) => j.soNo === printJob) || null;
+  const noteJobObj = jobs.find((j) => j.soNo === noteJob) || null;
+
+  const today = new Date().toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+
+  /* ── Row ──────────────────────────────────────────────────────────────────*/
+
+  const renderRow = (job: ArchSplitJob, i: number) => {
+    const isDone = jobDone(job);
     const started = jobStarted(job);
-    const totalRequested = job.bundles.reduce((s, b) => s + b.requestedBF, 0);
     const remaining = job.bundles.filter((b) => !entryDone(entryFor(job, b.lotNo))).length;
     const flagged = job.bundles.filter((b) => evaluateEntry(entryFor(job, b.lotNo)).flagged).length;
+    const due = dueInfo(job.shipDate);
+    const jobNotes = notes[job.soNo] || [];
+    const latest = jobNotes.length ? jobNotes[jobNotes.length - 1].text : '';
 
     return (
-      <div key={job.soNo} style={{ ...cardStyle, borderLeft: `4px solid ${complete ? '#22C55E' : due.color}` }}>
-        <div style={{ minWidth: 190 }}>
-          <div className="font-mono" style={{ fontSize: 14, fontWeight: 800, color: ARCH_SURFACE.navy }}>
+      <tr key={job.soNo} style={{ background: i % 2 ? '#FBFCFE' : '#fff', borderBottom: '1px solid #EEF1F6' }}>
+        <td style={{ ...td, paddingLeft: 14 }}>
+          {/* No link: these sales orders are fixtures, so an arrow to a NetSuite
+              record would be a dead affordance. It comes back with real data. */}
+          <span className="font-mono" style={{ fontWeight: 700, color: '#1A6FE0', fontSize: 11.5 }}>
             {job.soNo}
-          </div>
-          <div style={{ fontSize: 12.5, color: ARCH_SURFACE.text, marginTop: 2 }}>{job.customer}</div>
-          <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textLight, marginTop: 1 }}>
-            {job.locationName} · {job.trader}
-          </div>
-        </div>
-
-        <div style={{ flex: 1, minWidth: 240 }}>
-          {job.bundles.map((b) => {
-            const st = evaluateEntry(entryFor(job, b.lotNo));
-            return (
-              <div key={b.lotNo} style={{ fontSize: 11.5, marginBottom: 3, display: 'flex', gap: 8, alignItems: 'baseline' }}>
-                <span className="font-mono" style={{ fontWeight: 700, color: ARCH_SURFACE.navyMid, minWidth: 168 }}>
-                  {b.lotNo}
-                </span>
-                <span style={{ color: ARCH_SURFACE.textMid, flex: 1 }}>{b.itemDescription}</span>
-                <span className="font-mono" style={{ color: ARCH_SURFACE.text, fontWeight: 700 }}>
-                  {formatBF(b.requestedBF)}
-                </span>
-                <span style={{ color: ARCH_SURFACE.textLight, fontSize: 10 }}>of {formatBF(b.systemBF)} BF</span>
-                {st.complete && (
-                  // `invalid` has to be tested BEFORE falling through to the green
-                  // tick: an impossible entry is still "complete" (all three boxes
-                  // filled) and is not "flagged" (that check now excludes invalid
-                  // rows), so without this branch it rendered as a confident ✓.
-                  <span
-                    style={{
-                      color: st.flagged || st.invalid ? '#B91C1C' : '#15803D',
-                      fontSize: 10,
-                      fontWeight: 700,
-                    }}
-                  >
-                    {st.invalid ? '⚠ impossible' : st.flagged ? '⚠ check' : '✓'}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        <div style={{ textAlign: 'right', minWidth: 92 }}>
-          <span
-            style={{
-              display: 'inline-block',
-              padding: '3px 9px',
-              borderRadius: 20,
-              fontSize: 10.5,
-              fontWeight: 700,
-              color: due.color,
-              background: due.background,
-            }}
-          >
-            {due.label}
           </span>
-          <div className="font-mono" style={{ fontSize: 11, color: ARCH_SURFACE.textMid, marginTop: 4 }}>
-            {formatBF(totalRequested)} BF
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-          <button
-            type="button"
-            onClick={() => setPrintJob(job.soNo)}
-            title="Print the work order and bundle tags"
-            style={{
-              padding: '7px 12px',
-              borderRadius: 7,
-              border: '1px solid #CBD5E1',
-              background: '#fff',
-              color: ARCH_SURFACE.textMid,
-              fontSize: 11.5,
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
-          >
-            🖨 Work order
-          </button>
+        </td>
+        <td style={{ ...td, textAlign: 'center', fontWeight: 600 }}>{job.customer}</td>
+        <td style={{ ...td, textAlign: 'center', color: ARCH_SURFACE.textMid }}>{speciesListOf(job)}</td>
+        <td style={{ ...td, textAlign: 'center' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+            <span
+              style={{
+                width: 18,
+                height: 18,
+                borderRadius: '50%',
+                background: traderColor(job.trader),
+                color: '#fff',
+                fontSize: 8.5,
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              title={job.trader}
+            >
+              {traderInitials(job.trader)}
+            </span>
+            <span style={{ color: ARCH_SURFACE.textMid }}>{traderShortName(job.trader)}</span>
+          </span>
+        </td>
+        <td style={{ ...td, textAlign: 'right' }} className="font-mono">
+          {formatBF(jobRequestedBF(job))} <span style={{ color: ARCH_SURFACE.textLight, fontSize: 10.5 }}>BF</span>
+        </td>
+        <td style={{ ...td, textAlign: 'center' }} className="font-mono">
+          {job.bundles.length}×
+        </td>
+        <td style={{ ...td, textAlign: 'center' }}>
+          <span style={{ fontWeight: 600 }}>{shortDate(job.shipDate)}</span>
+          {!isDone && due.label !== 'No date' && (
+            <span
+              style={{
+                marginLeft: 6,
+                fontSize: 9.5,
+                fontWeight: 700,
+                padding: '1px 6px',
+                borderRadius: 8,
+                color: due.color,
+                background: due.background,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {due.label}
+            </span>
+          )}
+        </td>
+        <td style={{ ...td, textAlign: 'center' }}>
           <button
             type="button"
             onClick={() => setOpenJob(job.soNo)}
             style={{
-              padding: '7px 14px',
+              padding: '5px 13px',
               borderRadius: 7,
               border: 'none',
+              cursor: 'pointer',
               fontSize: 11.5,
               fontWeight: 700,
-              cursor: 'pointer',
+              fontFamily: 'inherit',
               whiteSpace: 'nowrap',
-              background: complete ? '#DCFCE7' : flagged ? '#FEE2E2' : '#FEF3C7',
-              color: complete ? '#15803D' : flagged ? '#B91C1C' : '#A16207',
+              background: isDone ? DONE.head : TODO.head,
+              color: isDone ? DONE.dark : TODO.dark,
             }}
           >
-            {complete ? '✓ Split done' : started ? `Continue (${remaining} left)` : `Enter split (${job.bundles.length})`}
+            {isDone
+              ? '✓ Split done'
+              : started
+                ? `Continuer (${remaining})`
+                : `Enter split (${job.bundles.length})`}
           </button>
-        </div>
-      </div>
+          {flagged > 0 && !isDone && (
+            <div style={{ fontSize: 9.5, color: '#B91C1C', fontWeight: 700, marginTop: 3 }}>
+              {flagged} à vérifier
+            </div>
+          )}
+        </td>
+        <td
+          style={{
+            ...td,
+            textAlign: 'center',
+            maxWidth: 190,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            cursor: 'pointer',
+            fontWeight: 600,
+            color: jobNotes.length ? TODO.dark : '#1A6FE0',
+          }}
+          onClick={() => setNoteJob(job.soNo)}
+          title={jobNotes.length ? latest : 'Ajouter un commentaire'}
+        >
+          {jobNotes.length ? latest : '＋ Comment'}
+        </td>
+        <td style={{ ...td, textAlign: 'center' }}>
+          <button
+            type="button"
+            onClick={() => setPrintJob(job.soNo)}
+            aria-label={`Imprimer le work order de ${job.soNo}`}
+            title="Work order et tags"
+            style={{
+              border: 'none',
+              background: 'none',
+              cursor: 'pointer',
+              fontSize: 14,
+              color: ARCH_SURFACE.textMid,
+              padding: 2,
+            }}
+          >
+            🖨
+          </button>
+        </td>
+      </tr>
     );
   };
 
-  const openJobObj = jobs.find((j) => j.soNo === openJob) || null;
-  const printJobObj = jobs.find((j) => j.soNo === printJob) || null;
+  const renderGroup = (
+    key: 'todo' | 'done',
+    label: string,
+    palette: typeof TODO,
+    list: ArchSplitJob[]
+  ) => {
+    if (list.length === 0) return null;
+    const isCollapsed = collapsed[key];
+    return (
+      <tbody key={key}>
+        <tr>
+          <td
+            colSpan={10}
+            onClick={() => setCollapsed((c) => ({ ...c, [key]: !c[key] }))}
+            style={{
+              background: palette.soft,
+              borderTop: `3px solid ${palette.accent}`,
+              borderBottom: `2px solid ${palette.head}`,
+              padding: '8px 14px',
+              cursor: 'pointer',
+              userSelect: 'none',
+            }}
+          >
+            <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.05em', color: palette.dark }}>
+              {isCollapsed ? '▸' : '▾'} {label.toUpperCase()}
+            </span>
+            <span
+              style={{
+                marginLeft: 9,
+                fontSize: 10.5,
+                fontWeight: 700,
+                color: palette.dark,
+                background: palette.head,
+                padding: '1px 8px',
+                borderRadius: 10,
+              }}
+            >
+              {list.length}
+            </span>
+          </td>
+        </tr>
+        {!isCollapsed && list.map(renderRow)}
+      </tbody>
+    );
+  };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#EEF1F6' }}>
-      {/* Header — deliberately says WAREHOUSE, so nobody mistakes it for the trader screen */}
-      <header
+    <div style={{ background: '#EEF1F6', minHeight: '100vh', fontFamily: 'inherit' }}>
+      {/* Top bar */}
+      <div
         style={{
-          background: 'linear-gradient(135deg, #0F2641 0%, #1A3D63 60%, #254E7A 100%)',
-          padding: '0 24px',
-          height: 56,
+          background: 'linear-gradient(135deg,#0F2641,#1A3D63)',
+          padding: '10px 16px',
           display: 'flex',
           alignItems: 'center',
-          gap: 16,
-          flexShrink: 0,
-          boxShadow: '0 2px 12px rgba(0,0,0,0.25)',
+          gap: 14,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
           <div
             style={{
-              width: 36,
-              height: 36,
-              borderRadius: 8,
-              background: 'linear-gradient(135deg, #1E6B47, #2A9060)',
+              width: 26,
+              height: 26,
+              borderRadius: 6,
+              background: ARCH_SURFACE.green,
+              color: '#fff',
+              fontSize: 10,
+              fontWeight: 800,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
             }}
           >
-            <span style={{ color: '#fff', fontSize: 14, fontWeight: 800 }}>MG</span>
+            CWP
           </div>
           <div>
-            <div style={{ color: '#fff', fontSize: 15, fontWeight: 700 }}>MGSL</div>
-            <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, letterSpacing: 1, textTransform: 'uppercase' }}>
-              Warehouse
+            <div style={{ color: '#fff', fontSize: 12.5, fontWeight: 700, lineHeight: 1.1 }}>CWP</div>
+            <div style={{ color: '#7A8FA3', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.09em' }}>
+              ARCHITECTURAL
             </div>
           </div>
+          <div style={{ width: 1, height: 22, background: 'rgba(255,255,255,0.18)', margin: '0 5px' }} />
+          <div style={{ color: '#DCE5EF', fontSize: 12.5 }}>Split Checklist</div>
         </div>
-        <div style={{ width: 1, height: 28, background: 'rgba(255,255,255,0.15)' }} />
-        <div style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: 500 }}>Bundle splits</div>
 
         <input
-          type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search order, customer, lot…"
+          placeholder="Rechercher par #SO, client, trader…"
           style={{
-            marginLeft: 'auto',
-            width: 260,
-            padding: '7px 11px',
+            flex: '0 1 420px',
+            margin: '0 auto',
+            padding: '6px 12px',
             borderRadius: 8,
-            border: '1px solid rgba(255,255,255,0.25)',
-            background: 'rgba(255,255,255,0.12)',
+            border: '1px solid rgba(255,255,255,0.16)',
+            background: 'rgba(255,255,255,0.08)',
             color: '#fff',
-            fontSize: 12.5,
+            fontSize: 12,
+            fontFamily: 'inherit',
             outline: 'none',
           }}
         />
+
+        <div style={{ textAlign: 'right', color: '#AFC2D6', fontSize: 10.5, lineHeight: 1.35 }}>
+          <div>{today}</div>
+          <div style={{ color: '#fff', fontWeight: 700 }}>
+            {pending.length} split{pending.length === 1 ? '' : 's'} à faire
+          </div>
+        </div>
+      </div>
+
+      {/* Sub header */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '9px 16px',
+          background: '#EEF1F6',
+        }}
+      >
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: ARCH_SURFACE.text }}>Splits à faire</span>
+        <span
+          style={{
+            fontSize: 10.5,
+            fontWeight: 700,
+            color: TODO.dark,
+            background: TODO.head,
+            padding: '2px 9px',
+            borderRadius: 10,
+          }}
+        >
+          {pending.length} en attente
+        </span>
+        <button
+          type="button"
+          onClick={() => setCollapsed({ todo: !allCollapsed, done: !allCollapsed })}
+          style={{
+            padding: '5px 12px',
+            borderRadius: 8,
+            border: '1px solid #CBD5E1',
+            background: '#fff',
+            color: ARCH_SURFACE.textMid,
+            fontSize: 11.5,
+            fontWeight: 600,
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+          }}
+        >
+          {allCollapsed ? 'Tout ouvrir' : 'Tout replier'}
+        </button>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: ARCH_SURFACE.textLight }}>
+          Seules les commandes qui demandent un split apparaissent ici
+        </span>
         <span
           style={{
             fontSize: 10,
             fontWeight: 700,
-            padding: '3px 9px',
-            borderRadius: 20,
-            background: 'rgba(200,160,53,0.30)',
-            color: '#fff',
+            color: '#7A4100',
+            background: '#FBF1E5',
+            border: '1px solid #D9822B',
+            padding: '2px 8px',
+            borderRadius: 9,
           }}
-          title="CWP ARCH has no data in NetSuite yet — this screen is running on demo data"
         >
-          Demo data
+          Données de démo
         </span>
-      </header>
+      </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px 32px' }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 12 }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: ARCH_SURFACE.navy }}>Splits to do</span>
-          <span
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              color: '#A16207',
-              background: '#FEF3C7',
-              padding: '1px 8px',
-              borderRadius: 10,
-            }}
-          >
-            {pending.length}
-          </span>
+      {/* Table */}
+      <div style={{ padding: '0 16px 24px' }}>
+        <div style={{ background: '#fff', borderRadius: 10, overflow: 'hidden', border: '1px solid #E2E8F0' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={{ ...th, textAlign: 'left', paddingLeft: 14 }}>#SO</th>
+                <th style={{ ...th, textAlign: 'center' }}>Client</th>
+                <th style={{ ...th, textAlign: 'center' }}>Species</th>
+                <th style={{ ...th, textAlign: 'center' }}>Trader</th>
+                <th style={{ ...th, textAlign: 'right' }}>Qté (BF)</th>
+                <th style={{ ...th, textAlign: 'center' }}>Bundles</th>
+                <th style={{ ...th, textAlign: 'center' }}>Ship week</th>
+                <th style={{ ...th, textAlign: 'center' }}>Split</th>
+                <th style={{ ...th, textAlign: 'center' }}>Commentaire</th>
+                <th style={{ ...th, textAlign: 'center' }}>Print</th>
+              </tr>
+            </thead>
+            {renderGroup('todo', 'Splits à faire', TODO, pending)}
+            {renderGroup('done', 'Splits complétés', DONE, done)}
+            {pending.length === 0 && done.length === 0 && (
+              <tbody>
+                <tr>
+                  <td colSpan={10} style={{ padding: '40px 0', textAlign: 'center', color: ARCH_SURFACE.textLight, fontSize: 12.5 }}>
+                    {search.trim() ? 'Aucun résultat pour cette recherche.' : 'Aucun split à faire.'}
+                  </td>
+                </tr>
+              </tbody>
+            )}
+          </table>
         </div>
-
-        {pending.length === 0 ? (
-          <div style={{ padding: 32, textAlign: 'center', color: ARCH_SURFACE.textLight, fontSize: 13, background: '#fff', borderRadius: 10, border: '1px solid #E2E8F0' }}>
-            Nothing waiting to be split.
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>{pending.map(renderJob)}</div>
-        )}
-
-        {done.length > 0 && (
-          <>
-            <button
-              type="button"
-              onClick={() => setShowDone((v) => !v)}
-              style={{
-                display: 'flex',
-                alignItems: 'baseline',
-                gap: 10,
-                marginTop: 24,
-                marginBottom: 12,
-                border: 'none',
-                background: 'transparent',
-                cursor: 'pointer',
-                padding: 0,
-              }}
-            >
-              <span style={{ fontSize: 13, fontWeight: 700, color: ARCH_SURFACE.navy }}>
-                {showDone ? '▾' : '▸'} Completed
-              </span>
-              <span
-                style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  color: '#15803D',
-                  background: '#DCFCE7',
-                  padding: '1px 8px',
-                  borderRadius: 10,
-                }}
-              >
-                {done.length}
-              </span>
-            </button>
-            {showDone && <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>{done.map(renderJob)}</div>}
-          </>
-        )}
       </div>
 
       {openJobObj && (
         <SplitCompletionDialog
           job={openJobObj}
-          entries={entries}
+          entryFor={(lotNo) => entryFor(openJobObj, lotNo)}
           onChange={(lotNo, patch) => handleChange(openJobObj.soNo, lotNo, patch)}
+          onReset={() => handleReset(openJobObj.soNo)}
           onSave={handleSave}
           onClose={() => setOpenJob(null)}
         />
       )}
       {printJobObj && <SplitWorkOrder job={printJobObj} onClose={() => setPrintJob(null)} />}
+      {noteJobObj && (
+        <SplitNoteDialog
+          job={noteJobObj}
+          notes={notes[noteJobObj.soNo] || []}
+          onAdd={(text, emailTrader) => addNote(noteJobObj.soNo, text, emailTrader)}
+          onClose={() => setNoteJob(null)}
+        />
+      )}
       {result && <SplitResultDialog job={result.job} outcomes={result.outcomes} onClose={() => setResult(null)} />}
 
       {toast && (
