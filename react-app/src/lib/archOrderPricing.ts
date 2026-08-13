@@ -137,10 +137,17 @@ export const marginColor = (pct: number): string =>
  * thickness. Real dressing tables have to come from the client.
  */
 export const planingOptions = (thickness: string): string[] => {
-  // NOT anchored. This is called with the item DESCRIPTION ("Sapele 6/4 KD"),
-  // not a bare thickness, so `^` never matched and every item silently fell back
-  // to nominal = 1 — offering 4/4 dressing options on 8/4 stock.
-  const m = String(thickness || '').match(/(\d+)\s*\/\s*4/);
+  // NOT anchored. This is called with the item DESCRIPTION ("Sapele 6/4 KD") as
+  // a fallback, not always a bare thickness, so `^` never matched and every item
+  // silently fell back to nominal = 1 — offering 4/4 dressing options on 8/4 stock.
+  //
+  // ⚠️ The trailing guard is `(?!\d)`, NOT `\b`. An earlier edit put a literal
+  // BACKSPACE byte (0x08) here instead of the two-character escape: the regex
+  // then demanded a backspace after the "4" and could never match, so this stayed
+  // broken while *looking* correct — terminals and diffs render 0x08 invisibly,
+  // and it is a valid regex, so tsc and review both passed it. Caught only by
+  // clicking the deployed UI. Do not "simplify" this back to \b.
+  const m = String(thickness || '').match(/(\d+)\s*\/\s*4(?!\d)/);
   const nominal = m ? parseInt(m[1], 10) / 4 : 1;
   const toFraction = (v: number): string => {
     if (!(v > 0)) return '0';
