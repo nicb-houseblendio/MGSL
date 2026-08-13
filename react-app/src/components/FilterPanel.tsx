@@ -67,6 +67,8 @@ interface FilterPanelProps {
   onPriceList?: () => void;
   activeView?: string;
   openTrigger?: number;
+  /** Start expanded. ARCH only — the prototype shows its filters open. */
+  defaultOpen?: boolean;
 }
 
 export const FilterPanel = ({
@@ -79,6 +81,7 @@ export const FilterPanel = ({
   onPriceList,
   activeView,
   openTrigger,
+  defaultOpen = false,
 }: FilterPanelProps) => {
   const { subsidiaryName } = useNetSuite();
   const config = getBusinessConfig(activeView || subsidiaryName);
@@ -93,7 +96,7 @@ export const FilterPanel = ({
   };
 
   const allFilters = config.filters;
-  const [filtersOpen, setFiltersOpen] = React.useState(false);
+  const [filtersOpen, setFiltersOpen] = React.useState(defaultOpen);
 
   React.useEffect(() => {
     if (openTrigger && openTrigger > 0) setFiltersOpen(true);

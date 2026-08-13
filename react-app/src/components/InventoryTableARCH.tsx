@@ -24,7 +24,6 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { formatArchQty, formatCostPerBF, uomSuffix } from '@/lib/archUom';
 import { ARCH_METRIC_COLORS, ARCH_FOOTER_COLORS } from '@/components/arch/archColors';
@@ -45,19 +44,23 @@ interface InventoryTableARCHProps {
 /**
  * Metric columns, in the order stock moves through them.
  *
- * OUTBOUND IS LOAD-BEARING — do not drop it. Available is
+ * Matches the client prototype exactly: six buckets, no Outbound column.
+ *
+ * ⚠️ KNOWN CONSEQUENCE. Available is
  *   onHand + onOrder + inTransit − reserve − readyToBuild − outbound,
- * so hiding outbound leaves Available unreconcilable from what is on screen: a
- * trader adding up the visible columns gets a different number and rightly stops
- * trusting the grid. (The offline POC omits this column while still generating
- * outbound quantities, which is why its Available never adds up either.)
+ * so on the rows that carry outbound stock a trader adding up the visible
+ * columns will not arrive at Available. We showed Outbound for exactly that
+ * reason and removed it on 2026-08-13 to match the prototype, which omits the
+ * column while still generating outbound quantities — so its Available does not
+ * reconcile either. Outbound is still in the Excel export, where a reconciling
+ * column is worth more than the width it costs. If traders query the arithmetic,
+ * this is the first thing to put back.
  */
 const METRIC_COLUMNS: { key: ArchDetailKey; label: string; width: number }[] = [
   { key: 'available', label: 'AVAILABLE', width: 105 },
   { key: 'onHand', label: 'ON HAND', width: 100 },
   { key: 'reserve', label: 'RESERVED', width: 100 },
   { key: 'readyToBuild', label: 'READY TO BUILD', width: 130 },
-  { key: 'outbound', label: 'OUTBOUND', width: 100 },
   { key: 'inTransit', label: 'IN TRANSIT', width: 105 },
   { key: 'onOrder', label: 'ON ORDER', width: 100 },
 ];
@@ -167,7 +170,11 @@ const MetricCell = ({
   uom: string;
   onDrillDown?: (bucket: ArchDetailKey, row: ArchSummaryRow) => void;
 }) => {
-  const color = ARCH_METRIC_COLORS[bucket];
+  // A zero carries no information, so it should not shout. The prototype dims
+  // them to #7A8FA3 while real values keep their metric colour — and 45% of the
+  // numeric cells on this grid are zeros, so at full saturation they drowned out
+  // the 55% that mattered.
+  const color = bf > 0 ? ARCH_METRIC_COLORS[bucket] : '#7A8FA3';
   const display = formatArchQty(bf, uom);
 
   if (onDrillDown && bf > 0) {
@@ -221,26 +228,11 @@ export const InventoryTableARCH = ({
     }));
 
     return [
-      {
-        id: 'select',
-        header: ({ table }) => (
-          <Checkbox
-            checked={table.getIsAllPageRowsSelected() || (table.getIsSomePageRowsSelected() && 'indeterminate')}
-            onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
-            aria-label="Select all"
-            className="border-white/50"
-          />
-        ),
-        cell: ({ row }) => (
-          <Checkbox
-            checked={row.getIsSelected()}
-            onCheckedChange={(value) => row.toggleSelected(!!value)}
-            aria-label="Select row"
-          />
-        ),
-        size: 36,
-        enableSorting: false,
-      },
+      // The prototype's grid has NO selection checkbox. Removed 2026-08-13 to
+      // match. `selectedArchRows` already falls back to every row when nothing is
+      // selected, so Export Excel now simply exports what is filtered. The
+      // selection plumbing is left in place so the column can be restored in one
+      // edit if traders ask for per-row export.
       {
         id: 'description',
         accessorKey: 'description',
@@ -299,36 +291,10 @@ export const InventoryTableARCH = ({
         ),
         size: 150,
       },
-      {
-        id: 'species',
-        accessorKey: 'species',
-        header: ({ column }) => <SortHeader label="SPECIES" column={column} />,
-        cell: ({ row }) => (
-          <AttrCell
-            value={row.original.species}
-            filterKey="species"
-            filterValue={row.original.species}
-            activeFilters={activeFilters}
-            onCellFilter={onCellFilter}
-          />
-        ),
-        size: 150,
-      },
-      {
-        id: 'category',
-        accessorKey: 'category',
-        header: ({ column }) => <SortHeader label="CATEGORY" column={column} />,
-        cell: ({ row }) => (
-          <AttrCell
-            value={row.original.category}
-            filterKey="category"
-            filterValue={row.original.category}
-            activeFilters={activeFilters}
-            onCellFilter={onCellFilter}
-          />
-        ),
-        size: 115,
-      },
+      // Species and Category are FILTERS in the prototype, not columns. They were
+      // added here and taken back out on 2026-08-13 to match. Both remain
+      // filterable from the panel, and clicking an attribute cell still toggles
+      // its filter on the columns that are left.
       ...metricCols,
       {
         id: 'avgCostBF',

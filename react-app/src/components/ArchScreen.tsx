@@ -214,6 +214,7 @@ export const ArchScreen = ({ uom, tab = 'inventory' }: ArchScreenProps) => {
           exportDisabled={!allRows}
           activeView="CWP ARCH"
           openTrigger={filterOpenTrigger}
+          defaultOpen
         />
       </div>
       )}
