@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { formatArchQty, formatBF, formatCostPerBF, uomSuffix } from '@/lib/archUom';
-import { isLotLocked, lockReason, lotQuantity, availabilityStatus } from '@/lib/archLots';
+import { isLotLocked, lockReason, lotQuantity, commitmentOn } from '@/lib/archLots';
 import { lotAllocation, lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
 import { ARCH_BUCKET_META, ARCH_SURFACE } from '@/components/arch/archColors';
 import { TallyButton, TallyImageDialog } from '@/components/arch/TallyImageDialog';
@@ -165,33 +165,6 @@ export const ArchLotTable = ({
       return [
         { label: 'PO #', mono: true, render: (l) => l.po || '—' },
         { label: 'ETA', render: (l) => formatShortDate(lotIncomingInfo(l.lotNo, 'inTransit').eta) },
-      ];
-    }
-    if (bucket === 'available') {
-      return [
-        {
-          label: 'Status',
-          render: (l) => {
-            const status = availabilityStatus(l);
-            if (!status) return '—';
-            return (
-              <span
-                style={{
-                  display: 'inline-block',
-                  padding: '2px 9px',
-                  borderRadius: 20,
-                  fontSize: 10.5,
-                  fontWeight: 700,
-                  background: `${status.color}1A`,
-                  color: status.color,
-                  border: `1px solid ${status.color}55`,
-                }}
-              >
-                {status.label}
-              </span>
-            );
-          },
-        },
       ];
     }
     return [];
@@ -380,6 +353,14 @@ export const ArchLotTable = ({
                   ))}
                   <th style={headerCellStyle}>Grain</th>
                   <th style={{ ...headerCellStyle, textAlign: 'right' }}>Total {uomSuffix(uom)}</th>
+                  {isOnHand && (
+                    <th
+                      style={{ ...headerCellStyle, textAlign: 'right' }}
+                      title="Uncommitted board feet — this bundle's on-hand less anything reserved, released to build, or held for shipment"
+                    >
+                      Avail. {uomSuffix(uom)}
+                    </th>
+                  )}
                   <th style={{ ...headerCellStyle, textAlign: 'right' }}>BF Cost</th>
                   <th style={{ ...headerCellStyle, width: 44, textAlign: 'center' }}>Tally</th>
                 </tr>
@@ -389,6 +370,13 @@ export const ArchLotTable = ({
                   const lock = isSellableView ? lockReason(lot) : null;
                   const locked = !!lock;
                   const reserved = Math.round(lot.reserve || 0);
+                  // Uncommitted on-hand for THIS bundle. Deliberately not
+                  // lotQuantity(lot,'available'), which is a cross-bucket rollup
+                  // and falls back to incoming quantity once a bundle is fully
+                  // committed — that would print in-transit board feet in an
+                  // on-hand column. Clamped because commitments are independent
+                  // figures and could in principle over-subscribe a bundle.
+                  const freeBF = Math.max(0, (lot.onHand || 0) - commitmentOn(lot));
                   const hasImage = !!(tallyImages[lot.lotNo] || lot.tallyImageUrl);
                   return (
                     <tr key={lot.lotNo} style={{ background: i % 2 === 0 ? '#fff' : '#F8FAFC' }}>
@@ -491,6 +479,24 @@ export const ArchLotTable = ({
                       >
                         {formatArchQty(lotQuantity(lot, bucket), uom)}
                       </td>
+                      {isOnHand && (
+                        <td
+                          style={{
+                            ...cellStyle,
+                            textAlign: 'right',
+                            fontWeight: 700,
+                            // Dimmed at zero so a fully committed bundle reads as
+                            // "nothing here for you" at a glance rather than as a
+                            // figure to be scanned. Same grey the grid dims its
+                            // zeros to; the border colour is faint enough that a
+                            // lone 0 in it reads as a rendering artifact.
+                            color: freeBF > 0 ? '#1B5E20' : '#7A8FA3',
+                          }}
+                          className="font-mono"
+                        >
+                          {formatArchQty(freeBF, uom)}
+                        </td>
+                      )}
                       <td style={{ ...cellStyle, textAlign: 'right' }} className="font-mono">
                         {formatCostPerBF(row.avgCostBF)}
                       </td>

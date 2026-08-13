@@ -32,27 +32,32 @@ interface DetailDrawerARCHProps {
   cartLotNos?: Set<string>;
 }
 
+/**
+ * Four tabs, matching the client prototype exactly. It carried Available and
+ * Outbound tabs at one point and dropped both, leaving the note "Available tab
+ * removed — On Hand is the primary view; Reserved folds into it via a toggle".
+ */
 const TABS: { key: ArchDetailKey; label: string }[] = [
-  // Available leads, mirroring the grid. It is a cross-bucket balance, so its lot
-  // list draws uncommitted on-hand bundles PLUS incoming ones — see lotQuantity.
-  { key: 'available', label: 'Available' },
   { key: 'onHand', label: 'On Hand' },
   { key: 'readyToBuild', label: 'Ready to Build' },
-  // Outbound has a tab because it has a grid column — every bucket a trader can
-  // click must land on a highlighted tab, or the modal looks broken.
-  { key: 'outbound', label: 'Outbound' },
   { key: 'inTransit', label: 'In Transit' },
   { key: 'onOrder', label: 'On Order' },
 ];
 
+const TAB_KEYS = new Set<ArchDetailKey>(TABS.map((t) => t.key));
+
 /**
- * Reserved has no tab of its own — it is a subset of On Hand, surfaced by the
- * "Show reserved" toggle there. Every other bucket, including Available, has a
- * tab, so a click on any grid cell lands on a view that actually contains the
- * number that was clicked.
+ * Buckets without a tab of their own all land on On Hand, as the prototype does:
+ * Reserved and Available are both views OF the on-hand pile rather than separate
+ * piles. Reserved additionally opens with its section expanded (see below).
+ *
+ * Available lands on a tab whose header total is LARGER than the number clicked,
+ * which is only honest because the On Hand table carries a per-lot Available
+ * column — the clicked figure is the sum of that column. Do not remove it
+ * without giving Available its tab back.
  */
 const resolveTab = (bucket: ArchDetailKey): ArchDetailKey =>
-  bucket === 'reserve' ? 'onHand' : bucket;
+  TAB_KEYS.has(bucket) ? bucket : 'onHand';
 
 export const DetailDrawerARCH = ({
   open,
