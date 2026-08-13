@@ -282,7 +282,12 @@ export const SplitCompletionDialog = ({
               cursor: 'pointer',
             }}
           >
-            Cancel
+            {/* "Close", not "Cancel". Measurements live in WarehouseSplitScreen,
+                so closing this dialog does NOT discard them — and it shouldn't:
+                someone who has re-tallied three bundles must not lose that by
+                mis-clicking. But a button labelled Cancel promises a discard it
+                never performs, which is worse than either behaviour alone. */}
+            Close
           </button>
           <span style={{ marginLeft: 'auto', fontSize: 11.5, color: flaggedCount || invalidCount ? '#B91C1C' : ARCH_SURFACE.textMid }}>
             {invalidCount > 0

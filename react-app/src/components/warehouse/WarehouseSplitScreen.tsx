@@ -64,9 +64,25 @@ export const WarehouseSplitScreen = () => {
     [entries]
   );
 
+  /**
+   * A bundle counts as recorded only if it is filled in AND the figures are
+   * possible.
+   *
+   * `entryComplete` alone was the wrong test everywhere in this file: the
+   * completion dialog refuses to save a bundle whose figures are impossible
+   * (measured <= 0, a negative part, or an empty customer bundle), but the queue
+   * behind it happily counted the same bundle as done — so a row could read
+   * "✓ Split done" for a split the dialog would not accept. Verified in sandbox:
+   * entering customer = 0 turned the row into "Continue (2 left)" with a tick.
+   */
+  const entryDone = React.useCallback(
+    (e: ArchSplitEntry) => entryComplete(e) && !evaluateEntry(e).invalid,
+    []
+  );
+
   const jobDone = React.useCallback(
-    (job: ArchSplitJob) => job.bundles.every((b) => entryComplete(entryFor(job, b.lotNo))),
-    [entryFor]
+    (job: ArchSplitJob) => job.bundles.every((b) => entryDone(entryFor(job, b.lotNo))),
+    [entryFor, entryDone]
   );
   const jobStarted = React.useCallback(
     (job: ArchSplitJob) => job.bundles.some((b) => entryTouched(entryFor(job, b.lotNo))),
@@ -89,7 +105,7 @@ export const WarehouseSplitScreen = () => {
   const handleSave = React.useCallback(() => {
     const job = jobs.find((j) => j.soNo === openJob);
     if (!job) return;
-    const complete = job.bundles.filter((b) => entryComplete(entryFor(job, b.lotNo)));
+    const complete = job.bundles.filter((b) => entryDone(entryFor(job, b.lotNo)));
     setOpenJob(null);
     if (complete.length === job.bundles.length) {
       setResult({
@@ -124,7 +140,7 @@ export const WarehouseSplitScreen = () => {
     const complete = jobDone(job);
     const started = jobStarted(job);
     const totalRequested = job.bundles.reduce((s, b) => s + b.requestedBF, 0);
-    const remaining = job.bundles.filter((b) => !entryComplete(entryFor(job, b.lotNo))).length;
+    const remaining = job.bundles.filter((b) => !entryDone(entryFor(job, b.lotNo))).length;
     const flagged = job.bundles.filter((b) => evaluateEntry(entryFor(job, b.lotNo)).flagged).length;
 
     return (
@@ -153,8 +169,18 @@ export const WarehouseSplitScreen = () => {
                 </span>
                 <span style={{ color: ARCH_SURFACE.textLight, fontSize: 10 }}>of {formatBF(b.systemBF)} BF</span>
                 {st.complete && (
-                  <span style={{ color: st.flagged ? '#B91C1C' : '#15803D', fontSize: 10, fontWeight: 700 }}>
-                    {st.flagged ? '⚠ check' : '✓'}
+                  // `invalid` has to be tested BEFORE falling through to the green
+                  // tick: an impossible entry is still "complete" (all three boxes
+                  // filled) and is not "flagged" (that check now excludes invalid
+                  // rows), so without this branch it rendered as a confident ✓.
+                  <span
+                    style={{
+                      color: st.flagged || st.invalid ? '#B91C1C' : '#15803D',
+                      fontSize: 10,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {st.invalid ? '⚠ impossible' : st.flagged ? '⚠ check' : '✓'}
                   </span>
                 )}
               </div>
