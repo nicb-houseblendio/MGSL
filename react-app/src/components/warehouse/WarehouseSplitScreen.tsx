@@ -47,6 +47,14 @@ export const WarehouseSplitScreen = () => {
   const [printJob, setPrintJob] = React.useState<string | null>(null);
   const [showDone, setShowDone] = React.useState(true);
   const [result, setResult] = React.useState<{ job: ArchSplitJob; outcomes: ArchSplitOutcome[] } | null>(null);
+  // A partial save closed the dialog with no acknowledgement at all, so it read
+  // as "nothing happened". Confirm it, and say what is still outstanding.
+  const [toast, setToast] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3200);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const entryFor = React.useCallback(
     (job: ArchSplitJob, lotNo: string): ArchSplitEntry => {
@@ -88,6 +96,9 @@ export const WarehouseSplitScreen = () => {
         job,
         outcomes: job.bundles.map((b) => splitOutcome(b, entryFor(job, b.lotNo))),
       });
+    } else {
+      const left = job.bundles.length - complete.length;
+      setToast(`Progress saved on ${job.soNo} — ${left} bundle${left === 1 ? '' : 's'} still to record`);
     }
   }, [jobs, openJob, entryFor]);
 
@@ -358,6 +369,28 @@ export const WarehouseSplitScreen = () => {
       )}
       {printJobObj && <SplitWorkOrder job={printJobObj} onClose={() => setPrintJob(null)} />}
       {result && <SplitResultDialog job={result.job} outcomes={result.outcomes} onClose={() => setResult(null)} />}
+
+      {toast && (
+        <div
+          role="status"
+          style={{
+            position: 'fixed',
+            bottom: 24,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#A16207',
+            color: '#fff',
+            padding: '10px 18px',
+            borderRadius: 9,
+            fontSize: 12.5,
+            fontWeight: 600,
+            boxShadow: '0 6px 24px rgba(13,31,51,0.3)',
+            zIndex: 400,
+          }}
+        >
+          {toast}
+        </div>
+      )}
     </div>
   );
 };

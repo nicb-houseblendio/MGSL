@@ -118,16 +118,22 @@ export const getOpenOrders = (): ArchOpenOrder[] => {
     const randInt = (a: number, b: number) => a + Math.floor(rng() * (b - a + 1));
     const lineCount = randInt(1, 3);
 
+    const soNo = `SO-${40000 + i * 137 + randInt(0, 99)}`;
     const lines: ArchCartLine[] = [];
     for (let n = 0; n < lineCount; n++) {
       const row = rows[(i * 5 + n * 3) % rows.length];
       const lot = row.lots[0];
       if (!lot) continue;
       lines.push({
-        key: `${row.internalId}|onHand|${lot.lotNo}`,
+        // Namespaced by SO. Existing order lines must never share a key shape
+        // with grid-picked cart lines, or a lot already on the order collides
+        // with the same lot added from the grid — duplicate rows, a React key
+        // warning, and visibly doubled BF.
+        key: `so:${soNo}|${lot.lotNo}`,
         internalId: row.internalId,
         itemCode: row.itemCode,
         description: row.description,
+        thickness: row.thickness,
         locationName: row.locationName,
         lotNo: lot.lotNo,
         containerNo: lot.containerNo,
@@ -135,19 +141,26 @@ export const getOpenOrders = (): ArchOpenOrder[] => {
         costPerBF: row.avgCostBF,
         bucket: 'onHand',
         existing: true,
+        // Already-sold stock has an agreed price. Seeded a little above lot cost
+        // so the margin readout is plausible rather than zero.
+        pricePerBF: Math.round((row.avgCostBF * (1.18 + rng() * 0.35)) * 100) / 100,
       });
     }
 
     const created = new Date();
     created.setDate(created.getDate() - randInt(1, 25));
+    const ship = new Date();
+    ship.setDate(ship.getDate() + randInt(5, 40));
 
     return {
-      soNo: `SO-${40000 + i * 137 + randInt(0, 99)}`,
+      soNo,
       customer,
       shipTo: addressesFor(customer)[0] || '',
       currency: currenciesFor(customer)[0],
       incoterms: INCOTERMS[randInt(0, INCOTERMS.length - 1)],
       created: created.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+      shipDate: ship.toISOString().slice(0, 10),
+      salesTeam: salesTeamFor(customer),
       // "Ready to Build" is MGSL's internal status meaning the warehouse can start
       // preparing it — and the point at which the order stops being editable.
       status: rng() > 0.65 ? 'Ready to Build' : 'Reserved',

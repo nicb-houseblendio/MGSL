@@ -58,6 +58,8 @@ export interface SplitRowState {
   discrepancyPct: number;
   /** Outside tolerance — worth a second look before saving. */
   flagged: boolean;
+  /** Physically impossible input: a non-positive bundle, or a negative part. */
+  invalid: boolean;
   complete: boolean;
   touched: boolean;
 }
@@ -71,6 +73,17 @@ export const evaluateEntry = (e: ArchSplitEntry): SplitRowState => {
   const touched = entryTouched(e);
   const complete = entryComplete(e);
   const discrepancyPct = measured > 0 ? discrepancy / measured : 0;
+  // A bundle cannot hold nothing, neither part can be negative, and a split that
+  // gives the customer nothing is not a split. Without this the discrepancy maths
+  // degenerates: measured = 0 made discrepancyPct = 0, so `flagged` stayed false
+  // and a row reading 0 / 0 / 0 rendered as "Balances" in green. A customer
+  // portion of 0 balances perfectly too, and is just as wrong.
+  //
+  // ⚠️ The customer <= 0 rule is OUR reading, not the client's. If "we couldn't
+  // fill any of it" is a real warehouse outcome, this becomes a warning rather
+  // than a block — it's on the question list for Marc-Antoine.
+  const invalid = touched && (measured <= 0 || customer <= 0 || inventory < 0);
+
   return {
     measured,
     customer,
@@ -78,7 +91,8 @@ export const evaluateEntry = (e: ArchSplitEntry): SplitRowState => {
     accounted,
     discrepancy,
     discrepancyPct,
-    flagged: touched && measured > 0 && Math.abs(discrepancyPct) > SPLIT_VARIANCE_TOLERANCE,
+    flagged: touched && !invalid && measured > 0 && Math.abs(discrepancyPct) > SPLIT_VARIANCE_TOLERANCE,
+    invalid,
     complete,
     touched,
   };

@@ -143,3 +143,60 @@
 .inventory-table-scroll::-webkit-scrollbar-thumb:hover {
   background: var(--navy);
 }
+
+
+/* ── Print: the warehouse work order ────────────────────────────────────────
+ * Printing IS the deliverable of the warehouse screen — the worker prints the
+ * sheet, writes the measured board footage on the tags by hand and staples them
+ * to the new bundles. Without these rules window.print() emitted the dimmed
+ * queue behind the modal plus a clipped dialog, because the Radix overlay is a
+ * fixed-position layer inside a scroll container.
+ *
+ * Approach: hide the whole document, then re-show only the print container and
+ * its ancestors, promoted to static flow so it can paginate.
+ */
+@media print {
+  /* Ancestors stay visible but paint nothing of their own. */
+  body * {
+    visibility: hidden;
+  }
+  #arch-split-print,
+  #arch-split-print * {
+    visibility: visible;
+  }
+  #arch-split-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+  /* Radix centres and scrolls its content; neither survives pagination. */
+  [role='dialog'] {
+    position: static !important;
+    transform: none !important;
+    max-height: none !important;
+    height: auto !important;
+    width: 100% !important;
+    max-width: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+  }
+  /* The dimmed backdrop would print as a grey wash over everything. */
+  [data-radix-popper-content-wrapper],
+  .no-print {
+    display: none !important;
+  }
+  /* Never split a bundle tag across a page break. */
+  #arch-split-print [style*='dashed'] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  @page {
+    margin: 12mm;
+  }
+}

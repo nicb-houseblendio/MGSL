@@ -24,6 +24,13 @@ export interface ArchCartLine {
   internalId: string;
   itemCode: string;
   description: string;
+  /**
+   * Nominal thickness, e.g. "6/4". Carried from the summary row so the planing
+   * options don't have to be recovered by regex from `description` — that only
+   * works because the fixtures format descriptions as `${species} ${thickness} KD`,
+   * which real NetSuite item descriptions will not guarantee.
+   */
+  thickness?: string;
   locationName: string;
   lotNo: string;
   containerNo: string;
@@ -34,6 +41,12 @@ export interface ArchCartLine {
   bucket: ArchDetailKey;
   /** True when the line came from an existing SO rather than the grid. */
   existing?: boolean;
+  /**
+   * Price already agreed on an existing SO line, $/BF.
+   * Seeds the Pricing step — without it "add to existing order" dead-ends,
+   * because the trader is asked to re-invent a price for stock already sold.
+   */
+  pricePerBF?: number;
 }
 
 /**
@@ -125,5 +138,8 @@ export interface ArchOpenOrder {
   incoterms: string;
   created: string;
   status: string;
+  /** ISO date already on the order — inherited so the header step is complete. */
+  shipDate: string;
+  salesTeam: string;
   lines: ArchCartLine[];
 }

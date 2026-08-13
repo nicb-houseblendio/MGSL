@@ -70,8 +70,9 @@ export const SplitCompletionDialog = ({
   });
 
   const anyTouched = rows.some((r) => r.state.touched);
-  const allComplete = rows.every((r) => entryComplete(r.entry));
+  const allComplete = rows.every((r) => entryComplete(r.entry) && !r.state.invalid);
   const flaggedCount = rows.filter((r) => r.state.flagged).length;
+  const invalidCount = rows.filter((r) => r.state.invalid).length;
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -111,16 +112,16 @@ export const SplitCompletionDialog = ({
 
           {rows.map(({ bundle, entry, state }) => {
             const inputState = (v: string): 'ok' | 'flag' | 'empty' =>
-              v.trim() === '' ? 'empty' : state.flagged ? 'flag' : 'ok';
+              v.trim() === '' ? 'empty' : state.flagged || state.invalid ? 'flag' : 'ok';
             return (
               <div
                 key={bundle.lotNo}
                 style={{
-                  border: `1px solid ${state.flagged ? '#FCA5A5' : '#E2E8F0'}`,
+                  border: `1px solid ${state.flagged || state.invalid ? '#FCA5A5' : '#E2E8F0'}`,
                   borderRadius: 10,
                   padding: '14px 16px',
                   marginBottom: 12,
-                  background: state.flagged ? '#FEF7F7' : '#fff',
+                  background: state.flagged || state.invalid ? '#FEF7F7' : '#fff',
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -191,7 +192,16 @@ export const SplitCompletionDialog = ({
 
                 {state.touched && (
                   <div style={{ marginTop: 10, fontSize: 11.5, lineHeight: 1.5 }}>
-                    {state.flagged ? (
+                    {state.invalid ? (
+                      <span style={{ color: '#B91C1C' }}>
+                        <strong>Check these figures.</strong>{' '}
+                        {state.measured <= 0
+                          ? 'A bundle cannot measure zero — enter what it actually held.'
+                          : state.customer < 0 || state.inventory < 0
+                            ? 'Quantities cannot be negative.'
+                            : 'The customer bundle is empty — record what they are actually receiving.'}
+                      </span>
+                    ) : state.flagged ? (
                       <span style={{ color: '#B91C1C' }}>
                         <strong>
                           {state.discrepancy > 0 ? '+' : ''}
@@ -274,8 +284,10 @@ export const SplitCompletionDialog = ({
           >
             Cancel
           </button>
-          <span style={{ marginLeft: 'auto', fontSize: 11.5, color: flaggedCount ? '#B91C1C' : ARCH_SURFACE.textMid }}>
-            {flaggedCount > 0
+          <span style={{ marginLeft: 'auto', fontSize: 11.5, color: flaggedCount || invalidCount ? '#B91C1C' : ARCH_SURFACE.textMid }}>
+            {invalidCount > 0
+              ? `${invalidCount} bundle${invalidCount === 1 ? '' : 's'} with impossible figures`
+              : flaggedCount > 0
               ? `${flaggedCount} bundle${flaggedCount === 1 ? '' : 's'} outside tolerance`
               : allComplete
                 ? 'All bundles accounted for'
@@ -283,7 +295,7 @@ export const SplitCompletionDialog = ({
           </span>
           <button
             type="button"
-            disabled={!anyTouched}
+            disabled={!anyTouched || invalidCount > 0}
             onClick={onSave}
             style={{
               padding: '9px 22px',
@@ -291,9 +303,9 @@ export const SplitCompletionDialog = ({
               border: 'none',
               fontSize: 13.5,
               fontWeight: 700,
-              cursor: anyTouched ? 'pointer' : 'not-allowed',
-              background: anyTouched ? ARCH_SURFACE.green : '#CBD5E1',
-              color: anyTouched ? '#fff' : '#94A3B8',
+              cursor: anyTouched && !invalidCount ? 'pointer' : 'not-allowed',
+              background: anyTouched && !invalidCount ? ARCH_SURFACE.green : '#CBD5E1',
+              color: anyTouched && !invalidCount ? '#fff' : '#94A3B8',
             }}
           >
             {allComplete ? 'Complete split' : 'Save progress'}

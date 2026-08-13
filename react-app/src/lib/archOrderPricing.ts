@@ -29,7 +29,7 @@ export const SPLIT_FEE = 200;
 export const PLANING_RATE = 0.2;
 /** Cutting to length, $ per board foot. */
 export const CUT_RATE = 0.15;
-/** Operations + insurance, as a fraction of the line's sales value. */
+/** Operations + insurance, as a fraction of the line's MATERIAL COST. */
 export const OPS_INSURANCE_RATE = 0.065;
 
 export const RATES_ARE_PROVISIONAL = true;
@@ -72,7 +72,12 @@ export const lineEconomics = (
   const planingCost = reman?.planing ? bf * PLANING_RATE : 0;
   const cuttingCost = reman?.cutting ? bf * CUT_RATE : 0;
   const processingCost = splitCost + planingCost + cuttingCost;
-  const opsInsuranceCost = revenue * OPS_INSURANCE_RATE;
+  // Charged on MATERIAL COST, not revenue. The prototype is explicit about this
+  // (`opIns = l.mbf * l.avgPriceMBF * OPINS_RATE` — quantity x lot cost), and the
+  // basis is not cosmetic: costing it on revenue makes the charge rise with the
+  // price the trader types, so raising the price made the margin look worse than
+  // it is. Insurance and handling track the value of the WOOD, not the invoice.
+  const opsInsuranceCost = lotCost * OPS_INSURANCE_RATE;
 
   const profit = revenue - lotCost - processingCost - opsInsuranceCost;
 
@@ -132,7 +137,10 @@ export const marginColor = (pct: number): string =>
  * thickness. Real dressing tables have to come from the client.
  */
 export const planingOptions = (thickness: string): string[] => {
-  const m = String(thickness || '').match(/^(\d+)\s*\/\s*4/);
+  // NOT anchored. This is called with the item DESCRIPTION ("Sapele 6/4 KD"),
+  // not a bare thickness, so `^` never matched and every item silently fell back
+  // to nominal = 1 — offering 4/4 dressing options on 8/4 stock.
+  const m = String(thickness || '').match(/(\d+)\s*\/\s*4/);
   const nominal = m ? parseInt(m[1], 10) / 4 : 1;
   const toFraction = (v: number): string => {
     if (!(v > 0)) return '0';

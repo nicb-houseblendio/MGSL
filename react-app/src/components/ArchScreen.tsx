@@ -45,6 +45,18 @@ export const ArchScreen = ({ uom }: ArchScreenProps) => {
    * ---------------------------------------------------------------------- */
   const [cart, setCart] = React.useState<ArchCartLine[]>([]);
   const [wizardOpen, setWizardOpen] = React.useState(false);
+  /**
+   * Bumped every time the builder closes, and used as its `key` so React
+   * remounts it fresh. Without this the wizard keeps all fourteen pieces of
+   * state between openings: create an order and reopen, and you land back on the
+   * Review step showing the previous customer and prices against an empty cart.
+   * The prototype does the same thing (`soWizardKey`).
+   */
+  const [wizardKey, setWizardKey] = React.useState(0);
+  const closeWizard = React.useCallback(() => {
+    setWizardOpen(false);
+    setWizardKey((k) => k + 1);
+  }, []);
   const [createdDraft, setCreatedDraft] = React.useState<ArchOrderDraft | null>(null);
 
   const cartLotNos = React.useMemo(() => new Set(cart.map((l) => l.lotNo)), [cart]);
@@ -56,12 +68,28 @@ export const ArchScreen = ({ uom }: ArchScreenProps) => {
         lotNos.forEach((lotNo) => {
           const lot = row.lots.find((l) => l.lotNo === lotNo);
           if (!lot) return;
-          const key = `${row.internalId}|${bucket}|${lotNo}`;
+          // Key on the PHYSICAL BUNDLE only. Including the bucket let the same
+          // lot be added once from On Hand and again from Available, showing
+          // twice in the cart and double-counting its board feet and revenue.
+          // A bundle is one thing; which view it was picked from is metadata.
+          const key = `${row.internalId}|${lotNo}`;
+          // First add wins. `set` overwrote unconditionally, and `bf` is
+          // bucket-dependent, so re-adding the same bundle from a different view
+          // silently CHANGED its board feet rather than being a no-op — a worse
+          // failure than the visible duplicate this key was meant to kill.
+          // Not reachable today (the cart is only fed from On Hand and Available,
+          // and anything addable has no commitment, so the two agree), but a
+          // silent order-dependent mutation is not worth leaving armed.
+          if (byKey.has(key)) return;
           byKey.set(key, {
             key,
             internalId: row.internalId,
             itemCode: row.itemCode,
             description: row.description,
+            // Carried explicitly rather than parsed back out of the description
+            // downstream — the row knows it, and real NetSuite descriptions will
+            // not reliably contain a parseable "n/4".
+            thickness: row.thickness,
             locationName: row.locationName,
             lotNo,
             containerNo: lot.containerNo,
@@ -89,6 +117,7 @@ export const ArchScreen = ({ uom }: ArchScreenProps) => {
     // flow can be reviewed end to end, and clear the cart as a real create would.
     setCreatedDraft(draft);
     setWizardOpen(false);
+    setWizardKey((k) => k + 1);
     setCart([]);
   }, []);
 
@@ -217,11 +246,14 @@ export const ArchScreen = ({ uom }: ArchScreenProps) => {
       )}
 
       <SOWizard
+        key={wizardKey}
         open={wizardOpen}
         cart={cart}
-        onClose={() => setWizardOpen(false)}
+        onClose={closeWizard}
         onRemoveLine={removeCartLine}
         onCreate={handleCreateOrder}
+        // "Add item" returns to the grid but KEEPS the draft, so it must not bump
+        // the key — the trader is coming back to this same order.
         onAddMoreItems={() => setWizardOpen(false)}
       />
 

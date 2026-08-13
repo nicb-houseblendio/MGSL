@@ -76,6 +76,17 @@ interface SOWizardProps {
   onAddMoreItems: () => void;
 }
 
+/**
+ * Identity of the PHYSICAL BUNDLE, independent of how the line was created.
+ *
+ * Cart lines are keyed `internalId|lotNo` while existing-order lines are keyed
+ * `so:<soNo>|lotNo`, so the two key spaces can never be compared directly.
+ * Matching on `lotNo` alone was the wrong granularity in the other direction:
+ * two rows differing by item or location but sharing a lot number would be
+ * treated as the same bundle, and one of them silently dropped.
+ */
+const bundleId = (l: ArchCartLine): string => `${l.internalId}|${l.lotNo}`;
+
 const emptySplit = (): ArchSplitIntent => ({ on: false, targetBF: '' });
 const emptyReman = (): ArchRemanIntent => ({
   planing: false,
@@ -230,11 +241,26 @@ export const SOWizard = ({ open, cart, onClose, onRemoveLine, onCreate, onAddMor
   const openOrders = React.useMemo(() => getOpenOrders(), []);
   const chosenOrder = openOrders.find((o) => o.soNo === existingSO) || null;
 
-  // Lines already on the chosen SO come first, then the lots picked off the grid.
-  const lines = React.useMemo<ArchCartLine[]>(
-    () => (mode === 'existing' && chosenOrder ? [...chosenOrder.lines, ...cart] : cart),
-    [mode, chosenOrder, cart]
-  );
+  /**
+   * Lines already on the chosen SO first, then the lots picked off the grid —
+   * with cart lots the order ALREADY holds dropped.
+   *
+   * Three of the six seeded orders contain a lot that is also selectable on the
+   * grid. Without this filter, adding it produced two rows for one physical
+   * bundle, doubling its board feet and revenue on every downstream step.
+   */
+  const lines = React.useMemo<ArchCartLine[]>(() => {
+    if (mode !== 'existing' || !chosenOrder) return cart;
+    const onOrder = new Set(chosenOrder.lines.map(bundleId));
+    return [...chosenOrder.lines, ...cart.filter((l) => !onOrder.has(bundleId(l)))];
+  }, [mode, chosenOrder, cart]);
+
+  /** Cart lots skipped because the chosen order already has them — surfaced on Items. */
+  const alreadyOnOrder = React.useMemo(() => {
+    if (mode !== 'existing' || !chosenOrder) return [];
+    const onOrder = new Set(chosenOrder.lines.map(bundleId));
+    return cart.filter((l) => onOrder.has(bundleId(l)));
+  }, [mode, chosenOrder, cart]);
 
   const sp = (k: string) => split[k] || emptySplit();
   const rm = (k: string) => reman[k] || emptyReman();
@@ -253,7 +279,17 @@ export const SOWizard = ({ open, cart, onClose, onRemoveLine, onCreate, onAddMor
     setShipTo(o.shipTo);
     setCurrency(o.currency);
     setIncoterms(o.incoterms);
-    setSalesTeam(salesTeamFor(o.customer));
+    setSalesTeam(o.salesTeam || salesTeamFor(o.customer));
+    setShipDate(o.shipDate || '');
+    // Carry the agreed price across so Pricing is already satisfied for lines
+    // that are already sold. The trader only has to price what they just added.
+    setPrice((prev) => {
+      const next = { ...prev };
+      o.lines.forEach((l) => {
+        if (l.pricePerBF != null && next[l.key] == null) next[l.key] = String(l.pricePerBF);
+      });
+      return next;
+    });
   };
 
   const pickCustomer = (c: string) => {
@@ -540,6 +576,24 @@ export const SOWizard = ({ open, cart, onClose, onRemoveLine, onCreate, onAddMor
           <span style={{ fontSize: 14, lineHeight: 1 }}>＋</span> Add item
         </button>
       </div>
+
+      {alreadyOnOrder.length > 0 && (
+        <div
+          style={{
+            padding: '9px 12px',
+            borderRadius: 9,
+            background: '#FBF1E5',
+            border: '1px solid #D9822B',
+            fontSize: 11.5,
+            color: '#7A4100',
+            marginBottom: 12,
+          }}
+        >
+          {alreadyOnOrder.length} selected bundle{alreadyOnOrder.length === 1 ? '' : 's'} already on this order and
+          not added again:{' '}
+          <span className="font-mono">{alreadyOnOrder.map((l) => l.lotNo).join(', ')}</span>
+        </div>
+      )}
 
       {lines.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 40, color: ARCH_SURFACE.textLight, fontSize: 13 }}>
@@ -902,8 +956,9 @@ export const SOWizard = ({ open, cart, onClose, onRemoveLine, onCreate, onAddMor
           {lines.map((l, i) => {
             const r = rm(l.key);
             const e = economics[i];
-            // Thickness is embedded in the description, e.g. "Sapele 6/4 KD".
-            const opts = planingOptions(l.description);
+            // Prefer the row's own thickness; fall back to the description
+            // ("Sapele 6/4 KD") only for lines built before it was carried.
+            const opts = planingOptions(l.thickness || l.description);
             return (
               <tr key={l.key}>
                 <LotCell line={l} />

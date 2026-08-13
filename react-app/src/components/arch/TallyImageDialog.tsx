@@ -213,8 +213,13 @@ export const TallyImageDialog = ({
           The tally sheet is the scan or photo attached to the lot record at receiving, shown as-is — board
           footage in the tables remains the system figure.
         </div>
+
+        {/* MUST live inside the stopPropagation panel. Mounted on the backdrop,
+            fileRef.current.click() bubbled to the backdrop's onClick={onClose},
+            so the picker opened, the dialog unmounted underneath it, and the
+            chosen file was silently dropped. */}
+        <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
       </div>
-      <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
     </div>
   );
 };
