@@ -163,6 +163,21 @@ const td: React.CSSProperties = {
   verticalAlign: 'middle',
 };
 
+/**
+ * Bulk dressing choices, in the order planingOptions emits them: it maps
+ * [nominal x 0.96, x 0.875, x 0.80] to fractions, so index 0 is the lightest
+ * pass. Labelled by depth of cut rather than by a fraction because the
+ * resulting size differs per lot — 4/4 dresses to 15/16, 8/4 to 1-15/16.
+ */
+const BULK_PLANING_LEVELS = ['Light (≈4% off)', 'Standard (≈12.5% off)', 'Heavy (≈20% off)'];
+
+/**
+ * 🔴 PLACEHOLDER, like every other rate here. Flags a sell price under
+ * cost x this. The real trigger — customer floor, deal type, currency — has not
+ * been specified, so this warns and never blocks.
+ */
+const LOW_PRICE_TRIGGER = 1.1;
+
 /** Loud, deliberate notice that a step is built on unconfirmed inputs. */
 const ProvisionalNote = ({ children }: { children: React.ReactNode }) => (
   <div
@@ -253,6 +268,35 @@ export const SOWizard = ({
   const [reman, setReman] = React.useState<Record<string, ArchRemanIntent>>({});
   const [price, setPrice] = React.useState<Record<string, string>>({});
 
+  /**
+   * "Apply to all" settings for the Remanufacturing step. Held separately from
+   * `reman` so nothing changes until the trader presses Apply.
+   *
+   * `planingLevel` is an INDEX into the lot's own dressing options, not a fixed
+   * fraction. The prototype's bulk bar offers a hard-coded 4/4 list
+   * (3/4, 13/16, 7/8, 15/16) and writes the chosen string onto every line
+   * verbatim — so bulk-dressing a mixed cart puts "15/16" on 8/4 stock, whose
+   * dressed size is about 1-15/16. Its own `dressedSizeFor(desc, frac)` was
+   * meant to resolve that and is stubbed to the identity function, flagged
+   * "pending real values". Applying a level instead lets each line resolve
+   * through planingOptions, which already does the per-lot maths.
+   */
+  const [bulkReman, setBulkReman] = React.useState({
+    planing: false,
+    planingLevel: '',
+    cutting: false,
+    cutLength: '',
+  });
+
+  /**
+   * Ship-to addresses typed in on this order, keyed by customer. Kept in wizard
+   * state only: writing to the customer record is a NetSuite write, and this
+   * wizard still writes nothing.
+   */
+  const [extraAddresses, setExtraAddresses] = React.useState<Record<string, string[]>>({});
+  const [addingAddress, setAddingAddress] = React.useState(false);
+  const [newAddress, setNewAddress] = React.useState({ name: '', street: '', city: '' });
+
   const openOrders = React.useMemo(() => getOpenOrders(), []);
   const chosenOrder = openOrders.find((o) => o.soNo === existingSO) || null;
 
@@ -285,6 +329,50 @@ export const SOWizard = ({
     setSplit((m) => ({ ...m, [k]: { ...sp(k), ...patch } }));
   const setRm = (k: string, patch: Partial<ArchRemanIntent>) =>
     setReman((m) => ({ ...m, [k]: { ...rm(k), ...patch } }));
+
+  const allAddresses = React.useMemo(
+    () => [...addressesFor(customer), ...(extraAddresses[customer] || [])],
+    [customer, extraAddresses]
+  );
+
+  const newAddressComplete =
+    !!newAddress.name.trim() && !!newAddress.street.trim() && !!newAddress.city.trim();
+
+  /** Priced, but under the trigger. Warns only — pricing is never blocked on it. */
+  const isLowPriced = (l: ArchCartLine) => {
+    const p = parseFloat(pr(l.key)) || 0;
+    return p > 0 && p < (l.costPerBF || 0) * LOW_PRICE_TRIGGER;
+  };
+  const lowPricedLines = lines.filter(isLowPriced);
+
+  /** Push the bulk settings onto every line, resolving the dressing per lot. */
+  const applyBulkReman = () => {
+    setReman((prev) => {
+      const next = { ...prev };
+      lines.forEach((l) => {
+        const current = next[l.key] || emptyReman();
+        const opts = planingOptions(l.thickness || l.description);
+        const idx = parseInt(bulkReman.planingLevel, 10);
+        // 'other' carries no size of its own, so it cannot be applied in bulk —
+        // leave whatever the line already had rather than blanking it.
+        const spec =
+          bulkReman.planing && Number.isFinite(idx) && opts[idx] && opts[idx] !== 'other'
+            ? opts[idx]
+            : bulkReman.planing
+              ? current.planingSpec
+              : '';
+        next[l.key] = {
+          ...current,
+          planing: bulkReman.planing,
+          planingSpec: spec,
+          planingOther: bulkReman.planing ? current.planingOther : '',
+          cutting: bulkReman.cutting,
+          cutLength: bulkReman.cutting ? bulkReman.cutLength : '',
+        };
+      });
+      return next;
+    });
+  };
 
   const applyExistingOrder = (soNo: string) => {
     const o = openOrders.find((x) => x.soNo === soNo);
@@ -716,19 +804,111 @@ export const SOWizard = ({
 
       <div>
         <label style={label}>Ship-to address *</label>
-        <select
-          value={shipTo}
-          disabled={!customer}
-          onChange={(e) => setShipTo(e.target.value)}
-          style={{ ...field(!!shipTo), cursor: customer ? 'pointer' : 'not-allowed', opacity: customer ? 1 : 0.6 }}
-        >
-          <option value="">{customer ? '— Select address —' : 'Select a customer first'}</option>
-          {addressesFor(customer).map((a) => (
-            <option key={a} value={a}>
-              {a}
-            </option>
-          ))}
-        </select>
+        {!addingAddress ? (
+          <select
+            value={shipTo}
+            disabled={!customer}
+            onChange={(e) => {
+              if (e.target.value === '__new__') {
+                setAddingAddress(true);
+                setShipTo('');
+              } else setShipTo(e.target.value);
+            }}
+            style={{ ...field(!!shipTo), cursor: customer ? 'pointer' : 'not-allowed', opacity: customer ? 1 : 0.6 }}
+          >
+            <option value="">{customer ? '— Select address —' : 'Select a customer first'}</option>
+            {allAddresses.map((a) => (
+              <option key={a} value={a}>
+                {a}
+              </option>
+            ))}
+            {customer && <option value="__new__">＋ Add new ship-to address…</option>}
+          </select>
+        ) : (
+          <div
+            style={{
+              border: `1.5px solid ${ARCH_SURFACE.green}`,
+              borderRadius: 10,
+              padding: '12px 14px',
+              background: '#F8FAFC',
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 700, color: ARCH_SURFACE.text, marginBottom: 10 }}>
+              New ship-to address
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <input
+                type="text"
+                value={newAddress.name}
+                placeholder="Location name (e.g. Main Yard)"
+                onChange={(e) => setNewAddress((a) => ({ ...a, name: e.target.value }))}
+                style={field(!!newAddress.name.trim())}
+              />
+              <input
+                type="text"
+                value={newAddress.street}
+                placeholder="Street address"
+                onChange={(e) => setNewAddress((a) => ({ ...a, street: e.target.value }))}
+                style={field(!!newAddress.street.trim())}
+              />
+              <input
+                type="text"
+                value={newAddress.city}
+                placeholder="City, Province"
+                onChange={(e) => setNewAddress((a) => ({ ...a, city: e.target.value }))}
+                style={field(!!newAddress.city.trim())}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setAddingAddress(false);
+                  setNewAddress({ name: '', street: '', city: '' });
+                }}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: 8,
+                  border: '1.5px solid #CBD5E1',
+                  background: '#fff',
+                  color: ARCH_SURFACE.textMid,
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!newAddressComplete}
+                onClick={() => {
+                  const full = `${newAddress.name.trim()} — ${newAddress.street.trim()}, ${newAddress.city.trim()}`;
+                  setExtraAddresses((m) => ({ ...m, [customer]: [...(m[customer] || []), full] }));
+                  setShipTo(full);
+                  setAddingAddress(false);
+                  setNewAddress({ name: '', street: '', city: '' });
+                }}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: newAddressComplete ? ARCH_SURFACE.green : '#CBD5E1',
+                  color: '#fff',
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  cursor: newAddressComplete ? 'pointer' : 'not-allowed',
+                }}
+              >
+                Save address
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: ARCH_SURFACE.textMid, marginTop: 8, lineHeight: 1.4 }}>
+              Held on this order only. Nothing is written to the customer record until SO creation is
+              wired up.
+            </div>
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
@@ -970,6 +1150,101 @@ export const SOWizard = ({
         placeholders</strong>. Unlike Industriel reman, this creates no new SKU and no inventory adjustment:
         it is a service with a fee.
       </ProvisionalNote>
+      {lines.length > 1 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 14,
+            flexWrap: 'wrap',
+            background: '#F8FAFC',
+            border: '1px solid #E2E8F0',
+            borderRadius: 9,
+            padding: '10px 12px',
+            marginBottom: 14,
+          }}
+        >
+          <span
+            style={{
+              fontSize: 9.5,
+              fontWeight: 700,
+              textTransform: 'uppercase',
+              letterSpacing: 0.4,
+              color: ARCH_SURFACE.textMid,
+            }}
+          >
+            Apply to all
+          </span>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={bulkReman.planing}
+              onChange={(e2) =>
+                setBulkReman((b) => ({ ...b, planing: e2.target.checked, planingLevel: '' }))
+              }
+              style={{ width: 16, height: 16, accentColor: ARCH_SURFACE.green, cursor: 'pointer' }}
+            />
+            Plane
+          </label>
+          {bulkReman.planing && (
+            <select
+              value={bulkReman.planingLevel}
+              onChange={(e2) => setBulkReman((b) => ({ ...b, planingLevel: e2.target.value }))}
+              style={{
+                ...numField,
+                width: 190,
+                textAlign: 'left',
+                cursor: 'pointer',
+                borderColor: bulkReman.planingLevel ? ARCH_SURFACE.green : '#CBD5E1',
+              }}
+            >
+              <option value="">Dressing level…</option>
+              {BULK_PLANING_LEVELS.map((lvl, i) => (
+                <option key={lvl} value={String(i)}>
+                  {lvl}
+                </option>
+              ))}
+            </select>
+          )}
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={bulkReman.cutting}
+              onChange={(e2) => setBulkReman((b) => ({ ...b, cutting: e2.target.checked, cutLength: '' }))}
+              style={{ width: 16, height: 16, accentColor: ARCH_SURFACE.green, cursor: 'pointer' }}
+            />
+            Cut
+          </label>
+          <input
+            type="text"
+            value={bulkReman.cutLength}
+            disabled={!bulkReman.cutting}
+            placeholder="Target length"
+            onChange={(e2) => setBulkReman((b) => ({ ...b, cutLength: e2.target.value }))}
+            style={{ ...numField, width: 140, textAlign: 'left', opacity: bulkReman.cutting ? 1 : 0.45 }}
+          />
+          <button
+            type="button"
+            onClick={applyBulkReman}
+            // Pressing Apply with nothing ticked would silently CLEAR every line,
+            // which is destructive and looks like a no-op until you scroll down.
+            disabled={!bulkReman.planing && !bulkReman.cutting}
+            style={{
+              marginLeft: 'auto',
+              padding: '7px 14px',
+              borderRadius: 7,
+              border: `1px solid ${!bulkReman.planing && !bulkReman.cutting ? '#CBD5E1' : ARCH_SURFACE.navyMid}`,
+              background: '#fff',
+              color: !bulkReman.planing && !bulkReman.cutting ? '#94A3B8' : ARCH_SURFACE.navyMid,
+              fontWeight: 600,
+              fontSize: 12,
+              cursor: !bulkReman.planing && !bulkReman.cutting ? 'not-allowed' : 'pointer',
+            }}
+          >
+            Apply
+          </button>
+        </div>
+      )}
       <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
         <thead>
           <tr>
@@ -1081,6 +1356,47 @@ export const SOWizard = ({
         the split fee, planing and cutting rates, and the {(OPS_INSURANCE_RATE * 100).toFixed(1)}% operations
         &amp; insurance charge are all placeholders. <strong>Do not quote a customer from these margins.</strong>
       </ProvisionalNote>
+      {lowPricedLines.length > 0 && (
+        <div
+          style={{
+            marginBottom: 12,
+            padding: '11px 14px',
+            borderRadius: 9,
+            border: '1px solid #FDE68A',
+            background: '#FEF9C3',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 10,
+          }}
+        >
+          <span style={{ fontSize: 16, lineHeight: 1 }}>⚠</span>
+          <div style={{ flex: 1, fontSize: 12.5, color: '#713F12', lineHeight: 1.5 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>
+                Pricing check — {lowPricedLines.length} line{lowPricedLines.length !== 1 ? 's' : ''} under
+                trigger
+              </span>
+              <span
+                style={{
+                  padding: '1px 6px',
+                  borderRadius: 4,
+                  fontSize: 9.5,
+                  fontWeight: 800,
+                  background: '#92400E',
+                  color: '#fff',
+                  textTransform: 'uppercase',
+                  letterSpacing: 0.5,
+                }}
+              >
+                placeholder logic — TBD
+              </span>
+            </div>
+            Sell price is below <strong>cost + {((LOW_PRICE_TRIGGER - 1) * 100).toFixed(0)}%</strong> on the
+            highlighted rows. The real trigger conditions (customer floor, deal type, currency) are not
+            decided yet, and this warns only — it does not block.
+          </div>
+        </div>
+      )}
       <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
         <thead>
           <tr>
@@ -1098,7 +1414,7 @@ export const SOWizard = ({
             const e = economics[i];
             const entered = (parseFloat(pr(l.key)) || 0) > 0;
             return (
-              <tr key={l.key}>
+              <tr key={l.key} style={isLowPriced(l) ? { background: '#FFFBEB' } : undefined}>
                 <LotCell line={l} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
                   {formatBF(e.bf)}
