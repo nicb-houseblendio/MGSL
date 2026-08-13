@@ -17,6 +17,7 @@ import { DetailDrawerMTL } from '@/components/DetailDrawerMTL';
 import { PriceListModal } from '@/components/PriceListModal';
 import { exportToExcelMTL } from '@/lib/exportMTL';
 import { ArchScreen } from '@/components/ArchScreen';
+import { WarehouseSplitScreen } from '@/components/warehouse/WarehouseSplitScreen';
 import { ARCH_UOMS } from '@/lib/archUom';
 import { ARCH_IS_DEMO_DATA } from '@/hooks/useArchSummaryData';
 
@@ -520,7 +521,35 @@ function TraderScreenContent() {
   );
 }
 
+/**
+ * Which screen this Suitelet renders.
+ *
+ * The warehouse split queue is deliberately NOT part of the trader screen —
+ * "le gars dans l'entrepôt, on veut pas nécessairement qu'il ait le trader
+ * screen, mais qu'il ait juste l'écran ici". Access is enforced by deploying it
+ * as its own Suitelet with its own role, and that Suitelet sets
+ * MCGI_CONFIG.screen = 'warehouse'.
+ *
+ * The two screens share one bundle for now. If the client wants warehouse users
+ * not to receive the trader code at all, split the Vite build into two entry
+ * points — the component boundary here is already clean enough for that.
+ */
+const getScreen = (): string => {
+  const win = typeof window !== 'undefined' ? window : null;
+  return (win as { MCGI_CONFIG?: { screen?: string } })?.MCGI_CONFIG?.screen || 'trader';
+};
+
 function App() {
+  const screen = getScreen();
+  if (screen === 'warehouse') {
+    // No NetSuiteProvider: this screen needs no subsidiary context or UoM config,
+    // and it must not depend on trader-screen data access.
+    return (
+      <ThemeProvider>
+        <WarehouseSplitScreen />
+      </ThemeProvider>
+    );
+  }
   return (
     <ThemeProvider>
       <NetSuiteProvider>
