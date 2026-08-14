@@ -47,7 +47,18 @@ export const ARCH_FOOTER_COLORS: Record<string, string> = {
 export const ARCH_SURFACE = {
   text: '#0D1F33',
   textMid: '#3D5166',
-  textLight: '#7A8FA3',
+  /**
+   * Was #7A8FA3, which measured 2.95–3.34:1 on the light surfaces it is used on
+   * — under the 4.5 AA needs at these sizes, and it is used at 9–11px almost
+   * everywhere. It failed on white, on #F8FAFC and #FBFCFE rows, and worst on
+   * the #EEF1F6 header strip. 46 instances on the Open Sales Orders tab alone.
+   *
+   * #586D82 keeps the same blue-grey hue and clears 4.5 against all four:
+   * white 5.35, #F8FAFC 5.15, #FBFCFE 5.24, #EEF1F6 4.73.
+   *
+   * ARCH and the warehouse screen only — IND and MTL do not use this palette.
+   */
+  textLight: '#586D82',
   border: '#E2E8F0',
   borderStrong: '#CBD5E1',
   rowEven: '#FFFFFF',
