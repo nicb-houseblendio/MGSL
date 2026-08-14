@@ -314,21 +314,42 @@ export const WarehouseSplitScreen = () => {
           {jobNotes.length ? latest : '+ Comment'}
         </td>
         <td style={{ ...td, textAlign: 'center' }}>
+          {/* The prototype's control: a bordered 30px button with a stroked
+              printer glyph, not a bare emoji. Emoji render differently on every
+              OS and at warehouse sizes read as a smudge. */}
           <button
             type="button"
             onClick={() => setPrintJob(job.soNo)}
-            aria-label={`Print work order for ${job.soNo}`}
-            title="Work order and tags"
+            aria-label={`Print order sheets for ${job.soNo}`}
+            title="Print order sheets (PDF)"
             style={{
-              border: 'none',
-              background: 'none',
+              width: 30,
+              height: 30,
+              borderRadius: 7,
+              border: '1px solid #CBD5E1',
+              background: '#fff',
               cursor: 'pointer',
-              fontSize: 14,
               color: ARCH_SURFACE.textMid,
-              padding: 2,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}
           >
-            🖨
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M6 9V3h12v6" />
+              <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+              <rect x="6" y="14" width="12" height="8" />
+            </svg>
           </button>
         </td>
       </tr>

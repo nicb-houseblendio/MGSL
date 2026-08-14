@@ -191,10 +191,23 @@
   .no-print {
     display: none !important;
   }
-  /* Never split a bundle tag across a page break. */
-  #arch-split-print [style*='dashed'] {
+  /* One sheet per page: the work order, then a lot sheet per bundle. Each is a
+     document the warehouse staples to a physical bundle, so they cannot run
+     together or break mid-sheet. */
+  #arch-split-print {
+    background: #fff !important;
+  }
+  .arch-sheet {
+    box-shadow: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
     break-inside: avoid;
     page-break-inside: avoid;
+  }
+  .arch-sheet + .arch-sheet {
+    break-before: page;
+    page-break-before: always;
   }
   @page {
     margin: 12mm;
