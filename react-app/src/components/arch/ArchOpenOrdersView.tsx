@@ -192,14 +192,12 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
     // dark mode, and this view's dark text vanished.
     <div style={{ margin: '0 4px 4px', borderRadius: 10, background: '#EEF1F6', color: ARCH_SURFACE.text }}>
       {/*
-        ONE content-width container for the header AND the table.
-        Capping only the table left it centred at 1500 under a header that spanned
-        the full 2520px surface — the mismatch read as a layout bug. Ten dense
-        columns stretched across a 2560px monitor is also a very long saccade from
-        SO # to Est. profit, so the cap itself is right; it just has to apply to
-        the whole view.
+        FULL WIDTH, no content cap. This view was capped at 1680 to keep the
+        saccade from SO # to Est. profit short on a 2560px monitor, but Marc-Antoine
+        chose full width on 2026-08-13 — "comme les autres TS" — so it now matches
+        the Hardwood grid and the Industriel and Métaux screens, which have never
+        been capped. Do not reintroduce a max-width here without asking him.
       */}
-      <div style={{ maxWidth: 1680, margin: '0 auto' }}>
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <div
         style={{
@@ -597,7 +595,6 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
             )}
           </table>
         </div>
-      </div>
       </div>
     </div>
   );
