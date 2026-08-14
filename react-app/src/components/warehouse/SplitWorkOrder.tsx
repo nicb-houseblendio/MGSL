@@ -60,7 +60,23 @@ export const SplitWorkOrder = ({ job, onClose }: SplitWorkOrderProps) => (
         </button>
       </div>
 
-      <div id="arch-split-print" style={{ flex: 1, overflowY: 'auto', padding: 24, background: '#fff' }}>
+      {/*
+        `color` is set here, not just `background`. This sheet pins itself to
+        white, but the app foreground follows the OS theme, so on a dark theme
+        every cell that did not name its own colour inherited near-white ONTO
+        that white: the Bundle/Lot, Item and Pick-for-customer values all
+        rendered at about 1.1:1 while On file, which sets textMid, stayed
+        readable. That is worse here than anywhere else in the app, because
+        this is the one screen the warehouse PRINTS — the missing values are
+        exactly the ones the sawyer needs.
+        Setting it on the root fixes every descendant that does not override,
+        including any cell added later. Rule: if an element sets a light
+        background, it must also set a colour.
+      */}
+      <div
+        id="arch-split-print"
+        style={{ flex: 1, overflowY: 'auto', padding: 24, background: '#fff', color: ARCH_SURFACE.text }}
+      >
         {/* Work order */}
         <div style={{ borderBottom: '2px solid #0F2641', paddingBottom: 10, marginBottom: 14 }}>
           <div style={{ fontSize: 19, fontWeight: 800, color: '#0F2641' }}>BUNDLE SPLIT — WORK ORDER</div>
