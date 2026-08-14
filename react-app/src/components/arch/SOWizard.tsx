@@ -1600,36 +1600,63 @@ export const SOWizard = ({
             </td>
             <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
             <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
-            <td
-              style={{ ...td, textAlign: 'right', fontWeight: 800, borderTop: '2px solid #CBD5E1' }}
-              className="font-mono"
-            >
-              {fmtMoney(totals.revenue, currency || 'USD', 0)}
-            </td>
-            <td
-              style={{
-                ...td,
-                textAlign: 'right',
-                fontWeight: 800,
-                color: marginColor(totals.marginPct),
-                borderTop: '2px solid #CBD5E1',
-              }}
-              className="font-mono"
-            >
-              {fmtMoney(totals.profit, currency || 'USD', 0)}
-            </td>
-            <td
-              style={{
-                ...td,
-                textAlign: 'right',
-                fontWeight: 800,
-                color: marginColor(totals.marginPct),
-                borderTop: '2px solid #CBD5E1',
-              }}
-              className="font-mono"
-            >
-              {fmtPct(totals.marginPct)}
-            </td>
+            {/*
+              Gated on priceOk, the same condition the footer states as "enter a
+              price for every line". Ungated, a fresh order — where prices start
+              empty — totalled revenue 0 against real lot cost and services and
+              announced a -$8,817 loss at 0.0% margin, in red, before the trader
+              had typed anything. The per-line cells already showed "—" for this,
+              so the total was the only thing claiming a number it did not have.
+              Board feet stays visible: it is true regardless of pricing.
+            */}
+            {priceOk ? (
+              <>
+                <td
+                  style={{ ...td, textAlign: 'right', fontWeight: 800, borderTop: '2px solid #CBD5E1' }}
+                  className="font-mono"
+                >
+                  {fmtMoney(totals.revenue, currency || 'USD', 0)}
+                </td>
+                <td
+                  style={{
+                    ...td,
+                    textAlign: 'right',
+                    fontWeight: 800,
+                    color: marginColor(totals.marginPct),
+                    borderTop: '2px solid #CBD5E1',
+                  }}
+                  className="font-mono"
+                >
+                  {fmtMoney(totals.profit, currency || 'USD', 0)}
+                </td>
+                <td
+                  style={{
+                    ...td,
+                    textAlign: 'right',
+                    fontWeight: 800,
+                    color: marginColor(totals.marginPct),
+                    borderTop: '2px solid #CBD5E1',
+                  }}
+                  className="font-mono"
+                >
+                  {fmtPct(totals.marginPct)}
+                </td>
+              </>
+            ) : (
+              <td
+                colSpan={3}
+                style={{
+                  ...td,
+                  textAlign: 'right',
+                  fontSize: 11,
+                  fontStyle: 'italic',
+                  color: ARCH_SURFACE.textLight,
+                  borderTop: '2px solid #CBD5E1',
+                }}
+              >
+                Totals appear once every line is priced
+              </td>
+            )}
           </tr>
         </tfoot>
       </table>
