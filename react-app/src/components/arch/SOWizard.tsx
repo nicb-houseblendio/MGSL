@@ -1361,14 +1361,37 @@ export const SOWizard = ({
             />
             Cut
           </label>
-          <input
-            type="text"
+          {/*
+            The SAME select the lines use, not a free-text box.
+            It was a text input, and the per-line control is a dropdown of
+            standard lengths, so bulk-applying anything outside that list —
+            "9 ft", say — wrote a value the line could not render: every Length
+            cell fell back to "— Select —" while Cut stayed ticked, the service
+            cost included the cutting rate, and Continue was enabled because the
+            stored string was non-empty. The trader saw four unset dropdowns and
+            an order that nonetheless carried a length they never chose.
+            Sharing the option list makes that state unreachable.
+          */}
+          <select
             value={bulkReman.cutLength}
             disabled={!bulkReman.cutting}
-            placeholder="Target length"
             onChange={(e2) => setBulkReman((b) => ({ ...b, cutLength: e2.target.value }))}
-            style={{ ...numField, width: 140, textAlign: 'left', opacity: bulkReman.cutting ? 1 : 0.45 }}
-          />
+            style={{
+              ...numField,
+              width: 140,
+              textAlign: 'left',
+              cursor: bulkReman.cutting ? 'pointer' : 'not-allowed',
+              opacity: bulkReman.cutting ? 1 : 0.45,
+              borderColor: bulkReman.cutLength ? ARCH_SURFACE.green : '#CBD5E1',
+            }}
+          >
+            <option value="">Target length…</option>
+            {CUT_LENGTHS.map((len) => (
+              <option key={len} value={len}>
+                {len}
+              </option>
+            ))}
+          </select>
           <button
             type="button"
             onClick={applyBulkReman}
@@ -1394,6 +1417,10 @@ export const SOWizard = ({
       <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
         <thead>
           <tr>
+            {/* Location, as on Bundle split, Pricing and Review. The reman is
+                done at the yard holding the wood, so which yard is part of
+                deciding whether to offer it. */}
+            <th style={th}>Location</th>
             <th style={th}>Item / Lot</th>
             <th style={{ ...th, textAlign: 'center' }}>Plane</th>
             <th style={th}>Dressed to</th>
@@ -1411,6 +1438,9 @@ export const SOWizard = ({
             const opts = planingOptions(l.thickness || l.description);
             return (
               <tr key={l.key}>
+                <td style={{ ...td, fontSize: 11.5, color: ARCH_SURFACE.textMid, whiteSpace: 'nowrap' }}>
+                  {l.locationName}
+                </td>
                 <LotCell line={l} />
                 <td style={{ ...td, textAlign: 'center' }}>
                   <input
