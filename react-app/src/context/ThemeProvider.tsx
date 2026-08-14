@@ -17,43 +17,75 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
+const DARK_QUERY = '(prefers-color-scheme: dark)';
+
+/**
+ * Single source of truth for "what should be on the html element right now".
+ *
+ * This used to be written out three times — once in each of the two useState
+ * initialisers and once per effect — and the copies had already drifted: the
+ * `change` handler resolved 'system' correctly but the state initialiser
+ * treated an absent localStorage entry differently from an explicit 'system'.
+ */
+const resolveTheme = (theme: Theme): 'light' | 'dark' => {
+  if (theme === 'light' || theme === 'dark') return theme;
+  if (typeof window === 'undefined') return 'light';
+  return window.matchMedia(DARK_QUERY).matches ? 'dark' : 'light';
+};
+
 export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   const [theme, setThemeState] = useState<Theme>(() => {
     if (typeof window === 'undefined') return 'system';
     return (localStorage.getItem('theme') as Theme) || 'system';
   });
 
-  const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>(() => {
-    if (typeof window === 'undefined') return 'light';
-    const stored = localStorage.getItem('theme') as Theme;
-    if (stored === 'dark') return 'dark';
-    if (stored === 'light') return 'light';
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  });
+  const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>(() =>
+    resolveTheme(typeof window === 'undefined' ? 'system' : ((localStorage.getItem('theme') as Theme) || 'system'))
+  );
 
   useEffect(() => {
     const root = document.documentElement;
-    const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    const resolved = theme === 'system' ? systemTheme : theme;
 
-    root.classList.remove('light', 'dark');
-    root.classList.add(resolved);
-    setResolvedTheme(resolved);
-    localStorage.setItem('theme', theme);
-  }, [theme]);
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = () => {
-      if (theme === 'system') {
-        const resolved = mediaQuery.matches ? 'dark' : 'light';
-        document.documentElement.classList.remove('light', 'dark');
-        document.documentElement.classList.add(resolved);
-        setResolvedTheme(resolved);
+    const sync = () => {
+      const next = resolveTheme(theme);
+      // Idempotent: only touch the class list when it actually disagrees, so the
+      // extra triggers below cannot cause a paint on every tab switch.
+      if (!root.classList.contains(next)) {
+        root.classList.remove('light', 'dark');
+        root.classList.add(next);
       }
+      setResolvedTheme(next);
     };
-    mediaQuery.addEventListener('change', handler);
-    return () => mediaQuery.removeEventListener('change', handler);
+
+    sync();
+    localStorage.setItem('theme', theme);
+
+    const mq = window.matchMedia(DARK_QUERY);
+
+    /*
+     * The `change` event on its own is not enough, and this is not theoretical:
+     * Chrome does not deliver prefers-color-scheme changes to a BACKGROUND tab.
+     * The trader screen is left open in a tab all day, so the common case — the
+     * OS flips to dark in the evening while the trader is in another tab — is
+     * exactly the case the event misses. The screen then stays in the old theme
+     * until someone reloads, which is how the dark grid was measured against
+     * light-mode colours in the first place.
+     *
+     * Re-resolving whenever the tab becomes visible again picks up anything the
+     * event dropped, whatever the reason.
+     */
+    const syncIfVisible = () => {
+      if (document.visibilityState === 'visible') sync();
+    };
+
+    mq.addEventListener('change', sync);
+    document.addEventListener('visibilitychange', syncIfVisible);
+    window.addEventListener('focus', syncIfVisible);
+    return () => {
+      mq.removeEventListener('change', sync);
+      document.removeEventListener('visibilitychange', syncIfVisible);
+      window.removeEventListener('focus', syncIfVisible);
+    };
   }, [theme]);
 
   const value = useMemo(
