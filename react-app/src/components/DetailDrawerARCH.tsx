@@ -185,9 +185,24 @@ export const DetailDrawerARCH = ({
                 }}
               >
                 <span>{label}</span>
+                {/*
+                  The ACTIVE tab's figure uses the light tint, not the saturated
+                  bucket colour. The saturated ones are chosen for light
+                  surfaces, and this strip is navy: In Transit rendered #4A148C
+                  on #0D1F33 at 1.07:1 and On Order #0D47A1 at 1.77:1, so the
+                  tab you were standing on was harder to read than the greyed-out
+                  ones beside it. The tint keeps the bucket hue and is what the
+                  header total already uses against this same navy.
+                  The 3px underline keeps the saturated colour — a solid bar
+                  carries at a weight 9px text cannot.
+                */}
                 <span
                   className="font-mono"
-                  style={{ fontSize: 11, fontWeight: 700, color: on ? color : 'rgba(255,255,255,0.4)' }}
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: on ? ARCH_BUCKET_META[key].bg : 'rgba(255,255,255,0.4)',
+                  }}
                 >
                   {formatArchQty(row[key] ?? 0, uom)}{' '}
                   <span style={{ fontSize: 9, opacity: 0.7 }}>{uomSuffix(uom)}</span>

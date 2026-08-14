@@ -195,8 +195,16 @@ export const ArchLotTable = ({
           }}
         >
           <span style={{ fontSize: 11.5, color: ARCH_SURFACE.textMid, fontWeight: 600 }}>
+            {/*
+              "all are committed" was wrong and contradicted the row next to it:
+              a bundle with 741 of 2,350 reserved shows Avail. 1,609 in green
+              while the header claimed everything was spoken for. What is
+              actually true is the RULE — any commitment holds the whole bundle,
+              because a bundle is one physical lift and cannot be half-sold
+              without going through the split flow.
+            */}
             {nothingSellable
-              ? `${lots.length} bundle${lots.length === 1 ? '' : 's'} — none sellable, all are committed`
+              ? `${lots.length} bundle${lots.length === 1 ? '' : 's'} — none sellable: any commitment holds the whole bundle`
               : selectedInView > 0
                 ? `${selectedInView} of ${selectableLots.length} bundle${selectableLots.length === 1 ? '' : 's'} selected`
                 : `${lots.length} bundle${lots.length === 1 ? '' : 's'}`}
