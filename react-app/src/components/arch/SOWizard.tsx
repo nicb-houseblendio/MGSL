@@ -178,6 +178,27 @@ const BULK_PLANING_LEVELS = ['Light (≈4% off)', 'Standard (≈12.5% off)', 'He
  */
 const LOW_PRICE_TRIGGER = 1.1;
 
+/**
+ * Edit-mode accent. Orange separates "adding to an existing order" from the
+ * green of "creating a new one", which is worth keeping — it is the only
+ * persistent signal that you are editing someone's live order.
+ *
+ * Was #D9822B, the prototype's value. White on it measures 2.93:1, so in edit
+ * mode the primary Continue button and the active step badge — the two things
+ * you look at most — both failed AA, while the same controls pass at ~5.5 in
+ * create mode because that accent is the darker green. #A85D14 is the same
+ * orange, dark enough to carry white at 4.95:1.
+ */
+const EDIT_ACCENT = '#A85D14';
+
+/**
+ * Amber used for text and badges on light surfaces — the On order badge, the
+ * split/held status, the footer validation hint. #B36B16 measured 3.7-4.2:1
+ * depending on the tint behind it, so every one of them sat under AA. Same
+ * amber, dark enough to clear it on white and on the #FFF8E1 / #FBF1E5 chips.
+ */
+const AMBER_TEXT = '#8F5612';
+
 /** Loud, deliberate notice that a step is built on unconfirmed inputs. */
 const ProvisionalNote = ({ children }: { children: React.ReactNode }) => (
   <div
@@ -229,7 +250,7 @@ const LotCell = ({ line }: { line: ArchCartLine }) => (
           style={{
             fontSize: 9.5,
             fontWeight: 700,
-            color: '#B36B16',
+            color: AMBER_TEXT,
             background: '#FBF1E5',
             borderRadius: 4,
             padding: '1px 5px',
@@ -486,7 +507,7 @@ export const SOWizard = ({
   const canCreate = startOk && itemsOk && headerOk && splitOk && remanOk && priceOk;
 
   const step = STEPS[stepIndex];
-  const accent = mode === 'existing' ? '#D9822B' : ARCH_SURFACE.green;
+  const accent = mode === 'existing' ? EDIT_ACCENT : ARCH_SURFACE.green;
 
   const buildDraft = (): ArchOrderDraft => ({
     mode,
@@ -531,7 +552,7 @@ export const SOWizard = ({
             ] as [ArchOrderMode, string, string][]
           ).map(([m, title, sub]) => {
             const on = mode === m;
-            const col = m === 'existing' ? '#D9822B' : ARCH_SURFACE.green;
+            const col = m === 'existing' ? EDIT_ACCENT : ARCH_SURFACE.green;
             return (
               <button
                 key={m}
@@ -693,7 +714,7 @@ export const SOWizard = ({
           {mode === 'existing' && chosenOrder ? (
             <>
               Lines already on <strong>{chosenOrder.soNo}</strong> are marked{' '}
-              <span style={{ color: '#B36B16', fontWeight: 700 }}>On order</span>. Add lots from the grid or
+              <span style={{ color: AMBER_TEXT, fontWeight: 700 }}>On order</span>. Add lots from the grid or
               remove lines, then continue.
             </>
           ) : (
@@ -728,7 +749,7 @@ export const SOWizard = ({
             padding: '9px 12px',
             borderRadius: 9,
             background: '#FBF1E5',
-            border: '1px solid #D9822B',
+            border: `1px solid ${EDIT_ACCENT}`,
             fontSize: 11.5,
             color: '#7A4100',
             marginBottom: 12,
@@ -844,7 +865,7 @@ export const SOWizard = ({
             padding: '9px 12px',
             borderRadius: 9,
             background: '#FBF1E5',
-            border: '1px solid #D9822B',
+            border: `1px solid ${EDIT_ACCENT}`,
             fontSize: 11.5,
             color: '#7A4100',
             display: 'flex',
@@ -865,7 +886,7 @@ export const SOWizard = ({
               flexShrink: 0,
               padding: '5px 11px',
               borderRadius: 7,
-              border: '1px solid #D9822B',
+              border: `1px solid ${EDIT_ACCENT}`,
               background: '#fff',
               color: '#7A4100',
               fontSize: 11.5,
@@ -1288,7 +1309,7 @@ export const SOWizard = ({
                       {!(v > 0) ? 'Enter a quantity' : `Exceeds the ${formatBF(l.bf)} BF bundle`}
                     </span>
                   ) : (
-                    <span style={{ color: '#8F5612', fontWeight: 600 }}>
+                    <span style={{ color: AMBER_TEXT, fontWeight: 600 }}>
                       Split · +{fmtMoney(SPLIT_FEE, currency || 'USD', 0)} · bundle held
                     </span>
                   )}
@@ -1856,7 +1877,7 @@ export const SOWizard = ({
               badges.push(
                 <span
                   key="s"
-                  style={{ padding: '2px 7px', borderRadius: 5, fontSize: 10.5, fontWeight: 600, background: '#FFF8E1', color: '#B36B16', marginRight: 4 }}
+                  style={{ padding: '2px 7px', borderRadius: 5, fontSize: 10.5, fontWeight: 600, background: '#FFF8E1', color: AMBER_TEXT, marginRight: 4 }}
                 >
                   Split
                 </span>
@@ -1874,7 +1895,7 @@ export const SOWizard = ({
               badges.push(
                 <span
                   key="c"
-                  style={{ padding: '2px 7px', borderRadius: 5, fontSize: 10.5, fontWeight: 600, background: '#FBF1E5', color: '#B36B16' }}
+                  style={{ padding: '2px 7px', borderRadius: 5, fontSize: 10.5, fontWeight: 600, background: '#FBF1E5', color: AMBER_TEXT }}
                 >
                   Cut → {r.cutLength}
                 </span>
@@ -2137,7 +2158,7 @@ export const SOWizard = ({
               // #8F5612, not #B36B16. This is the line that tells the trader WHY
               // Continue is dead, and at 3.99:1 on the footer it was the least
               // readable text on the step. Same amber family, 5.1:1.
-              <span style={{ fontSize: 11.5, color: '#8F5612', fontWeight: 600 }}>
+              <span style={{ fontSize: 11.5, color: AMBER_TEXT, fontWeight: 600 }}>
                 {step.key === 'items'
                   ? 'Add at least one lot'
                   : step.key === 'customer'
