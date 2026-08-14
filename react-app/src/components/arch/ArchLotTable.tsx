@@ -2,7 +2,7 @@ import * as React from 'react';
 import { formatArchQty, formatBF, formatCostPerBF, uomSuffix } from '@/lib/archUom';
 import { isLotLocked, lockReason, lotQuantity, commitmentOn } from '@/lib/archLots';
 import { lotAllocation, lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
-import { ARCH_BUCKET_META, ARCH_SURFACE } from '@/components/arch/archColors';
+import { ARCH_BUCKET_META, ARCH_RESERVE_INK, ARCH_SURFACE } from '@/components/arch/archColors';
 import { TallyButton, TallyImageDialog } from '@/components/arch/TallyImageDialog';
 import { ArchReservedSection } from '@/components/arch/ArchReservedSection';
 import type { ArchSummaryRow, ArchDetailKey, ArchLot } from '@/types/arch';
@@ -61,7 +61,8 @@ const headerCellStyle: React.CSSProperties = {
   textAlign: 'left',
 };
 
-const ageColor = (days: number) => (days > 21 ? '#B22222' : days > 10 ? '#B36B16' : '#2E7D32');
+// #B36B16 measured 4.17:1 on white. #8F5612 is the same amber, AA-clear.
+const ageColor = (days: number) => (days > 21 ? '#B22222' : days > 10 ? '#8F5612' : '#2E7D32');
 
 export const ArchLotTable = ({
   row,
@@ -257,7 +258,7 @@ export const ArchLotTable = ({
                   style={{
                     fontSize: 11.5,
                     fontWeight: 600,
-                    color: showReserved ? reserveMeta.color : ARCH_SURFACE.textMid,
+                    color: showReserved ? ARCH_RESERVE_INK : ARCH_SURFACE.textMid,
                     whiteSpace: 'nowrap',
                   }}
                 >
@@ -268,10 +269,10 @@ export const ArchLotTable = ({
                   style={{
                     fontSize: 11,
                     fontWeight: 700,
-                    color: showReserved ? reserveMeta.color : ARCH_SURFACE.textLight,
+                    color: showReserved ? ARCH_RESERVE_INK : ARCH_SURFACE.textLight,
                   }}
                 >
-                  {formatBF(reservedTotal)} <span style={{ fontSize: 9.5, opacity: 0.7 }}>BF</span>
+                  {formatBF(reservedTotal)} <span style={{ fontSize: 9.5 }}>BF</span>
                 </span>
               </button>
             )}
@@ -450,7 +451,7 @@ export const ArchLotTable = ({
                                 gap: 4,
                                 fontSize: 10.5,
                                 fontWeight: 700,
-                                color: reserveMeta.color,
+                                color: ARCH_RESERVE_INK,
                                 background: `${reserveMeta.color}14`,
                                 border: `1px solid ${reserveMeta.color}44`,
                                 borderRadius: 4,
@@ -460,7 +461,7 @@ export const ArchLotTable = ({
                               <span
                                 style={{ width: 5, height: 5, borderRadius: '50%', background: reserveMeta.color }}
                               />
-                              {formatBF(reserved)} <span style={{ fontSize: 9, opacity: 0.75 }}>BF</span>
+                              {formatBF(reserved)} <span style={{ fontSize: 9 }}>BF</span>
                             </span>
                           ) : (
                             <span style={{ color: ARCH_SURFACE.border, fontSize: 11 }}>—</span>
@@ -495,10 +496,11 @@ export const ArchLotTable = ({
                             fontWeight: 700,
                             // Dimmed at zero so a fully committed bundle reads as
                             // "nothing here for you" at a glance rather than as a
-                            // figure to be scanned. Same grey the grid dims its
-                            // zeros to; the border colour is faint enough that a
-                            // lone 0 in it reads as a rendering artifact.
-                            color: freeBF > 0 ? '#1B5E20' : '#7A8FA3',
+                            // figure to be scanned. Must come from the palette, not
+                            // a literal: this cell had #7A8FA3 hard-coded and so
+                            // missed the AA fix, measuring 3.34:1 on the white rows
+                            // and 3.21 on the #F8FAFC ones.
+                            color: freeBF > 0 ? '#1B5E20' : ARCH_SURFACE.textLight,
                           }}
                           className="font-mono"
                         >

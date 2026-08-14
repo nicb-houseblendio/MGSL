@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { formatBF } from '@/lib/archUom';
 import { lotAllocation, formatShortDate } from '@/lib/archFixtures';
-import { ARCH_BUCKET_META, ARCH_SURFACE } from '@/components/arch/archColors';
+import { ARCH_BUCKET_META, ARCH_RESERVE_INK, ARCH_SURFACE } from '@/components/arch/archColors';
 import { TallyButton, TallyImageDialog } from '@/components/arch/TallyImageDialog';
 import type { ArchSummaryRow } from '@/types/arch';
 
@@ -25,7 +25,10 @@ interface ArchReservedSectionProps {
 const COLUMNS = ['Lot #', 'Container #', 'SO #', 'SO Creation Date', 'Reserved For', 'Ship Week', 'Customer', 'Trader'];
 
 export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchReservedSectionProps) => {
+  // `accent` paints fills — borders and tints, where contrast rules do not apply.
+  // Anything that becomes a glyph uses `ink`: the same orange is under AA as text.
   const accent = ARCH_BUCKET_META.reserve.color;
+  const ink = ARCH_RESERVE_INK;
   const [tallyOpen, setTallyOpen] = React.useState<string | null>(null);
 
   const rows = React.useMemo(
@@ -62,12 +65,18 @@ export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchRes
   };
 
   /** Older reservations are the ones worth chasing — colour by age. */
-  const ageColor = (days: number) => (days > 21 ? '#B22222' : days > 10 ? '#B36B16' : '#2E7D32');
+  // #B36B16 measured 4.17:1 on white — the same amber the SO wizard already had
+  // to darken to #8F5612 for exactly this reason.
+  const ageColor = (days: number) => (days > 21 ? '#B22222' : days > 10 ? '#8F5612' : '#2E7D32');
 
   return (
     <div
       style={{
         margin: '18px 0 6px',
+        // Opaque, deliberately. Everything below is tinted with alpha, and the
+        // modal body behind this is dark — without an opaque light base the
+        // tints composite over near-black and the panel inverts.
+        background: '#fff',
         border: `1px solid ${accent}44`,
         borderRadius: 10,
         overflow: 'hidden',
@@ -80,18 +89,21 @@ export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchRes
           alignItems: 'center',
           gap: 10,
           padding: '9px 12px',
-          background: `${accent}14`,
+          // #FDF1EB is `${accent}14` already flattened onto white. As an alpha
+          // tint it rendered on the dark modal body instead: the strip came out
+          // near-black while its own table below stayed light peach.
+          background: '#FDF1EB',
           borderBottom: `1px solid ${accent}33`,
         }}
       >
-        <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.8, textTransform: 'uppercase', color: accent }}>
+        <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.8, textTransform: 'uppercase', color: ink }}>
           Reserved
         </span>
         <span style={{ fontSize: 11.5, color: ARCH_SURFACE.textMid }}>
           {rows.length} lot{rows.length === 1 ? '' : 's'} of the on-hand stock above committed to sales orders
         </span>
-        <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 800, color: accent }} className="font-mono">
-          {formatBF(total)} <span style={{ fontSize: 9.5, opacity: 0.7 }}>BF</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 800, color: ink }} className="font-mono">
+          {formatBF(total)} <span style={{ fontSize: 9.5 }}>BF</span>
         </span>
       </div>
 
@@ -122,7 +134,7 @@ export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchRes
                   <td style={{ ...cell, fontSize: 11, color: ARCH_SURFACE.textMid }} className="font-mono">
                     {lot.containerNo || '—'}
                   </td>
-                  <td style={{ ...cell, fontWeight: 700, color: accent }} className="font-mono">
+                  <td style={{ ...cell, fontWeight: 700, color: ink }} className="font-mono">
                     {allocation.soNumber}
                   </td>
                   <td style={{ ...cell, color: ARCH_SURFACE.textMid }}>{formatShortDate(allocation.createdDate)}</td>
@@ -132,7 +144,7 @@ export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchRes
                   <td style={{ ...cell, color: ARCH_SURFACE.textMid }}>{formatShortDate(allocation.shipWeek)}</td>
                   <td style={cell}>{allocation.customer}</td>
                   <td style={{ ...cell, color: ARCH_SURFACE.textMid }}>{allocation.trader}</td>
-                  <td style={{ ...cell, textAlign: 'right', fontWeight: 700, color: accent }} className="font-mono">
+                  <td style={{ ...cell, textAlign: 'right', fontWeight: 700, color: ink }} className="font-mono">
                     {formatBF(qty)}
                   </td>
                   <td style={{ ...cell, textAlign: 'center', paddingLeft: 6, paddingRight: 10 }}>

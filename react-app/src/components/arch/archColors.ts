@@ -79,3 +79,17 @@ export const ARCH_BUCKET_META: Record<ArchDetailKey, { label: string; color: str
   inTransit: { label: 'In Transit', color: '#4A148C', bg: '#F3E5F5', icon: '\u{26F5}' },
   available: { label: 'Available', color: '#1B5E20', bg: '#E8F5E9', icon: '✅' },
 };
+
+/**
+ * Reserved orange for TEXT.
+ *
+ * `ARCH_BUCKET_META.reserve.color` (#E65100) is chosen to carry as a fill — dots,
+ * borders, bars — where contrast rules do not apply. As small text it measures
+ * 3.79:1 on white and 3.42 on its own 8% tint, both under AA, and the Rsvd badge
+ * is real data the trader reads off the lot row.
+ *
+ * #B23F00 is the same orange darkened one step: 5.83 on white, 5.26 on the tint.
+ * Use it wherever the reserve colour becomes a glyph; keep #E65100 for the dot,
+ * the border and the toggle bar.
+ */
+export const ARCH_RESERVE_INK = '#B23F00';

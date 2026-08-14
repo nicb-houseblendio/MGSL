@@ -133,7 +133,10 @@ export const DetailDrawerARCH = ({
             <div style={{ textAlign: 'right' }}>
               <div
                 style={{
-                  color: 'rgba(255,255,255,0.45)',
+                  // 0.45 measured 3.58:1 on this strip. Alpha is the whole
+                  // contrast budget on a dark surface — 0.72 reads as the same
+                  // quiet label and clears AA at 6.6.
+                  color: 'rgba(255,255,255,0.72)',
                   fontSize: 10,
                   textTransform: 'uppercase',
                   letterSpacing: 0.8,
@@ -177,7 +180,12 @@ export const DetailDrawerARCH = ({
                   alignItems: 'center',
                   gap: 2,
                   background: on ? 'var(--navy)' : 'transparent',
-                  color: on ? '#fff' : 'rgba(255,255,255,0.5)',
+                  // Inactive was 0.5 (4.04:1) and the figure below 0.4 (3.15:1).
+                  // These tabs are not decoration — the trader reads In Transit
+                  // and On Order straight off them without switching. Active vs
+                  // inactive is still carried by the navy fill, the 700 weight,
+                  // the 3px underline and the figure's hue.
+                  color: on ? '#fff' : 'rgba(255,255,255,0.72)',
                   fontSize: 12.5,
                   fontWeight: on ? 700 : 600,
                   borderBottom: on ? `3px solid ${color}` : '3px solid transparent',
@@ -201,11 +209,14 @@ export const DetailDrawerARCH = ({
                   style={{
                     fontSize: 11,
                     fontWeight: 700,
-                    color: on ? ARCH_BUCKET_META[key].bg : 'rgba(255,255,255,0.4)',
+                    color: on ? ARCH_BUCKET_META[key].bg : 'rgba(255,255,255,0.72)',
                   }}
                 >
                   {formatArchQty(row[key] ?? 0, uom)}{' '}
-                  <span style={{ fontSize: 9, opacity: 0.7 }}>{uomSuffix(uom)}</span>
+                  {/* opacity here multiplies the alpha above, so 0.7 took the
+                      inactive suffix down to ~0.28 effective. 0.85 keeps the
+                      unit subordinate without dropping it under AA. */}
+                  <span style={{ fontSize: 9, opacity: 0.85 }}>{uomSuffix(uom)}</span>
                 </span>
               </button>
             );

@@ -73,7 +73,10 @@ export const lockReason = (
     return {
       badge: 'Rsvd',
       detail: `${Math.round(lot.reserve)} BF reserved against a sales order`,
-      color: '#E65100',
+      // ARCH_RESERVE_INK. The bucket's own #E65100 is 3.79:1 on the white lot
+      // rows — fine as a fill, under AA as a glyph, and this badge is a glyph.
+      // Kept as a literal so lib/ does not reach up into components/.
+      color: '#B23F00',
     };
   }
   if ((lot.readyToBuild || 0) > 0) {

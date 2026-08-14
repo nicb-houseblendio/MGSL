@@ -46,7 +46,11 @@ import type {
 
 /* ── Palette, lifted from the prototype ─────────────────────────────────────*/
 
-const TODO = { accent: '#EAB308', soft: '#FEFCE8', head: '#FDF0B8', dark: '#A16207' };
+// `dark` is the prototype's #A16207 nudged down one step. On the #FDF0B8 header
+// it measured 4.30:1 — 0.2 under AA, across all 11 instances including every
+// "Enter split" button, which is the control this screen exists for. #965C06
+// holds the same amber and clears at 4.79.
+const TODO = { accent: '#EAB308', soft: '#FEFCE8', head: '#FDF0B8', dark: '#965C06' };
 const DONE = { accent: '#22C55E', soft: '#F0FDF4', head: '#C5EFD3', dark: '#15803D' };
 
 const th: React.CSSProperties = {
@@ -55,7 +59,9 @@ const th: React.CSSProperties = {
   fontWeight: 700,
   letterSpacing: '0.06em',
   textTransform: 'uppercase',
-  color: '#7A8FA3',
+  // From the palette, not a literal — hard-coding #7A8FA3 here is what made these
+  // column headers miss the AA fix (3.34:1 on the white they sit on).
+  color: ARCH_SURFACE.textLight,
   background: '#fff',
   borderBottom: '1px solid #E2E8F0',
   whiteSpace: 'nowrap',
@@ -438,7 +444,10 @@ export const WarehouseSplitScreen = () => {
           </div>
           <div>
             <div style={{ color: '#fff', fontSize: 12.5, fontWeight: 700, lineHeight: 1.1 }}>CWP</div>
-            <div style={{ color: '#7A8FA3', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.09em' }}>
+            {/* Light-on-dark, so the palette's textLight would go the wrong way
+                here. #7A8FA3 measured 3.32:1 against the bar's lighter end;
+                #9FB3C8 gives 5.15 and still reads as secondary to the CWP above. */}
+            <div style={{ color: '#9FB3C8', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.09em' }}>
               ARCHITECTURAL
             </div>
           </div>
