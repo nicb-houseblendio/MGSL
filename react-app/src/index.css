@@ -24,7 +24,12 @@
     --attr-hover: #E8F5EF;
     /* Metric colors */
     --metric-onhand: #1B5E20;
-    --metric-committed: #E65100;
+    /* Was #E65100: 3.79:1 on white rows and 3.62 on the #F8FAFC stripe, under
+       the 4.5 AA bar at the sizes the grids use. It reads as a fill colour but
+       every use of it is a figure. #B23F00 is the same orange one step darker —
+       5.83 on white, 5.57 on the stripe. Shared by ARCH Reserved and the
+       IND/MTL Committed columns. */
+    --metric-committed: #B23F00;
     --metric-outbound: #B22222;
     --metric-onorder: #0D47A1;
     --metric-intransit: #4A148C;
@@ -67,7 +72,12 @@
     --metric-committed: #FF9800;
     --metric-outbound: #EF5350;
     --metric-onorder: #42A5F5;
-    --metric-intransit: #AB47BC;
+    /* Was #AB47BC, the worst value on the dark grid: 2.30:1 on the #1A3D63 rows
+       and 3.17 on the #0F2641 stripe. #CE93D8 is the lighter variant already
+       used for the same bucket in the totals footer (ARCH_FOOTER_COLORS), so
+       the two now agree: 4.64 and 6.40. Dark theme only — the light value
+       (#4A148C on white) was never the problem. */
+    --metric-intransit: #CE93D8;
     --metric-readytobuild: #26C6DA;
     --background-shadcn: 220 30% 8%;
     --foreground: 210 40% 98%;
