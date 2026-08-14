@@ -1239,7 +1239,19 @@ export const SOWizard = ({
                     type="number"
                     value={s.targetBF}
                     disabled={!s.on}
-                    min={1}
+                    /*
+                      step="any" and min 0, not min 1 with an implied step of 1.
+                      Board feet in hardwood are genuinely fractional — a bundle
+                      re-tallied after the saw comes back 1,732.5, not 1,733 —
+                      and with no step declared the browser defaults to 1 and
+                      marks every decimal stepMismatch. 100.5 was reported valid
+                      by our own check, drawn with a green border, and allowed
+                      past Continue, while the input was :invalid to the browser
+                      and would raise a native "nearest valid values are..."
+                      bubble. Our own >0 check still rejects 0 and negatives.
+                    */
+                    min={0}
+                    step="any"
                     max={l.bf}
                     placeholder={formatBF(l.bf)}
                     onChange={(e) => setSp(l.key, { targetBF: e.target.value })}
@@ -1252,6 +1264,9 @@ export const SOWizard = ({
                     }}
                   />
                 </td>
+                {/* Status colours: #8F5612 for the held/fee line, matching the
+                    footer hint. #B36B16 measured 4.17:1 here and this is what
+                    tells the trader the bundle goes on hold and the fee bites. */}
                 <td style={{ ...td, fontSize: 11.5 }}>
                   {!s.on ? (
                     <span style={{ color: ARCH_SURFACE.textLight }}>Full bundle</span>
@@ -1260,7 +1275,7 @@ export const SOWizard = ({
                       {!(v > 0) ? 'Enter a quantity' : `Exceeds the ${formatBF(l.bf)} BF bundle`}
                     </span>
                   ) : (
-                    <span style={{ color: '#B36B16', fontWeight: 600 }}>
+                    <span style={{ color: '#8F5612', fontWeight: 600 }}>
                       Split · +{fmtMoney(SPLIT_FEE, currency || 'USD', 0)} · bundle held
                     </span>
                   )}
@@ -1531,6 +1546,11 @@ export const SOWizard = ({
       <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
         <thead>
           <tr>
+            {/* Location, as the prototype's pricing table has. Price per BF is
+                not location-blind — incoterms and freight differ between CWP
+                Prevost, Buffalo and North Carolina, and an order can draw from
+                all three at once. */}
+            <th style={th}>Location</th>
             <th style={th}>Item / Lot</th>
             <th style={{ ...th, textAlign: 'right' }}>BF</th>
             <th style={{ ...th, textAlign: 'right' }}>Cost / BF</th>
@@ -1546,6 +1566,9 @@ export const SOWizard = ({
             const entered = (parseFloat(pr(l.key)) || 0) > 0;
             return (
               <tr key={l.key} style={isLowPriced(l) ? { background: '#FFFBEB' } : undefined}>
+                <td style={{ ...td, fontSize: 11.5, color: ARCH_SURFACE.textMid, whiteSpace: 'nowrap' }}>
+                  {l.locationName}
+                </td>
                 <LotCell line={l} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
                   {formatBF(e.bf)}
@@ -1589,7 +1612,10 @@ export const SOWizard = ({
             not one line at a time. */}
         <tfoot>
           <tr style={{ background: '#F1F5FA' }}>
+            {/* colSpan 2 — Location plus Item/Lot — so the BF total stays under
+                the BF column now that Location leads the table. */}
             <td
+              colSpan={2}
               style={{
                 ...td,
                 fontWeight: 700,
