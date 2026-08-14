@@ -1058,6 +1058,16 @@ export const SOWizard = ({
               </button>
             ))}
           </div>
+          {/* The prototype says this, and it is worth saying: with one button
+              showing, a trader cannot tell whether the customer is USD-only or
+              the screen simply has not loaded their currencies. */}
+          {customer && (
+            <div style={{ fontSize: 11, color: ARCH_SURFACE.textMid, marginTop: 6 }}>
+              {currenciesFor(customer).length > 1
+                ? `This customer can be billed in ${currenciesFor(customer).join(' or ')}.`
+                : `This customer is billed in ${currenciesFor(customer)[0]} only.`}
+            </div>
+          )}
         </div>
         <div style={{ flex: '1 1 200px' }}>
           <label style={label}>Ship date *</label>
@@ -2055,7 +2065,10 @@ export const SOWizard = ({
 
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
             {!stepValid[step.key] && (
-              <span style={{ fontSize: 11.5, color: '#B36B16' }}>
+              // #8F5612, not #B36B16. This is the line that tells the trader WHY
+              // Continue is dead, and at 3.99:1 on the footer it was the least
+              // readable text on the step. Same amber family, 5.1:1.
+              <span style={{ fontSize: 11.5, color: '#8F5612', fontWeight: 600 }}>
                 {step.key === 'items'
                   ? 'Add at least one lot'
                   : step.key === 'customer'
