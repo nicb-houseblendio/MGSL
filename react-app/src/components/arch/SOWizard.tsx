@@ -315,26 +315,39 @@ export const SOWizard = ({
    */
   const [droppedExisting, setDroppedExisting] = React.useState<Set<string>>(() => new Set());
 
+  /**
+   * The order's lines that survive after drops. Everything downstream keys off
+   * this, NOT off chosenOrder.lines.
+   *
+   * The distinction matters: the duplicate guard used the order's ORIGINAL
+   * lines, so dropping a line the trader also had in their cart made that
+   * bundle disappear from the order entirely — the order's copy was dropped
+   * and the cart's copy stayed suppressed as "already on this order", which by
+   * then was false. Dropping once cost it twice, and the notice kept insisting
+   * the bundle was on an order it had just been taken off.
+   */
+  const keptExisting = React.useMemo(
+    () => (chosenOrder ? chosenOrder.lines.filter((l) => !droppedExisting.has(l.key)) : []),
+    [chosenOrder, droppedExisting]
+  );
+
   const lines = React.useMemo<ArchCartLine[]>(() => {
     if (mode !== 'existing' || !chosenOrder) return cart;
-    const onOrder = new Set(chosenOrder.lines.map(bundleId));
-    return [
-      ...chosenOrder.lines.filter((l) => !droppedExisting.has(l.key)),
-      ...cart.filter((l) => !onOrder.has(bundleId(l))),
-    ];
-  }, [mode, chosenOrder, cart, droppedExisting]);
+    const onOrder = new Set(keptExisting.map(bundleId));
+    return [...keptExisting, ...cart.filter((l) => !onOrder.has(bundleId(l)))];
+  }, [mode, chosenOrder, cart, keptExisting]);
 
   /** Dropping is per-order, so switching orders must not carry the set over. */
   React.useEffect(() => {
     setDroppedExisting(new Set());
   }, [existingSO]);
 
-  /** Cart lots skipped because the chosen order already has them — surfaced on Items. */
+  /** Cart lots skipped because the order STILL has them — surfaced on Items. */
   const alreadyOnOrder = React.useMemo(() => {
     if (mode !== 'existing' || !chosenOrder) return [];
-    const onOrder = new Set(chosenOrder.lines.map(bundleId));
+    const onOrder = new Set(keptExisting.map(bundleId));
     return cart.filter((l) => onOrder.has(bundleId(l)));
-  }, [mode, chosenOrder, cart]);
+  }, [mode, chosenOrder, cart, keptExisting]);
 
   const sp = (k: string) => split[k] || emptySplit();
   const rm = (k: string) => reman[k] || emptyReman();
