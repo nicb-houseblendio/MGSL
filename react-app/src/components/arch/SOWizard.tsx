@@ -308,11 +308,26 @@ export const SOWizard = ({
    * grid. Without this filter, adding it produced two rows for one physical
    * bundle, doubling its board feet and revenue on every downstream step.
    */
+  /**
+   * Lines of the chosen order the trader has dropped on the Items step. Held
+   * separately from `cart` because they never came from the cart — the cart is
+   * bundles picked off the grid, these arrive with the order.
+   */
+  const [droppedExisting, setDroppedExisting] = React.useState<Set<string>>(() => new Set());
+
   const lines = React.useMemo<ArchCartLine[]>(() => {
     if (mode !== 'existing' || !chosenOrder) return cart;
     const onOrder = new Set(chosenOrder.lines.map(bundleId));
-    return [...chosenOrder.lines, ...cart.filter((l) => !onOrder.has(bundleId(l)))];
-  }, [mode, chosenOrder, cart]);
+    return [
+      ...chosenOrder.lines.filter((l) => !droppedExisting.has(l.key)),
+      ...cart.filter((l) => !onOrder.has(bundleId(l))),
+    ];
+  }, [mode, chosenOrder, cart, droppedExisting]);
+
+  /** Dropping is per-order, so switching orders must not carry the set over. */
+  React.useEffect(() => {
+    setDroppedExisting(new Set());
+  }, [existingSO]);
 
   /** Cart lots skipped because the chosen order already has them — surfaced on Items. */
   const alreadyOnOrder = React.useMemo(() => {
@@ -742,11 +757,15 @@ export const SOWizard = ({
                   {fmtMoney(l.costPerBF)}
                 </td>
                 <td style={{ ...td, textAlign: 'center' }}>
-                  {!l.existing && (
+                  {(
                     <button
                       type="button"
-                      onClick={() => onRemoveLine(l.key)}
-                      title="Remove this lot"
+                      onClick={() =>
+                        l.existing
+                          ? setDroppedExisting((s) => new Set(s).add(l.key))
+                          : onRemoveLine(l.key)
+                      }
+                      title={l.existing ? `Drop this line from ${existingSO}` : 'Remove this lot'}
                       style={{
                         width: 24,
                         height: 24,
@@ -766,7 +785,84 @@ export const SOWizard = ({
               </tr>
             ))}
           </tbody>
+          {/* Totals, as the prototype has. Without it the trader has to add the
+              rows up to know what the order now carries after adding or dropping. */}
+          <tfoot>
+            <tr style={{ background: '#F1F5FA' }}>
+              <td
+                colSpan={2}
+                style={{
+                  ...td,
+                  fontWeight: 700,
+                  fontSize: 10.5,
+                  textTransform: 'uppercase',
+                  letterSpacing: 0.4,
+                  color: ARCH_SURFACE.textMid,
+                  borderTop: '2px solid #CBD5E1',
+                }}
+              >
+                {lines.length} lot{lines.length === 1 ? '' : 's'} ·{' '}
+                {new Set(lines.map((l) => l.itemCode)).size} item
+                {new Set(lines.map((l) => l.itemCode)).size === 1 ? '' : 's'}
+              </td>
+              <td
+                style={{
+                  ...td,
+                  textAlign: 'right',
+                  fontWeight: 800,
+                  color: ARCH_SURFACE.navy,
+                  borderTop: '2px solid #CBD5E1',
+                }}
+                className="font-mono"
+              >
+                {formatBF(lines.reduce((s, l) => s + l.bf, 0))}
+              </td>
+              <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
+              <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
+            </tr>
+          </tfoot>
         </table>
+      )}
+
+      {droppedExisting.size > 0 && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: '9px 12px',
+            borderRadius: 9,
+            background: '#FBF1E5',
+            border: '1px solid #D9822B',
+            fontSize: 11.5,
+            color: '#7A4100',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            {droppedExisting.size} line{droppedExisting.size === 1 ? '' : 's'} dropped from{' '}
+            {existingSO}. Nothing is removed in NetSuite — this records the intent only.
+          </span>
+          {/* Dropping an order's own line is destructive-looking and there is no
+              other way back short of restarting the wizard. */}
+          <button
+            type="button"
+            onClick={() => setDroppedExisting(new Set())}
+            style={{
+              flexShrink: 0,
+              padding: '5px 11px',
+              borderRadius: 7,
+              border: '1px solid #D9822B',
+              background: '#fff',
+              color: '#7A4100',
+              fontSize: 11.5,
+              fontWeight: 700,
+              cursor: 'pointer',
+            }}
+          >
+            Undo
+          </button>
+        </div>
       )}
     </div>
   );
@@ -781,14 +877,39 @@ export const SOWizard = ({
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ flex: '2 1 320px' }}>
           <label style={label}>Customer *</label>
-          <select value={customer} onChange={(e) => pickCustomer(e.target.value)} style={field(!!customer)}>
-            <option value="">— Select customer —</option>
-            {CUSTOMERS.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+          {/*
+            LOCKED when editing an existing order. It was a live dropdown, so a
+            trader could reassign SO-41468 from Atlas Millwork to someone else —
+            which this wizard cannot do and would never mean to. The prototype
+            renders it read-only in this mode for the same reason, and the Review
+            step says outright that customer and terms come from the order.
+          */}
+          {mode === 'existing' ? (
+            <div
+              style={{
+                ...field(true),
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+                background: '#F8FAFC',
+              }}
+            >
+              <span style={{ fontWeight: 600 }}>{customer || '—'}</span>
+              <span style={{ fontSize: 11, color: ARCH_SURFACE.textMid, whiteSpace: 'nowrap' }}>
+                from {existingSO}
+              </span>
+            </div>
+          ) : (
+            <select value={customer} onChange={(e) => pickCustomer(e.target.value)} style={field(!!customer)}>
+              <option value="">— Select customer —</option>
+              {CUSTOMERS.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         <div style={{ flex: '1 1 220px' }}>
           <label style={label}>Customer PO</label>
@@ -1453,7 +1574,100 @@ export const SOWizard = ({
             );
           })}
         </tbody>
+        {/* Order total, as the prototype has. Pricing is where the trader decides
+            whether the deal is worth doing, and that decision is about the ORDER,
+            not one line at a time. */}
+        <tfoot>
+          <tr style={{ background: '#F1F5FA' }}>
+            <td
+              style={{
+                ...td,
+                fontWeight: 700,
+                fontSize: 10.5,
+                textTransform: 'uppercase',
+                letterSpacing: 0.4,
+                color: ARCH_SURFACE.textMid,
+                borderTop: '2px solid #CBD5E1',
+              }}
+            >
+              Order total
+            </td>
+            <td
+              style={{ ...td, textAlign: 'right', fontWeight: 800, color: ARCH_SURFACE.navy, borderTop: '2px solid #CBD5E1' }}
+              className="font-mono"
+            >
+              {formatBF(totals.bf)}
+            </td>
+            <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
+            <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
+            <td
+              style={{ ...td, textAlign: 'right', fontWeight: 800, borderTop: '2px solid #CBD5E1' }}
+              className="font-mono"
+            >
+              {fmtMoney(totals.revenue, currency || 'USD', 0)}
+            </td>
+            <td
+              style={{
+                ...td,
+                textAlign: 'right',
+                fontWeight: 800,
+                color: marginColor(totals.marginPct),
+                borderTop: '2px solid #CBD5E1',
+              }}
+              className="font-mono"
+            >
+              {fmtMoney(totals.profit, currency || 'USD', 0)}
+            </td>
+            <td
+              style={{
+                ...td,
+                textAlign: 'right',
+                fontWeight: 800,
+                color: marginColor(totals.marginPct),
+                borderTop: '2px solid #CBD5E1',
+              }}
+              className="font-mono"
+            >
+              {fmtPct(totals.marginPct)}
+            </td>
+          </tr>
+        </tfoot>
       </table>
+
+      {/* The prototype spells the arithmetic out here. Worth keeping: the margin
+          is the number the trader is judged on, and three of its four inputs are
+          placeholder rates, so it has to be auditable rather than a black box. */}
+      <div
+        style={{
+          marginTop: 14,
+          padding: '11px 14px',
+          borderRadius: 9,
+          background: '#F8FAFC',
+          border: '1px solid #E2E8F0',
+          fontSize: 11.5,
+          color: ARCH_SURFACE.textMid,
+          lineHeight: 1.6,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 9.5,
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: 0.5,
+            color: ARCH_SURFACE.text,
+            marginBottom: 4,
+          }}
+        >
+          How profit is calculated
+        </div>
+        Profit = Revenue − Lot cost − Services − Operations &amp; insurance.
+        <br />
+        Revenue = BF × price/BF · Lot cost = BF × cost/BF · Services = ${SPLIT_FEE} per split lot + $
+        {PLANING_RATE.toFixed(2)}/BF planing + ${CUT_RATE.toFixed(2)}/BF cutting ·
+        Operations &amp; insurance = {(OPS_INSURANCE_RATE * 100).toFixed(1)}% of lot cost ·
+        Margin % = Profit ÷ Revenue
+      </div>
     </div>
   );
 

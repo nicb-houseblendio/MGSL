@@ -134,7 +134,13 @@ export const ArchOrderDraftDialog = ({ draft, onClose }: ArchOrderDraftDialogPro
                 >
                   {k}
                 </div>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>{v}</div>
+                {/* Colour PINNED. Inheriting it put the dark theme's near-white
+                    foreground (#EEF1F6) on this panel's #F8FAFC — contrast 1.08,
+                    i.e. all eight values invisible, while the labels above them
+                    stayed readable because they set a colour explicitly. Any
+                    text on a light surface in this app must state its own
+                    colour; the app foreground follows the OS theme. */}
+                <div style={{ fontSize: 12, fontWeight: 600, color: ARCH_SURFACE.text }}>{v}</div>
               </div>
             ))}
           </div>
