@@ -293,15 +293,23 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
         >
           <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
             {/* Declared once, so every group sits on the same grid. */}
-            {/* Customer and Location are BOTH unsized, so they split the slack
-                evenly. Sizing only Customer made it absorb every spare pixel and
-                left a void in the middle of every row on a wide screen. */}
+            {/*
+              EVERY column is sized. Under `table-layout: fixed`, a column left
+              `auto` takes the ENTIRE surplus before any sized column gets a
+              pixel — so with Customer and Location unsized, going full width
+              dumped roughly 420px into each and opened two voids mid-row.
+              Once all ten carry a width the surplus is shared in proportion,
+              which is what the Hardwood grid does (it sizes every column and
+              sets minWidth to their sum) and why it spreads evenly.
+              These numbers are content widths, not a layout: the ratios between
+              them are what survives at 2560px.
+            */}
             <colgroup>
               <col style={{ width: 34 }} />
               <col style={{ width: 158 }} />
               <col style={{ width: 118 }} />
-              <col />
-              <col />
+              <col style={{ width: 230 }} />
+              <col style={{ width: 190 }} />
               <col style={{ width: 92 }} />
               <col style={{ width: 100 }} />
               <col style={{ width: 58 }} />
