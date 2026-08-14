@@ -160,7 +160,17 @@ export const FilterPanel = ({
         >
           <div className="px-5 pb-3.5 border-t border-[#E2E8F0]">
             <div className="flex gap-3 pt-3">
-              <div className="grid flex-1 gap-x-3 gap-y-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
+              {/*
+                auto-FIT, not auto-fill. auto-fill keeps the empty tracks it
+                created, so `1fr` has nothing left to hand the real fields and
+                they sit at the 180px minimum. At 2560 the row fits 12 tracks:
+                IND has exactly 12 filters and filled them, which is why it
+                looked right, but MTL (9) left ~580px blank and ARCH (6) left
+                ~1,164px — white, since an open panel is #FFFFFF. auto-fit
+                collapses the empty tracks so the fields share the whole row.
+                IND is unaffected: 12 items in 12 tracks collapses nothing.
+              */}
+              <div className="grid flex-1 gap-x-3 gap-y-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
                 {allFilters.map((key) => (
                   <FilterField
                     key={key}
