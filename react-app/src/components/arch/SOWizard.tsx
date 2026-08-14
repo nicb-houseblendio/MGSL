@@ -1728,13 +1728,26 @@ export const SOWizard = ({
                 fontWeight: 700,
                 textTransform: 'uppercase',
                 letterSpacing: 0.5,
-                color: ARCH_SURFACE.textLight,
+                // textMid, not textLight. Every other label in this wizard uses
+                // textMid; Review was the only step on textLight, which is 3.19:1
+                // on this panel — under the 4.5 needed at this size, and the
+                // labels here are the hardest to read in the whole flow despite
+                // being on the last screen before the order is committed.
+                color: ARCH_SURFACE.textMid,
                 marginBottom: 3,
               }}
             >
               {k}
             </div>
             <div style={{ fontSize: 12.5, fontWeight: 600, color: ARCH_SURFACE.text }}>{v}</div>
+            {/* The prototype carries the commission split through to Review.
+                It is decided on the Customer step and never restated, so this
+                was the one place the trader could not check it before creating. */}
+            {k === 'Sales team' && (SALES_TEAMS[salesTeam] || []).length > 0 && (
+              <div style={{ fontSize: 10, color: ARCH_SURFACE.textMid, marginTop: 2 }}>
+                {SALES_TEAMS[salesTeam].map((mem) => `${mem.name} ${mem.pct}%`).join(' · ')}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -1742,6 +1755,10 @@ export const SOWizard = ({
       <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
         <thead>
           <tr>
+            {/* Location, as the prototype's Review has. An order can draw from
+                CWP Prevost, Buffalo and North Carolina at once, and this was the
+                only step that never said where a line ships from. */}
+            <th style={th}>Location</th>
             <th style={th}>Item / Lot</th>
             <th style={th}>Services</th>
             <th style={{ ...th, textAlign: 'right' }}>BF</th>
@@ -1785,6 +1802,9 @@ export const SOWizard = ({
               );
             return (
               <tr key={l.key}>
+                <td style={{ ...td, fontSize: 11.5, color: ARCH_SURFACE.textMid, whiteSpace: 'nowrap' }}>
+                  {l.locationName}
+                </td>
                 <LotCell line={l} />
                 <td style={td}>{badges.length ? badges : <span style={{ color: ARCH_SURFACE.textLight }}>—</span>}</td>
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
@@ -1846,6 +1866,45 @@ export const SOWizard = ({
           </div>
         ))}
       </div>
+
+      {/*
+        A losing line can hide behind a healthy total. On the case that prompted
+        this — one line at $2.50/BF against $3.00 cost, losing $826 — the strip
+        above still read $1,744 and 21.8% in green, and the strip is what the eye
+        goes to on the last screen before the order is created. The Pricing step
+        already flags these; Review is where it actually costs money to miss one.
+        Warns only, and names the lines so the trader can go back to them.
+      */}
+      {(lowPricedLines.length > 0 || economics.some((e) => e.profit < 0)) && (
+        <div
+          style={{
+            padding: '11px 14px',
+            borderRadius: 9,
+            border: '1px solid #FDE68A',
+            background: '#FEF9C3',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 10,
+          }}
+        >
+          <span style={{ fontSize: 16, lineHeight: 1 }}>⚠</span>
+          <div style={{ flex: 1, fontSize: 12.5, color: '#713F12', lineHeight: 1.5 }}>
+            <strong>
+              {economics.filter((e) => e.profit < 0).length > 0
+                ? `${economics.filter((e) => e.profit < 0).length} ${
+                    economics.filter((e) => e.profit < 0).length === 1 ? 'line loses' : 'lines lose'
+                  } money on this order`
+                : `${lowPricedLines.length} line${lowPricedLines.length === 1 ? '' : 's'} priced under the trigger`}
+            </strong>{' '}
+            — the order total above can still look healthy while an individual line does not.{' '}
+            {lines
+              .filter((l, i) => economics[i].profit < 0 || isLowPriced(l))
+              .map((l) => l.lotNo)
+              .join(', ')}
+            . Go <strong>Back</strong> to Pricing to change it, or create the order as it stands.
+          </div>
+        </div>
+      )}
 
       <ProvisionalNote>
         <strong>Create does not write to NetSuite yet.</strong> It assembles the order and hands it back for
