@@ -175,6 +175,28 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
   const totalSales = visible.reduce((s, o) => s + orderRevenue(o), 0);
   const totalProfit = visible.reduce((s, o) => s + orderProfit(o), 0);
 
+  /**
+   * Currencies actually present in what is on screen.
+   *
+   * Board feet add up across anything. Money does not, and this view summed it
+   * as though it did: every money total added order revenue regardless of
+   * currency and then labelled the result USD. It is right today only because
+   * the fixtures hand every order USD — `currenciesFor(...)[0]` is always the
+   * first entry. The customer record already offers CAD, the SO wizard already
+   * lets a trader pick it, and the client's own prototype has CAD orders on its
+   * Open Sales Orders tab, so the first real CAD order would have produced a
+   * wrong number that looked entirely plausible.
+   *
+   * Rather than invent a conversion rate nobody has agreed, say so: one
+   * currency prints normally, more than one is called out instead of silently
+   * added together.
+   */
+  const currenciesPresent = [...new Set(visible.map((o) => o.currency))].sort();
+  const mixedCurrency = currenciesPresent.length > 1;
+  const soleCurrency = currenciesPresent[0] || 'USD';
+  const money = (n: number) =>
+    mixedCurrency ? 'Mixed' : `$${Math.round(n).toLocaleString('en-US')}`;
+
   const control: React.CSSProperties = {
     height: 32,
     padding: '0 11px',
@@ -248,8 +270,16 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'stretch', gap: 0 }}>
           {[
             { label: 'Total BF', value: formatBF(totalBF), mono: true },
-            { label: 'Sales', value: `$${Math.round(totalSales).toLocaleString('en-US')}`, mono: true },
-            { label: 'Est. profit', value: `$${Math.round(totalProfit).toLocaleString('en-US')}`, mono: true },
+            {
+              label: mixedCurrency ? 'Sales · mixed currency' : `Sales · ${soleCurrency}`,
+              value: money(totalSales),
+              mono: true,
+            },
+            {
+              label: mixedCurrency ? 'Est. profit · mixed' : `Est. profit · ${soleCurrency}`,
+              value: money(totalProfit),
+              mono: true,
+            },
           ].map((s, i) => (
             <div
               key={s.label}
@@ -590,12 +620,36 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                       <td style={{ ...num, color: ARCH_SURFACE.textMid }} className="font-mono">
                         {subItems}
                       </td>
-                      <td style={{ ...num, fontWeight: 700 }} className="font-mono">
-                        <Money n={subSales} currency="USD" />
-                      </td>
-                      <td style={{ ...num, fontWeight: 700, paddingRight: 14 }} className="font-mono">
-                        <Money n={subProfit} currency="USD" />
-                      </td>
+                      {/* Currency DERIVED from this trader's own orders, not the
+                          hard-coded "USD" that was here. A trader holding one
+                          USD and one CAD order had both added together and the
+                          result stamped USD. */}
+                      {(() => {
+                        const cur = [...new Set(list.map((o) => o.currency))];
+                        const mixed = cur.length > 1;
+                        return (
+                          <>
+                            <td style={{ ...num, fontWeight: 700 }} className="font-mono">
+                              {mixed ? (
+                                <span style={{ color: ARCH_SURFACE.textMid }} title={`Orders in ${cur.join(' and ')} — not summed`}>
+                                  Mixed
+                                </span>
+                              ) : (
+                                <Money n={subSales} currency={cur[0] || 'USD'} />
+                              )}
+                            </td>
+                            <td style={{ ...num, fontWeight: 700, paddingRight: 14 }} className="font-mono">
+                              {mixed ? (
+                                <span style={{ color: ARCH_SURFACE.textMid }} title={`Orders in ${cur.join(' and ')} — not summed`}>
+                                  Mixed
+                                </span>
+                              ) : (
+                                <Money n={subProfit} currency={cur[0] || 'USD'} />
+                              )}
+                            </td>
+                          </>
+                        );
+                      })()}
                     </tr>
                   </tbody>
                 );
