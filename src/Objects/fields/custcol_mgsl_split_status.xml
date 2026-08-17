@@ -1,0 +1,17 @@
+<transactioncolumncustomfield scriptid="custcol_mgsl_split_status">
+  <accesslevel>2</accesslevel>
+  <applyformatting>T</applyformatting>
+  <colsale>T</colsale>
+  <defaultchecked>F</defaultchecked>
+  <description>Set by the system, not by hand. Pending from the moment the trader flags the split; Done once the server has posted the Inventory Adjustment, trued up this line and released the remainder. Read-only on purpose: this is a state machine and hand-editing it would strand a held bundle. NOTE: a transactioncolumncustomfield cannot be DISABLED or INLINE in SDF, both are rejected at validation, so read-only is enforced by the Split Capture client script instead of by this definition.</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>SELECT</fieldtype>
+  <help>Maintained automatically. Pending means the warehouse still has to do the physical split.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>Split Status</label>
+  <searchlevel>2</searchlevel>
+  <selectrecordtype>[scriptid=customlist_mgsl_split_status]</selectrecordtype>
+  <storevalue>T</storevalue>
+</transactioncolumncustomfield>

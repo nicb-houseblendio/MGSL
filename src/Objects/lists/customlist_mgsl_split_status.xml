@@ -1,0 +1,16 @@
+<customlist scriptid="customlist_mgsl_split_status">
+  <name>MGSL Split Status</name>
+  <description>Lifecycle of a trader-flagged bundle split on a Sales Order line. Pending = the trader has flagged the split and the source bundle is held; nothing exists in inventory yet. Done = the warehouse keyed the actual quantities and the server has created the child lot, trued up the Sales Order line and released the remainder.</description>
+  <isinactive>F</isinactive>
+  <isordered>T</isordered>
+  <customvalues>
+    <customvalue scriptid="val_pending">
+      <value>Pending</value>
+      <isinactive>F</isinactive>
+    </customvalue>
+    <customvalue scriptid="val_done">
+      <value>Done</value>
+      <isinactive>F</isinactive>
+    </customvalue>
+  </customvalues>
+</customlist>

@@ -1,0 +1,16 @@
+<transactioncolumncustomfield scriptid="custcol_mgsl_split">
+  <accesslevel>2</accesslevel>
+  <applyformatting>T</applyformatting>
+  <colsale>T</colsale>
+  <defaultchecked>F</defaultchecked>
+  <description>Ticked by the trader when this line sells only part of a physical bundle. Holds the WHOLE source bundle out of availability until the warehouse completes the split, because the true remainder is unknown until the bundle is opened.</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>CHECKBOX</fieldtype>
+  <help>Tick this when the customer is taking part of a bundle rather than the whole thing. Enter the board feet to pick in Split BF to Pick. The entire bundle is held until the warehouse records the actual quantities.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>Split Bundle</label>
+  <searchlevel>2</searchlevel>
+  <storevalue>T</storevalue>
+</transactioncolumncustomfield>

@@ -1,0 +1,17 @@
+<transactioncolumncustomfield scriptid="custcol_mgsl_split_bf">
+  <accesslevel>2</accesslevel>
+  <applyformatting>T</applyformatting>
+  <colsale>T</colsale>
+  <defaultchecked>F</defaultchecked>
+  <description>Board feet the customer is taking from the source bundle. A request, not a result: the warehouse keys the actual figure once the bundle is cut and the Sales Order line is trued up to that. FLOAT, not integer, because hardwood board feet carry real decimals and must never be rounded.</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>FLOAT</fieldtype>
+  <help>Board feet to pick from this bundle. Must be greater than zero and no more than the bundle holds. The warehouse may come back with a different number, which is expected.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>Split BF to Pick</label>
+  <minvalue>0</minvalue>
+  <searchlevel>2</searchlevel>
+  <storevalue>T</storevalue>
+</transactioncolumncustomfield>

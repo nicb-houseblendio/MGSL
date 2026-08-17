@@ -1,0 +1,17 @@
+<transactioncolumncustomfield scriptid="custcol_mgsl_split_invadj">
+  <accesslevel>2</accesslevel>
+  <applyformatting>T</applyformatting>
+  <colsale>T</colsale>
+  <defaultchecked>F</defaultchecked>
+  <description>The Inventory Adjustment that executed this split, for audit. Written by the server when the split completes. Read-only on purpose so the audit link cannot be edited away from the transaction it points at. NOTE: a transactioncolumncustomfield cannot be DISABLED or INLINE in SDF, both are rejected at validation, so read-only is enforced by the Split Capture client script instead of by this definition.</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>SELECT</fieldtype>
+  <help>Link to the Inventory Adjustment that split the bundle. Set automatically.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>Split Inventory Adjustment</label>
+  <searchlevel>2</searchlevel>
+  <selectrecordtype>-30</selectrecordtype>
+  <storevalue>T</storevalue>
+</transactioncolumncustomfield>
