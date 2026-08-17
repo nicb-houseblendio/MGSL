@@ -84,10 +84,17 @@ define([
             filtered = filtered.filter((r) =>
                 Array.isArray(r.lots) && r.lots.some((l) => l.containerNo && vals.indexOf(l.containerNo) >= 0));
         }
-        // greaterThanZero: default true — hide rows with nothing in any bucket
+        // greaterThanZero: default true — hide rows with nothing in ANY bucket.
+        //
+        // Every bucket, not just the incoming three. A row that is entirely
+        // outbound — shipped, nothing left on hand — has real activity a trader
+        // needs to see, and testing only onHand/onOrder/inTransit would hide it
+        // the moment outbound is populated. IND sums committed and outbound for
+        // the same reason.
         if (params.greaterThanZero !== false && params.greaterThanZero !== 'false') {
             filtered = filtered.filter((r) =>
-                (r.onHand || 0) + (r.onOrder || 0) + (r.inTransit || 0) > 0);
+                (r.onHand || 0) + (r.reserve || 0) + (r.readyToBuild || 0) +
+                (r.outbound || 0) + (r.onOrder || 0) + (r.inTransit || 0) > 0);
         }
         return filtered;
     };

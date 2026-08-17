@@ -36,7 +36,10 @@ import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archO
 /* ── Derived figures ────────────────────────────────────────────────────────*/
 
 const lineRevenue = (l: ArchCartLine) => l.bf * (l.pricePerBF ?? 0);
-const lineProfit = (l: ArchCartLine) => l.bf * ((l.pricePerBF ?? 0) - l.costPerBF);
+// `?? 0` on cost is arithmetic-only. A line with unknown cost reports as pure
+// profit here, which is why the cost CELL renders an em dash rather than $0.00 —
+// the number must never look measured. See ArchOrderTotals.
+const lineProfit = (l: ArchCartLine) => l.bf * ((l.pricePerBF ?? 0) - (l.costPerBF ?? 0));
 const lineMargin = (l: ArchCartLine) => {
   const r = lineRevenue(l);
   return r > 0 ? lineProfit(l) / r : 0;

@@ -1,7 +1,7 @@
 /**
  * CWP ARCH (hardwood) data contract.
  *
- * Deliberately separate from `SummaryRow` (lib/api.ts) — ARCH is board-foot native,
+ * Deliberately separate from `SummaryRow` (lib/api.ts) — ARCH is multi-unit,
  * has no packs/PPP, and carries three things IND/MTL do not: a `readyToBuild`
  * bucket, per-lot tallies, and lot-level container numbers.
  *
@@ -96,8 +96,13 @@ export interface ArchSummaryRow {
   /**
    * Average lot cost in dollars per ONE `unit` — per BF for Lumber, per SQFT
    * for Veneer, per piece for Ovals. Never per MBF.
+   *
+   * NULL when costing is not available, which is the live case today: the ARCH
+   * cache builder has no lot costing wired. It is null rather than 0 because
+   * `$0.00/BF` is indistinguishable from stock that genuinely cost nothing —
+   * the same reason the empty quantity buckets are declared in `meta`.
    */
-  avgCostPerUnit: number;
+  avgCostPerUnit: number | null;
 
   /** Stable row identity: `${internalId}-${locationId}`. */
   detailKey: string;
@@ -109,8 +114,12 @@ export interface ArchSummaryRow {
  * ⚠️ The sums are only meaningful when every row shares one unit. Board feet,
  * square feet and pieces do not add up, so `units` reports what actually went
  * into them and the footer refuses to print a number when there is more than
- * one. Narrowing the Category filter to a single value is what makes the totals
- * real again.
+ * one — it names the units present instead.
+ *
+ * Narrowing to one unit is what makes the totals real again. Do NOT tell the
+ * user to do that via the Category filter: the ARCH cache emits an empty
+ * `category` on every row because `csegitem_category` is unpopulated, so that
+ * advice points at a filter with no options.
  */
 export interface ArchTotals {
   onHand: number;

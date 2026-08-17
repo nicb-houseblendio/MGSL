@@ -791,7 +791,7 @@ export const SOWizard = ({
                   {formatQty(l.bf, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }} className="font-mono">
-                  {fmtMoney(l.costPerBF)}
+                  {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF)}
                 </td>
                 <td style={{ ...td, textAlign: 'center' }}>
                   {(
@@ -1644,7 +1644,7 @@ export const SOWizard = ({
                   {formatQty(e.bf, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'right', color: ARCH_SURFACE.textMid }} className="font-mono">
-                  {fmtMoney(l.costPerBF)}
+                  {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF)}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }}>
                   <input

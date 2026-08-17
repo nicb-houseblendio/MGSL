@@ -138,6 +138,27 @@ define([
         return 'BF';
     };
 
+    /**
+     * Byte length of a UTF-8 string.
+     *
+     * `String.length` counts UTF-16 code units, but N/cache's 500 KB ceiling is
+     * measured in BYTES. Every ARCH string today is ASCII so the two coincide —
+     * which is why the difference is easy to miss — but one accented species
+     * name makes `.length` under-count, and a guard that under-counts lets
+     * through exactly the payload it exists to stop.
+     */
+    const utf8Bytes = (str) => {
+        let bytes = 0;
+        for (let i = 0; i < str.length; i++) {
+            const c = str.charCodeAt(i);
+            if (c < 0x80) bytes += 1;
+            else if (c < 0x800) bytes += 2;
+            else if (c >= 0xd800 && c <= 0xdbff) { bytes += 4; i++; }  // surrogate pair
+            else bytes += 3;
+        }
+        return bytes;
+    };
+
     const num = (v) => {
         const n = parseFloat(v);
         return isFinite(n) ? n : 0;
@@ -180,7 +201,26 @@ define([
             }).asMappedResults();
 
             const byPair = {};
+            const rateless = [];
             rows.forEach((r) => {
+                // A MISSING CONVERSION RATE IS AN ERROR, NOT A DEFAULT OF 1.
+                //
+                // `unitstypeuom` is LEFT JOINed, so a broken or absent unit
+                // record yields null. Defaulting that to 1 is silently wrong by
+                // three orders of magnitude for Lumber, whose real rate is
+                // 0.001 — the exact failure that once created a 680 BF
+                // remainder as 0.68 BF. Veneer and Ovals are genuinely rate 1,
+                // so a wrong default is invisible on two categories out of
+                // three, which is what makes it dangerous.
+                //
+                // Skip the row and name it. A lot missing from the screen with
+                // an error in the log is recoverable; a lot present and wrong
+                // by 1000x is not.
+                const rate = num(r.rate);
+                if (!(rate > 0)) {
+                    rateless.push(r.itemcode + ' / lot ' + (r.lotno || r.lotid));
+                    return;
+                }
                 const key = String(r.itemid) + '__' + String(r.locationid);
                 if (!byPair[key]) {
                     byPair[key] = {
@@ -189,7 +229,7 @@ define([
                         description:  r.description || r.itemcode || '',
                         species:      r.species || '',
                         unit:         normalizeUnit(r.unitname),
-                        rate:         (num(r.rate) > 0 ? num(r.rate) : 1),
+                        rate:         rate,
                         locationId:   String(r.locationid),
                         locationName: r.locationname || KNOWN_LOCATIONS[r.locationid] || '',
                         lots:         [],
@@ -212,6 +252,11 @@ define([
             log.audit('ARCH cache getInputData',
                 Object.keys(out).length + ' item x location pair(s) from ' + rows.length +
                 ' lot row(s). SKUs matched (' + matched.length + '): ' + matched.join(', '));
+            if (rateless.length) {
+                log.error('ARCH cache getInputData — lots SKIPPED, no conversion rate',
+                    rateless.length + ' lot row(s) had no usable stock-unit conversion rate and were ' +
+                    'excluded rather than counted at rate 1: ' + rateless.join(', '));
+            }
             return out;
         } catch (e) {
             log.error('ARCH cache getInputData failed', e.message);
@@ -271,8 +316,18 @@ define([
                 outbound:     0,
                 onOrder:      0,
                 inTransit:    0,
-                available:    onHand,   // = onHand while every deduction is structurally zero
-                avgCostPerUnit: 0,      // lot costing not wired yet — see Track C notes
+                // The FULL formula with its floor, not `onHand`, even though
+                // every deduction is structurally zero today. Writing the
+                // shortcut would mean that whoever fills `reserve` has to
+                // remember to come back and change this too — and if they
+                // don't, the screen offers stock that is already committed.
+                available:    Math.max(0, onHand + 0 /*onOrder*/ + 0 /*inTransit*/
+                                          - 0 /*reserve*/ - 0 /*readyToBuild*/ - 0 /*outbound*/),
+                // NULL, NOT ZERO. Lot costing is not wired yet, and 0 renders as
+                // "$0.00/BF" — indistinguishable from stock that genuinely cost
+                // nothing. null is self-describing: the formatter shows an em
+                // dash, so an absent cost can never be read as a measured one.
+                avgCostPerUnit: null,
                 detailKey:    pair.itemId + '-' + pair.locationId,
             };
 
@@ -282,7 +337,12 @@ define([
                 ttl:   CacheKeys.TTL_DETAIL,
             });
 
-            context.write({ key: 'summary', value: JSON.stringify(summaryRow) });
+            // Keyed per PAIR, not a shared 'summary' literal. Writing every row
+            // under one key relies on the output stage preserving duplicate
+            // keys — it does here, but it is not a documented guarantee, and a
+            // change in that behaviour would collapse the whole grid to one row
+            // with nothing failing loudly.
+            context.write({ key: pair.itemId + '__' + pair.locationId, value: JSON.stringify(summaryRow) });
         } catch (e) {
             log.error('ARCH cache reduce failed for ' + context.key, e.message);
         }
@@ -304,13 +364,14 @@ define([
             rows.sort((a, b) => (a.itemCode + a.locationName).localeCompare(b.itemCode + b.locationName));
 
             const payload = JSON.stringify(rows);
+            const payloadBytes = utf8Bytes(payload);
 
             // The 500 KB ceiling is per VALUE, not per cache. 6 SKUs cannot
             // approach it today, but the check is here rather than added later
             // under pressure — that is how IND acquired its chunking bug.
-            if (payload.length > CacheKeys.MAX_CACHE_VALUE_BYTES) {
+            if (payloadBytes > CacheKeys.MAX_CACHE_VALUE_BYTES) {
                 log.error('ARCH cache summarize',
-                    'Summary payload is ' + payload.length + ' bytes, over the ' +
+                    'Summary payload is ' + payloadBytes + ' bytes, over the ' +
                     CacheKeys.MAX_CACHE_VALUE_BYTES + ' byte ceiling. Chunking is NOT implemented ' +
                     'for ARCH yet — port it from cacheKeys_mtl/buildSummaryDataKey before this ships ' +
                     'at real volume.');
@@ -334,7 +395,7 @@ define([
             });
 
             log.audit('ARCH cache summarize',
-                rows.length + ' summary row(s), ' + payload.length + ' bytes. On Hand only.');
+                rows.length + ' summary row(s), ' + payloadBytes + ' bytes. On Hand only.');
         } catch (e) {
             log.error('ARCH cache summarize failed', e.message);
         }

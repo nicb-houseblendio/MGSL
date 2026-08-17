@@ -175,9 +175,14 @@ export const formatQtyWithUnit = (
 /**
  * Lot cost, quoted per native unit regardless of the selected display UoM.
  * Converting the cost as well as the quantity would double-apply the rate.
+ *
+ * An em dash for null — an ABSENT cost must never render as "$0.00", which a
+ * trader would read as free stock rather than as missing data.
  */
-export const formatCostPerUnit = (cost: number, unit: ArchUnit = DEFAULT_ARCH_UNIT): string =>
-  `$${cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/${unitLabel(unit)}`;
+export const formatCostPerUnit = (cost: number | null | undefined, unit: ArchUnit = DEFAULT_ARCH_UNIT): string =>
+  (cost === null || cost === undefined)
+    ? '—'
+    : `$${cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/${unitLabel(unit)}`;
 
 /** Bare money, no unit suffix — for columns that already carry one in the header. */
 export const formatCost = (cost: number): string =>
@@ -198,6 +203,17 @@ export const formatCost = (cost: number): string =>
  * as lines are added and removed.
  */
 const UNIT_ORDER: ArchUnit[] = ['BF', 'SQFT', 'LF', 'UNIT'];
+
+/**
+ * The units present, as a short list — "BF · SQFT · units".
+ *
+ * Used where a total cannot honestly be shown. It replaced the instruction
+ * "filter by Category to total", which was a dead end: the ARCH cache emits an
+ * empty `category` on every row because `csegitem_category` is not populated,
+ * so the filter that advice pointed at has no options to choose from.
+ */
+export const unitListLabel = (units: ArchUnit[]): string =>
+  UNIT_ORDER.filter((u) => units.indexOf(u) !== -1).map((u) => unitLabel(u)).join(' · ');
 
 export const formatUnitTotals = (
   items: Array<{ unit?: ArchUnit; qty: number }>,

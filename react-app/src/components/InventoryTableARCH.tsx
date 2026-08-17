@@ -25,7 +25,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { formatQty, formatCostPerUnit, displaySuffix } from '@/lib/archUom';
+import { formatQty, formatCostPerUnit, displaySuffix, unitListLabel } from '@/lib/archUom';
 import { ARCH_METRIC_COLORS, ARCH_FOOTER_COLORS } from '@/components/arch/archColors';
 import type { ArchSummaryRow, ArchDetailKey, ArchTotals } from '@/types/arch';
 
@@ -462,8 +462,11 @@ export const InventoryTableARCH = ({
                       <span className="text-[12px] font-semibold tracking-wider text-white/70 whitespace-nowrap">
                         <span className="uppercase">Totals · {rowCount ?? 0} items · </span>
                         {/* Not uppercased — "m³" is a unit symbol, "M³" is wrong. */}
+                        {/* Name the units rather than instruct. The old text said
+                            "filter by Category to total", which is a dead end —
+                            the ARCH cache emits an empty category on every row. */}
                         {mixedUnits
-                          ? <span className="normal-case">mixed units — filter by Category to total</span>
+                          ? <span className="normal-case">mixed: {unitListLabel(totals.units)}</span>
                           : displaySuffix(totalsUnit, uom)}
                       </span>
                     </TableCell>

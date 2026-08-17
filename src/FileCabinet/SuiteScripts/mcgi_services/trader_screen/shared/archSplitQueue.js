@@ -80,7 +80,11 @@ define(['N/query', 'N/log'], (query, log) => {
         rows.forEach((r) => {
             const rate = parseFloat(r.rate);
             facts[String(r.itemid)] = {
-                rate: (isFinite(rate) && rate > 0) ? rate : 1,
+                // 0, NOT 1, when the rate is missing. Defaulting to 1 here would
+                // hide the failure from the caller's guard: an item present in
+                // this map with a plausible-looking rate reads as healthy. 0 is
+                // not a usable rate, so it forces the caller to decide.
+                rate: (isFinite(rate) && rate > 0) ? rate : 0,
                 unit: normalizeUnit(r.unitname),
             };
         });
@@ -140,11 +144,22 @@ define(['N/query', 'N/log'], (query, log) => {
         const bySo = {};
         let lotMissingCount = 0;
 
+        const rateless = [];
         rows.forEach((r) => {
-            const fact = units[String(r.itemid)] || { rate: 1, unit: 'BF' };
-            const rate = fact.rate;
+            // Same rule as the ARCH cache builder: a MISSING conversion rate is
+            // an error, not a default of 1. Lumber's real rate is 0.001, so
+            // assuming 1 under-reports a bundle by three orders of magnitude —
+            // and it does so invisibly for Veneer and Ovals, which really are
+            // rate 1. The row is still returned so the warehouse sees the job,
+            // but with a zero system figure and a logged error, rather than a
+            // confident wrong number to measure against.
+            const fact = units[String(r.itemid)];
+            const rate = fact ? fact.rate : 0;
+            // Catches BOTH failures: the item missing from the lookup entirely,
+            // and the item present with an unusable rate.
+            if (!(rate > 0)) rateless.push(r.itemdescription || String(r.itemid));
             const stored = parseFloat(r.lotstored);
-            const systemBF = isFinite(stored) ? stored / rate : 0;
+            const systemBF = (rate > 0 && isFinite(stored)) ? stored / rate : 0;
             const lotMissing = !r.lotno;
             if (lotMissing) lotMissingCount++;
 
@@ -169,7 +184,7 @@ define(['N/query', 'N/log'], (query, log) => {
                 itemDescription: r.itemdescription || '',
                 species:         r.species || '',
                 containerNo:     '',
-                unit:            fact.unit,
+                unit:            fact ? fact.unit : 'BF',
                 systemBF:        systemBF,
                 requestedBF:     parseFloat(r.requestedbf) || 0,
                 lineUniqueKey:   r.lineuniquekey,
@@ -184,6 +199,11 @@ define(['N/query', 'N/log'], (query, log) => {
             bundles:     rows.length,
             lotMissing:  lotMissingCount,
         };
+        if (rateless.length) {
+            log.error('ARCH Split Queue — no conversion rate',
+                rateless.length + ' bundle(s) have no usable stock-unit rate; their system quantity is ' +
+                'reported as 0 rather than assumed at rate 1: ' + [...new Set(rateless)].join(', '));
+        }
         if (lotMissingCount) {
             log.audit('ARCH Split Queue',
                 lotMissingCount + ' split-flagged line(s) have no lot assigned; returned with lotMissing so the ' +

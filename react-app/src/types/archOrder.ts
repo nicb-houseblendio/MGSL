@@ -46,8 +46,14 @@ export interface ArchCartLine {
   unit: ArchUnit;
   /** Quantity this lot contributes, in `unit`, from the bucket it was selected from. */
   bf: number;
-  /** Lot cost per one `unit` — drives the margin estimate. */
-  costPerBF: number;
+  /**
+   * Lot cost per one `unit` — drives the margin estimate.
+   *
+   * NULL when the source row carries no costing (see `ArchSummaryRow`). The
+   * pricing engine already treats it as 0 for arithmetic, which means a line
+   * with unknown cost reads as pure margin — see the note on `ArchOrderTotals`.
+   */
+  costPerBF: number | null;
   bucket: ArchDetailKey;
   /** True when the line came from an existing SO rather than the grid. */
   existing?: boolean;
@@ -135,7 +141,8 @@ export interface ArchOrderDraftLine {
   unit: ArchUnit;
   /** Quantity actually going on the order, in `unit` — the split target when split. */
   bf: number;
-  costPerBF: number;
+  /** Null when the source row carries no costing — see `ArchOrderLine.costPerBF`. */
+  costPerBF: number | null;
   pricePerBF: number;
   isSplit: boolean;
   /** Full lot size, retained so the warehouse knows what it is splitting from. */
@@ -143,6 +150,15 @@ export interface ArchOrderDraftLine {
   reman: ArchRemanIntent;
 }
 
+/**
+ * ⚠️ COST-DERIVED FIGURES ARE ONLY AS GOOD AS THE LINE COSTS. `archOrderPricing`
+ * treats a null `costPerBF` as 0, so a line whose cost is unknown contributes
+ * nothing to `lotCost` and reports as pure profit. That is unreachable today —
+ * order lines are built from fixtures, which always carry a cost — but it goes
+ * live the moment the wizard is fed by the real ARCH cache, which currently
+ * emits no costing at all. Give the margin readout an explicit "cost unknown"
+ * state before that happens.
+ */
 export interface ArchOrderTotals {
   /**
    * ⚠️ Sum of every line's quantity REGARDLESS OF UNIT, so it is only a real

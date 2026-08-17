@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { convertQty, displaySuffix, ARCH_UOM_M3 } from '@/lib/archUom';
+import { convertQty, displaySuffix, unitListLabel, ARCH_UOM_M3 } from '@/lib/archUom';
 import type { ArchUnit } from '@/lib/archUom';
 import type { ArchSummaryRow, ArchTotals } from '@/types/arch';
 
@@ -102,7 +102,7 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
     // Board feet, square feet and pieces do not add up. Rather than write a
     // confident wrong number into a spreadsheet someone will forward, the
     // totals row goes blank and says why.
-    mixedUnits ? 'mixed' : displaySuffix(totalsUnit, uom),
+    mixedUnits ? 'mixed: ' + unitListLabel(totals.units) : displaySuffix(totalsUnit, uom),
     ...(mixedUnits
       ? ['', '', '', '', '', '', '']
       : [
