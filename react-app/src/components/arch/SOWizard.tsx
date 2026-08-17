@@ -3,7 +3,9 @@ import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { formatBF } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import {
-  SPLIT_FEE,
+  SPLIT_FEE_PLACEHOLDER,
+  splitFee,
+  splitFeeEnabled,
   PLANING_RATE,
   CUT_RATE,
   OPS_INSURANCE_RATE,
@@ -1226,7 +1228,10 @@ export const SOWizard = ({
       <ProvisionalNote>
         How a split line is marked on the sales order is <strong>not decided yet</strong> — custom record or
         checkbox. The wizard records the intent and the target quantity; it does not commit to a NetSuite
-        representation. The <strong>${SPLIT_FEE} fee is a placeholder rate</strong>.
+        representation.{' '}
+        {splitFeeEnabled()
+          ? <strong>The ${splitFee()} split fee comes from configuration.</strong>
+          : <strong>No split fee is charged — the ${SPLIT_FEE_PLACEHOLDER} in the prototype was never confirmed, so it stays off.</strong>}
       </ProvisionalNote>
       <div style={{ fontSize: 12.5, color: ARCH_SURFACE.textMid, lineHeight: 1.5, marginBottom: 14 }}>
         The quantity you enter is a <strong>placeholder</strong>. The warehouse measures each plank and
@@ -1310,7 +1315,7 @@ export const SOWizard = ({
                     </span>
                   ) : (
                     <span style={{ color: AMBER_TEXT, fontWeight: 600 }}>
-                      Split · +{fmtMoney(SPLIT_FEE, currency || 'USD', 0)} · bundle held
+                      Split{splitFeeEnabled() ? ' · +' + fmtMoney(splitFee(), currency || 'USD', 0) : ''} · bundle held
                     </span>
                   )}
                 </td>
@@ -1790,7 +1795,7 @@ export const SOWizard = ({
         </div>
         Profit = Revenue − Lot cost − Services − Operations &amp; insurance.
         <br />
-        Revenue = BF × price/BF · Lot cost = BF × cost/BF · Services = ${SPLIT_FEE} per split lot + $
+        Revenue = BF × price/BF · Lot cost = BF × cost/BF · Services = ${splitFeeEnabled() ? splitFee() : 0} per split lot + $
         {PLANING_RATE.toFixed(2)}/BF planing + ${CUT_RATE.toFixed(2)}/BF cutting ·
         Operations &amp; insurance = {(OPS_INSURANCE_RATE * 100).toFixed(1)}% of lot cost ·
         Margin % = Profit ÷ Revenue

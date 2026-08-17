@@ -23,8 +23,39 @@ import type {
 
 /* ── Provisional rates ──────────────────────────────────────────────────────*/
 
-/** Flat handling fee per lot that has to be physically split. */
-export const SPLIT_FEE = 200;
+/**
+ * Flat handling fee per lot that has to be physically split.
+ *
+ * 🔴 CONFIGURATION, DEFAULT OFF. The $200 comes from the client prototype and has
+ * never been confirmed — Nic's design carries it as an open question and is
+ * explicit that it must not be hard-coded: "built as config, default OFF, until
+ * confirmed".
+ *
+ * So the amount lives on the trader-screen Suitelet as a script parameter and
+ * arrives through MCGI_CONFIG. With nothing configured the fee is simply not
+ * charged, which is the honest default: billing a customer a number nobody has
+ * agreed is worse than billing nothing and being asked why.
+ *
+ * `splitFeeEnabled()` and `splitFee()` are functions rather than constants
+ * because the config is not present when this module is first evaluated.
+ */
+export const splitFeeEnabled = (): boolean => {
+  const cfg = (window as unknown as { MCGI_CONFIG?: { splitFeeEnabled?: boolean } }).MCGI_CONFIG;
+  return cfg?.splitFeeEnabled === true;
+};
+
+export const splitFee = (): number => {
+  if (!splitFeeEnabled()) return 0;
+  const cfg = (window as unknown as { MCGI_CONFIG?: { splitFeeAmount?: number } }).MCGI_CONFIG;
+  const n = Number(cfg?.splitFeeAmount);
+  return isFinite(n) && n >= 0 ? n : 0;
+};
+
+/**
+ * The prototype's figure, kept ONLY so the UI can say what the unconfirmed rate
+ * would be when explaining itself. Never used to bill: `splitFee()` is.
+ */
+export const SPLIT_FEE_PLACEHOLDER = 200;
 /** Surfacing, $ per board foot. */
 export const PLANING_RATE = 0.2;
 /** Cutting to length, $ per board foot. */
@@ -68,7 +99,7 @@ export const lineEconomics = (
   const revenue = bf * (pricePerBF || 0);
   const lotCost = bf * (line.costPerBF || 0);
 
-  const splitCost = split?.on ? SPLIT_FEE : 0;
+  const splitCost = split?.on ? splitFee() : 0;
   const planingCost = reman?.planing ? bf * PLANING_RATE : 0;
   const cuttingCost = reman?.cutting ? bf * CUT_RATE : 0;
   const processingCost = splitCost + planingCost + cuttingCost;

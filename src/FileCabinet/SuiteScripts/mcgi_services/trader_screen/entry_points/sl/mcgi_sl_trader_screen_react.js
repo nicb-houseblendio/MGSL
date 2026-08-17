@@ -76,7 +76,25 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record', 'N/log'
             deploymentId: runtime.getCurrentScript().deploymentId,
         });
 
+        /*
+         * Split handling fee — configuration, defaulted OFF.
+         *
+         * The $200 in the client prototype was never confirmed, and Nic's design
+         * is explicit that it must not be hard-coded. Unset means no fee is
+         * charged: quoting a customer a number nobody agreed is worse than
+         * quoting nothing and being asked why.
+         *
+         * ARCH-only in effect. IND and MTL never read these keys, so adding them
+         * to the shared config changes nothing for those screens.
+         */
+        const script = runtime.getCurrentScript();
+        const feeEnabled = String(script.getParameter({ name: 'custscript_arch_split_fee_on' }) || '') === 'T';
+        const feeAmountRaw = parseFloat(script.getParameter({ name: 'custscript_arch_split_fee_amt' }));
+        const feeAmount = (isFinite(feeAmountRaw) && feeAmountRaw >= 0) ? feeAmountRaw : 0;
+
         const configObj = {
+            splitFeeEnabled: feeEnabled,
+            splitFeeAmount: feeAmount,
             restletUrl: restletUrl,
             suiteletUrl: suiteletUrl,
             userId: String(user.id),

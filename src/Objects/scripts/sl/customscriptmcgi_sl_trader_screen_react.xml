@@ -7,6 +7,62 @@
   <notifyowner>T</notifyowner>
   <notifyuser>F</notifyuser>
   <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/sl/mcgi_sl_trader_screen_react.js]</scriptfile>
+  <scriptcustomfields>
+    <scriptcustomfield scriptid="custscript_arch_split_fee_on">
+      <accesslevel>2</accesslevel>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>CWP ARCH only. Leave UNCHECKED until the client confirms a real split handling fee. Unchecked means no fee is charged on a split line, which is deliberate: the $200 in the prototype was never agreed, and quoting an unconfirmed number is worse than quoting none. IND and MTL never read this.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>CHECKBOX</fieldtype>
+      <help>Off by default and safe to leave off.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>ARCH Split Fee Enabled</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
+    <scriptcustomfield scriptid="custscript_arch_split_fee_amt">
+      <accesslevel>2</accesslevel>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>CWP ARCH only. Flat handling fee per split lot, in the order currency. Ignored unless ARCH Split Fee Enabled is ticked.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>FLOAT</fieldtype>
+      <help>Only takes effect when the fee is enabled.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>ARCH Split Fee Amount</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue>0</minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
+  </scriptcustomfields>
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploymcgi_sl_trader_screen_react">
       <allemployees>T</allemployees>
