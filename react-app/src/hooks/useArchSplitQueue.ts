@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { getSplitJobs } from '@/lib/archSplit';
 import type { ArchSplitJob } from '@/types/archSplit';
+import type { ArchUnit } from '@/lib/archUom';
 
 /**
  * The warehouse split queue, from NetSuite when it is reachable and from
@@ -65,6 +66,8 @@ interface QueueBundle {
   itemDescription: string;
   species: string;
   containerNo: string;
+  /** Canonical stock unit from the server — 'BF' | 'SQFT' | 'UNIT' | 'LF'. */
+  unit: ArchUnit;
   systemBF: number;
   requestedBF: number;
   lineUniqueKey: number;

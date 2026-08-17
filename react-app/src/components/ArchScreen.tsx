@@ -114,7 +114,8 @@ export const ArchScreen = ({ uom, tab = 'inventory' }: ArchScreenProps) => {
             // in — on the Available view that is the uncommitted remainder, not
             // the full on-hand figure.
             bf: lotQuantity(lot, bucket),
-            costPerBF: row.avgCostBF,
+            unit: row.unit,
+            costPerBF: row.avgCostPerUnit,
             bucket,
           });
         });

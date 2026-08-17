@@ -1,6 +1,6 @@
 // Presentational only — no hooks, no React namespace types needed.
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { formatBF } from '@/lib/archUom';
+import { formatQty, formatUnitTotals } from '@/lib/archUom';
 import { nextSplitLotNo, shortDate } from '@/lib/archSplit';
 import type { ArchSplitJob } from '@/types/archSplit';
 
@@ -135,7 +135,6 @@ const Field = ({
 );
 
 export const SplitWorkOrder = ({ job, onClose }: SplitWorkOrderProps) => {
-  const totalBF = job.bundles.reduce((s, b) => s + b.systemBF, 0);
   const printedOn = new Date()
     .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
     .toUpperCase();
@@ -256,7 +255,7 @@ export const SplitWorkOrder = ({ job, onClose }: SplitWorkOrderProps) => {
             >
               <Field label="CUSTOMER" value={job.customer} />
               <Field label="TRADER" value={job.trader} />
-              <Field label="TOTAL QTY" value={`${formatBF(totalBF)} BF`} mono />
+              <Field label="TOTAL QTY" value={formatUnitTotals(job.bundles.map((b) => ({ unit: b.unit, qty: b.requestedBF })))} mono />
               {/* Formatted, matching the queue row. A raw ISO date on a printed
                   sheet is the one format nobody on a warehouse floor reads. */}
               <Field label="READY TO SHIP" value={shortDate(job.shipDate)} last />
@@ -311,7 +310,7 @@ export const SplitWorkOrder = ({ job, onClose }: SplitWorkOrderProps) => {
                       {b.itemDescription}
                     </td>
                     <td style={{ ...cell, textAlign: 'right', fontWeight: 600 }}>
-                      {formatBF(b.systemBF)}
+                      {formatQty(b.systemBF, b.unit)}
                     </td>
                     <td style={{ ...cell }}>
                       <span

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { formatArchQty, uomSuffix } from '@/lib/archUom';
+import { formatQty, displaySuffix } from '@/lib/archUom';
 import { lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
 import { ARCH_BUCKET_META, ARCH_SURFACE } from '@/components/arch/archColors';
 import type { ArchSummaryRow } from '@/types/arch';
@@ -86,7 +86,7 @@ export const ArchPOListView = ({ row, uom }: ArchPOListViewProps) => {
       <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 12 }}>
         <thead>
           <tr>
-            {['PO #', 'Supplier', 'Container #', 'ETA', `On Order (${uomSuffix(uom)})`].map((h, i) => (
+            {['PO #', 'Supplier', 'Container #', 'ETA', `On Order (${displaySuffix(row.unit, uom)})`].map((h, i) => (
               <th key={h} style={{ ...headerCell, textAlign: i >= 3 ? 'right' : 'left' }}>
                 {h}
               </th>
@@ -109,7 +109,7 @@ export const ArchPOListView = ({ row, uom }: ArchPOListViewProps) => {
                   <EtaPill date={formatShortDate(incoming.eta)} color={meta.color} />
                 </td>
                 <td style={{ ...cell, textAlign: 'right', fontWeight: 700, color: ARCH_SURFACE.navy }} className="font-mono">
-                  {formatArchQty(lot.onOrder, uom)}
+                  {formatQty(lot.onOrder, row.unit, uom)}
                 </td>
               </tr>
             );
@@ -124,7 +124,7 @@ export const ArchPOListView = ({ row, uom }: ArchPOListViewProps) => {
               style={{ ...cell, borderBottom: 'none', textAlign: 'right', fontWeight: 800, color: ARCH_SURFACE.navy }}
               className="font-mono"
             >
-              {formatArchQty(total, uom)}
+              {formatQty(total, row.unit, uom)}
             </td>
           </tr>
         </tfoot>

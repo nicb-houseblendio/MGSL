@@ -17,6 +17,7 @@
  */
 
 import { seededRandom } from '@/lib/archLots';
+import { unitForCategory } from '@/lib/archUom';
 import type { ArchLot, ArchSummaryRow } from '@/types/arch';
 
 /** Real NetSuite location ids — the only genuinely real values in this file. */
@@ -135,6 +136,7 @@ const buildRow = (index: number): ArchSummaryRow => {
     containerNo: containers[0] || '',
     containers,
     lots,
+    unit: unitForCategory(category),
     onHand,
     reserve,
     readyToBuild,
@@ -142,8 +144,10 @@ const buildRow = (index: number): ArchSummaryRow => {
     onOrder,
     inTransit,
     available: Math.max(0, onHand + onOrder + inTransit - reserve - readyToBuild - outbound),
-    // Hardwood lot cost per board foot — roughly $2.40 to $9.80.
-    avgCostBF: Math.round((2.4 + rng() * 7.4) * 100) / 100,
+    // Hardwood lot cost per unit — roughly $2.40 to $9.80. Same band across all
+    // four categories: the fixtures exist to exercise layout, not to model
+    // veneer pricing, and inventing a per-category band would read as real.
+    avgCostPerUnit: Math.round((2.4 + rng() * 7.4) * 100) / 100,
     detailKey: `${internalId}-${location.id}`,
   };
 };

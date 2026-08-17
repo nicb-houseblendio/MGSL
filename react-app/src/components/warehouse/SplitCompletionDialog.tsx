@@ -1,8 +1,8 @@
 import * as React from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { formatBF } from '@/lib/archUom';
+import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
-import { evaluateEntry, entryComplete, jobRequestedBF, jobSystemBF, SPLIT_VARIANCE_TOLERANCE } from '@/lib/archSplit';
+import { evaluateEntry, entryComplete, SPLIT_VARIANCE_TOLERANCE } from '@/lib/archSplit';
 import type { ArchSplitEntry, ArchSplitJob } from '@/types/archSplit';
 
 /**
@@ -96,6 +96,10 @@ export const SplitCompletionDialog = ({
   const flaggedCount = rows.filter((r) => r.state.flagged).length;
   const invalidCount = rows.filter((r) => r.state.invalid).length;
 
+  // The measured totals are only summable within one unit. Every real split
+  // job is single-unit today (all five `-B` lots in the sandbox are Lumber),
+  // so the first bundle's unit labels them rather than inventing a mixed case.
+  const jobUnit = job.bundles[0]?.unit ?? 'BF';
   const tot = rows.reduce(
     (a, r) => ({
       customer: a.customer + r.state.customer,
@@ -116,7 +120,7 @@ export const SplitCompletionDialog = ({
           <div style={{ color: '#fff', fontSize: 15, fontWeight: 700 }}>Enter split details</div>
           <div style={{ color: '#AFC2D6', fontSize: 11.5, marginTop: 2 }}>
             <span className="font-mono">{job.soNo}</span> · {job.customer} · {job.bundles.length} bundle
-            {job.bundles.length === 1 ? '' : 's'} · <span className="font-mono">{formatBF(jobRequestedBF(job))} BF</span>
+            {job.bundles.length === 1 ? '' : 's'} · <span className="font-mono">{formatUnitTotals(job.bundles.map((b) => ({ unit: b.unit, qty: b.requestedBF })))}</span>
           </div>
         </div>
 
@@ -175,10 +179,10 @@ export const SplitCompletionDialog = ({
                         style={{ ...cell, textAlign: 'right', fontWeight: 600, color: ARCH_SURFACE.textMid }}
                         className="font-mono"
                       >
-                        {formatBF(bundle.systemBF)}
+                        {formatQty(bundle.systemBF, bundle.unit)}
                       </td>
                       <td style={{ ...cell, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                        {formatBF(bundle.requestedBF)}
+                        {formatQty(bundle.requestedBF, bundle.unit)}
                       </td>
                       <td style={{ ...cell, textAlign: 'right' }}>
                         <input
@@ -208,7 +212,7 @@ export const SplitCompletionDialog = ({
                         style={{ ...cell, textAlign: 'right', fontWeight: 700, color: bad ? '#B91C1C' : ARCH_SURFACE.text }}
                         className="font-mono"
                       >
-                        {state.touched ? formatBF(state.measured) : '—'}
+                        {state.touched ? formatQty(state.measured, bundle.unit) : '—'}
                       </td>
                     </tr>
                     {(state.invalid || state.flagged) && (
@@ -227,7 +231,7 @@ export const SplitCompletionDialog = ({
                               Re-tallied{' '}
                               <strong className="font-mono">
                                 {state.discrepancy > 0 ? '+' : ''}
-                                {formatBF(state.discrepancy)} BF
+                                {formatQty(state.discrepancy, bundle.unit)} {unitLabel(bundle.unit)}
                               </strong>{' '}
                               against Lot BF, {Math.abs(Math.round(state.discrepancyPct * 100))}%. Past{' '}
                               {Math.round(SPLIT_VARIANCE_TOLERANCE * 100)}% it is worth a second look, but you can
@@ -247,16 +251,16 @@ export const SplitCompletionDialog = ({
                 <td style={{ ...cell, fontWeight: 700 }}>Total</td>
                 <td />
                 <td style={{ ...cell, textAlign: 'right', fontWeight: 700, color: ARCH_SURFACE.textMid }} className="font-mono">
-                  {formatBF(jobSystemBF(job))}
+                  {formatUnitTotals(job.bundles.map((b) => ({ unit: b.unit, qty: b.systemBF })))}
                 </td>
                 <td style={{ ...cell, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                  {formatBF(jobRequestedBF(job))}
+                  {formatUnitTotals(job.bundles.map((b) => ({ unit: b.unit, qty: b.requestedBF })))}
                 </td>
                 <td style={{ ...cell, textAlign: 'right', fontWeight: 700, paddingRight: 17 }} className="font-mono">
-                  {formatBF(tot.customer)}
+                  {formatQty(tot.customer, jobUnit)}
                 </td>
                 <td style={{ ...cell, textAlign: 'right', fontWeight: 700, paddingRight: 17 }} className="font-mono">
-                  {formatBF(tot.inventory)}
+                  {formatQty(tot.inventory, jobUnit)}
                 </td>
                 <td
                   style={{
@@ -267,7 +271,7 @@ export const SplitCompletionDialog = ({
                   }}
                   className="font-mono"
                 >
-                  {formatBF(tot.customer + tot.inventory)}
+                  {formatQty(tot.customer + tot.inventory, jobUnit)}
                 </td>
               </tr>
             </tfoot>

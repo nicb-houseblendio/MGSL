@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { formatBF } from '@/lib/archUom';
+import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import {
   SPLIT_FEE_PLACEHOLDER,
@@ -532,6 +532,7 @@ export const SOWizard = ({
       containerNo: l.containerNo,
       bf: orderedBF(l, sp(l.key)),
       lotBF: l.bf,
+      unit: l.unit,
       costPerBF: l.costPerBF,
       pricePerBF: parseFloat(pr(l.key)) || 0,
       isSplit: sp(l.key).on,
@@ -787,7 +788,7 @@ export const SOWizard = ({
                 </td>
                 <LotCell line={l} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                  {formatBF(l.bf)}
+                  {formatQty(l.bf, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }} className="font-mono">
                   {fmtMoney(l.costPerBF)}
@@ -851,7 +852,7 @@ export const SOWizard = ({
                 }}
                 className="font-mono"
               >
-                {formatBF(lines.reduce((s, l) => s + l.bf, 0))}
+                {formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: l.bf })))}
               </td>
               <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
               <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
@@ -1262,7 +1263,7 @@ export const SOWizard = ({
                 </td>
                 <LotCell line={l} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                  {formatBF(l.bf)}
+                  {formatQty(l.bf, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'center' }}>
                   <input
@@ -1292,7 +1293,7 @@ export const SOWizard = ({
                     min={0}
                     step="any"
                     max={l.bf}
-                    placeholder={formatBF(l.bf)}
+                    placeholder={formatQty(l.bf, l.unit)}
                     onChange={(e) => setSp(l.key, { targetBF: e.target.value })}
                     className="font-mono"
                     style={{
@@ -1311,7 +1312,7 @@ export const SOWizard = ({
                     <span style={{ color: ARCH_SURFACE.textLight }}>Full bundle</span>
                   ) : bad ? (
                     <span style={{ color: '#B22222', fontWeight: 600 }}>
-                      {!(v > 0) ? 'Enter a quantity' : `Exceeds the ${formatBF(l.bf)} BF bundle`}
+                      {!(v > 0) ? 'Enter a quantity' : `Exceeds the ${formatQty(l.bf, l.unit)} ${unitLabel(l.unit)} bundle`}
                     </span>
                   ) : (
                     <span style={{ color: AMBER_TEXT, fontWeight: 600 }}>
@@ -1640,7 +1641,7 @@ export const SOWizard = ({
                 </td>
                 <LotCell line={l} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                  {formatBF(e.bf)}
+                  {formatQty(e.bf, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'right', color: ARCH_SURFACE.textMid }} className="font-mono">
                   {fmtMoney(l.costPerBF)}
@@ -1701,7 +1702,7 @@ export const SOWizard = ({
               style={{ ...td, textAlign: 'right', fontWeight: 800, color: ARCH_SURFACE.navy, borderTop: '2px solid #CBD5E1' }}
               className="font-mono"
             >
-              {formatBF(totals.bf)}
+              {formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: l.bf })))}
             </td>
             <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
             <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
@@ -1913,7 +1914,7 @@ export const SOWizard = ({
                 <LotCell line={l} />
                 <td style={td}>{badges.length ? badges : <span style={{ color: ARCH_SURFACE.textLight }}>—</span>}</td>
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                  {formatBF(e.bf)}
+                  {formatQty(e.bf, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }} className="font-mono">
                   {fmtMoney(parseFloat(pr(l.key)) || 0)}
@@ -1945,7 +1946,7 @@ export const SOWizard = ({
         }}
       >
         {[
-          ['Board feet', `${formatBF(totals.bf)} BF`, '#fff'],
+          ['Quantity', formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: l.bf }))), '#fff'],
           ['Revenue', fmtMoney(totals.revenue, currency || 'USD', 0), '#fff'],
           ['Lot cost', fmtMoney(totals.lotCost, currency || 'USD', 0), 'rgba(255,255,255,0.75)'],
           ['Services + ops', fmtMoney(totals.processingCost + totals.opsInsuranceCost, currency || 'USD', 0), 'rgba(255,255,255,0.75)'],

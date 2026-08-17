@@ -1,6 +1,6 @@
 // No React import needed — this component uses no hooks or JSX namespace types
 // beyond the automatic runtime.
-import { formatBF } from '@/lib/archUom';
+import { formatUnitTotals } from '@/lib/archUom';
 import type { ArchCartLine } from '@/types/archOrder';
 
 /**
@@ -21,7 +21,9 @@ export const SOCartBar = ({ cart, onOpenWizard, onClear }: SOCartBarProps) => {
   if (cart.length === 0) return null;
 
   const itemCount = new Set(cart.map((l) => l.internalId)).size;
-  const totalBF = cart.reduce((s, l) => s + l.bf, 0);
+  // Not one number: a cart can mix a Lumber line in BF with a Veneer line in
+  // SQFT, and their sum would be meaningless.
+  const totalLabel = formatUnitTotals(cart.map((l) => ({ unit: l.unit, qty: l.bf })));
 
   return (
     <div
@@ -43,7 +45,7 @@ export const SOCartBar = ({ cart, onOpenWizard, onClear }: SOCartBarProps) => {
       <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.9)' }}>
         {cart.length} bundle{cart.length === 1 ? '' : 's'} · {itemCount} item{itemCount === 1 ? '' : 's'} ·{' '}
         <span className="font-mono" style={{ fontWeight: 700 }}>
-          {formatBF(totalBF)} BF
+          {totalLabel}
         </span>
       </span>
 

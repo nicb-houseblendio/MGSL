@@ -16,6 +16,7 @@
  */
 
 import type { ArchDetailKey } from '@/types/arch';
+import type { ArchUnit } from '@/lib/archUom';
 
 /** One lot picked off the grid and added to the order. */
 export interface ArchCartLine {
@@ -34,9 +35,18 @@ export interface ArchCartLine {
   locationName: string;
   lotNo: string;
   containerNo: string;
-  /** Board feet this lot contributes, in the bucket it was selected from. */
+  /**
+   * The item's stock unit, carried from the summary row.
+   *
+   * A cart can mix a Lumber line in BF with a Veneer line in SQFT, so the unit
+   * has to travel with the LINE — there is no single unit for an order. The
+   * `*BF` names on the fields below are kept for contract stability; read them
+   * as "quantity", "cost per unit" and "price per unit".
+   */
+  unit: ArchUnit;
+  /** Quantity this lot contributes, in `unit`, from the bucket it was selected from. */
   bf: number;
-  /** Lot cost per board foot — drives the margin estimate. */
+  /** Lot cost per one `unit` — drives the margin estimate. */
   costPerBF: number;
   bucket: ArchDetailKey;
   /** True when the line came from an existing SO rather than the grid. */
@@ -121,7 +131,9 @@ export interface ArchOrderDraftLine {
   description: string;
   locationName: string;
   containerNo: string;
-  /** Board feet actually going on the order — the split target when split. */
+  /** The item's stock unit — see the note on `ArchOrderLine.unit`. */
+  unit: ArchUnit;
+  /** Quantity actually going on the order, in `unit` — the split target when split. */
   bf: number;
   costPerBF: number;
   pricePerBF: number;
@@ -132,6 +144,12 @@ export interface ArchOrderDraftLine {
 }
 
 export interface ArchOrderTotals {
+  /**
+   * ⚠️ Sum of every line's quantity REGARDLESS OF UNIT, so it is only a real
+   * figure on a single-unit order. Money totals below are always valid — dollars
+   * add up whatever the lines are counted in. For a quantity a human will read,
+   * use `formatUnitTotals` over the lines instead of printing this.
+   */
   bf: number;
   revenue: number;
   lotCost: number;

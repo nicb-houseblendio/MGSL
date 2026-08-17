@@ -25,7 +25,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { formatArchQty, formatCostPerBF, uomSuffix } from '@/lib/archUom';
+import { formatQty, formatCostPerUnit, displaySuffix } from '@/lib/archUom';
 import { ARCH_METRIC_COLORS, ARCH_FOOTER_COLORS } from '@/components/arch/archColors';
 import type { ArchSummaryRow, ArchDetailKey, ArchTotals } from '@/types/arch';
 
@@ -175,7 +175,9 @@ const MetricCell = ({
   // numeric cells on this grid are zeros, so at full saturation they drowned out
   // the 55% that mattered.
   const color = bf > 0 ? ARCH_METRIC_COLORS[bucket] : '#7A8FA3';
-  const display = formatArchQty(bf, uom);
+  // The row's own unit, not a screen-wide one — a veneer row reads in SQFT even
+  // when the Lumber rows beside it are showing cubic metres.
+  const display = formatQty(bf, row.unit, uom);
 
   if (onDrillDown && bf > 0) {
     return (
@@ -297,12 +299,14 @@ export const InventoryTableARCH = ({
       // its filter on the columns that are left.
       ...metricCols,
       {
-        id: 'avgCostBF',
-        accessorKey: 'avgCostBF',
-        header: ({ column }) => <SortHeader label="AVG COST/BF" column={column} align="right" />,
+        id: 'avgCostPerUnit',
+        accessorKey: 'avgCostPerUnit',
+        // The header can no longer name the unit — one column spans rows priced
+        // per BF, per SQFT and per piece — so each cell carries its own suffix.
+        header: ({ column }) => <SortHeader label="AVG COST" column={column} align="right" />,
         cell: ({ row }) => (
           <span className="tabular-nums font-mono text-xs text-right block">
-            {formatCostPerBF(row.original.avgCostBF)}
+            {formatCostPerUnit(row.original.avgCostPerUnit, row.original.unit)}
           </span>
         ),
         size: 115,
@@ -437,6 +441,11 @@ export const InventoryTableARCH = ({
               if (METRIC_IDS.has(h.column.id)) break;
               leadingNonMetric++;
             }
+            // One unit across every visible row is what makes a column total a
+            // real number. `units` is empty only when the grid is empty, which
+            // the `totals &&` guard above does not exclude on its own.
+            const totalsUnit = totals.units[0] ?? 'BF';
+            const mixedUnits = totals.units.length > 1;
             return (
               <tfoot>
                 {/* bottom:-1 (not 0) avoids a subpixel gap under the sticky footer */}
@@ -453,7 +462,9 @@ export const InventoryTableARCH = ({
                       <span className="text-[12px] font-semibold tracking-wider text-white/70 whitespace-nowrap">
                         <span className="uppercase">Totals · {rowCount ?? 0} items · </span>
                         {/* Not uppercased — "m³" is a unit symbol, "M³" is wrong. */}
-                        {uomSuffix(uom)}
+                        {mixedUnits
+                          ? <span className="normal-case">mixed units — filter by Category to total</span>
+                          : displaySuffix(totalsUnit, uom)}
                       </span>
                     </TableCell>
                   )}
@@ -464,14 +475,18 @@ export const InventoryTableARCH = ({
                         <TableCell key={colId} className="pt-[13px] pb-2.5 px-3" style={{ width: header.getSize() }} />
                       );
                     }
-                    const value = totals[colId as keyof ArchTotals] ?? 0;
+                    const value = (totals[colId as keyof ArchTotals] as number) ?? 0;
                     return (
                       <TableCell key={colId} className="pt-[13px] pb-2.5 px-3" style={{ width: header.getSize() }}>
                         <span
                           className="font-mono text-[12px] font-bold tabular-nums text-right block"
                           style={{ color: ARCH_FOOTER_COLORS[colId] }}
                         >
-                          {formatArchQty(value, uom)}
+                          {/* Board feet, square feet and pieces do not add up.
+                              Printing their sum would be a confident wrong
+                              number, so the column goes blank until the grid
+                              holds one unit. */}
+                          {mixedUnits ? '—' : formatQty(value, totalsUnit, uom)}
                         </span>
                       </TableCell>
                     );

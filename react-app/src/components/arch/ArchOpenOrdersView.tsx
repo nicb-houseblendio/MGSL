@@ -27,7 +27,7 @@
  */
 
 import * as React from 'react';
-import { formatBF } from '@/lib/archUom';
+import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import { traderInitials, traderColorMap } from '@/lib/archTraders';
 import { getOpenOrders, TRADERS } from '@/lib/archOrderFixtures';
@@ -42,7 +42,8 @@ const lineMargin = (l: ArchCartLine) => {
   return r > 0 ? lineProfit(l) / r : 0;
 };
 
-const orderBF = (o: ArchOpenOrder) => o.lines.reduce((s, l) => s + l.bf, 0);
+/** Quantities of an order grouped by unit — an order may mix Lumber and Veneer. */
+const orderQtys = (o: ArchOpenOrder) => o.lines.map((l) => ({ unit: l.unit, qty: l.bf }));
 const orderRevenue = (o: ArchOpenOrder) => o.lines.reduce((s, l) => s + lineRevenue(l), 0);
 const orderProfit = (o: ArchOpenOrder) => o.lines.reduce((s, l) => s + lineProfit(l), 0);
 const orderMargin = (o: ArchOpenOrder) => {
@@ -171,7 +172,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
 
   // Totals track what is VISIBLE, so filtering by trader retotals rather than
   // showing a figure that does not match the rows beneath it.
-  const totalBF = visible.reduce((s, o) => s + orderBF(o), 0);
+  const totalQtys = visible.flatMap(orderQtys);
   const totalSales = visible.reduce((s, o) => s + orderRevenue(o), 0);
   const totalProfit = visible.reduce((s, o) => s + orderProfit(o), 0);
 
@@ -269,7 +270,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'stretch', gap: 0 }}>
           {[
-            { label: 'Total BF', value: formatBF(totalBF), mono: true },
+            { label: 'Total qty', value: formatUnitTotals(totalQtys), mono: true },
             {
               label: mixedCurrency ? 'Sales · mixed currency' : `Sales · ${soleCurrency}`,
               value: money(totalSales),
@@ -372,7 +373,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
               </tbody>
             ) : (
               groups.map(([trader, list]) => {
-                const subBF = list.reduce((s, o) => s + orderBF(o), 0);
+                const subQtys = list.flatMap(orderQtys);
                 const subItems = list.reduce((s, o) => s + o.lines.length, 0);
                 const subSales = list.reduce((s, o) => s + orderRevenue(o), 0);
                 const subProfit = list.reduce((s, o) => s + orderProfit(o), 0);
@@ -509,7 +510,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                               {shipWeek(o.shipDate)}
                             </td>
                             <td style={{ ...num, fontWeight: 700 }} className="font-mono">
-                              {formatBF(orderBF(o))}
+                              {formatUnitTotals(orderQtys(o))}
                             </td>
                             <td style={{ ...num, color: ARCH_SURFACE.textMid }} className="font-mono">
                               {o.lines.length}
@@ -571,10 +572,10 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                                   style={{ ...td, padding: '6px 12px', color: ARCH_SURFACE.textLight, whiteSpace: 'nowrap' }}
                                   className="font-mono"
                                 >
-                                  ${(l.pricePerBF ?? 0).toFixed(2)}/BF
+                                  ${(l.pricePerBF ?? 0).toFixed(2)}/{unitLabel(l.unit)}
                                 </td>
                                 <td style={{ ...num, padding: '6px 12px' }} className="font-mono">
-                                  {formatBF(l.bf)}
+                                  {formatQty(l.bf, l.unit)}
                                 </td>
                                 <td style={{ ...num, padding: '6px 12px' }} />
                                 <td style={{ ...num, padding: '6px 12px' }} className="font-mono">
@@ -615,7 +616,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                         Subtotal · {trader}
                       </td>
                       <td style={{ ...num, fontWeight: 700 }} className="font-mono">
-                        {formatBF(subBF)}
+                        {formatUnitTotals(subQtys)}
                       </td>
                       <td style={{ ...num, color: ARCH_SURFACE.textMid }} className="font-mono">
                         {subItems}

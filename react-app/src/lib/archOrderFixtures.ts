@@ -151,7 +151,8 @@ export const getOpenOrders = (): ArchOpenOrder[] => {
         lotNo: lot.lotNo,
         containerNo: lot.containerNo,
         bf: Math.max(50, Math.round((lot.onHand || row.onHand || 500) / 50) * 50),
-        costPerBF: row.avgCostBF,
+        unit: row.unit,
+        costPerBF: row.avgCostPerUnit,
         bucket: 'onHand',
         existing: true,
         // A line is at most as far along as its order. An order still Reserved
@@ -159,7 +160,7 @@ export const getOpenOrders = (): ArchOpenOrder[] => {
         lineStatus: status === 'Reserved' ? 'Reserved' : rng() > 0.45 ? status : 'Reserved',
         // Already-sold stock has an agreed price. Seeded a little above lot cost
         // so the margin readout is plausible rather than zero.
-        pricePerBF: Math.round((row.avgCostBF * (1.18 + rng() * 0.35)) * 100) / 100,
+        pricePerBF: Math.round((row.avgCostPerUnit * (1.18 + rng() * 0.35)) * 100) / 100,
       });
     }
 

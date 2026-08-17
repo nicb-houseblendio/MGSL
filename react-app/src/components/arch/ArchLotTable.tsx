@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { formatArchQty, formatBF, formatCostPerBF, uomSuffix } from '@/lib/archUom';
+import { formatQty, formatCostPerUnit, displaySuffix, unitLabel } from '@/lib/archUom';
 import { isLotLocked, lockReason, lotQuantity, commitmentOn } from '@/lib/archLots';
 import { lotAllocation, lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
 import { ARCH_BUCKET_META, ARCH_RESERVE_INK, ARCH_SURFACE } from '@/components/arch/archColors';
@@ -272,7 +272,7 @@ export const ArchLotTable = ({
                     color: showReserved ? ARCH_RESERVE_INK : ARCH_SURFACE.textLight,
                   }}
                 >
-                  {formatBF(reservedTotal)} <span style={{ fontSize: 9.5 }}>BF</span>
+                  {formatQty(reservedTotal, row.unit)} <span style={{ fontSize: 9.5 }}>{unitLabel(row.unit)}</span>
                 </span>
               </button>
             )}
@@ -361,13 +361,13 @@ export const ArchLotTable = ({
                     </th>
                   ))}
                   <th style={headerCellStyle}>Grain</th>
-                  <th style={{ ...headerCellStyle, textAlign: 'right' }}>Total {uomSuffix(uom)}</th>
+                  <th style={{ ...headerCellStyle, textAlign: 'right' }}>Total {displaySuffix(row.unit, uom)}</th>
                   {isOnHand && (
                     <th
                       style={{ ...headerCellStyle, textAlign: 'right' }}
                       title="Uncommitted board feet — this bundle's on-hand less anything reserved, released to build, or held for shipment"
                     >
-                      Avail. {uomSuffix(uom)}
+                      Avail. {displaySuffix(row.unit, uom)}
                     </th>
                   )}
                   <th style={{ ...headerCellStyle, textAlign: 'right' }}>BF Cost</th>
@@ -438,7 +438,7 @@ export const ArchLotTable = ({
                           style={{ ...cellStyle, padding: '6px 10px' }}
                           title={
                             reserved > 0
-                              ? `${formatBF(reserved)} BF of this bundle is reserved — turn on "Show reserved" for detail`
+                              ? `${formatQty(reserved, row.unit)} ${unitLabel(row.unit)} of this bundle is reserved — turn on "Show reserved" for detail`
                               : 'Nothing reserved on this bundle'
                           }
                         >
@@ -461,7 +461,7 @@ export const ArchLotTable = ({
                               <span
                                 style={{ width: 5, height: 5, borderRadius: '50%', background: reserveMeta.color }}
                               />
-                              {formatBF(reserved)} <span style={{ fontSize: 9 }}>BF</span>
+                              {formatQty(reserved, row.unit)} <span style={{ fontSize: 9 }}>{unitLabel(row.unit)}</span>
                             </span>
                           ) : (
                             <span style={{ color: ARCH_SURFACE.border, fontSize: 11 }}>—</span>
@@ -486,7 +486,7 @@ export const ArchLotTable = ({
                         style={{ ...cellStyle, textAlign: 'right', fontWeight: 700, color: ARCH_SURFACE.navy }}
                         className="font-mono"
                       >
-                        {formatArchQty(lotQuantity(lot, bucket), uom)}
+                        {formatQty(lotQuantity(lot, bucket), row.unit, uom)}
                       </td>
                       {isOnHand && (
                         <td
@@ -504,11 +504,11 @@ export const ArchLotTable = ({
                           }}
                           className="font-mono"
                         >
-                          {formatArchQty(freeBF, uom)}
+                          {formatQty(freeBF, row.unit, uom)}
                         </td>
                       )}
                       <td style={{ ...cellStyle, textAlign: 'right' }} className="font-mono">
-                        {formatCostPerBF(row.avgCostBF)}
+                        {formatCostPerUnit(row.avgCostPerUnit, row.unit)}
                       </td>
                       <td style={{ ...cellStyle, textAlign: 'center', paddingLeft: 6, paddingRight: 10 }}>
                         <TallyButton

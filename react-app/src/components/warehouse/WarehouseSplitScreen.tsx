@@ -18,7 +18,7 @@
  */
 
 import * as React from 'react';
-import { formatBF } from '@/lib/archUom';
+import { formatQty, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import { useArchSplitQueue } from '@/hooks/useArchSplitQueue';
 import {
@@ -29,7 +29,6 @@ import {
   entryKey,
   splitOutcome,
   speciesListOf,
-  jobRequestedBF,
   shortDate,
   dueInfo,
 } from '@/lib/archSplit';
@@ -314,7 +313,7 @@ export const WarehouseSplitScreen = () => {
           </span>
         </td>
         <td style={{ ...td, textAlign: 'right' }} className="font-mono">
-          {formatBF(jobRequestedBF(job))} <span style={{ color: ARCH_SURFACE.textLight, fontSize: 10.5 }}>BF</span>
+          {formatUnitTotals(job.bundles.map((b) => ({ unit: b.unit, qty: b.requestedBF })))}
         </td>
         <td style={{ ...td, textAlign: 'center' }} className="font-mono">
           {job.bundles.length}×
@@ -762,20 +761,20 @@ const SplitResultDialog = ({
             <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, lineHeight: 1.8, color: ARCH_SURFACE.text }}>
               <li>
                 Correct the sales order line to{' '}
-                <strong className="font-mono">{formatBF(o.soLineBF)} BF</strong> — replacing the trader's placeholder.
+                <strong className="font-mono">{formatQty(o.soLineBF, o.unit)}</strong> — replacing the trader's placeholder.
               </li>
               <li>
                 Inventory adjustment splitting the lot: <strong className="font-mono">{o.lotNo}</strong> becomes{' '}
-                <strong className="font-mono">{formatBF(o.originalLotBF)} BF</strong>, and a new bundle{' '}
+                <strong className="font-mono">{formatQty(o.originalLotBF, o.unit)}</strong>, and a new bundle{' '}
                 <strong className="font-mono">{o.newLotNo}</strong> is created at{' '}
-                <strong className="font-mono">{formatBF(o.newLotBF)} BF</strong>.
+                <strong className="font-mono">{formatQty(o.newLotBF, o.unit)}</strong>.
               </li>
               {o.systemVarianceBF !== 0 && (
                 <li>
                   Re-tally variance of{' '}
                   <strong className="font-mono" style={{ color: o.systemVarianceBF > 0 ? '#15803D' : '#B91C1C' }}>
                     {o.systemVarianceBF > 0 ? '+' : ''}
-                    {formatBF(o.systemVarianceBF)} BF
+                    {formatQty(o.systemVarianceBF, o.unit)}
                   </strong>{' '}
                   against the figure on file.
                 </li>

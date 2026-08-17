@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
-import { convertBF, uomSuffix, ARCH_UOM_M3 } from '@/lib/archUom';
+import { convertQty, displaySuffix, ARCH_UOM_M3 } from '@/lib/archUom';
+import type { ArchUnit } from '@/lib/archUom';
 import type { ArchSummaryRow, ArchTotals } from '@/types/arch';
 
 /**
@@ -28,14 +29,18 @@ const downloadXlsx = (wb: XLSX.WorkBook, filename: string) => {
   URL.revokeObjectURL(url);
 };
 
-/** m³ needs decimals; BF is whole. */
-const qty = (bf: number, uom: string): number => {
-  const v = convertBF(bf || 0, uom);
-  return uom === ARCH_UOM_M3 ? Math.round(v * 1000) / 1000 : Math.round(v);
+/** m³ needs decimals; every native unit is whole. */
+const qty = (value: number, unit: ArchUnit, uom: string): number => {
+  const v = convertQty(value || 0, unit, uom);
+  return uom === ARCH_UOM_M3 && v !== (value || 0) ? Math.round(v * 1000) / 1000 : Math.round(v);
 };
 
 export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uom: string) => {
-  const u = uomSuffix(uom);
+  // The quantity headers can no longer name a unit — the sheet may hold BF,
+  // SQFT and piece rows together — so a Unit column is added and each row
+  // declares its own. That is also the shape a pivot table wants.
+  const mixedUnits = totals.units.length > 1;
+  const totalsUnit: ArchUnit = totals.units[0] ?? 'BF';
 
   const headers = [
     'Item Code',
@@ -48,16 +53,17 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
     'Grain',
     'Containers',
     'Bundles',
-    `Available (${u})`,
-    `On Hand (${u})`,
-    `Reserved (${u})`,
-    `Ready to Build (${u})`,
+    'Unit',
+    'Available',
+    'On Hand',
+    'Reserved',
+    'Ready to Build',
     // Outbound must be here for the same reason it is on the grid: Available
     // subtracts it, so omitting it makes the exported Available unreconcilable.
-    `Outbound (${u})`,
-    `In Transit (${u})`,
-    `On Order (${u})`,
-    'Avg Cost/BF',
+    'Outbound',
+    'In Transit',
+    'On Order',
+    'Avg Cost/Unit',
   ];
 
   const dataRows: (string | number)[][] = rows.map((r) => [
@@ -71,14 +77,15 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
     escAmp(r.grain || ''),
     escAmp(r.containers.join(', ')),
     r.lots.length,
-    qty(r.available, uom),
-    qty(r.onHand, uom),
-    qty(r.reserve, uom),
-    qty(r.readyToBuild, uom),
-    qty(r.outbound, uom),
-    qty(r.inTransit, uom),
-    qty(r.onOrder, uom),
-    r.avgCostBF || 0,
+    displaySuffix(r.unit, uom),
+    qty(r.available, r.unit, uom),
+    qty(r.onHand, r.unit, uom),
+    qty(r.reserve, r.unit, uom),
+    qty(r.readyToBuild, r.unit, uom),
+    qty(r.outbound, r.unit, uom),
+    qty(r.inTransit, r.unit, uom),
+    qty(r.onOrder, r.unit, uom),
+    r.avgCostPerUnit || 0,
   ]);
 
   const totalsRow: (string | number)[] = [
@@ -92,13 +99,21 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
     '',
     '',
     rows.reduce((s, r) => s + r.lots.length, 0),
-    qty(totals.available, uom),
-    qty(totals.onHand, uom),
-    qty(totals.reserve, uom),
-    qty(totals.readyToBuild, uom),
-    qty(totals.outbound, uom),
-    qty(totals.inTransit, uom),
-    qty(totals.onOrder, uom),
+    // Board feet, square feet and pieces do not add up. Rather than write a
+    // confident wrong number into a spreadsheet someone will forward, the
+    // totals row goes blank and says why.
+    mixedUnits ? 'mixed' : displaySuffix(totalsUnit, uom),
+    ...(mixedUnits
+      ? ['', '', '', '', '', '', '']
+      : [
+          qty(totals.available, totalsUnit, uom),
+          qty(totals.onHand, totalsUnit, uom),
+          qty(totals.reserve, totalsUnit, uom),
+          qty(totals.readyToBuild, totalsUnit, uom),
+          qty(totals.outbound, totalsUnit, uom),
+          qty(totals.inTransit, totalsUnit, uom),
+          qty(totals.onOrder, totalsUnit, uom),
+        ]),
     '',
   ];
 

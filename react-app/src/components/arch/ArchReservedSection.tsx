@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { formatBF } from '@/lib/archUom';
+import { formatQty, unitLabel } from '@/lib/archUom';
 import { lotAllocation, formatShortDate } from '@/lib/archFixtures';
 import { ARCH_BUCKET_META, ARCH_RESERVE_INK, ARCH_SURFACE } from '@/components/arch/archColors';
 import { TallyButton, TallyImageDialog } from '@/components/arch/TallyImageDialog';
@@ -103,7 +103,7 @@ export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchRes
           {rows.length} lot{rows.length === 1 ? '' : 's'} of the on-hand stock above committed to sales orders
         </span>
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 800, color: ink }} className="font-mono">
-          {formatBF(total)} <span style={{ fontSize: 9.5 }}>BF</span>
+          {formatQty(total, row.unit)} <span style={{ fontSize: 9.5 }}>{unitLabel(row.unit)}</span>
         </span>
       </div>
 
@@ -145,7 +145,7 @@ export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchRes
                   <td style={cell}>{allocation.customer}</td>
                   <td style={{ ...cell, color: ARCH_SURFACE.textMid }}>{allocation.trader}</td>
                   <td style={{ ...cell, textAlign: 'right', fontWeight: 700, color: ink }} className="font-mono">
-                    {formatBF(qty)}
+                    {formatQty(qty, row.unit)}
                   </td>
                   <td style={{ ...cell, textAlign: 'center', paddingLeft: 6, paddingRight: 10 }}>
                     <TallyButton

@@ -26,6 +26,8 @@
  * lift."
  */
 
+import type { ArchUnit } from '@/lib/archUom';
+
 export interface ArchSplitBundle {
   /** Lot number of the bundle being split. */
   lotNo: string;
@@ -33,9 +35,29 @@ export interface ArchSplitBundle {
   /** Species alone, for the grouped list on the queue row. */
   species: string;
   containerNo: string;
-  /** Board feet the system currently believes the bundle holds. */
+  /**
+   * The item's stock unit. Lumber is BF, but a veneer bundle would be SQFT and
+   * ovals are counted in pieces, so this drives every label on the screen.
+   *
+   * Whether veneer and ovals are splittable AT ALL is an open question with
+   * Marc-Antoine — the argument against is that a split exists because nobody
+   * knows the real remainder until the bundle is opened, and for ovals you just
+   * take 5 of 12. This field does not presume an answer: it only makes sure that
+   * if such a bundle ever reaches the queue it reads "216 units" and not
+   * "216 BF".
+   */
+  unit: ArchUnit;
+  /**
+   * What the system currently believes the bundle holds, in `unit`.
+   *
+   * NOTE ON THE NAME: the `*BF` suffix on this and the fields below is now a
+   * misnomer, kept deliberately. Renaming them would churn the server contract
+   * (`archSplitQueue.js`, `archSplitExecute.js`) and the completion path that
+   * P6 has just verified end to end, for a purely cosmetic gain — the arithmetic
+   * is unit-agnostic. Read them as "quantity", not as "board feet".
+   */
   systemBF: number;
-  /** Board feet the trader put on the sales order line — a placeholder target. */
+  /** What the trader put on the sales order line — a placeholder target, in `unit`. */
   requestedBF: number;
 }
 
@@ -86,6 +108,8 @@ export interface ArchSplitEntry {
  */
 export interface ArchSplitOutcome {
   lotNo: string;
+  /** Unit of every quantity below, carried from the bundle that was split. */
+  unit: ArchUnit;
   /** Sales order line quantity corrected from the placeholder to the real figure. */
   soLineBF: number;
   /** Board feet remaining on the original lot after the split. */

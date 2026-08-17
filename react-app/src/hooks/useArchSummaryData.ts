@@ -26,6 +26,7 @@ const EMPTY_TOTALS: ArchTotals = {
   onOrder: 0,
   inTransit: 0,
   available: 0,
+  units: [],
 };
 
 const applyArchFilters = (rows: ArchSummaryRow[], filters: FilterState): ArchSummaryRow[] => {
@@ -59,8 +60,14 @@ const applyArchFilters = (rows: ArchSummaryRow[], filters: FilterState): ArchSum
   return out;
 };
 
-const sumTotals = (rows: ArchSummaryRow[]): ArchTotals =>
-  rows.reduce<ArchTotals>(
+/**
+ * The sums are still computed across mixed units — the footer decides whether
+ * they can honestly be shown, and a Category filter collapses `units` to one,
+ * at which point they are correct. Computing them unconditionally keeps this
+ * function pure and puts the judgement in one place instead of two.
+ */
+const sumTotals = (rows: ArchSummaryRow[]): ArchTotals => {
+  const totals = rows.reduce<ArchTotals>(
     (acc, r) => ({
       onHand: acc.onHand + (r.onHand || 0),
       reserve: acc.reserve + (r.reserve || 0),
@@ -69,9 +76,13 @@ const sumTotals = (rows: ArchSummaryRow[]): ArchTotals =>
       onOrder: acc.onOrder + (r.onOrder || 0),
       inTransit: acc.inTransit + (r.inTransit || 0),
       available: acc.available + (r.available || 0),
+      units: acc.units,
     }),
-    { ...EMPTY_TOTALS }
+    { ...EMPTY_TOTALS, units: [] }
   );
+  totals.units = [...new Set(rows.map((r) => r.unit))];
+  return totals;
+};
 
 /**
  * Options for one filter, computed against the rows left after EVERY OTHER

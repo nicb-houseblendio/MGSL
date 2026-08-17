@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { formatArchQty, uomSuffix } from '@/lib/archUom';
+import { formatQty, displaySuffix } from '@/lib/archUom';
 import { ARCH_BUCKET_META } from '@/components/arch/archColors';
 import { ArchLotTable } from '@/components/arch/ArchLotTable';
 import { ArchPOListView } from '@/components/arch/ArchPOListView';
@@ -145,8 +145,8 @@ export const DetailDrawerARCH = ({
                 Total
               </div>
               <div className="font-mono" style={{ color: meta.bg, fontSize: 16, fontWeight: 700 }}>
-                {formatArchQty(total, uom)}
-                <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 4 }}>{uomSuffix(uom)}</span>
+                {formatQty(total, row.unit, uom)}
+                <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 4 }}>{displaySuffix(row.unit, uom)}</span>
               </div>
             </div>
           </div>
@@ -212,11 +212,11 @@ export const DetailDrawerARCH = ({
                     color: on ? ARCH_BUCKET_META[key].bg : 'rgba(255,255,255,0.72)',
                   }}
                 >
-                  {formatArchQty(row[key] ?? 0, uom)}{' '}
+                  {formatQty(row[key] ?? 0, row.unit, uom)}{' '}
                   {/* opacity here multiplies the alpha above, so 0.7 took the
                       inactive suffix down to ~0.28 effective. 0.85 keeps the
                       unit subordinate without dropping it under AA. */}
-                  <span style={{ fontSize: 9, opacity: 0.85 }}>{uomSuffix(uom)}</span>
+                  <span style={{ fontSize: 9, opacity: 0.85 }}>{displaySuffix(row.unit, uom)}</span>
                 </span>
               </button>
             );

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { formatBF } from '@/lib/archUom';
+import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import { fmtMoney, fmtPct, marginColor } from '@/lib/archOrderPricing';
 import type { ArchOrderDraft } from '@/types/archOrder';
@@ -163,9 +163,9 @@ export const ArchOrderDraftDialog = ({ draft, onClose }: ArchOrderDraftDialogPro
                   </td>
                   <td style={cell}>{l.description}</td>
                   <td style={{ ...cell, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                    {formatBF(l.bf)}
+                    {formatQty(l.bf, l.unit)}
                     {l.isSplit && (
-                      <span style={{ color: ARCH_SURFACE.textLight, fontWeight: 400 }}> / {formatBF(l.lotBF)}</span>
+                      <span style={{ color: ARCH_SURFACE.textLight, fontWeight: 400 }}> / {formatQty(l.lotBF, l.unit)}</span>
                     )}
                   </td>
                   <td style={{ ...cell, textAlign: 'right' }} className="font-mono">
@@ -174,7 +174,7 @@ export const ArchOrderDraftDialog = ({ draft, onClose }: ArchOrderDraftDialogPro
                   <td style={{ ...cell, fontSize: 11 }}>
                     {l.isSplit && (
                       <div style={{ color: '#B36B16', fontWeight: 600 }}>
-                        SPLIT — pick {formatBF(l.bf)} of {formatBF(l.lotBF)} BF; hold the whole bundle
+                        SPLIT — pick {formatQty(l.bf, l.unit)} of {formatQty(l.lotBF, l.unit)} {unitLabel(l.unit)}; hold the whole bundle
                       </div>
                     )}
                     {l.reman.planing && (
@@ -206,7 +206,7 @@ export const ArchOrderDraftDialog = ({ draft, onClose }: ArchOrderDraftDialogPro
           >
             {(
               [
-                ['Board feet', `${formatBF(draft.totals.bf)} BF`, ARCH_SURFACE.text],
+                ['Quantity', formatUnitTotals(draft.lines.map((l) => ({ unit: l.unit, qty: l.bf }))), ARCH_SURFACE.text],
                 ['Revenue', fmtMoney(draft.totals.revenue, cur, 0), ARCH_SURFACE.text],
                 ['Estimated profit', fmtMoney(draft.totals.profit, cur, 0), marginColor(draft.totals.marginPct)],
                 ['Margin', fmtPct(draft.totals.marginPct), marginColor(draft.totals.marginPct)],

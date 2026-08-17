@@ -113,6 +113,7 @@ export const splitOutcome = (bundle: ArchSplitBundle, e: ArchSplitEntry): ArchSp
   const s = evaluateEntry(e, bundle.systemBF);
   return {
     lotNo: bundle.lotNo,
+    unit: bundle.unit,
     soLineBF: s.customer,
     originalLotBF: s.customer,
     newLotBF: s.inventory,
@@ -189,6 +190,11 @@ export const getSplitJobs = (): ArchSplitJob[] => {
         itemDescription: `${species} ${thickness} ${grade}`,
         species,
         containerNo: `${CONTAINERS[bInt(0, CONTAINERS.length - 1)]}${bInt(1000000, 9999999)}`,
+        // Every fixture bundle is Lumber, deliberately. The five real `-B` lots
+        // in the sandbox are all Lumber, and whether veneer or ovals are
+        // splittable at all is still an open question with Marc-Antoine. Seeding
+        // a splittable veneer bundle here would answer it by invention.
+        unit: 'BF' as const,
         systemBF,
         requestedBF,
       };
