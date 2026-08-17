@@ -40,9 +40,37 @@
       <setting></setting>
       <storevalue>T</storevalue>
     </scriptcustomfield>
+    <scriptcustomfield scriptid="custscript_arch_split_adj_account">
+      <accesslevel>2</accesslevel>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue>612</defaultvalue>
+      <description>Internal id of the GL account bundle-split Inventory Adjustments post to. 612 is "9999997 Temp Inventory", which is what every existing inventory adjustment in this account already uses. Configured here rather than accepted from the browser: the screen must not be able to choose where a write posts. Splits refuse to complete if this is empty.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>INTEGER</fieldtype>
+      <help>Defaults to 612, matching existing inventory adjustments.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>Split Adjustment Account</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
   </scriptcustomfields>
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploy_mcgi_sl_arch_split_execute">
+      <custscript_arch_split_adj_account>612</custscript_arch_split_adj_account>
       <allemployees>F</allemployees>
       <allpartners>F</allpartners>
       <allroles>F</allroles>

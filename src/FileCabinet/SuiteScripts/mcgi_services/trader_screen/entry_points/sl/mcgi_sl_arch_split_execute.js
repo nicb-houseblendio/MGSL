@@ -78,10 +78,10 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
         context.response.write({ output: JSON.stringify(payload) });
     };
 
-    const REQUIRED = [
-        'soId', 'lineUniqueKey', 'lotId', 'locationId',
-        'customerQty', 'remainderQty', 'subsidiaryId', 'adjustmentAccountId', 'departmentId',
-    ];
+    // Deliberately short. Subsidiary, department and the GL account are resolved
+    // from the order and from script configuration, never accepted from the
+    // caller — a screen must not be able to choose where an adjustment posts.
+    const REQUIRED = ['soId', 'lineUniqueKey', 'lotId', 'locationId', 'customerQty', 'remainderQty'];
 
     const onRequest = (context) => {
         const user = runtime.getCurrentUser();

@@ -32,6 +32,8 @@ interface SplitCompletionDialogProps {
   onReset: () => void;
   onSave: () => void;
   onClose: () => void;
+  /** True while the split is being written to NetSuite. */
+  busy?: boolean;
 }
 
 const th: React.CSSProperties = {
@@ -82,6 +84,7 @@ export const SplitCompletionDialog = ({
   onReset,
   onSave,
   onClose,
+  busy,
 }: SplitCompletionDialogProps) => {
   const rows = job.bundles.map((b) => {
     const entry = entryFor(b.lotNo);
@@ -356,7 +359,11 @@ export const SplitCompletionDialog = ({
           <button
             type="button"
             onClick={onSave}
-            disabled={!anyTouched || invalidCount > 0}
+            // Also disabled while the write is in flight. Each bundle posts its
+            // own adjustment and the endpoint revalidates against live stock, so
+            // a double-click would send a second round against a picture the
+            // first is still changing.
+            disabled={!anyTouched || invalidCount > 0 || !!busy}
             style={{
               padding: '8px 20px',
               borderRadius: 9,

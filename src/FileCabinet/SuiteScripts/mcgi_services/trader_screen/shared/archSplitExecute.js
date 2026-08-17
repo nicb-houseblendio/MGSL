@@ -52,7 +52,7 @@
  * Callers pass and receive DISPLAY units — board feet for Lumber. Nothing
  * outside this module should ever see a stored value.
  */
-define(['N/record', 'N/query', 'N/log'], (record, query, log) => {
+define(['N/record', 'N/query', 'N/runtime', 'N/log'], (record, query, runtime, log) => {
 
     /** Split status list values, by the text the list carries. */
     const STATUS_PENDING = 'Pending';
@@ -377,7 +377,62 @@ define(['N/record', 'N/query', 'N/log'], (record, query, log) => {
      * @param {number} input.adjustmentAccountId
      * @param {string} input.soTranId           for the memo
      */
-    const executeSplit = (input) => {
+    /**
+     * Fills in the accounting context from the order itself.
+     *
+     * The browser used to have to send subsidiaryId, departmentId and — worst —
+     * adjustmentAccountId. A screen has no business naming the GL account an
+     * inventory adjustment posts to; anyone who could reach the endpoint could
+     * have pointed the write at any account in the chart. These are now read
+     * from the Sales Order and from script configuration, and whatever the
+     * caller sends for them is ignored.
+     *
+     * Department is the Trading Softwood / Trading Hardwood value the client
+     * asked to be set from the trader's role. Taking it from the order means it
+     * matches whatever the order already booked against rather than being
+     * asserted twice.
+     */
+    const resolveContext = (input) => {
+        const rows = query.runSuiteQL({
+            query:
+                'SELECT tl.subsidiary AS subsidiaryid, tl.department AS departmentid, t.tranid AS tranid ' +
+                'FROM transaction t JOIN transactionline tl ON tl.transaction = t.id ' +
+                "WHERE t.id = ? AND tl.mainline = 'T'",
+            params: [input.soId],
+        }).asMappedResults();
+        if (!rows.length) throw new Error('That sales order does not exist.');
+
+        const acct = runtime.getCurrentScript().getParameter({ name: 'custscript_arch_split_adj_account' });
+        const accountId = parseInt(acct, 10);
+        if (!accountId) {
+            throw new Error(
+                'No adjustment account is configured. Set custscript_arch_split_adj_account on the ' +
+                'split endpoint deployment before completing splits.'
+            );
+        }
+
+        return {
+            subsidiaryId: rows[0].subsidiaryid,
+            departmentId: input.departmentId || rows[0].departmentid,
+            adjustmentAccountId: accountId,
+            soTranId: rows[0].tranid,
+        };
+    };
+
+    const executeSplit = (rawInput) => {
+        const ctx = resolveContext(rawInput);
+        const input = {
+            soId: rawInput.soId,
+            lineUniqueKey: rawInput.lineUniqueKey,
+            lotId: rawInput.lotId,
+            locationId: rawInput.locationId,
+            customerQty: rawInput.customerQty,
+            remainderQty: rawInput.remainderQty,
+            subsidiaryId: ctx.subsidiaryId,
+            departmentId: ctx.departmentId,
+            adjustmentAccountId: ctx.adjustmentAccountId,
+            soTranId: ctx.soTranId,
+        };
         const v = revalidate(input);
 
         // Someone already completed this one. Report their result rather than

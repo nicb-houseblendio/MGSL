@@ -30,6 +30,32 @@ export interface ArchSplitQueueState {
   /** Split-flagged lines with no lot assigned. They cannot be worked as-is. */
   lotMissingCount: number;
   reload: () => void;
+  /**
+   * Completes one bundle in NetSuite. Resolves to the server's own account of
+   * what happened, or an error message fit to show someone holding a tape
+   * measure. Never throws — the caller is a save handler, not a try block.
+   */
+  completeBundle: (req: CompleteRequest) => Promise<CompleteResult>;
+}
+
+export interface CompleteRequest {
+  soId: number;
+  lineUniqueKey: number;
+  lotId: number;
+  locationId: number;
+  /** Measured, in display units. */
+  customerQty: number;
+  remainderQty: number;
+}
+
+export interface CompleteResult {
+  ok: boolean;
+  error?: string;
+  alreadyDone?: boolean;
+  inventoryAdjustmentId?: number;
+  parentLot?: string;
+  childLot?: string;
+  tallyVarianceDisplay?: number;
 }
 
 interface QueueBundle {
@@ -118,5 +144,34 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
     };
   }, [nonce]);
 
-  return { jobs, source, error, lotMissingCount, reload };
+  /**
+   * Note what is NOT sent: subsidiary, department, and the GL account. Those are
+   * resolved server-side from the order and from script configuration. A screen
+   * choosing where an inventory adjustment posts would be a hole, not a feature.
+   */
+  const completeBundle = React.useCallback(async (req: CompleteRequest): Promise<CompleteResult> => {
+    const url = endpointUrl();
+    if (!url) {
+      return { ok: false, error: 'This screen is not connected to NetSuite, so nothing was written.' };
+    }
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req),
+      });
+      // The Suitelet answers 200 to everything — NetSuite gives no way to set a
+      // status code — so branch on the payload, never on r.status.
+      const body = await r.json();
+      if (!body || body.ok !== true) {
+        return { ok: false, error: (body && body.error) || 'The split could not be completed.' };
+      }
+      return body as CompleteResult;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'NetSuite could not be reached.' };
+    }
+  }, []);
+
+  return { jobs, source, error, lotMissingCount, reload, completeBundle };
 };

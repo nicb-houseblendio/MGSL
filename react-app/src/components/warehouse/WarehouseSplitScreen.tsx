@@ -78,7 +78,8 @@ export const WarehouseSplitScreen = () => {
   // Live from NetSuite when the Suitelet injects its URL, fixtures otherwise.
   // The source is surfaced in the toolbar rather than hidden: demo data shown as
   // if it were real is the one outcome worth designing against.
-  const { jobs, source, error, lotMissingCount } = useArchSplitQueue();
+  const { jobs, source, error, lotMissingCount, reload, completeBundle } = useArchSplitQueue();
+  const [saving, setSaving] = React.useState(false);
   // Colours assigned across the whole roster, so no two traders collide.
   const traderColors = React.useMemo(() => traderColorMap(jobs.map((j) => j.trader)), [jobs]);
 
@@ -153,18 +154,79 @@ export const WarehouseSplitScreen = () => {
     [jobs]
   );
 
-  const handleSave = React.useCallback(() => {
+  /**
+   * Completes the split in NetSuite, one bundle at a time.
+   *
+   * Sequential rather than parallel on purpose: each bundle posts its own
+   * Inventory Adjustment against the same item and location, and the endpoint
+   * revalidates against live stock every time. Firing them together would have
+   * each one validating against a picture the others are still changing.
+   *
+   * A bundle that is only partly recorded is skipped, not sent — the worker is
+   * mid-measurement, not finished. Anything that fails is named, and the queue is
+   * reloaded either way so the screen shows what NetSuite actually holds rather
+   * than what we hoped it would.
+   */
+  const handleSave = React.useCallback(async () => {
+    if (saving) return;
     const job = jobs.find((j) => j.soNo === openJob);
     if (!job) return;
-    const complete = job.bundles.filter((b) => entryDone(entryFor(job, b.lotNo), b.systemBF));
-    setOpenJob(null);
-    if (complete.length === job.bundles.length) {
-      setResult({ job, outcomes: job.bundles.map((b) => splitOutcome(b, entryFor(job, b.lotNo))) });
-    } else {
-      const left = job.bundles.length - complete.length;
-      setToast(`Progress saved on ${job.soNo} — ${left} bundle${left === 1 ? '' : 's'} still to record`);
+
+    const ready = job.bundles.filter((b) => entryDone(entryFor(job, b.lotNo), b.systemBF));
+    const left = job.bundles.length - ready.length;
+
+    // On fixtures there is nothing to write to; keep the old preview behaviour
+    // so the screen is still demonstrable without NetSuite.
+    if (source !== 'netsuite') {
+      setOpenJob(null);
+      if (!left) setResult({ job, outcomes: job.bundles.map((b) => splitOutcome(b, entryFor(job, b.lotNo))) });
+      else setToast(`Progress saved on ${job.soNo} — ${left} bundle${left === 1 ? '' : 's'} still to record`);
+      return;
     }
-  }, [jobs, openJob, entryFor, entryDone]);
+
+    if (!ready.length) {
+      setToast('Nothing to save yet — enter both figures for at least one bundle.');
+      return;
+    }
+
+    setSaving(true);
+    const done: string[] = [];
+    const failed: string[] = [];
+
+    for (const b of ready) {
+      const e = entryFor(job, b.lotNo);
+      const bb = b as typeof b & { lotId?: number | null; lineUniqueKey?: number; locationId?: number };
+      if (!bb.lotId) {
+        failed.push(`${b.lotNo || 'unnamed bundle'}: no bundle is assigned to this line`);
+        continue;
+      }
+      const res = await completeBundle({
+        soId: (job as typeof job & { soId: number }).soId,
+        lineUniqueKey: bb.lineUniqueKey as number,
+        lotId: bb.lotId,
+        locationId: bb.locationId as number,
+        customerQty: parseFloat(e.customerBF),
+        remainderQty: parseFloat(e.inventoryBF),
+      });
+      if (res.ok) done.push(`${res.parentLot || b.lotNo} → ${res.childLot || ''}`.trim());
+      else failed.push(`${b.lotNo}: ${res.error}`);
+    }
+
+    setSaving(false);
+    setOpenJob(null);
+    reload();
+
+    if (failed.length && !done.length) {
+      setToast(`Nothing was saved. ${failed[0]}`);
+    } else if (failed.length) {
+      setToast(`${done.length} bundle${done.length === 1 ? '' : 's'} split. ${failed.length} failed: ${failed[0]}`);
+    } else if (left) {
+      setToast(`${done.length} bundle${done.length === 1 ? '' : 's'} split on ${job.soNo} — ${left} still to record`);
+    } else {
+      setResult({ job, outcomes: job.bundles.map((b) => splitOutcome(b, entryFor(job, b.lotNo))) });
+      setToast(`${job.soNo} split in NetSuite — ${done.join(', ')}`);
+    }
+  }, [jobs, openJob, entryFor, entryDone, source, completeBundle, reload, saving]);
 
   const addNote = React.useCallback(
     (soNo: string, text: string, emailed: boolean) => {
@@ -598,6 +660,7 @@ export const WarehouseSplitScreen = () => {
           onChange={(lotNo, patch) => handleChange(openJobObj.soNo, lotNo, patch)}
           onReset={() => handleReset(openJobObj.soNo)}
           onSave={handleSave}
+          busy={saving}
           onClose={() => setOpenJob(null)}
         />
       )}
