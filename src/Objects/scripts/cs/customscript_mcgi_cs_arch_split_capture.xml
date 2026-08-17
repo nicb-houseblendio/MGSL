@@ -8,21 +8,6 @@
   <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/cs/mcgi_cs_arch_split_capture.js]</scriptfile>
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploy_mcgi_cs_arch_split_capture">
-      <!-- Broad audience on purpose, and note this is the OPPOSITE of the split
-           execute Suitelet, for a reason.
-
-           That endpoint WRITES, so a narrow audience limits who can act. This one
-           only VALIDATES. Anyone excluded from the audience simply edits a Sales
-           Order with none of the rules running: they could tick Split with no
-           quantity, or overwrite Split Status by hand. A validation script with a
-           narrow audience is a validation script with holes in it.
-
-           Restricting reach is a safeguard for a write path and a liability for a
-           guard rail. -->
-      <allemployees>T</allemployees>
-      <allpartners>F</allpartners>
-      <allroles>T</allroles>
-      <audslctrole></audslctrole>
       <eventtype></eventtype>
       <isdeployed>T</isdeployed>
       <loglevel>DEBUG</loglevel>
