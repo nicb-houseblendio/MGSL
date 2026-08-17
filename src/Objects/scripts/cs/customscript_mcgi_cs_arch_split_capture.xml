@@ -1,0 +1,38 @@
+<clientscript scriptid="customscript_mcgi_cs_arch_split_capture">
+  <description>CWP ARCH bundle split capture rules on the Sales Order line: keeps the Split flag and its board-foot quantity consistent, and refuses hand edits to Split Status and Split Inventory Adjustment. Those two cannot be made read-only in the field definition because a transactioncolumncustomfield rejects both DISABLED and INLINE, so this script is the only place that intent can live.</description>
+  <isinactive>F</isinactive>
+  <name>MCGI CS ARCH Split Capture</name>
+  <notifyadmins>F</notifyadmins>
+  <notifyemails></notifyemails>
+  <notifyowner>T</notifyowner>
+  <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/cs/mcgi_cs_arch_split_capture.js]</scriptfile>
+  <scriptdeployments>
+    <scriptdeployment scriptid="customdeploy_mcgi_cs_arch_split_capture">
+      <!-- Broad audience on purpose, and note this is the OPPOSITE of the split
+           execute Suitelet, for a reason.
+
+           That endpoint WRITES, so a narrow audience limits who can act. This one
+           only VALIDATES. Anyone excluded from the audience simply edits a Sales
+           Order with none of the rules running: they could tick Split with no
+           quantity, or overwrite Split Status by hand. A validation script with a
+           narrow audience is a validation script with holes in it.
+
+           Restricting reach is a safeguard for a write path and a liability for a
+           guard rail. -->
+      <allemployees>T</allemployees>
+      <allpartners>F</allpartners>
+      <allroles>T</allroles>
+      <audslctrole></audslctrole>
+      <eventtype></eventtype>
+      <isdeployed>T</isdeployed>
+      <loglevel>DEBUG</loglevel>
+      <recordtype>SALESORDER</recordtype>
+      <!-- Execute-as-Role is meaningless for a client script: it runs in the
+           user's browser as the user. Left empty to match the two client
+           scripts already deployed on this form. -->
+      <runasrole></runasrole>
+      <status>RELEASED</status>
+      <title>MCGI CS ARCH Split Capture</title>
+    </scriptdeployment>
+  </scriptdeployments>
+</clientscript>
