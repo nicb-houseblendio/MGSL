@@ -1,0 +1,39 @@
+<mapreducescript scriptid="customscript_mcgi_mr_trader_cache_arch">
+  <description>Trader Screen cache builder for CWP ARCH (subsidiary 9). Builds On Hand from lot balances; the other five buckets are structurally zero until ARCH sales orders and purchase orders exist in the account.</description>
+  <isinactive>F</isinactive>
+  <name>MCGI MR Trader Screen Cache ARCH</name>
+  <notifyadmins>F</notifyadmins>
+  <notifyemails></notifyemails>
+  <notifyowner>T</notifyowner>
+  <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js]</scriptfile>
+  <!-- No script custom fields on purpose. The MTL fork carries four, but this
+       builder reads none of them: the subsidiary is a constant, there is no
+       delta mode to threshold or force past, and no lot costing yet to point at
+       an accounting book. Declaring parameters the code never reads is how a
+       deployment ends up looking configurable when it is not. Add them when the
+       code actually consumes them. -->
+  <scriptdeployments>
+    <scriptdeployment scriptid="customdeploy_mcgi_mr_trader_cache_arch">
+      <buffersize>1</buffersize>
+      <concurrencylimit>1</concurrencylimit>
+      <isdeployed>T</isdeployed>
+      <loglevel>DEBUG</loglevel>
+      <queueallstagesatonce>T</queueallstagesatonce>
+      <runasrole>ADMINISTRATOR</runasrole>
+      <!-- ⚠️ NOTSCHEDULED, AND IT MUST STAY THAT WAY UNTIL DELIBERATELY CHANGED.
+           IND's scheduled deployment is a known trap: two runners corrupt the
+           summarize merge and fork a second chain that cannot be stopped. This
+           builder is run on demand only. -->
+      <status>NOTSCHEDULED</status>
+      <title>MCGI MR Trader Screen Cache ARCH</title>
+      <yieldaftermins>60</yieldaftermins>
+      <recurrence>
+        <single>
+          <repeat></repeat>
+          <startdate>2026-08-17</startdate>
+          <starttime>23:00:00Z</starttime>
+        </single>
+      </recurrence>
+    </scriptdeployment>
+  </scriptdeployments>
+</mapreducescript>
