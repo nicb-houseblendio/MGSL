@@ -1,0 +1,61 @@
+<suitelet scriptid="customscript_mcgi_sl_arch_split_execute">
+  <description>CWP ARCH bundle split write path. Posts the Inventory Adjustment that splits a lot and trues the Sales Order line up to the measured quantities. Runs as Administrator because warehouse and trader roles cannot write inventory adjustments; authorisation is therefore enforced in script against custscript_arch_split_roles, which fails closed to Administrator only when unset.</description>
+  <isinactive>F</isinactive>
+  <name>MCGI SL ARCH Split Execute</name>
+  <notifyadmins>T</notifyadmins>
+  <notifyemails></notifyemails>
+  <notifyowner>T</notifyowner>
+  <notifyuser>F</notifyuser>
+  <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/sl/mcgi_sl_arch_split_execute.js]</scriptfile>
+  <scriptcustomfields>
+    <scriptcustomfield scriptid="custscript_arch_split_roles">
+      <accesslevel>2</accesslevel>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>Comma separated role internal IDs permitted to complete a bundle split. Leave EMPTY until the warehouse role is settled with the client: empty means Administrator only, which is the safe default for a deployment that writes as Administrator. Administrator is always retained even if omitted from the list, so a bad entry cannot lock out the person who has to fix it.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>TEXT</fieldtype>
+      <help>Example: 1057,1063. Empty is safe and means Administrator only.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>Permitted Split Roles</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
+  </scriptcustomfields>
+  <scriptdeployments>
+    <scriptdeployment scriptid="customdeploy_mcgi_sl_arch_split_execute">
+      <allemployees>F</allemployees>
+      <allpartners>F</allpartners>
+      <allroles>F</allroles>
+      <!-- Administrator only, until the warehouse role is settled with the client.
+           allemployees=F is not by itself enough: an admin does NOT bypass a
+           Suitelet audience, so with no role listed the endpoint refuses
+           everyone including the person who has to test it. Add the warehouse
+           role HERE as well as to custscript_arch_split_roles when it is known;
+           the audience decides who can reach the URL, the parameter decides who
+           the script will act for. -->
+      <audslctrole>ADMINISTRATOR</audslctrole>
+      <eventtype></eventtype>
+      <isdeployed>T</isdeployed>
+      <isonline>F</isonline>
+      <loglevel>DEBUG</loglevel>
+      <runasrole>ADMINISTRATOR</runasrole>
+      <status>RELEASED</status>
+      <title>MCGI SL ARCH Split Execute</title>
+    </scriptdeployment>
+  </scriptdeployments>
+</suitelet>
