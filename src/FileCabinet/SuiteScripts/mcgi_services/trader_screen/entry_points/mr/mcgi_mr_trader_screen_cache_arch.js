@@ -95,19 +95,32 @@ define([
      * items are sold by MBF, by the piece or by the square foot, and softwood
      * items in this account carry no units type at all.
      *
-     * Of 2 300 items, exactly 12 carry one, and they split cleanly:
-     *   unitstype 2  → six MTL dunnage items (pallets, nets, blocks & slats)
-     *   unitstype 1  → MBF          (Lumber:  PUR44KD, ZEB44KD, ZEB84KD, SAP54FCKD)
-     *   unitstype 4  → Unit         (Ovals:   WAL44OVLOUTKD)
-     *   unitstype 5  → Square Feet  (Veneer:  WALVENFCAA)
+     * The account defines five units types, verified 2026-08-17:
+     *   1 MBF          → Lumber  (PUR44KD, ZEB44KD, ZEB84KD, SAP54FCKD)
+     *   2 Manual       → six MTL dunnage items: pallets, nets, blocks & slats
+     *   3 Linear Feet  → NO ITEMS YET. This is what Decking will be sold in.
+     *   4 Unit         → Ovals   (WAL44OVLOUTKD)
+     *   5 Square Feet  → Veneer  (WALVENFCAA)
      *
-     * REPLACE THIS the moment the hardwood/softwood segment is populated. It
-     * will break the first time somebody creates a softwood item measured in
-     * MBF, and it will break silently — which is why every matched item is
-     * written to the execution log below, so drift is visible rather than
-     * inferred.
+     * ── Why this EXCLUDES rather than allowlists ────────────────────────────
+     * The first version listed [1, 4, 5], the three types that had items. That
+     * was a live bug: type 3 is Linear Feet, Decking is sold by the linear
+     * foot, and the Decking category is already documented as existing-but-
+     * empty. The day those items were created the cache would have dropped
+     * every one of them — no error, no empty result to notice, just a whole
+     * product category quietly absent from the screen. The SKU log below lists
+     * what MATCHED; it can never show what was missed.
+     *
+     * Excluding the one known-foreign type instead means a new hardwood unit is
+     * included by default. The failure mode flips from "stock silently missing"
+     * to "something unexpected appears in the logged SKU list" — the second is
+     * visible, the first is not.
+     *
+     * REPLACE THIS ENTIRELY once the hardwood/softwood SKU segment Lucas and
+     * Julie are adding is populated. It remains a proxy: it only works while
+     * softwood carries no units type at all.
      */
-    const ARCH_UNITS_TYPES = [1, 4, 5];
+    const EXCLUDED_UNITS_TYPES = [2];   // Manual — MTL dunnage, not hardwood
 
     /**
      * NetSuite unit name → the canonical code the React app uses.
@@ -153,7 +166,8 @@ define([
         'JOIN inventorynumber inv ON inv.id = inl.inventorynumber ' +
         'JOIN item i              ON i.id  = inv.item ' +
         'LEFT JOIN unitstypeuom u ON u.internalid = i.stockunit ' +
-        'WHERE i.unitstype IN (' + ARCH_UNITS_TYPES.map(() => '?').join(',') + ') ' +
+        'WHERE i.unitstype IS NOT NULL ' +
+        '  AND i.unitstype NOT IN (' + EXCLUDED_UNITS_TYPES.map(() => '?').join(',') + ') ' +
         '  AND inl.quantityonhand <> 0';
 
     // ── getInputData ────────────────────────────────────────────────────────
@@ -162,7 +176,7 @@ define([
         try {
             const rows = query.runSuiteQL({
                 query: LOT_SQL,
-                params: ARCH_UNITS_TYPES,
+                params: EXCLUDED_UNITS_TYPES,
             }).asMappedResults();
 
             const byPair = {};
