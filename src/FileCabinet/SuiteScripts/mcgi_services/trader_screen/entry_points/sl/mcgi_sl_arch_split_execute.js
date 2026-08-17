@@ -43,7 +43,8 @@
  * confirming the deployment, the role allowlist and the executing user without
  * touching a bundle.
  */
-define(['N/runtime', 'N/log', './../../shared/archSplitExecute'], (runtime, log, splitLib) => {
+define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared/archSplitQueue'],
+(runtime, log, splitLib, queueLib) => {
 
     const ROLE_ADMINISTRATOR = 3;
 
@@ -97,6 +98,22 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute'], (runtime, log,
         }
 
         if (context.request.method === 'GET') {
+            // The warehouse screen's queue. Read-only, and served from the same
+            // deployment as the write so both sit behind one role allowlist —
+            // whoever may complete a split may see what is waiting, and nobody
+            // else sees either.
+            if (context.request.parameters.action === 'queue') {
+                try {
+                    const q = queueLib.getPendingSplits();
+                    return respond(context, 200, { ok: true, jobs: q.jobs, counts: q.counts });
+                } catch (e) {
+                    log.error('ARCH Split Execute', 'Queue read failed: ' + (e.message || String(e)));
+                    return respond(context, 500, {
+                        ok: false, code: 'QUEUE_FAILED',
+                        error: 'Could not load the split queue: ' + (e.message || String(e)),
+                    });
+                }
+            }
             return respond(context, 200, {
                 ok: true,
                 service: 'arch-split-execute',

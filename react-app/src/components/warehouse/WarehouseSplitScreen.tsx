@@ -20,8 +20,8 @@
 import * as React from 'react';
 import { formatBF } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
+import { useArchSplitQueue } from '@/hooks/useArchSplitQueue';
 import {
-  getSplitJobs,
   emptyEntry,
   entryComplete,
   entryTouched,
@@ -75,7 +75,10 @@ const td: React.CSSProperties = {
 };
 
 export const WarehouseSplitScreen = () => {
-  const jobs = React.useMemo(() => getSplitJobs(), []);
+  // Live from NetSuite when the Suitelet injects its URL, fixtures otherwise.
+  // The source is surfaced in the toolbar rather than hidden: demo data shown as
+  // if it were real is the one outcome worth designing against.
+  const { jobs, source, error, lotMissingCount } = useArchSplitQueue();
   // Colours assigned across the whole roster, so no two traders collide.
   const traderColors = React.useMemo(() => traderColorMap(jobs.map((j) => j.trader)), [jobs]);
 
@@ -524,18 +527,34 @@ export const WarehouseSplitScreen = () => {
         <span style={{ marginLeft: 'auto', fontSize: 11, color: ARCH_SURFACE.textLight }}>
           Only orders that require a split appear here
         </span>
+        {lotMissingCount > 0 && (
+          <span
+            title="These lines are flagged for a split but no bundle has been assigned to them, so there is nothing to cut yet."
+            style={{
+              fontSize: 10, fontWeight: 700, color: '#7A4100', background: '#FBF1E5',
+              border: '1px solid #D9822B', padding: '2px 8px', borderRadius: 9,
+            }}
+          >
+            {lotMissingCount} line{lotMissingCount === 1 ? '' : 's'} without a bundle
+          </span>
+        )}
         <span
+          title={
+            source === 'netsuite' ? 'Live from NetSuite.'
+              : error ? 'Could not reach NetSuite, so demo data is shown instead: ' + error
+              : 'Demo data. This screen is not connected to NetSuite here.'
+          }
           style={{
             fontSize: 10,
             fontWeight: 700,
-            color: '#7A4100',
-            background: '#FBF1E5',
-            border: '1px solid #D9822B',
+            color:      source === 'netsuite' ? '#1B5E20' : '#7A4100',
+            background: source === 'netsuite' ? '#E8F5E9' : '#FBF1E5',
+            border:     '1px solid ' + (source === 'netsuite' ? '#1B5E20' : '#D9822B'),
             padding: '2px 8px',
             borderRadius: 9,
           }}
         >
-          Demo data
+          {source === 'loading' ? 'Loading…' : source === 'netsuite' ? 'Live' : error ? 'Demo data — NetSuite unreachable' : 'Demo data'}
         </span>
       </div>
 

@@ -28,7 +28,7 @@
  * Lives under trader_screen/ because it loads that folder's bundle and is
  * therefore covered by the same deploy.xml files path. Move both together.
  */
-define(['N/ui/serverWidget', 'N/runtime', 'N/file', 'N/log'], (serverWidget, runtime, file, log) => {
+define(['N/ui/serverWidget', 'N/runtime', 'N/file', 'N/log', 'N/url'], (serverWidget, runtime, file, log, url) => {
 
     const loadBundleFile = (fileName) => {
         const path = '/SuiteScripts/mcgi_services/trader_screen/react-app/dist/' + fileName;
@@ -58,12 +58,30 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/file', 'N/log'], (serverWidget, run
      */
     const buildConfig = (isFullscreen) => {
         const user = runtime.getCurrentUser();
+        // Where the screen reads its queue and posts completions. Resolved rather
+        // than hardcoded so the same bundle works in any account, and passed in
+        // rather than derived in the browser: the front end has no business
+        // guessing a Suitelet URL, and if this is absent it correctly falls back
+        // to fixtures instead of firing requests at a URL it invented.
+        let splitEndpointUrl = '';
+        try {
+            splitEndpointUrl = url.resolveScript({
+                scriptId:   'customscript_mcgi_sl_arch_split_execute',
+                deploymentId: 'customdeploy_mcgi_sl_arch_split_execute',
+                returnExternalUrl: false,
+            });
+        } catch (e) {
+            log.error('Warehouse Screen',
+                'Could not resolve the split endpoint, the screen will fall back to demo data: ' + e.message);
+        }
+
         const configObj = {
             screen: 'warehouse',
             userId: String(user.id),
             userName: user.name || '',
             accountId: runtime.accountId,
             fullscreen: isFullscreen,
+            splitEndpointUrl: splitEndpointUrl,
         };
         return JSON.stringify(configObj).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
     };
