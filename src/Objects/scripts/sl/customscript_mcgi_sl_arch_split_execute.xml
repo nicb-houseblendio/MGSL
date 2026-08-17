@@ -2,7 +2,12 @@
   <description>CWP ARCH bundle split write path. Posts the Inventory Adjustment that splits a lot and trues the Sales Order line up to the measured quantities. Runs as Administrator because warehouse and trader roles cannot write inventory adjustments; authorisation is therefore enforced in script against custscript_arch_split_roles, which fails closed to Administrator only when unset.</description>
   <isinactive>F</isinactive>
   <name>MCGI SL ARCH Split Execute</name>
-  <notifyadmins>T</notifyadmins>
+  <!-- admins=F matches every other script in this account. This endpoint is hit
+       by warehouse staff, and it already handles expected refusals itself,
+       returning JSON and logging them at AUDIT. Emailing all administrators
+       on top of that is noise, and noise is how real failures get ignored.
+       The owner still gets notified. -->
+  <notifyadmins>F</notifyadmins>
   <notifyemails></notifyemails>
   <notifyowner>T</notifyowner>
   <notifyuser>F</notifyuser>
