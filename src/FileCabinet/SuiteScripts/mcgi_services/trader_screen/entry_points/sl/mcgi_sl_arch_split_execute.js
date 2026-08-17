@@ -79,7 +79,7 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute'], (runtime, log,
 
     const REQUIRED = [
         'soId', 'lineUniqueKey', 'lotId', 'locationId',
-        'customerQty', 'remainderQty', 'subsidiaryId', 'adjustmentAccountId',
+        'customerQty', 'remainderQty', 'subsidiaryId', 'adjustmentAccountId', 'departmentId',
     ];
 
     const onRequest = (context) => {

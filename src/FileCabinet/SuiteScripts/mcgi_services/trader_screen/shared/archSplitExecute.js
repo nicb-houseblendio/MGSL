@@ -248,24 +248,51 @@ define(['N/record', 'N/query', 'N/log'], (record, query, log) => {
         const adj = record.create({ type: record.Type.INVENTORY_ADJUSTMENT, isDynamic: true });
         adj.setValue({ fieldId: 'subsidiary', value: input.subsidiaryId });
         adj.setValue({ fieldId: 'account',    value: input.adjustmentAccountId });
+        // Both mandatory on this account and neither is covered by
+        // ignoreMandatoryFields: the save fails with "Please enter value(s) for:
+        // Adjustment Location, Department".
+        //
+        // adjlocation is the header default; each line still carries its own
+        // location, and for a split both are the same place by definition — the
+        // remainder stays where the parent was.
+        adj.setValue({ fieldId: 'adjlocation', value: input.locationId });
+        // Department is the Trading Softwood / Trading Hardwood split the client
+        // asked to be set automatically from the trader's role. Passed in rather
+        // than inferred here, because this module has no idea who the trader is.
+        adj.setValue({ fieldId: 'department',  value: input.departmentId });
         adj.setValue({
             fieldId: 'memo',
             value: 'CWP ARCH bundle split — ' + v.lot.lotName + ' on ' + input.soTranId +
                    ' (customer ' + input.customerQty + ', remainder ' + input.remainderQty + ')',
         });
 
-        // The parent gives up the remainder. Also absorbs any tally variance:
-        // the parent ends at exactly what the warehouse measured for the
-        // customer, so a short or long tally lands here and stays visible.
-        const parentDelta = v.customerStored - v.lot.storedQty;
-        addLine(adj, v, input, parentDelta, { issue: v.lot.lotName });
+        /*
+         * 🔴 The read side and the write side use DIFFERENT units, and this cost a
+         * wrong first run: `inventorynumberlocation.quantityonhand` reports the
+         * item's BASE unit (MBF for Lumber), but an Inventory Adjustment's
+         * adjustqtyby and inventoryassignment quantity are in the item's STOCK
+         * unit (BF). Converting for the write as well as the read applied the
+         * 0.001 twice, and a 680 BF remainder was created as 0.00068 MBF, i.e.
+         * 0.68 BF — three orders of magnitude short, silently.
+         *
+         * So: convert when READING a stored quantity, pass DISPLAY units when
+         * WRITING. Nothing here is converted.
+         */
+        const onHandDisplay = toDisplay(v.lot.storedQty, v.rate);
+
+        // The parent gives up the remainder and also absorbs any tally variance,
+        // ending at exactly what the warehouse measured for the customer, so a
+        // short or long tally lands here and stays visible.
+        const parentDeltaDisplay = input.customerQty - onHandDisplay;
+        addLine(adj, v, input, parentDeltaDisplay, { issueId: v.lot.lotId });
 
         // The remainder becomes the child lot.
-        addLine(adj, v, input, v.remainderStored, { receipt: childLotName });
+        addLine(adj, v, input, input.remainderQty, { receipt: childLotName });
 
         const id = adj.save({ enableSourcing: true, ignoreMandatoryFields: false });
         log.audit('ARCH Split', 'Inventory Adjustment ' + id + ' created for ' + v.lot.lotName +
-                  ' -> ' + childLotName + ' (parent delta ' + parentDelta + ', child ' + v.remainderStored + ')');
+                  ' -> ' + childLotName + ' (parent delta ' + parentDeltaDisplay +
+                  ', child ' + input.remainderQty + ', display units)');
         return id;
     };
 
@@ -277,11 +304,29 @@ define(['N/record', 'N/query', 'N/log'], (record, query, log) => {
 
         const detail = adj.getCurrentSublistSubrecord({ sublistId: 'inventory', fieldId: 'inventorydetail' });
         detail.selectNewLine({ sublistId: 'inventoryassignment' });
-        detail.setCurrentSublistValue({
-            sublistId: 'inventoryassignment',
-            fieldId:   lotRef.issue ? 'issueinventorynumber' : 'receiptinventorynumber',
-            value:     lotRef.issue || lotRef.receipt,
-        });
+
+        // The two sides take DIFFERENT value types, and getting it wrong throws
+        // INVALID_FLD_VALUE rather than failing quietly:
+        //
+        //   issueinventorynumber   the internal ID of an EXISTING lot. A name is
+        //                          rejected outright. Nic's production lot
+        //                          assignment passes Number(lotId) for the same
+        //                          reason.
+        //   receiptinventorynumber a NAME, for a lot that does not exist yet.
+        //                          This is what mints the child lot.
+        if (lotRef.issueId) {
+            detail.setCurrentSublistValue({
+                sublistId: 'inventoryassignment',
+                fieldId:   'issueinventorynumber',
+                value:     Number(lotRef.issueId),
+            });
+        } else {
+            detail.setCurrentSublistValue({
+                sublistId: 'inventoryassignment',
+                fieldId:   'receiptinventorynumber',
+                value:     String(lotRef.receipt),
+            });
+        }
         detail.setCurrentSublistValue({ sublistId: 'inventoryassignment', fieldId: 'quantity', value: storedDelta });
         detail.commitLine({ sublistId: 'inventoryassignment' });
 
