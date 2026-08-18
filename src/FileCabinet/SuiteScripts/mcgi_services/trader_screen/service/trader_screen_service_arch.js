@@ -115,11 +115,84 @@ define([
         };
     };
 
+    /**
+     * Is the summary ACTUALLY readable? META alone is not proof.
+     *
+     * SUMMARY and META are separate cache entries with separate lifetimes, so
+     * they can disagree. The builder's shrink guard refreshes META on every run
+     * but only rewrites SUMMARY when it accepts one; before that was fixed, a
+     * repeatedly-tripping guard would let SUMMARY expire while META kept
+     * claiming rows. The builder no longer does that — but a service that
+     * believes META on its own would report "available, 14 rows" while the
+     * summary endpoint returned CACHE_MISS, and the two answers would come from
+     * the same request cycle.
+     *
+     * Cheap to check, so check rather than trust.
+     *
+     * @returns {{present: boolean, reason: string|null, rows: Array|null}}
+     */
+    const readSummary = (myCache) => {
+        const raw = myCache.get({ key: CacheKeysARCH.SUMMARY });
+        if (!raw) return { present: false, reason: 'SUMMARY_MISSING', rows: null };
+        let parsed;
+        try {
+            parsed = JSON.parse(raw);
+        } catch (e) {
+            return { present: false, reason: 'SUMMARY_UNREADABLE', rows: null };
+        }
+        if (Array.isArray(parsed)) return { present: true, reason: null, rows: parsed };
+
+        if (parsed && parsed.chunked && parsed.chunkCount) {
+            // ⚠️ A MISSING CHUNK IS A MISS, NOT A SMALLER RESULT.
+            // This loop used to skip absent chunks and return whatever it found,
+            // which is silent truncation on the read side — the same failure the
+            // shrink guard prevents on the write side, and harder to notice
+            // because the rows that survive look perfectly valid. Chunks share
+            // SUMMARY's TTL but are separate entries, so one expiring or failing
+            // to write is a real scenario once chunking lands.
+            const rows = [];
+            for (let i = 0; i < parsed.chunkCount; i++) {
+                const chunkRaw = myCache.get({ key: CacheKeysARCH.buildSummaryDataKey(i) });
+                if (!chunkRaw) return { present: false, reason: 'SUMMARY_CHUNK_MISSING', rows: null };
+                let chunkRows;
+                try {
+                    chunkRows = JSON.parse(chunkRaw);
+                } catch (e) {
+                    return { present: false, reason: 'SUMMARY_CHUNK_UNREADABLE', rows: null };
+                }
+                if (!Array.isArray(chunkRows)) {
+                    return { present: false, reason: 'SUMMARY_CHUNK_UNREADABLE', rows: null };
+                }
+                rows.push.apply(rows, chunkRows);
+            }
+            return { present: true, reason: null, rows: rows };
+        }
+        return { present: false, reason: 'SUMMARY_UNREADABLE', rows: null };
+    };
+
     const handleGetMeta = () => {
         try {
-            const raw = getMyCache().get({ key: CacheKeysARCH.META });
+            const myCache = getMyCache();
+            const raw = myCache.get({ key: CacheKeysARCH.META });
             if (!raw) return { available: false, reason: 'CACHE_MISS' };
             const meta = JSON.parse(raw);
+
+            // Cross-check. If META survived but the summary did not, the screen
+            // has nothing to render, so saying "available" would be a lie that
+            // the very next request contradicts. `lastUpdated` is still returned
+            // so the UI can say WHEN the data it cannot show was last built,
+            // rather than just failing blank.
+            const summary = readSummary(myCache);
+            if (!summary.present) {
+                return {
+                    available:   false,
+                    reason:      summary.reason,
+                    lastUpdated: meta.lastUpdated || '',
+                    lastAttempt: meta.lastAttempt || meta.lastUpdated || '',
+                    rowCount:    0,
+                };
+            }
+
             return {
                 available:    true,
                 cacheVersion: meta.cacheVersion,
@@ -150,31 +223,18 @@ define([
     const handleGetSummary = (params) => {
         try {
             const myCache = getMyCache();
-            const raw = myCache.get({ key: CacheKeysARCH.SUMMARY });
-            if (!raw) {
+            const summary = readSummary(myCache);
+            if (!summary.present) {
                 return {
-                    error: 'CACHE_MISS',
-                    message: 'ARCH cache not populated. Run the ARCH Map/Reduce script.',
+                    error: summary.reason === 'SUMMARY_MISSING' ? 'CACHE_MISS' : summary.reason,
+                    message: summary.reason === 'SUMMARY_MISSING'
+                        ? 'ARCH cache not populated. Run the ARCH Map/Reduce script.'
+                        : 'ARCH cache is present but not readable (' + summary.reason + '). ' +
+                          'Returning nothing rather than a partial set — run the ARCH Map/Reduce ' +
+                          'script to rebuild.',
                 };
             }
-
-            const parsed = JSON.parse(raw);
-            let allRows;
-            if (parsed && parsed.chunked && parsed.chunkCount) {
-                // The builder does not chunk yet — it refuses to write an
-                // oversized payload instead. This branch is here so the reader
-                // is ready the day chunking is ported from MTL.
-                allRows = [];
-                for (let i = 0; i < parsed.chunkCount; i++) {
-                    const chunkStr = myCache.get({ key: CacheKeysARCH.buildSummaryDataKey(i) });
-                    if (chunkStr) {
-                        const chunkRows = JSON.parse(chunkStr);
-                        if (Array.isArray(chunkRows)) allRows.push.apply(allRows, chunkRows);
-                    }
-                }
-            } else {
-                allRows = parsed;
-            }
+            const allRows = summary.rows;
 
             const filtered = applyFilters(allRows, params || {});
             const metaRaw = myCache.get({ key: CacheKeysARCH.META });
