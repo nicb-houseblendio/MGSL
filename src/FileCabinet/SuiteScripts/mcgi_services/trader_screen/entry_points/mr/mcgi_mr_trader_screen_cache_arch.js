@@ -8,24 +8,31 @@
  * lot-level detail payload per pair, and writes both to N/cache so the React
  * screen loads with zero search governance.
  *
- * ═══ STATUS: ON HAND ONLY ═══════════════════════════════════════════════════
- * This is deliberately partial. Five of the six buckets have NO SOURCE DATA in
- * the account yet — checked 2026-08-17: the six ARCH SKUs carry 96 lots across
- * 3 locations and 123 transactions, and every one of those transactions is an
- * Inventory Adjustment. There is not a single ARCH sales order, purchase order,
- * receipt or transfer order.
+ * ═══ STATUS: FIVE OF SIX BUCKETS BUILT ══════════════════════════════════════
+ * Updated 2026-08-18. The original version of this header said "On Hand only",
+ * which was true when there was not a single ARCH sales or purchase order in the
+ * account. Seeded orders now exist, so four more are sourced:
  *
- *   onHand        ✅ built here, from lot balances
- *   reserve       ⛔ needs sales orders        — none exist
- *   readyToBuild  ⛔ needs sales orders        — none exist
- *   outbound      ⛔ needs sales orders        — none exist
- *   onOrder       ⛔ needs purchase orders     — none exist
- *   inTransit     ⛔ needs POs/TOs billed not received — none exist
+ *   onHand        ✅ lot balances
+ *   reserve       ✅ open sales-order quantity — sold, still in the building
+ *   outbound      ✅ shipped sales-order quantity
+ *   onOrder       ✅ open purchase-order quantity — ordered, not received
+ *   inTransit     ✅ purchase-order quantity billed but not received
+ *   readyToBuild  ⛔ NO FIELD EXISTS to source it from. Marc-Antoine describes
+ *                    it as a header status a trader ticks by hand; every
+ *                    candidate custbody name was probed on 2026-08-18 and none
+ *                    resolved. It stays a literal 0 — a proxy would invent data.
  *
- * Writing the other five now would mean writing queries nothing can validate:
- * an empty result is indistinguishable from a broken one. They are stubbed to
- * zero, explicitly, so the shape is right and the gap is visible on the screen
- * rather than hidden behind plausible-looking numbers.
+ * `bucketsBuilt` / `bucketsEmpty` in META carry this to the browser, so the
+ * screen states which columns are real rather than showing five confident zeros.
+ *
+ * ── The honest gap: lot attribution ─────────────────────────────────────────
+ * ARCH is lot-centric, so each bucket is wanted PER LOT. That needs the order
+ * line to carry an inventory-detail assignment. Real ARCH orders do; the seeded
+ * ones do not, because no inventory detail was set on them. Quantity that no lot
+ * can claim is therefore published as `unattributed` rather than dropped or
+ * spread — so a drill-down showing fewer lots than the column implies reads as a
+ * known gap instead of a bug.
  *
  * ═══ WHY N/query AND NOT SAVED SEARCHES ═════════════════════════════════════
  * A DEPARTURE from IND and MTL, which each drive off six saved searches. Three
@@ -278,6 +285,139 @@ define([
         '  AND i.unitstype NOT IN (' + EXCLUDED_UNITS_TYPES.map(() => '?').join(',') + ') ' +
         '  AND (i.cseg_subsidiary_loc IS NULL OR i.cseg_subsidiary_loc <> ?)';
 
+    /**
+     * ═══ THE FOUR SOURCED BUCKETS ════════════════════════════════════════════
+     * Open sales and purchase order lines for hardwood items, with any lot
+     * assignment attached.
+     *
+     * ⚠️ THIS QUERY FANS OUT. A line with three lot assignments returns three
+     * rows carrying the SAME line quantity. Summing `qty` across them triples
+     * the figure. The line-level values are therefore taken ONCE per
+     * (transaction, line) in JS and the assignment rows are used only to
+     * attribute quantity to lots. This is the same cartesian trap that
+     * `archSplitQueue` documents, and the reason `ia.transactionline` joins on
+     * the line NUMBER rather than `tl.id`.
+     *
+     * ⚠️ EVERY QUANTITY IS IN THE ITEM'S BASE UNIT, exactly like
+     * `quantityonhand`. A 500 BF sales-order line stores -0.5, a 1 500 BF
+     * purchase-order line stores 1.5. They go through the same `/ rate`
+     * conversion as On Hand. Veneer and Ovals are rate 1 and pass through, which
+     * is what makes the Lumber case easy to miss.
+     *
+     * ⚠️ SALES ORDER QUANTITIES ARE NEGATIVE. NetSuite signs outbound lines, so
+     * everything from a SalesOrd is taken through Math.abs.
+     *
+     * The `cseg_subsidiary_loc` filter does double duty: it scopes to hardwood
+     * AND removes the CA-E and TAXQC lines that user events add to every order,
+     * because those items carry no segment. Without it they would be counted as
+     * stock.
+     */
+    const BUCKET_SQL =
+        'SELECT ' +
+        '  tl.item                AS itemid, ' +
+        '  tl.location            AS locationid, ' +
+        '  t.type                 AS trantype, ' +
+        '  t.id                   AS tranid, ' +
+        '  tl.linesequencenumber  AS lineno, ' +
+        '  tl.quantity            AS qty, ' +
+        '  tl.quantityshiprecv    AS shiprecv, ' +
+        '  tl.quantitybilled      AS billed, ' +
+        '  inv.inventorynumber    AS lotno, ' +
+        '  ia.quantity            AS assignedqty ' +
+        'FROM transactionline tl ' +
+        'JOIN transaction t ON t.id = tl.transaction ' +
+        'JOIN item i        ON i.id = tl.item ' +
+        'LEFT JOIN inventoryassignment ia ' +
+        '       ON ia.transaction = t.id AND ia.transactionline = tl.linesequencenumber ' +
+        'LEFT JOIN inventorynumber inv ON inv.id = ia.inventorynumber ' +
+        'WHERE i.cseg_subsidiary_loc = ? ' +
+        "  AND tl.mainline = 'F' " +
+        "  AND tl.isclosed = 'F' " +
+        "  AND t.type IN ('SalesOrd', 'PurchOrd')";
+
+
+    /**
+     * Reads BUCKET_SQL and folds it into per-(item, location) figures.
+     *
+     * Returns, keyed `itemId__locationId`:
+     *   { reserve, outbound, onOrder, inTransit,       // row totals, BASE units
+     *     lots: { lotNo: {reserve, outbound, onOrder, inTransit} },
+     *     unattributed: { ...same four... } }          // no lot assignment
+     *
+     * `unattributed` is not a rounding detail — it is the honest half of the
+     * answer. A sales order line with no inventory detail contributes real,
+     * correct quantity to the ROW but cannot be attributed to any LOT, so the
+     * drill-down would show nothing while the column shows a number. Recording
+     * it means that gap is visible instead of looking like a bug.
+     */
+    const loadBuckets = () => {
+        const byPair = {};
+        const seenLines = {};
+        const blank = () => ({ reserve: 0, outbound: 0, onOrder: 0, inTransit: 0 });
+
+        let rows;
+        try {
+            rows = query.runSuiteQL({
+                query: BUCKET_SQL,
+                params: [HARDWOOD_SEGMENT],
+            }).asMappedResults();
+        } catch (e) {
+            // Buckets missing is bad; On Hand being wrong is worse. Return empty
+            // and let the run continue with the buckets at zero, loudly.
+            log.error('ARCH cache buckets — COULD NOT LOAD, all four buckets will read 0',
+                e.name + ': ' + e.message);
+            return {};
+        }
+
+        rows.forEach((r) => {
+            const key = String(r.itemid) + '__' + String(r.locationid);
+            if (!byPair[key]) byPair[key] = { totals: blank(), lots: {}, unattributed: blank() };
+            const bucket = byPair[key];
+
+            const isSale = String(r.trantype) === 'SalesOrd';
+            // SO quantities are signed negative by NetSuite.
+            const ordered  = Math.abs(num(r.qty));
+            const moved    = Math.abs(num(r.shiprecv));   // shipped (SO) / received (PO)
+            const billed   = Math.abs(num(r.billed));
+            const open     = Math.max(0, ordered - moved);
+
+            // ── Line-level figures ONCE per line, never per assignment row ──
+            const lineKey = String(r.tranid) + '#' + String(r.lineno);
+            if (!seenLines[lineKey]) {
+                seenLines[lineKey] = true;
+                if (isSale) {
+                    // Sold and still in the building.
+                    bucket.totals.reserve  += open;
+                    // Already gone out the door.
+                    bucket.totals.outbound += moved;
+                } else {
+                    // Ordered from a supplier, not yet received.
+                    bucket.totals.onOrder += open;
+                    // Billed but not received — it is on the water.
+                    bucket.totals.inTransit += Math.max(0, Math.min(billed, ordered) - moved);
+                }
+            }
+
+            // ── Lot attribution, only where an assignment exists ──
+            const assigned = Math.abs(num(r.assignedqty));
+            if (r.lotno && assigned > 0) {
+                if (!bucket.lots[r.lotno]) bucket.lots[r.lotno] = blank();
+                if (isSale) bucket.lots[r.lotno].reserve += assigned;
+                else        bucket.lots[r.lotno].onOrder += assigned;
+            }
+        });
+
+        // Whatever the row carries but no lot claims.
+        Object.keys(byPair).forEach((k) => {
+            const b = byPair[k];
+            ['reserve', 'outbound', 'onOrder', 'inTransit'].forEach((f) => {
+                const claimed = Object.keys(b.lots).reduce((s, lot) => s + b.lots[lot][f], 0);
+                b.unattributed[f] = Math.max(0, b.totals[f] - claimed);
+            });
+        });
+
+        return byPair;
+    };
 
     /**
      * ═══ ACTIVE INVENTORY HOLDS ══════════════════════════════════════════════
@@ -385,6 +525,7 @@ define([
             }
 
             const holds = loadActiveHolds();
+            const buckets = loadBuckets();
 
             const byPair = {};
             const rateless = [];
@@ -420,6 +561,7 @@ define([
                         locationId:   String(r.locationid),
                         locationName: r.locationname || KNOWN_LOCATIONS[r.locationid] || '',
                         holds:        holds[key] || {},
+                        buckets:      buckets[key] || null,
                         lots:         [],
                     };
                 }
@@ -494,19 +636,32 @@ define([
 
             // Stored → display. The ONLY place this conversion happens.
             const heldLots = pair.holds || {};
+            const bk       = pair.buckets;
+            const rate     = pair.rate;
+            const perLot   = (bk && bk.lots) || {};
+
             const lots = pair.lots.map((l) => {
                 const isHeld = Object.prototype.hasOwnProperty.call(heldLots, l.lotNo);
+                const lb     = perLot[l.lotNo] || null;
                 return {
                     lotNo:         l.lotNo,
                     lotId:         l.lotId,
-                    po:            '',      // no ARCH purchase orders exist yet
+                    po:            '',      // still no per-lot PO attribution — see containerNo
                     containerNo:   '',      // not on inventorynumber; open question with Marc-Antoine
-                    onHand:        l.storedQty / pair.rate,
-                    reserve:       0,       // ⛔ no sales orders exist
-                    readyToBuild:  0,       // ⛔ no sales orders exist
-                    outbound:      0,       // ⛔ no sales orders exist
-                    onOrder:       0,       // ⛔ no purchase orders exist
-                    inTransit:     0,       // ⛔ no POs/TOs exist
+                    onHand:        l.storedQty / rate,
+                    // Per-lot figures exist ONLY where the order line carries an
+                    // inventory-detail assignment. A line without one contributes
+                    // to the ROW but to no lot — see `unattributed` below.
+                    reserve:       lb ? lb.reserve   / rate : 0,
+                    outbound:      lb ? lb.outbound  / rate : 0,
+                    onOrder:       lb ? lb.onOrder   / rate : 0,
+                    inTransit:     lb ? lb.inTransit / rate : 0,
+                    // ⛔ readyToBuild has NO SOURCE. Marc-Antoine described it as a
+                    // header status a trader ticks by hand, and no such field
+                    // exists on the transaction — every candidate custbody name
+                    // was probed on 2026-08-18 and none resolved. It stays 0 until
+                    // the field is created; guessing a proxy would invent data.
+                    readyToBuild:  0,
                     // The lot is still REPORTED — it physically exists and On Hand
                     // must keep showing it. It is only withheld from `available`.
                     onHold:        isHeld,
@@ -520,6 +675,22 @@ define([
             // hidden — ARCH declares what it withholds rather than quietly
             // shrinking a number the way MTL does.
             const held = lots.reduce((s, l) => s + (l.onHold ? l.onHand : 0), 0);
+
+            // Row-level buckets, converted from BASE units the same way On Hand
+            // is. Taken from the order lines rather than summed from the lots —
+            // see the note on `reserve` below.
+            const bt        = (bk && bk.totals) || { reserve: 0, outbound: 0, onOrder: 0, inTransit: 0 };
+            const bu        = (bk && bk.unattributed) || { reserve: 0, outbound: 0, onOrder: 0, inTransit: 0 };
+            const reserve   = bt.reserve   / rate;
+            const outbound  = bt.outbound  / rate;
+            const onOrder   = bt.onOrder   / rate;
+            const inTransit = bt.inTransit / rate;
+            const unattributed = {
+                reserve:   bu.reserve   / rate,
+                outbound:  bu.outbound  / rate,
+                onOrder:   bu.onOrder   / rate,
+                inTransit: bu.inTransit / rate,
+            };
 
             const summaryRow = {
                 internalId:   pair.itemId,
@@ -552,23 +723,34 @@ define([
                 lots:         lots,
                 unit:         pair.unit,
                 onHand:       onHand,
-                reserve:      0,
+                // Row totals come from the ORDER LINES, not from summing the
+                // lots. A line without an inventory-detail assignment is real
+                // and must count here even though no lot can claim it — summing
+                // lots would silently under-report exactly those orders.
+                reserve:      reserve,
+                outbound:     outbound,
+                onOrder:      onOrder,
+                inTransit:    inTransit,
+                // ⛔ STILL NO SOURCE. There is no Ready to Build field on the
+                // transaction — every candidate custbody name was probed on
+                // 2026-08-18 and none exists. Marc-Antoine describes it as a
+                // header status ticked by hand, so the field has to be created
+                // before this can be anything but 0. Do not substitute a proxy.
                 readyToBuild: 0,
-                outbound:     0,
-                onOrder:      0,
-                inTransit:    0,
-                // The FULL formula with its floor, not `onHand`, even though
-                // every deduction is structurally zero today. Writing the
-                // shortcut would mean that whoever fills `reserve` has to
-                // remember to come back and change this too — and if they
-                // don't, the screen offers stock that is already committed.
+                // Quantity the row carries that NO lot claims, because the order
+                // line has no inventory detail. Published so a drill-down showing
+                // fewer lots than the column suggests reads as a known gap rather
+                // than a bug. Real ARCH orders assign lots; ours seeded none.
+                unattributed: unattributed,
                 // Held stock is subtracted here and ONLY here. onHand still
                 // reports it, because the wood is on the floor; it simply is not
                 // sellable while a correction is pending.
                 held:         held,
                 heldLotCount: lots.filter((l) => l.onHold).length,
-                available:    Math.max(0, onHand + 0 /*onOrder*/ + 0 /*inTransit*/
-                                          - 0 /*reserve*/ - 0 /*readyToBuild*/ - 0 /*outbound*/
+                // The full formula, floored. readyToBuild stays a literal 0 so it
+                // is obvious it contributes nothing yet.
+                available:    Math.max(0, onHand + onOrder + inTransit
+                                          - reserve - 0 /*readyToBuild*/ - outbound
                                           - held),
                 // NULL, NOT ZERO. Lot costing is not wired yet, and 0 renders as
                 // "$0.00/BF" — indistinguishable from stock that genuinely cost
@@ -759,8 +941,8 @@ define([
                         lastAttempt:        new Date().toISOString(),
                         rowCount:           existingCount,
                         lastRunMode:        'FULL',
-                        bucketsBuilt:       ['onHand'],
-                        bucketsEmpty:       ['reserve', 'readyToBuild', 'outbound', 'onOrder', 'inTransit'],
+                        bucketsBuilt:       ['onHand', 'reserve', 'outbound', 'onOrder', 'inTransit'],
+                        bucketsEmpty:       ['readyToBuild'],
                         skippedLotCount:    skippedLots.length,
                         shrinkGuard:        true,
                         shrinkGuardRefused: rows.length,
@@ -783,8 +965,10 @@ define([
                     lastRunMode:  'FULL',
                     // Stated in the payload, not just in this file, so the screen
                     // can tell the user which columns are real.
-                    bucketsBuilt: ['onHand'],
-                    bucketsEmpty: ['reserve', 'readyToBuild', 'outbound', 'onOrder', 'inTransit'],
+                    bucketsBuilt: ['onHand', 'reserve', 'outbound', 'onOrder', 'inTransit'],
+                    // readyToBuild alone. No field exists on the transaction to
+                    // source it from — see the note in reduce.
+                    bucketsEmpty: ['readyToBuild'],
                     // Non-zero means the On Hand figures on screen are LOW: these
                     // lots exist but could not be converted to display units.
                     skippedLotCount: skippedLots.length,
@@ -793,7 +977,7 @@ define([
             });
 
             log.audit('ARCH cache summarize',
-                rows.length + ' summary row(s), ' + payloadBytes + ' bytes. On Hand only.' +
+                rows.length + ' summary row(s), ' + payloadBytes + ' bytes. readyToBuild not sourced.' +
                 (existingCount ? ' Replaced ' + existingCount + ' cached row(s).' : '') +
                 (forceFull ? ' FORCED — shrink guard bypassed.' : ''));
         } catch (e) {
