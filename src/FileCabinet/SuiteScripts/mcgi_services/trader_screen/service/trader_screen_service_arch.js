@@ -48,6 +48,7 @@ define([
         const t = {
             onHand: 0, reserve: 0, readyToBuild: 0,
             outbound: 0, onOrder: 0, inTransit: 0, available: 0,
+            held: 0, heldLotCount: 0,
             units: [],
         };
         const seen = {};
@@ -59,6 +60,8 @@ define([
             t.onOrder      += parseFloat(r.onOrder)      || 0;
             t.inTransit    += parseFloat(r.inTransit)    || 0;
             t.available    += parseFloat(r.available)    || 0;
+            t.held         += parseFloat(r.held)         || 0;
+            t.heldLotCount += parseInt(r.heldLotCount, 10) || 0;
             const u = r.unit || 'BF';
             if (!seen[u]) { seen[u] = true; t.units.push(u); }
         });
@@ -94,7 +97,12 @@ define([
         if (params.greaterThanZero !== false && params.greaterThanZero !== 'false') {
             filtered = filtered.filter((r) =>
                 (r.onHand || 0) + (r.reserve || 0) + (r.readyToBuild || 0) +
-                (r.outbound || 0) + (r.onOrder || 0) + (r.inTransit || 0) > 0);
+                (r.outbound || 0) + (r.onOrder || 0) + (r.inTransit || 0) +
+                // Held stock counts as activity. A row that is entirely on hold
+                // has an Available of 0, and hiding it would make the stock
+                // disappear from the screen entirely — the opposite of what a
+                // hold is for, which is to make it visible as unsellable.
+                (r.held || 0) > 0);
         }
         return filtered;
     };

@@ -64,10 +64,10 @@
  * are. FULL rebuild only, until there is something to be incremental about.
  */
 define([
-    'N/query', 'N/cache', 'N/log', 'N/runtime',
+    'N/query', 'N/search', 'N/cache', 'N/log', 'N/runtime',
     '../../shared/cacheKeys_arch',
     '../../shared/cacheClient',
-], (query, cache, log, runtime, CacheKeys, CacheClient) => {
+], (query, search, cache, log, runtime, CacheKeys, CacheClient) => {
 
     /**
      * ⚠️ ARCH STOCK IS **NOT** SCOPED BY SUBSIDIARY OR LOCATION. Do not "fix"
@@ -116,11 +116,30 @@ define([
      * to "something unexpected appears in the logged SKU list" — the second is
      * visible, the first is not.
      *
-     * REPLACE THIS ENTIRELY once the hardwood/softwood SKU segment Lucas and
-     * Julie are adding is populated. It remains a proxy: it only works while
-     * softwood carries no units type at all.
+     * ── SUPERSEDED 2026-08-18. The units-type heuristic is NO LONGER the scope. ─
+     * Scoping is now `cseg_subsidiary_loc = Hardwood` on the item — a real
+     * segment rather than a proxy. What is kept below is only the early-warning
+     * query, which uses the old heuristic to spot SKUs that look like hardwood
+     * but were never tagged.
+     *
+     * How it got here: Lucas and Julie had applied the segment to LOCATIONS
+     * only, and the data showed exactly the problem Nic described on the
+     * 2026-08-17 call — CWP Prevost is tagged SOFTWOOD and holds 79 of the 97
+     * hardwood lots, because it is a shared reload. The segment was already
+     * enabled on the item record but blank on every SKU, so on 2026-08-18 the
+     * six ARCH SKUs (plus our Decking test item) were tagged Hardwood, with
+     * Andrei's explicit approval.
+     *
+     * ⚠️ TWO THINGS TO KNOW.
+     *   - The segment POSTS TO GL. It is present on transaction and
+     *     transactionline, so it now sources onto ARCH transaction lines created
+     *     from here on. Existing lines are not retroactively tagged.
+     *   - Tagging is a DELIBERATE ACT, so an untagged hardwood SKU is invisible
+     *     to this screen. That is the cost of dropping the heuristic, which
+     *     caught things by accident. UNTAGGED_SQL below is the mitigation.
      */
-    const EXCLUDED_UNITS_TYPES = [2];   // Manual — MTL dunnage, not hardwood
+    const HARDWOOD_SEGMENT = 1;         // customrecord_cseg_subsidiary_loc: 1=Hardwood, 2=Softwood
+    const EXCLUDED_UNITS_TYPES = [2];   // Manual — MTL dunnage. Used ONLY by the untagged-SKU warning.
 
     /**
      * ── Shrink guard thresholds ─────────────────────────────────────────────
@@ -239,9 +258,105 @@ define([
         'JOIN inventorynumber inv ON inv.id = inl.inventorynumber ' +
         'JOIN item i              ON i.id  = inv.item ' +
         'LEFT JOIN unitstypeuom u ON u.internalid = i.stockunit ' +
+        'WHERE i.cseg_subsidiary_loc = ? ' +
+        '  AND inl.quantityonhand <> 0';
+
+    /**
+     * Items that LOOK like hardwood by the old heuristic but are NOT tagged.
+     *
+     * The segment is a deliberate act — somebody has to set it — so an untagged
+     * hardwood SKU is invisible to this cache, silently. That is the price of
+     * moving off the units-type heuristic, which caught things by accident.
+     *
+     * This query is the early warning: anything carrying an ARCH-shaped units
+     * type without the Hardwood segment is probably a SKU someone forgot to tag.
+     * It costs one query per run and turns a silent omission into a log line.
+     */
+    const UNTAGGED_SQL =
+        'SELECT i.id, i.itemid FROM item i ' +
         'WHERE i.unitstype IS NOT NULL ' +
         '  AND i.unitstype NOT IN (' + EXCLUDED_UNITS_TYPES.map(() => '?').join(',') + ') ' +
-        '  AND inl.quantityonhand <> 0';
+        '  AND (i.cseg_subsidiary_loc IS NULL OR i.cseg_subsidiary_loc <> ?)';
+
+
+    /**
+     * ═══ ACTIVE INVENTORY HOLDS ══════════════════════════════════════════════
+     * Marc-Antoine creates hold records to pull stock off the trader screen
+     * before posting an Inventory Adjustment. So a hold means "this stock is
+     * being corrected, do not sell it", and until 2026-08-18 ARCH ignored them
+     * entirely — a held hardwood lot read as fully sellable.
+     *
+     * ── Why the WHOLE lot is withheld, not a quantity ───────────────────────
+     * The record's quantity field is `custrecord_mgsl_hold_packs`, "Packs on
+     * Hold". ARCH has no packs. MTL subtracts packs from a pack count, which is
+     * meaningful there and meaningless here — subtracting a pack figure from a
+     * board-foot balance would produce a confidently wrong number of exactly the
+     * kind this module has spent the day removing.
+     *
+     * So an active hold on an ARCH lot withholds that lot ENTIRELY. Three
+     * reasons, in order of weight:
+     *   1. It matches ARCH's own existing rule. A bundle with any reserve is
+     *      already locked in full, because the real remainder is unknown until
+     *      the warehouse physically splits it. A hold is the same shape of
+     *      uncertainty.
+     *   2. It matches the stated intent — pull the stock off the screen. Being
+     *      conservative errs toward not selling something twice.
+     *   3. The packs figure is carried through as `heldPacks` untouched, so if
+     *      the client later says a hardwood hold is partial, it can be
+     *      reinterpreted without re-reading NetSuite.
+     *
+     * ⚠️ OPEN WITH THE CLIENT: is a hardwood hold all-or-nothing per lot, or a
+     * quantity in the item's own unit? This implements the first. Sandbox has
+     * zero hold records, so nothing here is verified against real data.
+     *
+     * ── Why status is filtered in JS ────────────────────────────────────────
+     * Same reason MTL does it: the SDF customlist's value internal id is not
+     * known at deploy time, and the volume is tiny — Marc described creating
+     * these "quelques fois par semaine".
+     */
+    const loadActiveHolds = () => {
+        const byKey = {};
+        let holdCount = 0;
+        try {
+            search.create({
+                type: 'customrecord_mgsl_inventory_hold',
+                columns: [
+                    search.createColumn({ name: 'custrecord_mgsl_hold_item' }),
+                    search.createColumn({ name: 'custrecord_mgsl_hold_location' }),
+                    search.createColumn({ name: 'custrecord_mgsl_hold_lot' }),
+                    search.createColumn({ name: 'custrecord_mgsl_hold_packs' }),
+                    search.createColumn({ name: 'custrecord_mgsl_hold_status' }),
+                ],
+            }).run().each((r) => {
+                if (r.getText({ name: 'custrecord_mgsl_hold_status' }) !== 'Active') return true;
+                const itemId  = r.getValue({ name: 'custrecord_mgsl_hold_item' });
+                const locId   = r.getValue({ name: 'custrecord_mgsl_hold_location' });
+                const lotName = r.getText({ name: 'custrecord_mgsl_hold_lot' });
+                // NOTE: packs may legitimately be 0 or blank for an ARCH hold,
+                // since the field does not describe hardwood. MTL rejects those
+                // rows; we must NOT, or a hold entered without a pack figure
+                // would be silently ignored and the stock would stay sellable.
+                const packs = parseFloat(r.getValue({ name: 'custrecord_mgsl_hold_packs' })) || 0;
+                if (!itemId || !locId || !lotName) return true;
+                const key = String(itemId) + '__' + String(locId);
+                if (!byKey[key]) byKey[key] = {};
+                byKey[key][lotName] = (byKey[key][lotName] || 0) + packs;
+                holdCount++;
+                return true;
+            });
+            log.audit('ARCH cache holds',
+                holdCount + ' active hold(s) across ' + Object.keys(byKey).length +
+                ' item x location key(s)');
+        } catch (e) {
+            // Fail LOUD and fail CLOSED is not an option here — throwing would
+            // kill the whole cache build over a subsidiary feature. But an empty
+            // holds map means held stock becomes sellable, so this must never
+            // pass silently.
+            log.error('ARCH cache holds — COULD NOT LOAD, held stock may appear sellable',
+                e.name + ': ' + e.message);
+        }
+        return byKey;
+    };
 
     // ── getInputData ────────────────────────────────────────────────────────
     // Returns one entry per item × location, each carrying its lots. FULL only.
@@ -249,8 +364,27 @@ define([
         try {
             const rows = query.runSuiteQL({
                 query: LOT_SQL,
-                params: EXCLUDED_UNITS_TYPES,
+                params: [HARDWOOD_SEGMENT],
             }).asMappedResults();
+
+            // Early warning for SKUs nobody tagged — see UNTAGGED_SQL.
+            try {
+                const untagged = query.runSuiteQL({
+                    query: UNTAGGED_SQL,
+                    params: EXCLUDED_UNITS_TYPES.concat([HARDWOOD_SEGMENT]),
+                }).asMappedResults();
+                if (untagged.length) {
+                    log.error('ARCH cache — POSSIBLE UNTAGGED HARDWOOD, invisible to this screen',
+                        untagged.length + ' item(s) carry an ARCH-shaped units type but no Hardwood ' +
+                        'segment, so their stock does NOT appear: ' +
+                        untagged.map((r) => r.itemid).join(', ') +
+                        '. Set cseg_subsidiary_loc = Hardwood on them, or confirm they are not hardwood.');
+                }
+            } catch (e) {
+                log.audit('ARCH cache', 'Untagged-hardwood check failed (non-fatal): ' + e.message);
+            }
+
+            const holds = loadActiveHolds();
 
             const byPair = {};
             const rateless = [];
@@ -285,6 +419,7 @@ define([
                         rate:         rate,
                         locationId:   String(r.locationid),
                         locationName: r.locationname || KNOWN_LOCATIONS[r.locationid] || '',
+                        holds:        holds[key] || {},
                         lots:         [],
                     };
                 }
@@ -358,21 +493,33 @@ define([
             const myCache = CacheClient.getCache();
 
             // Stored → display. The ONLY place this conversion happens.
-            const lots = pair.lots.map((l) => ({
-                lotNo:         l.lotNo,
-                lotId:         l.lotId,
-                po:            '',      // no ARCH purchase orders exist yet
-                containerNo:   '',      // not on inventorynumber; open question with Marc-Antoine
-                onHand:        l.storedQty / pair.rate,
-                reserve:       0,       // ⛔ no sales orders exist
-                readyToBuild:  0,       // ⛔ no sales orders exist
-                outbound:      0,       // ⛔ no sales orders exist
-                onOrder:       0,       // ⛔ no purchase orders exist
-                inTransit:     0,       // ⛔ no POs/TOs exist
-                tallyImageUrl: null,
-            }));
+            const heldLots = pair.holds || {};
+            const lots = pair.lots.map((l) => {
+                const isHeld = Object.prototype.hasOwnProperty.call(heldLots, l.lotNo);
+                return {
+                    lotNo:         l.lotNo,
+                    lotId:         l.lotId,
+                    po:            '',      // no ARCH purchase orders exist yet
+                    containerNo:   '',      // not on inventorynumber; open question with Marc-Antoine
+                    onHand:        l.storedQty / pair.rate,
+                    reserve:       0,       // ⛔ no sales orders exist
+                    readyToBuild:  0,       // ⛔ no sales orders exist
+                    outbound:      0,       // ⛔ no sales orders exist
+                    onOrder:       0,       // ⛔ no purchase orders exist
+                    inTransit:     0,       // ⛔ no POs/TOs exist
+                    // The lot is still REPORTED — it physically exists and On Hand
+                    // must keep showing it. It is only withheld from `available`.
+                    onHold:        isHeld,
+                    heldPacks:     isHeld ? heldLots[l.lotNo] : 0,
+                    tallyImageUrl: null,
+                };
+            });
 
             const onHand = lots.reduce((s, l) => s + l.onHand, 0);
+            // Quantity sitting on a held lot, in display units. Reported, not
+            // hidden — ARCH declares what it withholds rather than quietly
+            // shrinking a number the way MTL does.
+            const held = lots.reduce((s, l) => s + (l.onHold ? l.onHand : 0), 0);
 
             const summaryRow = {
                 internalId:   pair.itemId,
@@ -415,8 +562,14 @@ define([
                 // shortcut would mean that whoever fills `reserve` has to
                 // remember to come back and change this too — and if they
                 // don't, the screen offers stock that is already committed.
+                // Held stock is subtracted here and ONLY here. onHand still
+                // reports it, because the wood is on the floor; it simply is not
+                // sellable while a correction is pending.
+                held:         held,
+                heldLotCount: lots.filter((l) => l.onHold).length,
                 available:    Math.max(0, onHand + 0 /*onOrder*/ + 0 /*inTransit*/
-                                          - 0 /*reserve*/ - 0 /*readyToBuild*/ - 0 /*outbound*/),
+                                          - 0 /*reserve*/ - 0 /*readyToBuild*/ - 0 /*outbound*/
+                                          - held),
                 // NULL, NOT ZERO. Lot costing is not wired yet, and 0 renders as
                 // "$0.00/BF" — indistinguishable from stock that genuinely cost
                 // nothing. null is self-describing: the formatter shows an em

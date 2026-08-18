@@ -53,6 +53,27 @@ export interface ArchLot {
   onOrder: number;
   inTransit: number;
   /**
+   * An active Inventory Hold sits on this lot, so it is NOT sellable.
+   *
+   * Marc-Antoine creates holds to pull stock off the trader screen before
+   * posting an Inventory Adjustment. The lot is still reported in `onHand` —
+   * the wood is physically on the floor — but it is excluded from `available`.
+   *
+   * ARCH withholds the WHOLE lot rather than a quantity. The hold record's
+   * figure is "Packs on Hold" and ARCH has no packs, so subtracting it from a
+   * board-foot balance would be meaningless. This also matches ARCH's existing
+   * rule that a bundle with any reserve is locked in full.
+   */
+  onHold?: boolean;
+  /**
+   * The hold record's raw "Packs on Hold" figure, carried through untouched.
+   *
+   * NOT used in any arithmetic. It is here so that if the client later says a
+   * hardwood hold is partial rather than whole-lot, it can be reinterpreted
+   * without re-reading NetSuite.
+   */
+  heldPacks?: number;
+  /**
    * File-cabinet URL of the supplier tally (a photo/scan of the packing list).
    * Null when no tally has been attached to the lot yet.
    */
@@ -90,7 +111,20 @@ export interface ArchSummaryRow {
   outbound: number;
   onOrder: number;
   inTransit: number;
-  /** onHand + onOrder + inTransit − reserve − readyToBuild − outbound, floored at 0. */
+  /**
+   * Quantity sitting on lots with an active Inventory Hold, in `unit`.
+   *
+   * Reported rather than silently deducted. MTL subtracts held stock and shows
+   * the trader a smaller number with no explanation; ARCH declares it, the same
+   * way it declares empty buckets and skipped lots.
+   */
+  held?: number;
+  /** How many of this row's lots are held. */
+  heldLotCount?: number;
+  /**
+   * onHand + onOrder + inTransit − reserve − readyToBuild − outbound − held,
+   * floored at 0. Held stock is excluded here and ONLY here.
+   */
   available: number;
 
   /**
