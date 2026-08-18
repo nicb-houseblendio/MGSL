@@ -3,8 +3,14 @@
   <isinactive>F</isinactive>
   <name>MCGI MR Trader Screen Cache ARCH</name>
   <notifyadmins>F</notifyadmins>
-  <notifyemails></notifyemails>
-  <notifyowner>T</notifyowner>
+  <notifyemails>aserban@houseblend.io</notifyemails>
+  <!-- Notifications go to Andrei ONLY while ARCH is being built.
+       notifyowner=T sent them to the script owner, "House Blend 2"
+       (credentials.ns_mcg2@houseblend.io) — a shared HouseBlend
+       credentials mailbox, so the person actually building this never
+       saw them. notifyadmins stays F: MGSL admins must not be paged by
+       our in-progress work. -->
+  <notifyowner>F</notifyowner>
   <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js]</scriptfile>
   <!-- ONE script parameter, because the code actually reads it.
        The MTL fork carries four; the other three are still deliberately absent —

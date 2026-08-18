@@ -311,9 +311,30 @@ define([
                 // looking at the screen; every other gap here (empty buckets,
                 // absent costing) is declared in meta, and so is this one.
                 skippedLots = rateless.slice();
-                log.error('ARCH cache getInputData — lots SKIPPED, no conversion rate',
+
+                // ── Level by CAUSE, same rule as the shrink guard ────────────
+                // An item with a broken unit setup does not heal itself, so this
+                // is a PERSISTENT condition. At error level, on an hourly
+                // schedule with notifyowner set, it would fire an error and an
+                // email every hour forever — the documented failure mode in this
+                // codebase, and the exact bug that was just fixed in summarize.
+                // It was missed here while fixing it there.
+                //
+                // First occurrence is an error because it is news. Once META
+                // already records a non-zero skippedLotCount it is a known
+                // condition, so it drops to audit. The count stays in META
+                // either way, so nothing is hidden from the screen.
+                let alreadyReported = false;
+                try {
+                    const metaRaw = CacheClient.getCache().get({ key: CacheKeys.META });
+                    if (metaRaw) alreadyReported = (JSON.parse(metaRaw).skippedLotCount || 0) > 0;
+                } catch (e) { /* unknown — treat as news and log loudly */ }
+
+                const logSkipped = alreadyReported ? log.audit : log.error;
+                logSkipped('ARCH cache getInputData — lots SKIPPED, no conversion rate',
                     rateless.length + ' lot row(s) had no usable stock-unit conversion rate and were ' +
-                    'excluded rather than counted at rate 1: ' + rateless.join(', '));
+                    'excluded rather than counted at rate 1: ' + rateless.join(', ') +
+                    (alreadyReported ? ' (STILL SKIPPING — first occurrence already logged at error level.)' : ''));
             }
             return out;
         } catch (e) {
