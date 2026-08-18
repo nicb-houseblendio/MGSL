@@ -127,6 +127,9 @@ define([
                 rowCount:     meta.rowCount,
                 bucketsBuilt: meta.bucketsBuilt || [],
                 bucketsEmpty: meta.bucketsEmpty || [],
+                // >0 means the On Hand figures are LOW — lots exist that could
+                // not be converted to display units and were excluded.
+                skippedLotCount: meta.skippedLotCount || 0,
             };
         } catch (e) {
             log.error({ title: 'trader_screen_service_arch.getMeta', details: e.message });
@@ -177,6 +180,7 @@ define([
                     rowCount:     filtered.length,
                     bucketsBuilt: meta.bucketsBuilt || [],
                     bucketsEmpty: meta.bucketsEmpty || [],
+                    skippedLotCount: meta.skippedLotCount || 0,
                 },
             };
         } catch (e) {

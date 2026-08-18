@@ -205,6 +205,19 @@ export const formatCost = (cost: number): string =>
 const UNIT_ORDER: ArchUnit[] = ['BF', 'SQFT', 'LF', 'UNIT'];
 
 /**
+ * The known order first, then anything unrecognised — never dropping a unit.
+ *
+ * Filtering by UNIT_ORDER alone silently discarded any unit outside the list.
+ * `ArchUnit` is a closed union so TypeScript says that cannot happen, but the
+ * values arrive as JSON from NetSuite, and a totals line that quietly omits a
+ * quantity is precisely the failure this module exists to prevent.
+ */
+const orderedUnits = (units: ArchUnit[]): ArchUnit[] => [
+  ...UNIT_ORDER.filter((u) => units.indexOf(u) !== -1),
+  ...units.filter((u) => UNIT_ORDER.indexOf(u) === -1),
+];
+
+/**
  * The units present, as a short list — "BF · SQFT · units".
  *
  * Used where a total cannot honestly be shown. It replaced the instruction
@@ -213,7 +226,7 @@ const UNIT_ORDER: ArchUnit[] = ['BF', 'SQFT', 'LF', 'UNIT'];
  * so the filter that advice pointed at has no options to choose from.
  */
 export const unitListLabel = (units: ArchUnit[]): string =>
-  UNIT_ORDER.filter((u) => units.indexOf(u) !== -1).map((u) => unitLabel(u)).join(' · ');
+  orderedUnits(units).map((u) => unitLabel(u)).join(' · ');
 
 export const formatUnitTotals = (
   items: Array<{ unit?: ArchUnit; qty: number }>,
@@ -225,7 +238,7 @@ export const formatUnitTotals = (
     byUnit.set(u, (byUnit.get(u) || 0) + (it.qty || 0));
   });
   if (byUnit.size === 0) return `0 ${unitLabel(DEFAULT_ARCH_UNIT)}`;
-  return UNIT_ORDER.filter((u) => byUnit.has(u))
+  return orderedUnits([...byUnit.keys()])
     .map((u) => formatQtyWithUnit(byUnit.get(u) as number, u, displayUom))
     .join(' · ');
 };

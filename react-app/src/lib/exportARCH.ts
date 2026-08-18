@@ -85,7 +85,10 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
     qty(r.outbound, r.unit, uom),
     qty(r.inTransit, r.unit, uom),
     qty(r.onOrder, r.unit, uom),
-    r.avgCostPerUnit || 0,
+    // Empty cell, NOT 0. The grid already renders an em dash for an absent
+    // cost; writing 0 into a spreadsheet would be worse, because a spreadsheet
+    // gets forwarded and totalled by someone who never saw the screen.
+    r.avgCostPerUnit === null || r.avgCostPerUnit === undefined ? '' : r.avgCostPerUnit,
   ]);
 
   const totalsRow: (string | number)[] = [

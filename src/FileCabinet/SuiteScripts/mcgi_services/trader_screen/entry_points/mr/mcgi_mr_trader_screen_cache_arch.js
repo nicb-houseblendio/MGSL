@@ -123,6 +123,19 @@ define([
     const EXCLUDED_UNITS_TYPES = [2];   // Manual — MTL dunnage, not hardwood
 
     /**
+     * Fallback display names for the locations holding ARCH stock, verified
+     * 2026-08-17.
+     *
+     * `BUILTIN.DF(inl.location)` normally supplies the name and this is never
+     * reached — which is exactly why it has to exist. An earlier edit deleted
+     * this constant while leaving the reference below in place, and nothing
+     * failed: `||` short-circuits on a truthy name, so the undefined identifier
+     * was never evaluated. The first location with a blank display name would
+     * have thrown ReferenceError and killed the whole cache build.
+     */
+    const KNOWN_LOCATIONS = { 122: 'CWP Prevost', 135: 'USL', 136: 'CAL' };
+
+    /**
      * NetSuite unit name → the canonical code the React app uses.
      * Mirrors `normalizeUnit` in react-app/src/lib/archUom.ts and the copy in
      * archSplitQueue.js. Three copies is two too many; if a fourth is ever
@@ -158,6 +171,17 @@ define([
         }
         return bytes;
     };
+
+    /**
+     * Lots dropped for want of a usable conversion rate, carried from
+     * getInputData to summarize so the count reaches META.
+     *
+     * ⚠️ Module state across Map/Reduce STAGES is not guaranteed — NetSuite may
+     * run them in different executions. This is therefore best-effort: when it
+     * survives, the browser learns that stock is missing; when it does not, the
+     * execution log still has the detail. It is never the only record.
+     */
+    let skippedLots = [];
 
     const num = (v) => {
         const n = parseFloat(v);
@@ -253,6 +277,11 @@ define([
                 Object.keys(out).length + ' item x location pair(s) from ' + rows.length +
                 ' lot row(s). SKUs matched (' + matched.length + '): ' + matched.join(', '));
             if (rateless.length) {
+                // Also stashed on the module so summarize can put it in META.
+                // An error in the execution log is invisible to the trader
+                // looking at the screen; every other gap here (empty buckets,
+                // absent costing) is declared in meta, and so is this one.
+                skippedLots = rateless.slice();
                 log.error('ARCH cache getInputData — lots SKIPPED, no conversion rate',
                     rateless.length + ' lot row(s) had no usable stock-unit conversion rate and were ' +
                     'excluded rather than counted at rate 1: ' + rateless.join(', '));
@@ -390,6 +419,9 @@ define([
                     // can tell the user which columns are real.
                     bucketsBuilt: ['onHand'],
                     bucketsEmpty: ['reserve', 'readyToBuild', 'outbound', 'onOrder', 'inTransit'],
+                    // Non-zero means the On Hand figures on screen are LOW: these
+                    // lots exist but could not be converted to display units.
+                    skippedLotCount: skippedLots.length,
                 }),
                 ttl: CacheKeys.TTL_SUMMARY,
             });
