@@ -20,19 +20,57 @@
       <loglevel>DEBUG</loglevel>
       <queueallstagesatonce>T</queueallstagesatonce>
       <runasrole>ADMINISTRATOR</runasrole>
-      <!-- ⚠️ NOTSCHEDULED, AND IT MUST STAY THAT WAY UNTIL DELIBERATELY CHANGED.
-           IND's scheduled deployment is a known trap: two runners corrupt the
-           summarize merge and fork a second chain that cannot be stopped. This
-           builder is run on demand only. -->
-      <status>NOTSCHEDULED</status>
+      <!-- SCHEDULED hourly, deliberately, 2026-08-18.
+           ═══════════════════════════════════════════════════════════════════
+           This looks like it contradicts the standing rule "never enable the
+           trader-cache MR's scheduled deployment". It does not. That rule is
+           about the IND builder, and it exists for three specific mechanisms,
+           ALL THREE OF WHICH ARE ABSENT HERE — verified against both files on
+           2026-08-18:
+
+             1. IND throttles on TS_LAST_RUN_TIMESTAMP with a non-atomic
+                read-then-write, so two runners both decide "not throttled" and
+                both start a FULL rebuild. This builder has NO throttle state at
+                all (IND: 13 references to LAST_RUN, ARCH: 0).
+             2. IND's summarize READS TS_SUMMARY, merges, and writes back, so
+                interleaved runs mean last-writer-wins on a partial merge and
+                one run's delta silently vanishes. This summarize never reads
+                SUMMARY back — it writes a complete payload built from the
+                output iterator, so a concurrent run can only write the same
+                bytes.
+             3. IND's summarize self-reschedules onto
+                runtime.getCurrentScript().deploymentId, so enabling a second
+                deployment forks an immortal chain. This builder contains no
+                N/task, no task.submit and no deploymentId reference (IND: 1 and
+                3 respectively).
+
+           So ARCH is a stateless, idempotent FULL rebuild on a SINGLE
+           deployment with concurrencylimit 1. It was scheduled because the
+           opposite failure was real and observed: TTL is 4h and nothing
+           refreshed the cache, so the summary endpoint returned CACHE_MISS
+           overnight and the screen had no data until someone pressed a button.
+
+           TWO RULES IF YOU CHANGE THIS:
+             - Never add a second deployment to this script. One chain, one
+               deployment. That is what keeps mechanism 3 inapplicable.
+             - Keep TTL_SUMMARY/TTL_DETAIL above the refresh interval with
+               margin. Hourly against a 4h TTL is 4x, so three consecutive
+               failed runs are survivable. Lowering the TTL to "match" the
+               interval is the exact mistake that caused the IND blackout.
+
+           `repeat` is an ISO 8601 duration — PT1H. Not a word enum. Taken from
+           what SDF actually wrote after the change was made in the UI; do not
+           guess this value. `starttime` is UTC: 11:00Z is 07:00 PT. -->
+      <status>SCHEDULED</status>
       <title>MCGI MR Trader Screen Cache ARCH</title>
       <yieldaftermins>60</yieldaftermins>
       <recurrence>
-        <single>
-          <repeat></repeat>
-          <startdate>2026-08-17</startdate>
-          <starttime>23:00:00Z</starttime>
-        </single>
+        <daily>
+          <everyxdays>1</everyxdays>
+          <repeat>PT1H</repeat>
+          <startdate>2026-08-18</startdate>
+          <starttime>11:00:00Z</starttime>
+        </daily>
       </recurrence>
     </scriptdeployment>
   </scriptdeployments>
