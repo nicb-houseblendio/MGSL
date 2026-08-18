@@ -476,20 +476,46 @@ define([
             // partial set is still real data worth keeping; every ARCH payload is
             // complete by construction, so the cached one is strictly better than
             // a truncated new one. Stale-but-complete beats silently-truncated.
+            // Tolerant on purpose. A CHECKBOX parameter should come back as a
+            // boolean, but this is the ONLY escape from a guard that otherwise
+            // blocks a legitimate shrink forever, and it has never been exercised.
+            // If NetSuite ever hands back 'T' or 'true', a strict === true would
+            // fail silently and leave the cache wedged with no way out.
             const forceFull = (function () {
                 try {
-                    return runtime.getCurrentScript()
-                        .getParameter({ name: 'custscript_ts_arch_force_full_rebuild' }) === true;
+                    const v = runtime.getCurrentScript()
+                        .getParameter({ name: 'custscript_ts_arch_force_full_rebuild' });
+                    return v === true || v === 'T' || v === 'true';
                 } catch (e) { return false; }
             })();
 
             let existingCount = 0;
+            let existingRaw   = null;
+            let priorMeta     = null;
             try {
-                const existingRaw = myCache.get({ key: CacheKeys.SUMMARY });
+                existingRaw = myCache.get({ key: CacheKeys.SUMMARY });
                 if (existingRaw) {
                     const existing = JSON.parse(existingRaw);
-                    if (Array.isArray(existing)) existingCount = existing.length;
+                    if (Array.isArray(existing)) {
+                        existingCount = existing.length;
+                    } else if (existing && existing.chunked && existing.chunkCount) {
+                        // Chunking is not implemented in THIS writer, but the reader
+                        // supports it and MTL's port is on the list. Without this
+                        // branch the guard would meet a chunked summary, fail the
+                        // Array.isArray test, leave existingCount at 0 and silently
+                        // disarm itself — the protection would vanish exactly when
+                        // the data got big enough to need it.
+                        for (let ci = 0; ci < existing.chunkCount; ci++) {
+                            const chunkRaw = myCache.get({ key: CacheKeys.buildSummaryDataKey(ci) });
+                            if (chunkRaw) {
+                                const chunkRows = JSON.parse(chunkRaw);
+                                if (Array.isArray(chunkRows)) existingCount += chunkRows.length;
+                            }
+                        }
+                    }
                 }
+                const metaRaw = myCache.get({ key: CacheKeys.META });
+                if (metaRaw) priorMeta = JSON.parse(metaRaw);
             } catch (e) {
                 // A cache we cannot read is a cache we cannot protect. Proceed:
                 // writing a fresh complete payload beats leaving an unparseable one.
@@ -504,12 +530,42 @@ define([
                 rows.length < existingCount * SHRINK_GUARD_MAX_RATIO;
 
             if (shrinkGuardTripped) {
-                log.error('ARCH cache summarize — SHRINK GUARD',
+                // ── Level by CAUSE, not by importance ────────────────────
+                // The deployment has notifyowner=T, and this now runs EVERY HOUR.
+                // A persistent cause — a broken query, a permanently smaller data
+                // set — would otherwise fire an error and an email every hour,
+                // forever. That is the documented failure mode in this codebase:
+                // a per-run condition logged at error level becomes hundreds of
+                // lines a day and a mailbox full of the same message.
+                //
+                // So: the FIRST trip is an error, because it is news. A trip that
+                // repeats a condition already recorded in META is an audit line,
+                // because it is not. The state is still fully visible — shrinkGuard
+                // stays true in META and the screen can surface it.
+                const alreadyKnown = !!(priorMeta && priorMeta.shrinkGuard === true);
+                const logTrip = alreadyKnown ? log.audit : log.error;
+                logTrip('ARCH cache summarize — SHRINK GUARD',
                     'REFUSING to replace ' + existingCount + ' cached row(s) with ' + rows.length +
                     ' (ratio=' + (rows.length / existingCount).toFixed(3) +
-                    ', trips below ' + SHRINK_GUARD_MAX_RATIO + '). The cached summary is kept. ' +
-                    'If the shrink is REAL, run once with ' +
+                    ', trips below ' + SHRINK_GUARD_MAX_RATIO + '). The cached summary is kept.' +
+                    (alreadyKnown ? ' STILL TRIPPING — first occurrence was already logged at error level.' : '') +
+                    ' If the shrink is REAL, run once with ' +
                     'custscript_ts_arch_force_full_rebuild checked.');
+
+                // ── Keep the data we are protecting ALIVE ─────────────────────
+                // Refusing to replace SUMMARY also means not refreshing its TTL,
+                // while META below IS refreshed. Left alone, a guard that trips
+                // repeatedly would let SUMMARY expire after TTL_SUMMARY while META
+                // kept claiming N rows — the service would return CACHE_MISS from
+                // one endpoint and "available: true, rowCount: 14" from the other.
+                // Re-writing the same bytes costs nothing and keeps them in step.
+                if (existingRaw) {
+                    myCache.put({
+                        key:   CacheKeys.SUMMARY,
+                        value: existingRaw,
+                        ttl:   CacheKeys.TTL_SUMMARY,
+                    });
+                }
                 // META is still refreshed, so the screen can report that the cache
                 // did NOT update and why, rather than silently serving older rows
                 // as though they were fresh.
@@ -519,11 +575,7 @@ define([
                 // had in fact refused to, which is worse than the truncation this
                 // guard is preventing: stale data that reports itself as fresh.
                 // `lastAttempt` records that a run happened and was rejected.
-                let priorUpdated = null;
-                try {
-                    const priorRaw = myCache.get({ key: CacheKeys.META });
-                    if (priorRaw) priorUpdated = JSON.parse(priorRaw).lastUpdated || null;
-                } catch (e) { /* fall through to null — better absent than invented */ }
+                const priorUpdated = priorMeta ? (priorMeta.lastUpdated || null) : null;
 
                 myCache.put({
                     key: CacheKeys.META,
