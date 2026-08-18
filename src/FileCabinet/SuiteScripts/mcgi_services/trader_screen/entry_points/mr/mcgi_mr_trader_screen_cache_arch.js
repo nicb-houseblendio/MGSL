@@ -123,6 +123,33 @@ define([
     const EXCLUDED_UNITS_TYPES = [2];   // Manual — MTL dunnage, not hardwood
 
     /**
+     * ── Shrink guard thresholds ─────────────────────────────────────────────
+     * Ported from MTL, but the row threshold is NOT MTL's number and must not be
+     * "corrected" to match it. MTL uses 20 because it carries ~452 rows in prod
+     * and ~200 in sandbox. ARCH carries 14. Copying 20 would leave the guard
+     * permanently disarmed — it would never once arm, and the port would be
+     * decorative.
+     *
+     * 5 arms the guard as soon as the cached summary is large enough for a
+     * collapse to be unambiguous at ARCH's current size, and scales harmlessly
+     * upward because growth never trips it.
+     *
+     * ⚠️ RECALIBRATE when the real import lands. At 500 rows a floor of 5 is far
+     * too permissive to mean anything on its own; the RATIO carries the
+     * protection from then on.
+     */
+    const SHRINK_GUARD_MIN_ROWS = 5;
+    /**
+     * Trip when the incoming set is under half the cached set. Same value and
+     * same reasoning as MTL: every truncation actually observed there was far
+     * below half (prod 27/452 = 0.06), and erring high is deliberate — a false
+     * trip costs stale rows plus a loud log line, a missed catch costs the user
+     * their data. A false trip is recoverable in one step: run once with
+     * custscript_ts_arch_force_full_rebuild checked.
+     */
+    const SHRINK_GUARD_MAX_RATIO = 0.5;
+
+    /**
      * Fallback display names for the locations holding ARCH stock, verified
      * 2026-08-17.
      *
@@ -424,12 +451,108 @@ define([
                 return;
             }
 
+            // ── Shrink guard ──────────────────────────────────────────────
+            // Everything above this point will happily write a 1-row payload over
+            // a good 14-row one, and it looks entirely legitimate.
+            //
+            // The exposure is real, not theoretical. `reduce` catches per-pair
+            // errors, logs them and CONTINUES, so a partial failure produces a
+            // partial payload rather than a failed run. Zero rows writes an empty
+            // array and blanks the screen outright.
+            //
+            // MTL learned this in production: 452 rows became 27, leaving a
+            // US-only location dropdown, spotted by Julie at 13:14 ET on
+            // 2026-07-31. MTL's own trigger — a stale N/cache read confusing
+            // DELTA for FULL — cannot happen here, because ARCH has no delta
+            // mode. But MTL keys its guard on the OUTCOME rather than the mode
+            // precisely so it ALSO catches an errored run with little or no
+            // output, and that is the hole ARCH has.
+            //
+            // Scheduling this hourly (2026-08-18) widened it: truncation used to
+            // require someone pressing a button and watching. Now an unattended
+            // run can blank the cache overnight and nobody sees it for hours.
+            //
+            // ARCH REFUSES rather than merging. MTL merges because a delta's
+            // partial set is still real data worth keeping; every ARCH payload is
+            // complete by construction, so the cached one is strictly better than
+            // a truncated new one. Stale-but-complete beats silently-truncated.
+            const forceFull = (function () {
+                try {
+                    return runtime.getCurrentScript()
+                        .getParameter({ name: 'custscript_ts_arch_force_full_rebuild' }) === true;
+                } catch (e) { return false; }
+            })();
+
+            let existingCount = 0;
+            try {
+                const existingRaw = myCache.get({ key: CacheKeys.SUMMARY });
+                if (existingRaw) {
+                    const existing = JSON.parse(existingRaw);
+                    if (Array.isArray(existing)) existingCount = existing.length;
+                }
+            } catch (e) {
+                // A cache we cannot read is a cache we cannot protect. Proceed:
+                // writing a fresh complete payload beats leaving an unparseable one.
+                log.error('ARCH cache summarize',
+                    'Could not read the existing summary to compare against, so the shrink ' +
+                    'guard is disarmed for this run: ' + e.message);
+            }
+
+            const shrinkGuardTripped =
+                !forceFull &&
+                existingCount >= SHRINK_GUARD_MIN_ROWS &&
+                rows.length < existingCount * SHRINK_GUARD_MAX_RATIO;
+
+            if (shrinkGuardTripped) {
+                log.error('ARCH cache summarize — SHRINK GUARD',
+                    'REFUSING to replace ' + existingCount + ' cached row(s) with ' + rows.length +
+                    ' (ratio=' + (rows.length / existingCount).toFixed(3) +
+                    ', trips below ' + SHRINK_GUARD_MAX_RATIO + '). The cached summary is kept. ' +
+                    'If the shrink is REAL, run once with ' +
+                    'custscript_ts_arch_force_full_rebuild checked.');
+                // META is still refreshed, so the screen can report that the cache
+                // did NOT update and why, rather than silently serving older rows
+                // as though they were fresh.
+                // `lastUpdated` must keep pointing at when the SUMMARY last actually
+                // changed — carried over from the previous META. Stamping it with
+                // "now" would tell the browser the cache had just refreshed when it
+                // had in fact refused to, which is worse than the truncation this
+                // guard is preventing: stale data that reports itself as fresh.
+                // `lastAttempt` records that a run happened and was rejected.
+                let priorUpdated = null;
+                try {
+                    const priorRaw = myCache.get({ key: CacheKeys.META });
+                    if (priorRaw) priorUpdated = JSON.parse(priorRaw).lastUpdated || null;
+                } catch (e) { /* fall through to null — better absent than invented */ }
+
+                myCache.put({
+                    key: CacheKeys.META,
+                    value: JSON.stringify({
+                        cacheVersion:       1,
+                        lastUpdated:        priorUpdated,
+                        lastAttempt:        new Date().toISOString(),
+                        rowCount:           existingCount,
+                        lastRunMode:        'FULL',
+                        bucketsBuilt:       ['onHand'],
+                        bucketsEmpty:       ['reserve', 'readyToBuild', 'outbound', 'onOrder', 'inTransit'],
+                        skippedLotCount:    skippedLots.length,
+                        shrinkGuard:        true,
+                        shrinkGuardRefused: rows.length,
+                    }),
+                    ttl: CacheKeys.TTL_SUMMARY,
+                });
+                return;
+            }
+
             myCache.put({ key: CacheKeys.SUMMARY, value: payload, ttl: CacheKeys.TTL_SUMMARY });
             myCache.put({
                 key: CacheKeys.META,
                 value: JSON.stringify({
                     cacheVersion: 1,
+                    // On the healthy path these are the same instant; they diverge
+                    // only when the shrink guard refuses a run.
                     lastUpdated:  new Date().toISOString(),
+                    lastAttempt:  new Date().toISOString(),
                     rowCount:     rows.length,
                     lastRunMode:  'FULL',
                     // Stated in the payload, not just in this file, so the screen
@@ -444,7 +567,9 @@ define([
             });
 
             log.audit('ARCH cache summarize',
-                rows.length + ' summary row(s), ' + payloadBytes + ' bytes. On Hand only.');
+                rows.length + ' summary row(s), ' + payloadBytes + ' bytes. On Hand only.' +
+                (existingCount ? ' Replaced ' + existingCount + ' cached row(s).' : '') +
+                (forceFull ? ' FORCED — shrink guard bypassed.' : ''));
         } catch (e) {
             log.error('ARCH cache summarize failed', e.message);
         }

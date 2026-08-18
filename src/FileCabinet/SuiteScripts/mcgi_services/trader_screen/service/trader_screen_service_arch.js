@@ -130,6 +130,16 @@ define([
                 // >0 means the On Hand figures are LOW — lots exist that could
                 // not be converted to display units and were excluded.
                 skippedLotCount: meta.skippedLotCount || 0,
+                // ⚠️ THIS OBJECT IS AN ALLOWLIST. A field added to the cached META
+                // is invisible to the browser until it is named here — that has now
+                // been missed twice (skippedLotCount, then shrinkGuard). If you add
+                // something to the builder's META, add it here in the same commit.
+                lastAttempt: meta.lastAttempt || meta.lastUpdated || '',
+                // True means the last run REFUSED to update: the rows below are the
+                // previously cached set, and `lastUpdated` is when they were built,
+                // not when the run happened.
+                shrinkGuard: meta.shrinkGuard === true,
+                shrinkGuardRefused: meta.shrinkGuardRefused || 0,
             };
         } catch (e) {
             log.error({ title: 'trader_screen_service_arch.getMeta', details: e.message });
@@ -181,6 +191,9 @@ define([
                     bucketsBuilt: meta.bucketsBuilt || [],
                     bucketsEmpty: meta.bucketsEmpty || [],
                     skippedLotCount: meta.skippedLotCount || 0,
+                    lastAttempt: meta.lastAttempt || meta.lastUpdated || '',
+                    shrinkGuard: meta.shrinkGuard === true,
+                    shrinkGuardRefused: meta.shrinkGuardRefused || 0,
                 },
             };
         } catch (e) {

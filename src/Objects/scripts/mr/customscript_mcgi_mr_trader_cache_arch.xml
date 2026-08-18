@@ -6,16 +6,48 @@
   <notifyemails></notifyemails>
   <notifyowner>T</notifyowner>
   <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js]</scriptfile>
-  <!-- No script custom fields on purpose. The MTL fork carries four, but this
-       builder reads none of them: the subsidiary is a constant, there is no
-       delta mode to threshold or force past, and no lot costing yet to point at
-       an accounting book. Declaring parameters the code never reads is how a
-       deployment ends up looking configurable when it is not. Add them when the
-       code actually consumes them. -->
+  <!-- ONE script parameter, because the code actually reads it.
+       The MTL fork carries four; the other three are still deliberately absent —
+       the subsidiary is a constant, there is no delta mode to threshold, and no
+       lot costing yet to point at an accounting book. Declaring parameters the
+       code never reads is how a deployment ends up looking configurable when it
+       is not. -->
+  <scriptcustomfields>
+    <scriptcustomfield scriptid="custscript_ts_arch_force_full_rebuild">
+      <accesslevel>2</accesslevel>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>Bypasses the shrink guard for ONE run. Check this only when the summary is legitimately much smaller than what is cached — for example after test data is deleted. Leave unchecked: with it on, a broken run can silently truncate the cache, which is exactly what the guard prevents.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>CHECKBOX</fieldtype>
+      <help>The shrink guard refuses to replace the cached summary when the incoming row count is under half the cached count, because that pattern means a partial or errored run rather than a real change. If the shrink is genuine the guard would otherwise block it forever, so check this, run once, then UNCHECK it.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>Force Full Rebuild (bypass shrink guard)</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
+  </scriptcustomfields>
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploy_mcgi_mr_trader_cache_arch">
       <buffersize>1</buffersize>
       <concurrencylimit>1</concurrencylimit>
+      <!-- Left OFF at the deployment level so the guard is armed by default.
+           It is a one-run switch, not a setting. -->
+      <custscript_ts_arch_force_full_rebuild>F</custscript_ts_arch_force_full_rebuild>
       <isdeployed>T</isdeployed>
       <loglevel>DEBUG</loglevel>
       <queueallstagesatonce>T</queueallstagesatonce>
