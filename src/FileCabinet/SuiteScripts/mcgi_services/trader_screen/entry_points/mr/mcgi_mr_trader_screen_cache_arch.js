@@ -200,6 +200,7 @@ define([
         '  i.itemid                AS itemcode, ' +
         '  i.displayname           AS description, ' +
         '  BUILTIN.DF(i.cseg1)     AS species, ' +
+        '  BUILTIN.DF(i.csegitem_category) AS category, ' +
         '  u.unitname              AS unitname, ' +
         '  u.conversionrate        AS rate, ' +
         '  inl.location            AS locationid, ' +
@@ -252,6 +253,7 @@ define([
                         itemCode:     r.itemcode || '',
                         description:  r.description || r.itemcode || '',
                         species:      r.species || '',
+                        category:     r.category || '',
                         unit:         normalizeUnit(r.unitname),
                         rate:         rate,
                         locationId:   String(r.locationid),
@@ -331,10 +333,25 @@ define([
                 locationId:   pair.locationId,
                 locationName: pair.locationName,
                 species:      pair.species,
-                thickness:    '',   // segment not yet populated on the ARCH items
-                category:     '',   // csegitem_category not yet populated
-                grade:        '',   // confirmed empty on hardwood items
-                grain:        '',
+                category:     pair.category,
+                // ── The other three, and why they are empty ──────────────────
+                // Verified 2026-08-18 against the item record, correcting an
+                // earlier comment here that claimed category was unpopulated —
+                // it is, with Lumber / Veneer / Ovals on all six SKUs, and this
+                // module was throwing it away.
+                //
+                // Only THREE segments exist on `item`: cseg1 (species),
+                // csegitem_category, and cseggrade. Of those, grade is genuinely
+                // empty on the hardwood items.
+                //
+                // thickness and grain are NOT segments at all — no csegthickness
+                // or cseggrain column exists. So they cannot be "populated
+                // later"; they need a decided source. The fixtures fake thickness
+                // by formatting descriptions as `${species} ${thickness} KD`,
+                // which real item descriptions will not guarantee.
+                thickness:    '',   // no such segment — needs a source decision
+                grade:        '',   // segment exists, empty on the hardwood items
+                grain:        '',   // no such segment — needs a source decision
                 containerNo:  '',
                 containers:   [],
                 lots:         lots,

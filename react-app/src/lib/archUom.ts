@@ -220,10 +220,14 @@ const orderedUnits = (units: ArchUnit[]): ArchUnit[] => [
 /**
  * The units present, as a short list — "BF · SQFT · units".
  *
- * Used where a total cannot honestly be shown. It replaced the instruction
- * "filter by Category to total", which was a dead end: the ARCH cache emits an
- * empty `category` on every row because `csegitem_category` is not populated,
- * so the filter that advice pointed at has no options to choose from.
+ * Used where a total cannot honestly be shown — it states what the units ARE
+ * rather than instructing the reader to go and narrow them.
+ *
+ * It replaced the text "filter by Category to total". The stated reason at the
+ * time — that `csegitem_category` was unpopulated so the filter had no options —
+ * was WRONG, corrected 2026-08-18: the segment is populated and the builder was
+ * discarding it. Naming the units is still the better message, but it is a choice
+ * rather than a workaround for missing data.
  */
 export const unitListLabel = (units: ArchUnit[]): string =>
   orderedUnits(units).map((u) => unitLabel(u)).join(' · ');

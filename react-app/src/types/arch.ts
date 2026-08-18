@@ -116,10 +116,16 @@ export interface ArchSummaryRow {
  * into them and the footer refuses to print a number when there is more than
  * one — it names the units present instead.
  *
- * Narrowing to one unit is what makes the totals real again. Do NOT tell the
- * user to do that via the Category filter: the ARCH cache emits an empty
- * `category` on every row because `csegitem_category` is unpopulated, so that
- * advice points at a filter with no options.
+ * Narrowing to one unit is what makes the totals real again, and the Category
+ * filter does exactly that — category maps 1:1 to unit (Lumber→BF, Veneer→SQFT,
+ * Ovals→pieces, Decking→LF).
+ *
+ * CORRECTION, 2026-08-18: an earlier note here said category was unpopulated and
+ * that the advice pointed at an empty filter. That was wrong — `csegitem_category`
+ * carries Lumber/Veneer/Ovals on every hardwood SKU; the cache builder was simply
+ * not reading it. The footer still names the units rather than instructing,
+ * because stating what IS beats telling someone what to do, but it is a
+ * preference now and not a workaround.
  */
 export interface ArchTotals {
   onHand: number;
