@@ -142,6 +142,11 @@ export interface ArchCacheMeta {
   /** True means the last run REFUSED to update; these are the previous rows. */
   shrinkGuard?: boolean;
   shrinkGuardRefused?: number;
+  /** Accounting book the AVG COST column is priced in. 1 = Primary = CAD. */
+  costBook?: number;
+  /** Rows carrying a cost, and rows showing an em dash because none was found. */
+  costedRowCount?: number | null;
+  uncostedRowCount?: number | null;
 }
 
 interface ArchSummaryResponse {

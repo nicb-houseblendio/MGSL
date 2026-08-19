@@ -74,7 +74,13 @@ define([
     'N/query', 'N/search', 'N/cache', 'N/log', 'N/runtime',
     '../../shared/cacheKeys_arch',
     '../../shared/cacheClient',
-], (query, search, cache, log, runtime, CacheKeys, CacheClient) => {
+    // Shared FIFO lot-cost engine, validated to the cent against production GL
+    // (2026-06-11). MTL already depends on it, so it exists in both sandbox and
+    // production — but it is NOT tracked in this repo and drifts per
+    // environment, so treat its output as data to be checked, not as a given.
+    // Every call here is wrapped: costing must never take down the cache build.
+    '/SuiteScripts/MCGI_LIB_LotCost',
+], (query, search, cache, log, runtime, CacheKeys, CacheClient, LotCostLib) => {
 
     /**
      * ⚠️ ARCH STOCK IS **NOT** SCOPED BY SUBSIDIARY OR LOCATION. Do not "fix"
@@ -241,6 +247,70 @@ define([
         return isFinite(n) ? n : 0;
     };
 
+    /* ══ Lot costing ═══════════════════════════════════════════════════════════
+     *
+     * WHICH BOOK. The Primary book, which on a CAD subsidiary IS the CAD cost.
+     * Asked twice and answered twice, independently: Marc-Antoine — « Je crois
+     * que nous utiliserons le CAD (comme IND) » — and Lucas on the 2026-08-17
+     * call — « on va faire comme industriel et on va tout présenter en CAD ».
+     *
+     * MTL's sandbox-6 / production-2 divergence therefore does NOT apply here:
+     * that is MTL reaching for a USD SECONDARY book, and the secondary book id
+     * is what differs per environment. The PRIMARY book is 1 everywhere, so this
+     * default is environment-independent — the one safe thing to hard-default.
+     * (Verified in sandbox 2026-08-19: only two books exist, 1 Primary and 2
+     * "USD Accounting Book". There is no book 6, so MTL's sandbox default is
+     * already stale — flagged, not touched, since MTL is out of scope here.)
+     *
+     * ⚠️ STILL OPEN, and it is NOT this parameter's job to fix: the trader can
+     * raise a SO in USD, and a CAD cost against a USD price makes the margin
+     * compare two currencies. Lucas described the exposure himself — « notre
+     * inventaire est en CAD, mais on vend aussi en US quand même beaucoup ». The
+     * question to settle is the CONVERSION RULE and the rate, not the currency.
+     * If the answer ever becomes "cost in USD", flip the parameter — no code
+     * change — but the margin still needs the rule.
+     */
+    const ARCH_COST_BOOK_DEFAULT = 1;
+
+    let _costBookCached = null;
+    const costBookId = () => {
+        if (_costBookCached === null) {
+            let v = null;
+            try {
+                v = runtime.getCurrentScript().getParameter({ name: 'custscript_ts_arch_cost_book' });
+            } catch (e) { /* parameter absent — fall through to the default */ }
+            _costBookCached = parseInt(v, 10) || ARCH_COST_BOOK_DEFAULT;
+        }
+        return _costBookCached;
+    };
+
+    /**
+     * Per-lot cost at one location, **PER BASE UNIT**, in the costing book's
+     * currency. Keys are lot internal ids; a lot with no posting history at the
+     * location comes back null and must stay null.
+     *
+     * Wrapped deliberately. MCGI_LIB_LotCost is an untracked runtime dependency
+     * that runs its own SuiteQL, and a costing failure must degrade to "no cost
+     * shown" — an em dash — rather than lose the row's quantities, which are the
+     * reason the screen exists.
+     */
+    const loadLotCosts = (lotList, locationId) => {
+        if (!lotList || !lotList.length) return {};
+        try {
+            const ids = [];
+            for (let i = 0; i < lotList.length; i++) {
+                if (lotList[i].lotId) ids.push(lotList[i].lotId);
+            }
+            if (!ids.length) return {};
+            return LotCostLib.getLotCostsAtLocation(ids, locationId, { book: costBookId() }) || {};
+        } catch (e) {
+            log.error('ARCH cache lot costing failed',
+                'location=' + locationId + ' book=' + costBookId() + ' — the row keeps its ' +
+                'quantities and reports no cost. ' + e.message);
+            return {};
+        }
+    };
+
     /**
      * Every ARCH lot with a balance, one row per lot × location.
      *
@@ -254,6 +324,7 @@ define([
         '  i.displayname           AS description, ' +
         '  BUILTIN.DF(i.cseg1)     AS species, ' +
         '  BUILTIN.DF(i.csegitem_category) AS category, ' +
+        '  BUILTIN.DF(i.csegseg_thickness) AS thickness, ' +
         '  u.unitname              AS unitname, ' +
         '  u.conversionrate        AS rate, ' +
         '  inl.location            AS locationid, ' +
@@ -318,7 +389,10 @@ define([
         '  tl.location            AS locationid, ' +
         '  t.type                 AS trantype, ' +
         '  t.id                   AS tranid, ' +
-        '  tl.linesequencenumber  AS lineno, ' +
+        // The line's OWN id, which is what inventoryassignment points at —
+        // see the join below. Also the dedupe key, so a line that fans out
+        // over several lots is still counted once in the row totals.
+        '  tl.id                  AS lineno, ' +
         '  tl.quantity            AS qty, ' +
         '  tl.quantityshiprecv    AS shiprecv, ' +
         '  tl.quantitybilled      AS billed, ' +
@@ -328,7 +402,18 @@ define([
         'JOIN transaction t ON t.id = tl.transaction ' +
         'JOIN item i        ON i.id = tl.item ' +
         'LEFT JOIN inventoryassignment ia ' +
-        '       ON ia.transaction = t.id AND ia.transactionline = tl.linesequencenumber ' +
+        // 🔴 tl.id, NOT tl.linesequencenumber. Measured in sandbox across every
+        // transaction from 2026-08-01 to 08-19: joining assignments on
+        // linesequencenumber leaves 8 with no matching line, joining on tl.id
+        // leaves 0. inventoryassignment.transactionline references tl.id.
+        //
+        // This hid for weeks because the two columns are usually EQUAL — both
+        // are 1 on a single-line order, which is every order we seeded. Over
+        // the same window 2,073 of 6,003 lines (35%) have id <> seq, and those
+        // are the ones that mis-attribute. Row totals were never affected
+        // (they come from the LINES, deduped); per-LOT reserve/onOrder and the
+        // `unattributed` figure were.
+        '       ON ia.transaction = t.id AND ia.transactionline = tl.id ' +
         'LEFT JOIN inventorynumber inv ON inv.id = ia.inventorynumber ' +
         'WHERE i.cseg_subsidiary_loc = ? ' +
         "  AND tl.mainline = 'F' " +
@@ -556,6 +641,9 @@ define([
                         description:  r.description || r.itemcode || '',
                         species:      r.species || '',
                         category:     r.category || '',
+                        // Blank on veneer, and correctly so — veneer has no
+                        // thickness. Blank is not the same as missing here.
+                        thickness:    r.thickness || '',
                         unit:         normalizeUnit(r.unitname),
                         rate:         rate,
                         locationId:   String(r.locationid),
@@ -670,6 +758,42 @@ define([
                 };
             });
 
+            /* ── Row cost: quantity-weighted across the lots that HAVE one ─────
+             *
+             * 🔴 THE UNIT DIRECTION IS THE OPPOSITE OF EVERY QUANTITY ABOVE.
+             *
+             * `rate` is base-units-per-display-unit (BF = 0.001, i.e. NetSuite
+             * stores lumber in MBF). So:
+             *
+             *     quantity:  base → display  is  qty  / rate      (÷ 0.001 = ×1000)
+             *     cost:      base → display  is  cost * rate      (× 0.001 = ÷1000)
+             *
+             * getLotCostsAtLocation derives its rate as `line GL / line qty`, and
+             * that line qty is in BASE units — which is why MTL calls the same
+             * return value `mbfPrice`. Divide here instead of multiplying and
+             * purpleheart reports $4,320,000/BF instead of $4.32/BF.
+             *
+             * This asymmetry has already caused three separate bugs on this
+             * screen, every time because two of the three ARCH unit types are
+             * rate 1 and hide the error completely. Only Lumber exposes it.
+             *
+             * A lot with no posting history has NO cost, which is not a cost of
+             * zero: it is excluded from both sides of the average, and a row
+             * where no lot is costed stays null so the grid shows an em dash.
+             * Weighting by on-hand means an empty lot cannot drag the average.
+             */
+            const lotCosts = loadLotCosts(pair.lots, pair.locationId);
+            let costQty = 0;
+            let costVal = 0;
+            lots.forEach((l) => {
+                const perBase = lotCosts[l.lotId];
+                if (perBase === null || perBase === undefined || !isFinite(perBase)) return;
+                if (!(l.onHand > 0)) return;
+                costQty += l.onHand;
+                costVal += l.onHand * (perBase * rate);
+            });
+            const avgCostPerUnit = costQty > 0 ? Math.round((costVal / costQty) * 100) / 100 : null;
+
             const onHand = lots.reduce((s, l) => s + l.onHand, 0);
             // Quantity sitting on a held lot, in display units. Reported, not
             // hidden — ARCH declares what it withholds rather than quietly
@@ -706,17 +830,30 @@ define([
                 // it is, with Lumber / Veneer / Ovals on all six SKUs, and this
                 // module was throwing it away.
                 //
-                // Only THREE segments exist on `item`: cseg1 (species),
-                // csegitem_category, and cseggrade. Of those, grade is genuinely
-                // empty on the hardwood items.
+                // ⚠️ REWRITTEN 2026-08-19. The previous comment here claimed no
+                // thickness segment existed and that grade was an item field.
+                // BOTH were wrong — checked by selecting a whole item row and
+                // reading its 81 columns instead of assuming:
                 //
-                // thickness and grain are NOT segments at all — no csegthickness
-                // or cseggrain column exists. So they cannot be "populated
-                // later"; they need a decided source. The fixtures fake thickness
-                // by formatting descriptions as `${species} ${thickness} KD`,
-                // which real item descriptions will not guarantee.
-                thickness:    '',   // no such segment — needs a source decision
-                grade:        '',   // segment exists, empty on the hardwood items
+                //   cseg1                → species    ✅ populated
+                //   csegitem_category    → category   ✅ populated
+                //   csegseg_thickness    → thickness  ✅ POPULATED, and it was
+                //        being discarded here exactly like category was until
+                //        2026-08-18. Verified against all six SKUs: PUR44KD 4/4,
+                //        SAP54FCKD 5/4, ZEB44KD 4/4, ZEB84KD 8/4, ovals 4/4 —
+                //        every one matching the digits in its own item code.
+                //        WALVENFCAA is blank, which is correct: veneer has no
+                //        thickness.
+                //   cseggrade            → does NOT exist on `item` at all. It is
+                //        a column on TRANSACTIONLINE, i.e. grade is recorded per
+                //        SO line, not per item. So an inventory grid cannot
+                //        source it from the item however long we wait — that is a
+                //        product question, not missing data.
+                //   grain                → no column anywhere on the item. The
+                //        item table DOES expose custitem_* fields (12 of them),
+                //        so this is absence, not invisibility.
+                thickness:    pair.thickness || '',
+                grade:        '',   // see below — cseggrade is NOT an item field
                 grain:        '',   // no such segment — needs a source decision
                 containerNo:  '',
                 containers:   [],
@@ -752,11 +889,11 @@ define([
                 available:    Math.max(0, onHand + onOrder + inTransit
                                           - reserve - 0 /*readyToBuild*/ - outbound
                                           - held),
-                // NULL, NOT ZERO. Lot costing is not wired yet, and 0 renders as
+                // NULL, NOT ZERO, when nothing could be costed. 0 renders as
                 // "$0.00/BF" — indistinguishable from stock that genuinely cost
                 // nothing. null is self-describing: the formatter shows an em
                 // dash, so an absent cost can never be read as a measured one.
-                avgCostPerUnit: null,
+                avgCostPerUnit: avgCostPerUnit,
                 detailKey:    pair.itemId + '-' + pair.locationId,
             };
 
@@ -791,6 +928,11 @@ define([
 
             // Stable order so the grid does not reshuffle between rebuilds.
             rows.sort((a, b) => (a.itemCode + a.locationName).localeCompare(b.itemCode + b.locationName));
+
+            // Counted here, not in reduce: reduce runs per pair and module state
+            // does not reliably survive between stages (see `skippedLots`).
+            const costedRows = rows.filter((r) =>
+                r.avgCostPerUnit !== null && r.avgCostPerUnit !== undefined).length;
 
             const payload = JSON.stringify(rows);
             const payloadBytes = utf8Bytes(payload);
@@ -944,6 +1086,13 @@ define([
                         bucketsBuilt:       ['onHand', 'reserve', 'outbound', 'onOrder', 'inTransit'],
                         bucketsEmpty:       ['readyToBuild'],
                         skippedLotCount:    skippedLots.length,
+                        // Carried from the prior run, exactly like lastUpdated: the
+                        // rows being SERVED are the previous ones, so this run's
+                        // costed count would describe rows nobody can see.
+                        // costBook is config, not row state, so it is current.
+                        costBook:           costBookId(),
+                        costedRowCount:     priorMeta ? priorMeta.costedRowCount : null,
+                        uncostedRowCount:   priorMeta ? priorMeta.uncostedRowCount : null,
                         shrinkGuard:        true,
                         shrinkGuardRefused: rows.length,
                     }),
@@ -972,12 +1121,20 @@ define([
                     // Non-zero means the On Hand figures on screen are LOW: these
                     // lots exist but could not be converted to display units.
                     skippedLotCount: skippedLots.length,
+                    // Costing, declared rather than inferred from the rows. A row
+                    // with no cost shows an em dash, which is honest per-row but
+                    // does not tell anyone WHY — these two counts do, and they
+                    // separate "the library returned nothing" from "no stock".
+                    costBook:        costBookId(),
+                    costedRowCount:  costedRows,
+                    uncostedRowCount: rows.length - costedRows,
                 }),
                 ttl: CacheKeys.TTL_SUMMARY,
             });
 
             log.audit('ARCH cache summarize',
-                rows.length + ' summary row(s), ' + payloadBytes + ' bytes. readyToBuild not sourced.' +
+                rows.length + ' summary row(s), ' + payloadBytes + ' bytes. readyToBuild not sourced. ' +
+                costedRows + '/' + rows.length + ' row(s) costed from book ' + costBookId() + '.' +
                 (existingCount ? ' Replaced ' + existingCount + ' cached row(s).' : '') +
                 (forceFull ? ' FORCED — shrink guard bypassed.' : ''));
         } catch (e) {

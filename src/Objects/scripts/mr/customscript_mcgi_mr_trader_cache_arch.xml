@@ -46,6 +46,33 @@
       <setting></setting>
       <storevalue>T</storevalue>
     </scriptcustomfield>
+    <scriptcustomfield scriptid="custscript_ts_arch_cost_book">
+      <accesslevel>2</accesslevel>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue>1</defaultvalue>
+      <description>Accounting book the AVG COST column is priced in. 1 = Primary, which on a CAD subsidiary IS the CAD cost — this is what the client asked for twice (Marc-Antoine and Lucas, both "comme IND, en CAD"). Change it only if that decision is reversed; the code needs no edit.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>INTEGER</fieldtype>
+      <help>MTL prices its lots in a USD SECONDARY book, whose internal id differs per environment (sandbox and production disagree). The PRIMARY book is 1 in every environment, so leaving this at 1 is environment-independent. Note that a CAD cost against a USD sales order makes the margin compare two currencies — that conversion rule is still an open question with the client and this parameter does not answer it.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>Costing Accounting Book</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
   </scriptcustomfields>
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploy_mcgi_mr_trader_cache_arch">
@@ -54,6 +81,8 @@
       <!-- Left OFF at the deployment level so the guard is armed by default.
            It is a one-run switch, not a setting. -->
       <custscript_ts_arch_force_full_rebuild>F</custscript_ts_arch_force_full_rebuild>
+      <!-- Primary book = CAD on a CAD subsidiary. See the field help. -->
+      <custscript_ts_arch_cost_book>1</custscript_ts_arch_cost_book>
       <isdeployed>T</isdeployed>
       <loglevel>DEBUG</loglevel>
       <queueallstagesatonce>T</queueallstagesatonce>

@@ -221,6 +221,12 @@ define([
                 // not when the run happened.
                 shrinkGuard: meta.shrinkGuard === true,
                 shrinkGuardRefused: meta.shrinkGuardRefused || 0,
+                // Costing. costBook says WHICH book the money is in (1 = Primary
+                // = CAD); the counts separate "nothing could be costed" from
+                // "there is no stock", which an em-dash column cannot express.
+                costBook:         meta.costBook || 0,
+                costedRowCount:   meta.costedRowCount == null ? null : meta.costedRowCount,
+                uncostedRowCount: meta.uncostedRowCount == null ? null : meta.uncostedRowCount,
             };
         } catch (e) {
             log.error({ title: 'trader_screen_service_arch.getMeta', details: e.message });
@@ -273,6 +279,11 @@ define([
                     lastAttempt: meta.lastAttempt || meta.lastUpdated || '',
                     shrinkGuard: meta.shrinkGuard === true,
                     shrinkGuardRefused: meta.shrinkGuardRefused || 0,
+                    // Same allowlist rule as getMeta above — see the warning
+                    // there. Added with lot costing, 2026-08-19.
+                    costBook:         meta.costBook || 0,
+                    costedRowCount:   meta.costedRowCount == null ? null : meta.costedRowCount,
+                    uncostedRowCount: meta.uncostedRowCount == null ? null : meta.uncostedRowCount,
                 },
             };
         } catch (e) {
