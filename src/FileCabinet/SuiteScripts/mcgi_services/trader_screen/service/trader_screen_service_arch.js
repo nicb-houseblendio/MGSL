@@ -248,6 +248,17 @@ define([
             const metaRaw = myCache.get({ key: CacheKeysARCH.META });
             const meta = metaRaw ? JSON.parse(metaRaw) : {};
 
+            // Mirrors the audit line IND has carried for months, and its absence
+            // here cost real time: when the browser sat on "Loading inventory
+            // data…" there was no way to tell whether the request had reached
+            // this service at all, because a successful ARCH call logged nothing.
+            // Silence read identically to "never arrived".
+            log.audit('trader_screen_service_arch.getSummary',
+                'rowsInCache=' + allRows.length + ' rowsServed=' + filtered.length +
+                ' metaRowCount=' + (meta.rowCount || 0) +
+                ' shrinkGuard=' + (meta.shrinkGuard === true) +
+                ' greaterThanZero=' + ((params || {}).greaterThanZero !== false));
+
             return {
                 success: true,
                 rows:    filtered,
