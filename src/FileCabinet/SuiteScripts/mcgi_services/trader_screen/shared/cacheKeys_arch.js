@@ -25,6 +25,38 @@
  * with margin. Do not lower these to "match the refresh interval" — that is the
  * exact reasoning that caused the outage.
  *
+ * ── RAISED 4h → 12h ON 2026-08-19, because the schedule has a nightly gap ────
+ * The hourly schedule does NOT give 24-hour coverage. Measured over the first
+ * full night, 2026-08-18/19:
+ *
+ *     07:01 … 20:02 PT   hourly, unbroken
+ *     20:02 → 04:01 PT   ~8 HOUR GAP, seven runs missing
+ *     04:01 PT onward    resumes
+ *
+ * The resume is at 11:01Z — EXACTLY the configured `starttime`. So the daily
+ * event fires at 11:00Z, repeats hourly for roughly sixteen hours, and then
+ * stops until the next day's start. It is a bounded repeat window, not
+ * continuous.
+ *
+ * At a 4h TTL the arithmetic was: last write 03:02Z, expired ~07:02Z, next run
+ * 11:01Z — so the cache was DEAD about four hours every night. That is the same
+ * failure scheduling was meant to fix, reduced from permanent to nightly rather
+ * than removed.
+ *
+ * 12h outlives an 8h gap with 4h of margin. The real refresh backstop is now the
+ * next day's start (~24h), not one hour, so by the rule above the TTL had to grow
+ * with it.
+ *
+ * THE TRADE-OFF, STATED: at 4h the cache dies nightly and shows nothing; at 12h
+ * it survives and may serve data up to 12h old. Staleness is VISIBLE — the
+ * builder publishes `lastUpdated` and `lastAttempt`, the service passes them
+ * through, and the screen badge surfaces them — so this is the same judgement as
+ * the shrink guard: stale-but-labelled beats dead-or-silently-wrong.
+ *
+ * ⚠️ DO NOT close the gap by adding a second scheduled deployment. That is
+ * mechanism 3 of the IND trap and forks a chain that cannot be stopped. One
+ * script, one deployment.
+ *
  * ── What ARCH adds that IND and MTL do not have ─────────────────────────────
  * Two extra buckets, `reserve` and `readyToBuild`, and lot-level payloads with
  * per-lot tallies and container numbers. That is the main reason ARCH gets its
@@ -37,9 +69,11 @@ define([], () => {
     const TS_ARCH_DETAIL_PREFIX       = 'TS_ARCH_DETAIL__';
     const TS_ARCH_SUMMARY_DATA_PREFIX = 'TS_ARCH_SUMMARY_DATA_';
 
-    const TTL_SUMMARY           = 14400;       // 4h — see the note above before changing
-    const TTL_DETAIL            = 14400;       // 4h
-    const TTL_LAST_RUN          = 86400;       // 24h
+    // 12h, NOT 4h. Sized to outlive the schedule's ~8h nightly gap with margin —
+    // read the note above before changing either of these.
+    const TTL_SUMMARY           = 43200;       // 12h
+    const TTL_DETAIL            = 43200;       // 12h
+    const TTL_LAST_RUN          = 86400;       // 24h, N/cache's maximum
     const MAX_CACHE_VALUE_BYTES = 500 * 1024;  // 500 KB, N/cache's hard per-value ceiling
 
     const detailKey = (itemId, locationId) =>

@@ -84,7 +84,7 @@
 
            So ARCH is a stateless, idempotent FULL rebuild on a SINGLE
            deployment with concurrencylimit 1. It was scheduled because the
-           opposite failure was real and observed: TTL is 4h and nothing
+           opposite failure was real and observed: TTL was 4h and nothing
            refreshed the cache, so the summary endpoint returned CACHE_MISS
            overnight and the screen had no data until someone pressed a button.
 
@@ -92,9 +92,12 @@
              - Never add a second deployment to this script. One chain, one
                deployment. That is what keeps mechanism 3 inapplicable.
              - Keep TTL_SUMMARY/TTL_DETAIL above the refresh interval with
-               margin. Hourly against a 4h TTL is 4x, so three consecutive
-               failed runs are survivable. Lowering the TTL to "match" the
-               interval is the exact mistake that caused the IND blackout.
+               margin. Raised to 12h on 2026-08-19: this schedule does NOT give
+               24h coverage — measured, it repeats hourly from the 11:00Z start
+               for ~16h then stops until the next day, leaving a ~8h gap. At 4h
+               the cache died about four hours every night. 12h outlives the gap
+               with margin. Lowering the TTL to "match" the hourly interval is
+               the exact mistake that caused the IND blackout.
 
            `repeat` is an ISO 8601 duration — PT1H. Not a word enum. Taken from
            what SDF actually wrote after the change was made in the UI; do not
