@@ -1,22 +1,21 @@
 /**
  * Summary data for CWP ARCH.
  *
- * Mirrors `useSummaryData` (IND/MTL) but is board-foot native, carries the extra
- * `reserve` / `readyToBuild` buckets, and filters on container — which is a LOT
- * attribute, so a row matches when any of its lots sits in a selected container.
+ * Mirrors `useSummaryData` (IND/MTL) but is unit-native (BF / SQFT / LF / units),
+ * carries the extra `reserve` / `readyToBuild` buckets, and filters on container —
+ * which is a LOT attribute, so a row matches when any of its lots sits in a
+ * selected container.
  *
- * SOURCE: local fixtures. The ARCH RESTlet does not exist yet — see
- * lib/archFixtures.ts for why. When it lands, replace the body of `load()` with
- * an `apiGet<ArchSummaryResponse>('summary', { subsidiaryId: '9' })` call; the
- * rest of this file and every component above it stays as-is.
+ * SOURCE: the ARCH RESTlet, with the local fixtures as a visible fallback. The
+ * grid renders fixtures on the first paint and upgrades itself to live data when
+ * the request lands; the header badge says which of the two you are looking at.
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { getArchFixtureRows } from '@/lib/archFixtures';
+import { apiGet } from '@/lib/api';
 import type { ArchSummaryRow, ArchTotals } from '@/types/arch';
 import type { FilterState } from '@/types';
-
-export const ARCH_IS_DEMO_DATA = true;
 
 const EMPTY_TOTALS: ArchTotals = {
   onHand: 0,
@@ -120,57 +119,182 @@ const compareLabels = (a: string, b: string): number => {
   return a.localeCompare(b, undefined, { sensitivity: 'base' });
 };
 
-export const useArchSummaryData = (enabled: boolean) => {
-  /**
-   * Seeded from the fixtures LAZILY, in the initialiser — not from an effect.
-   *
-   * The effect version left the grid permanently empty. Measured in the deployed
-   * screen on 2026-08-19: `allRows=null loading=false error=null` while calling
-   * `getArchFixtureRows()` directly from the same component's render returned 40
-   * rows. So the data source was fine and the mount effect simply never ran —
-   * which is also why the Open Sales Orders tab kept working, since it calls its
-   * fixture getter during render rather than from an effect.
-   *
-   * ⚠️ Why the effect did not run is NOT understood. This removes the dependency
-   * on it rather than explaining it. That is a real fix for a SYNCHRONOUS source —
-   * an effect is pointless indirection when the data is available at first render
-   * — but the question comes back the moment this hook fetches from the RESTlet,
-   * because an async source genuinely needs an effect. Do not wire the live swap
-   * back in without first understanding this.
-   */
-  const [allRows, setAllRows] = useState<ArchSummaryRow[] | null>(() => {
+/** ARCH subsidiary — the RESTlet's service factory routes on this. */
+const ARCH_SUBSIDIARY_ID = 9;
+
+/** Which dataset the screen is actually showing. */
+export type ArchDataSource = 'netsuite' | 'fixtures';
+
+/**
+ * What the cache says about itself, so the screen can be specific rather than
+ * implying every column is real.
+ */
+export interface ArchCacheMeta {
+  lastUpdated?: string;
+  lastAttempt?: string;
+  rowCount?: number;
+  /** Buckets with a real source behind them. */
+  bucketsBuilt?: string[];
+  /** Structurally zero — today: readyToBuild, which has no field to read. */
+  bucketsEmpty?: string[];
+  /** >0 means On Hand is LOW: lots exist that could not be converted. */
+  skippedLotCount?: number;
+  /** True means the last run REFUSED to update; these are the previous rows. */
+  shrinkGuard?: boolean;
+  shrinkGuardRefused?: number;
+}
+
+interface ArchSummaryResponse {
+  success?: boolean;
+  rows?: ArchSummaryRow[];
+  meta?: ArchCacheMeta;
+}
+
+/* ══ Live data lives at module scope, NOT in component state ══════════════════
+ *
+ * Two failures on this screen were both caused by tying ARCH data to one
+ * component instance's state, and both looked like "the data never arrived":
+ *
+ *   1. Loading from a mount effect left the grid permanently empty — measured in
+ *      the deployed screen, `allRows=null loading=false error=null` while calling
+ *      the fixture getter from that same render returned 40 rows.
+ *   2. Loading from a promise callback fetched fine and changed nothing — the
+ *      request completed in 184ms with 42KB of rows (browser resource timing),
+ *      and the grid still showed all 40 fixtures with no error. The `setState`
+ *      had run against a fiber that was no longer the one rendering.
+ *
+ * The common cause is state ownership, so the state moved out. The resolved rows
+ * are held here and READ DURING RENDER, which means:
+ *
+ *   • Any instance that renders — first mount, remount, a second one — sees the
+ *     newest data. There is no instance that can hold a stale copy.
+ *   • Arrival only has to trigger a re-render, not deliver a value. Even if that
+ *     notification is missed, the next render for ANY reason shows live data, so
+ *     the screen is self-healing rather than permanently wrong.
+ *
+ * `window.__archDbg` keeps a timestamped trail of the fetch for exactly the kind
+ * of diagnosis above — the failure mode here is silence, and silence needs
+ * breadcrumbs. It is a few bytes and it is the only reason #2 was findable.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+const archDbg = (event: string, detail?: unknown): void => {
+  try {
+    const w = window as unknown as { __archDbg?: unknown[] };
+    if (!w.__archDbg) w.__archDbg = [];
+    w.__archDbg.push({ t: Math.round(performance.now()), event, detail });
+  } catch {
+    /* never let instrumentation break the screen */
+  }
+};
+
+interface ArchLiveState {
+  rows: ArchSummaryRow[] | null;
+  meta: ArchCacheMeta | null;
+  error: string | null;
+  inFlight: boolean;
+}
+
+const live: ArchLiveState = { rows: null, meta: null, error: null, inFlight: false };
+
+/**
+ * The version setter of every hook instance, so arrival can force a re-render.
+ *
+ * Registered during render rather than from an effect — deliberately, because
+ * failure #1 above was an effect that never ran, and this subscription must not
+ * depend on the mechanism it exists to survive. It is idempotent: setters are
+ * stable per fiber and a Set dedupes by identity.
+ */
+const subscribers = new Set<(fn: (v: number) => number) => void>();
+
+const notify = (): void => {
+  archDbg('notify', { subscribers: subscribers.size, rows: live.rows?.length ?? null, error: live.error });
+  subscribers.forEach((bump) => {
     try {
-      return getArchFixtureRows();
-    } catch (e) {
-      // Surfaced through `error` below rather than swallowed — a fixture that
-      // throws must not look like an empty dataset.
-      return null;
+      bump((v) => v + 1);
+    } catch {
+      // Setting state on an unmounted fiber is a no-op in React 18, not an
+      // error — but one bad subscriber must not stop the others being told.
     }
   });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+};
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+let liveStarted = false;
+let inFlightPromise: Promise<void> | null = null;
+
+const startLive = (force = false): Promise<void> => {
+  if (inFlightPromise) return inFlightPromise;
+  if (liveStarted && !force) return Promise.resolve();
+  liveStarted = true;
+  live.inFlight = true;
+  archDbg('fetch:start', { force });
+
+  inFlightPromise = apiGet<ArchSummaryResponse>('summary', { subsidiaryId: ARCH_SUBSIDIARY_ID })
+    .then((res) => {
+      // An empty ARCH cache is legitimate, so `rows: []` is accepted. A missing
+      // `rows` key is not — that is a malformed response, and demo data with an
+      // explanation beats rendering nothing.
+      if (!res || !Array.isArray(res.rows)) {
+        live.error = 'The ARCH cache returned an unexpected response, so demo data is showing.';
+        archDbg('fetch:malformed', res);
+        return;
+      }
+      live.rows = res.rows;
+      live.meta = res.meta ?? null;
+      live.error = null;
+      archDbg('fetch:ok', { rows: res.rows.length, meta: res.meta ?? null });
+    })
+    .catch((e: unknown) => {
+      // apiGet throws on CACHE_MISS, on a missing RESTlet URL (local preview or
+      // storybook), and on any transport error. All three mean the same here:
+      // keep the fixtures and say why.
+      live.error = e instanceof Error ? e.message : 'The ARCH cache could not be reached.';
+      archDbg('fetch:error', live.error);
+    })
+    .then(() => {
+      live.inFlight = false;
+      inFlightPromise = null;
+      notify();
+    });
+
+  return inFlightPromise;
+};
+
+export const useArchSummaryData = (enabled: boolean) => {
+  const [, bump] = useState(0);
+
+  /**
+   * The fallback, computed once. A fixture that THROWS must not be mistaken for
+   * an empty dataset, so the failure is captured and surfaced through `error`.
+   */
+  const [fixtureRows, fixtureError] = useMemo<[ArchSummaryRow[] | null, string | null]>(() => {
     try {
-      const rows = getArchFixtureRows();
-      setAllRows(rows);
-      return rows;
+      return [getArchFixtureRows(), null];
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load ARCH data');
-      setAllRows(null);
-      throw e;
-    } finally {
-      setLoading(false);
+      return [null, e instanceof Error ? e.message : 'The ARCH demo data failed to load.'];
     }
   }, []);
 
-  useEffect(() => {
-    if (enabled && !allRows) {
-      void load().catch(() => {});
-    }
-  }, [enabled, allRows, load]);
+  // Subscribe during render, unsubscribe on unmount. If the effect never runs
+  // the Set keeps one dead setter per fiber — bounded, and a no-op when called.
+  subscribers.add(bump);
+  useEffect(() => () => void subscribers.delete(bump), [bump]);
+
+  // Gated on `enabled` so opening IND or MTL never fires an ARCH request.
+  if (enabled) void startLive();
+
+  const allRows = live.rows ?? fixtureRows;
+  const source: ArchDataSource = live.rows ? 'netsuite' : 'fixtures';
+  // Only a hard failure — one that leaves nothing to draw. A failed live fetch
+  // while fixtures are showing is reported by `sourceError` and the badge, not
+  // as a grid-level error.
+  const error = allRows ? null : live.error ?? fixtureError;
+  const loading = live.inFlight && !allRows;
+
+  /** Re-fetch live data. Wired to the refresh button. */
+  const reload = useCallback(async () => {
+    await startLive(true);
+    return live.rows ?? [];
+  }, []);
 
   const getFilteredRows = useCallback(
     (filters: FilterState): ArchSummaryRow[] => (allRows ? applyArchFilters(allRows, filters) : []),
@@ -202,7 +326,19 @@ export const useArchSummaryData = (enabled: boolean) => {
     [allRows]
   );
 
-  // `reload` is unused today (fixtures never go stale) but is the seam the real
-  // RESTlet will need — the refresh button wires to it when the back end lands.
-  return { allRows, loading, error, reload: load, getFilteredRows, getTotals, getFilterOptions };
+  return {
+    allRows,
+    loading,
+    error,
+    reload,
+    getFilteredRows,
+    getTotals,
+    getFilterOptions,
+    /** 'netsuite' | 'fixtures' — what the grid is actually showing. */
+    source,
+    /** The cache's own account of itself. Null while on fixtures. */
+    meta: live.meta,
+    /** Why the live fetch failed, when it did. Null while live data is showing. */
+    sourceError: live.error,
+  };
 };

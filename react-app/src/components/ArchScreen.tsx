@@ -8,6 +8,7 @@ import { SOWizard } from '@/components/arch/SOWizard';
 import { ArchOrderDraftDialog } from '@/components/arch/ArchOrderDraftDialog';
 import { lotQuantity } from '@/lib/archLots';
 import { useArchSummaryData } from '@/hooks/useArchSummaryData';
+import type { ArchDataSource, ArchCacheMeta } from '@/hooks/useArchSummaryData';
 import { exportToExcelARCH } from '@/lib/exportARCH';
 import type { FilterState } from '@/types';
 import type { ArchSummaryRow, ArchDetailKey } from '@/types/arch';
@@ -28,10 +29,20 @@ interface ArchScreenProps {
   uom: string;
   /** Which of the two ARCH tabs to show. Owned by App so this stays mounted. */
   tab?: 'inventory' | 'orders';
+  /** Reports whether the grid is showing NetSuite data or fixtures. */
+  onSourceChange?: (source: ArchDataSource, meta: ArchCacheMeta | null, sourceError: string | null) => void;
 }
 
-export const ArchScreen = ({ uom, tab = 'inventory' }: ArchScreenProps) => {
-  const { allRows, loading, error, getFilteredRows, getTotals, getFilterOptions } = useArchSummaryData(true);
+export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange }: ArchScreenProps) => {
+  const { allRows, loading, error, getFilteredRows, getTotals, getFilterOptions, source, meta, sourceError } =
+    useArchSummaryData(true);
+
+  // The header badge lives in App but the data is fetched here, so the source has
+  // to travel upward. Passing it up beats calling the hook twice — two copies
+  // could disagree, which is exactly the ambiguity the badge exists to remove.
+  React.useEffect(() => {
+    onSourceChange?.(source, meta, sourceError);
+  }, [source, meta, sourceError, onSourceChange]);
 
   const [filters, setFilters] = React.useState<FilterState>(EMPTY_FILTERS);
   const [resetKey, setResetKey] = React.useState(0);

@@ -19,7 +19,7 @@ import { exportToExcelMTL } from '@/lib/exportMTL';
 import { ArchScreen } from '@/components/ArchScreen';
 import { WarehouseSplitScreen } from '@/components/warehouse/WarehouseSplitScreen';
 import { ARCH_UOMS } from '@/lib/archUom';
-import { ARCH_IS_DEMO_DATA } from '@/hooks/useArchSummaryData';
+import type { ArchDataSource, ArchCacheMeta } from '@/hooks/useArchSummaryData';
 
 // ARCH is board-foot native: no packs, no PPP, no MBF. Cubic metres exist only
 // because European packing lists arrive metric (1 m³ = 423 BF).
@@ -206,6 +206,14 @@ function TraderScreenContent() {
    * half-built order survive a trip to the orders list and back.
    */
   const [archTab, setArchTab] = React.useState<'inventory' | 'orders'>('inventory');
+  // Reported upward by ArchScreen, which is where ARCH data is fetched.
+  const [archSource, setArchSource] = React.useState<ArchDataSource>('fixtures');
+  const [archMeta, setArchMeta] = React.useState<ArchCacheMeta | null>(null);
+  const [archSourceError, setArchSourceError] = React.useState<string | null>(null);
+  const handleArchSource = React.useCallback(
+    (s: ArchDataSource, m: ArchCacheMeta | null, err: string | null) => {
+      setArchSource(s); setArchMeta(m); setArchSourceError(err);
+    }, []);
 
   const handleCellFilter = React.useCallback((filterKey: string, value: string) => {
     setFilters(prev => {
@@ -336,15 +344,34 @@ function TraderScreenContent() {
           <span className="text-white text-[11px]">{today}</span>
           {/* ARCH runs on local demo data — say so, and never show the IND/MTL
               cache timestamp next to it (meta persists from the previous view). */}
-          {isARCH && ARCH_IS_DEMO_DATA && (
+          {isARCH && archSource === 'fixtures' && (
             <>
               <div className="w-px h-5 bg-white/15" />
               <span
                 className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
                 style={{ background: 'rgba(200,160,53,0.30)', color: '#FFFFFF' }}
-                title="CWP ARCH has no data in NetSuite yet — this screen is running on local demo data"
+                title={archSourceError
+                  ? 'Showing local demo data because the ARCH cache could not be read: ' + archSourceError
+                  : 'Showing local demo data — waiting on the ARCH cache'}
               >
                 Demo data
+              </span>
+            </>
+          )}
+          {isARCH && archSource === 'netsuite' && (
+            <>
+              <div className="w-px h-5 bg-white/15" />
+              <span
+                className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                style={{ background: 'rgba(255,255,255,0.14)', color: '#FFFFFF' }}
+                title={'Live NetSuite data.' +
+                  (archMeta?.bucketsEmpty?.length ? ' No source yet, reads 0: ' + archMeta.bucketsEmpty.join(', ') + '.' : '') +
+                  (archMeta?.shrinkGuard ? ' The last cache run REFUSED to update — these are the previous rows.' : '') +
+                  (archMeta?.skippedLotCount ? ' ' + archMeta.skippedLotCount + ' lot(s) excluded, so On Hand is low.' : '')}
+              >
+                {archMeta?.shrinkGuard
+                  ? 'Live · not refreshed'
+                  : 'Live' + (archMeta?.bucketsEmpty?.length ? ' · ' + archMeta.bucketsEmpty.length + ' column not sourced' : '')}
               </span>
             </>
           )}
@@ -444,7 +471,7 @@ function TraderScreenContent() {
           components/ArchScreen.tsx. Keeping it behind one branch leaves the
           IND/MTL render path below completely untouched. */}
       {isARCH ? (
-        <ArchScreen uom={uom} tab={archTab} />
+        <ArchScreen uom={uom} tab={archTab} onSourceChange={handleArchSource} />
       ) : (
       <>
       {/* Filters */}
