@@ -255,7 +255,27 @@ export const ArchScreen = ({ uom, tab = 'inventory' }: ArchScreenProps) => {
               uom={uom}
             />
           ) : !loading ? (
-            <p className="py-12 text-center text-sm text-[#3D5166]">Loading inventory data…</p>
+            /*
+             * The FINISHED-AND-EMPTY state. It used to read "Loading inventory
+             * data…", which was actively misleading: this branch is reached only
+             * when `loading` is FALSE, so it announced a load that had already
+             * stopped. The genuine loading state is the spinner above, gated on
+             * `loading && !allRows`.
+             *
+             * That label cost hours on 2026-08-19 — an empty grid looked like a
+             * hang, so the investigation went after a request that was never the
+             * problem. A screen that misreports its own state makes every
+             * downstream diagnosis unreliable, so this now says what is actually
+             * known and distinguishes the two ways of arriving here.
+             */
+            <div className="py-12 text-center">
+              <p className="text-sm font-medium text-[#3D5166]">No inventory data loaded.</p>
+              <p className="mt-1 text-xs text-[#7A8FA3]">
+                {error
+                  ? 'The load failed — see the message above.'
+                  : 'The data source returned nothing and reported no error.'}
+              </p>
+            </div>
           ) : null}
         </div>
         )}

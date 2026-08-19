@@ -121,7 +121,32 @@ const compareLabels = (a: string, b: string): number => {
 };
 
 export const useArchSummaryData = (enabled: boolean) => {
-  const [allRows, setAllRows] = useState<ArchSummaryRow[] | null>(null);
+  /**
+   * Seeded from the fixtures LAZILY, in the initialiser — not from an effect.
+   *
+   * The effect version left the grid permanently empty. Measured in the deployed
+   * screen on 2026-08-19: `allRows=null loading=false error=null` while calling
+   * `getArchFixtureRows()` directly from the same component's render returned 40
+   * rows. So the data source was fine and the mount effect simply never ran —
+   * which is also why the Open Sales Orders tab kept working, since it calls its
+   * fixture getter during render rather than from an effect.
+   *
+   * ⚠️ Why the effect did not run is NOT understood. This removes the dependency
+   * on it rather than explaining it. That is a real fix for a SYNCHRONOUS source —
+   * an effect is pointless indirection when the data is available at first render
+   * — but the question comes back the moment this hook fetches from the RESTlet,
+   * because an async source genuinely needs an effect. Do not wire the live swap
+   * back in without first understanding this.
+   */
+  const [allRows, setAllRows] = useState<ArchSummaryRow[] | null>(() => {
+    try {
+      return getArchFixtureRows();
+    } catch (e) {
+      // Surfaced through `error` below rather than swallowed — a fixture that
+      // throws must not look like an empty dataset.
+      return null;
+    }
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
