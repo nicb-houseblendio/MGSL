@@ -23,10 +23,10 @@
  * filters will legitimately match nothing; that is a data gap, not a bug here.
  */
 define([
-    'N/runtime', 'N/log',
+    'N/runtime', 'N/log', 'N/query',
     '../shared/cacheKeys_arch',
     '../shared/cacheClient',
-], (runtime, log, CacheKeysARCH, CacheClient) => {
+], (runtime, log, query, CacheKeysARCH, CacheClient) => {
 
     const getMyCache = () => CacheClient.getCache();
 
@@ -326,6 +326,86 @@ define([
         }
     };
 
+    /**
+     * Customers the wizard can raise an order for.
+     *
+     * Exists because the wizard's customer dropdown was a hardcoded list of
+     * invented names, so `customerId` was always undefined and the order endpoint
+     * refused every submission with "The order needs a customer".
+     *
+     * ── Why this is NOT scoped by the request's subsidiary ───────────────────
+     * It would return an empty list. The ARCH screen calls this service with
+     * subsidiaryId 9 (ARC), and measured 2026-08-20: **zero** of the 807 active
+     * customers sit in subsidiary 9, while 387 sit in subsidiary 5 where the
+     * hardwood actually is. Scoping on the request would therefore hide every
+     * customer and look like a broken feature.
+     *
+     * Nor is it scoped to subsidiary 5. That would hide 420 customers on a guess
+     * about who ARCH sells to, and hiding the one name a trader is looking for is
+     * a worse failure than a longer list. 807 rows is a small payload and the
+     * picker searches. NetSuite still refuses an order whose customer its
+     * subsidiary does not permit, which is a clean failure rather than a silent
+     * one.
+     *
+     * ── Why it is not cached ────────────────────────────────────────────────
+     * One query per wizard open, against a table that changes when someone adds
+     * a customer. A cache key here would need invalidating on a customer edit,
+     * and this module has just finished deleting five keys that promised things
+     * nothing maintained.
+     *
+     * `currency` and `terms` come back so the wizard can pre-fill from the
+     * customer record rather than making the trader restate what NetSuite knows.
+     */
+    const handleGetCustomers = () => {
+        try {
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT ' +
+                    '  c.id                     AS id, ' +
+                    '  c.companyname            AS companyname, ' +
+                    '  c.entityid               AS entityid, ' +
+                    '  c.currency               AS currencyid, ' +
+                    '  BUILTIN.DF(c.currency)   AS currencyname, ' +
+                    '  c.terms                  AS termsid, ' +
+                    '  BUILTIN.DF(c.terms)      AS termsname, ' +
+                    '  c.subsidiary             AS subsidiaryid ' +
+                    'FROM customer c ' +
+                    "WHERE c.isinactive = 'F' " +
+                    // Sorted on the DISPLAYED name, not on companyname. Sorting
+                    // by companyname alone puts every record that lacks one at
+                    // the top of the picker — "Anonymous Customer" and "Nordex
+                    // Norway AS" ahead of "2K Wholesale Inc" — which reads as an
+                    // unsorted list.
+                    'ORDER BY COALESCE(c.companyname, c.entityid)',
+            }).asMappedResults();
+
+            return {
+                success: true,
+                customers: rows.map((r) => ({
+                    id: String(r.id),
+                    // companyname is blank on some records — County Line Materials
+                    // LLC carries its name in entityid only — so neither field
+                    // alone is a reliable label.
+                    name: String(r.companyname || r.entityid || ('Customer ' + r.id)),
+                    currencyId: r.currencyid ? String(r.currencyid) : null,
+                    currencyName: r.currencyname ? String(r.currencyname) : null,
+                    termsId: r.termsid ? String(r.termsid) : null,
+                    termsName: r.termsname ? String(r.termsname) : null,
+                    subsidiaryId: r.subsidiaryid ? String(r.subsidiaryid) : null,
+                })),
+            };
+        } catch (e) {
+            // A failed customer list must not read as "this account has no
+            // customers". The screen keeps its picker disabled and says why.
+            log.error('ARCH service — customer list failed',
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return {
+                success: false,
+                error: 'The customer list could not be loaded: ' + (e.message || String(e)),
+            };
+        }
+    };
+
     const getHandler = (dataIn) => {
         const action = (dataIn && dataIn.action) || 'get';
         const handlers = {
@@ -333,6 +413,7 @@ define([
             meta:       handleGetMeta,
             summary:    handleGetSummary,
             detail:     handleGetDetail,
+            customers:  handleGetCustomers,
         };
         const handler = handlers[action];
         if (!handler) return { success: false, error: 'Unknown action: ' + action };

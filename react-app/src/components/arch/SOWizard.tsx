@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
+import { useArchCustomers, type ArchCustomer } from '@/hooks/useArchCustomers';
 import {
   SPLIT_FEE_PLACEHOLDER,
   splitFee,
@@ -18,7 +19,6 @@ import {
   planingOptions,
 } from '@/lib/archOrderPricing';
 import {
-  CUSTOMERS,
   INCOTERMS,
   SALES_TEAMS,
   SALES_TEAM_NAMES,
@@ -280,6 +280,23 @@ export const SOWizard = ({
   const [soSearch, setSoSearch] = React.useState('');
 
   const [customer, setCustomer] = React.useState('');
+  /**
+   * The customer's NetSuite internal id, and the thing that makes an order
+   * submittable. Empty while the picker is on fixture names, which is why a demo
+   * customer cannot reach NetSuite and be refused confusingly — it simply cannot
+   * be submitted.
+   */
+  const [customerId, setCustomerId] = React.useState('');
+
+  /**
+   * Live customers, fetched when the wizard opens rather than on screen mount:
+   * most trader sessions never create an order. Falls back to fixture names with
+   * a visible reason, the same honesty channel the summary and split queue use.
+   */
+  const { customers: liveCustomers, source: customerSource, error: customerError } =
+    useArchCustomers(true);
+  const customerOptions: ArchCustomer[] = liveCustomers;
+  const customersAreLive = customerSource === 'netsuite';
   const [customerPO, setCustomerPO] = React.useState('');
   const [shipTo, setShipTo] = React.useState('');
   const [currency, setCurrency] = React.useState('');
@@ -446,7 +463,29 @@ export const SOWizard = ({
     });
   };
 
-  const pickCustomer = (c: string) => {
+  /**
+   * Selected by ID, and the name is looked up from it rather than the reverse.
+   * Resolving a typed name to a customer is how an order lands on the wrong
+   * account, and 807 customers is more than enough for a near-match to look
+   * right.
+   *
+   * Currency comes from the customer record when NetSuite supplied one, because
+   * the customer's own currency beats asking a trader to restate it. Falls back
+   * to the fixture helper when the picker is on demo names.
+   */
+  const pickCustomerById = (id: string) => {
+    const hit = customerOptions.find((c) => c.id === id);
+    const name = hit ? hit.name : '';
+    setCustomerId(hit && hit.id ? hit.id : '');
+    setCustomer(name);
+    setShipTo('');
+    setSalesTeam(salesTeamFor(name));
+    setCurrency(hit?.currencyName || currenciesFor(name)[0]);
+  };
+
+  /** Fixture path: no id, so the order cannot be submitted. */
+  const pickCustomerByName = (c: string) => {
+    setCustomerId('');
     setCustomer(c);
     setShipTo('');
     setSalesTeam(salesTeamFor(c));
@@ -516,6 +555,7 @@ export const SOWizard = ({
     existingSO: mode === 'existing' ? existingSO : null,
     header: {
       customer,
+      customerId: customerId || undefined,
       customerPO,
       shipTo,
       currency,
@@ -943,14 +983,42 @@ export const SOWizard = ({
               </span>
             </div>
           ) : (
-            <select value={customer} onChange={(e) => pickCustomer(e.target.value)} style={field(!!customer)}>
-              <option value="">— Select customer —</option>
-              {CUSTOMERS.map((c) => (
-                <option key={c} value={c}>
-                  {c}
+            <>
+              <select
+                value={customersAreLive ? customerId : customer}
+                onChange={(e) =>
+                  customersAreLive
+                    ? pickCustomerById(e.target.value)
+                    : pickCustomerByName(e.target.value)
+                }
+                style={field(!!customer)}
+              >
+                <option value="">
+                  {customerSource === 'loading'
+                    ? 'Loading customers…'
+                    : `— Select customer${customersAreLive ? ` (${customerOptions.length})` : ''} —`}
                 </option>
-              ))}
-            </select>
+                {customerOptions.map((c) => (
+                  <option key={c.id || c.name} value={customersAreLive ? c.id || '' : c.name}>
+                    {c.name}
+                    {c.currencyName ? ` · ${c.currencyName}` : ''}
+                  </option>
+                ))}
+              </select>
+              {/*
+                Says outright when the list is not real. Without this the picker
+                looks identical either way, and a trader would fill in a whole
+                order before the endpoint refused it for a customer that does not
+                exist.
+              */}
+              {!customersAreLive && customerSource !== 'loading' && (
+                <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
+                  ⚠️ Demo names — this screen is not reading customers from NetSuite, so an
+                  order cannot be created.
+                  {customerError ? ` ${customerError}` : ''}
+                </div>
+              )}
+            </>
           )}
         </div>
         <div style={{ flex: '1 1 220px' }}>
