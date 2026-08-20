@@ -8,7 +8,7 @@ import {
   splitFeeEnabled,
   PLANING_RATE,
   CUT_RATE,
-  OPS_INSURANCE_RATE,
+  opsInsuranceRate,
   lineEconomics,
   sumEconomics,
   orderedBF,
@@ -1568,9 +1568,10 @@ export const SOWizard = ({
   const priceBody = (
     <div>
       <ProvisionalNote>
-        Profit is computed against the <strong>lot cost</strong>, which is real. The deductions are not:
-        the split fee, planing and cutting rates, and the {(OPS_INSURANCE_RATE * 100).toFixed(1)}% operations
-        &amp; insurance charge are all placeholders. <strong>Do not quote a customer from these margins.</strong>
+        Profit is computed against the <strong>lot cost</strong>, which is real, and the{' '}
+        {(opsInsuranceRate() * 100).toFixed(2)}% operations &amp; insurance charge, which is the rate
+        NetSuite already carries on the SO. Still provisional: the split fee and the planing and
+        cutting rates. <strong>Do not quote a customer from these margins.</strong>
       </ProvisionalNote>
       {lowPricedLines.length > 0 && (
         <div
@@ -1798,7 +1799,7 @@ export const SOWizard = ({
         <br />
         Revenue = BF × price/BF · Lot cost = BF × cost/BF · Services = ${splitFeeEnabled() ? splitFee() : 0} per split lot + $
         {PLANING_RATE.toFixed(2)}/BF planing + ${CUT_RATE.toFixed(2)}/BF cutting ·
-        Operations &amp; insurance = {(OPS_INSURANCE_RATE * 100).toFixed(1)}% of lot cost ·
+        Operations &amp; insurance = {(opsInsuranceRate() * 100).toFixed(2)}% of lot cost ·
         Margin % = Profit ÷ Revenue
       </div>
     </div>

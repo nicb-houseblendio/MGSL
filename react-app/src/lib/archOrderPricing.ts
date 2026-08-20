@@ -1,12 +1,17 @@
 /**
  * Order economics for CWP ARCH.
  *
- * 🔴 EVERY RATE BELOW IS A PLACEHOLDER carried over from the offline prototype,
- * where they are marked "pending real values". They are NOT client-confirmed.
- * The screen surfaces that fact to the trader rather than hiding it — see the
- * provisional-pricing notice in the wizard's Pricing and Review steps. Do not
- * quote a customer from these numbers, and do not let them harden into fact
- * because they have been in the codebase a while.
+ * 🔴 THE SERVICE RATES BELOW ARE PLACEHOLDERS carried over from the offline
+ * prototype, where they are marked "pending real values". They are NOT
+ * client-confirmed. The screen surfaces that fact to the trader rather than
+ * hiding it — see the provisional-pricing notice in the wizard's Pricing and
+ * Review steps. Do not quote a customer from these numbers, and do not let them
+ * harden into fact because they have been in the codebase a while.
+ *
+ * ✅ Operations & insurance is the EXCEPTION, and is no longer provisional.
+ * NetSuite has been carrying the real rate all along on the SO header. See
+ * `opsInsuranceRate()` for the measurement; the prototype's figure was wrong by
+ * a factor of 21.7 and made every margin on this screen read too low.
  *
  * The margin model itself is the part worth keeping: the trader enters a price
  * per board foot and immediately sees profit against the LOT COST, which is what
@@ -60,8 +65,39 @@ export const SPLIT_FEE_PLACEHOLDER = 200;
 export const PLANING_RATE = 0.2;
 /** Cutting to length, $ per board foot. */
 export const CUT_RATE = 0.15;
-/** Operations + insurance, as a fraction of the line's MATERIAL COST. */
-export const OPS_INSURANCE_RATE = 0.065;
+/**
+ * Operations + insurance, as a fraction of the line's MATERIAL COST.
+ *
+ * ✅ NOT a placeholder. This is the one rate the prototype guessed at that
+ * NetSuite already answers: `custbody_mgsl_insurancerate` on the SO header.
+ * Measured 2026-08-20 across all 4,216 sales orders in the account:
+ *
+ *   | value              | SOs           |
+ *   | 0.003              | 3,979 (94.4%) |
+ *   | null               | 48            |
+ *   | range              | 0.0015–0.015  |
+ *   | mean               | 0.0035        |
+ *
+ * So the real charge is 0.3% of material cost. The prototype carried 6.5%,
+ * which is 21.7x too high and was deducted from every line's profit. On a
+ * 15,061 BF purpleheart lot at $4.32/BF the charge falls from $4,229 to $195, so
+ * $4,034 of the deduction was invented.
+ *
+ * ── Why a configured default rather than a read of the field ────────────────
+ * The wizard prices a DRAFT. There is no SO record to read the rate off until
+ * the order is created, so a default is not laziness here, it is the only thing
+ * available at the moment the trader needs the number. It is overridable
+ * through MCGI_CONFIG so a subsidiary on a different rate does not need a
+ * rebuild, and the write path should stamp the value it used onto the SO rather
+ * than letting NetSuite default it independently.
+ */
+export const OPS_INSURANCE_RATE_DEFAULT = 0.003;
+
+export const opsInsuranceRate = (): number => {
+  const cfg = (window as unknown as { MCGI_CONFIG?: { opsInsuranceRate?: number } }).MCGI_CONFIG;
+  const n = Number(cfg?.opsInsuranceRate);
+  return isFinite(n) && n >= 0 ? n : OPS_INSURANCE_RATE_DEFAULT;
+};
 
 export const RATES_ARE_PROVISIONAL = true;
 
@@ -108,7 +144,7 @@ export const lineEconomics = (
   // basis is not cosmetic: costing it on revenue makes the charge rise with the
   // price the trader types, so raising the price made the margin look worse than
   // it is. Insurance and handling track the value of the WOOD, not the invoice.
-  const opsInsuranceCost = lotCost * OPS_INSURANCE_RATE;
+  const opsInsuranceCost = lotCost * opsInsuranceRate();
 
   const profit = revenue - lotCost - processingCost - opsInsuranceCost;
 
