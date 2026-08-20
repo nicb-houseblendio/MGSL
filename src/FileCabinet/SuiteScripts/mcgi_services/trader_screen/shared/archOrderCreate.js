@@ -349,7 +349,20 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
      * a guess worth making silently.
      */
     const resolveSalesRep = (requestedId, userId, customerId) => {
-        const candidates = dedupe([requestedId, userId].filter(Boolean));
+        // A configured rep is the LAST resort, and deliberately has no built-in
+        // default. Verified 2026-08-20 by logging in as the ARCH trader role: it
+        // cannot read the employee table at all ("Record 'employee' was not
+        // found"), so the wizard's dropdown is empty; employee 3293 "Trader
+        // Hardwood" has issalesrep=F, so the caller fallback misses too; and the
+        // test customer has no assigned rep. All three legs fail, so a real trader
+        // cannot currently create an order.
+        //
+        // ⚠️ This parameter is EMPTY by default ON PURPOSE. Filling it in with
+        // some plausible rep would attribute commission on real sales documents
+        // to a person nobody chose. Leaving it empty keeps the refusal, which is
+        // recoverable; a wrong default is not. The better fix is upstream: flag
+        // ARCH traders as sales reps on their employee records.
+        const candidates = dedupe([requestedId, userId, int(param('custscript_arch_default_sales_rep'))].filter(Boolean));
 
         if (candidates.length) {
             const valid = query.runSuiteQL({
@@ -1490,9 +1503,13 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
             const repId = resolveSalesRep(
                 int(h.salesRepId), int(runtime.getCurrentUser().id), customerId);
             if (!repId) {
-                throw refusal('No sales rep could be determined for this order. The caller is not ' +
-                              'a sales rep and the customer has none assigned, so there is nobody ' +
-                              'to credit. Send header.salesRepId.');
+                // Names every way out, because whoever hits this is a trader who
+                // cannot read the employee table and has no way to guess.
+                throw refusal('No sales rep could be determined, so there is nobody to credit and ' +
+                              'NetSuite would reject the order. Any one of these fixes it: tick ' +
+                              '"Sales Rep" on the trader’s employee record, assign a sales rep ' +
+                              'to this customer, or set the default rep on this deployment ' +
+                              '(custscript_arch_default_sales_rep).');
             }
             {
                 so.setSublistValue({ sublistId: 'salesteam', fieldId: 'employee', line: 0, value: repId });

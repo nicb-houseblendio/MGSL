@@ -320,7 +320,10 @@ export const SOWizard = ({
    */
   const [liveReps, setLiveReps] = React.useState<ArchSalesRep[]>([]);
   const [salesRepId, setSalesRepId] = React.useState('');
-  React.useEffect(() => { fetchSalesReps().then(setLiveReps); }, []);
+  const [repsLoaded, setRepsLoaded] = React.useState(false);
+  React.useEffect(() => {
+    fetchSalesReps().then((r) => { setLiveReps(r); setRepsLoaded(true); });
+  }, []);
   const [customerPO, setCustomerPO] = React.useState('');
   const [shipTo, setShipTo] = React.useState('');
   const [currency, setCurrency] = React.useState('');
@@ -1327,6 +1330,19 @@ export const SOWizard = ({
                 </option>
               ))}
         </select>
+        {/*
+          Says outright when the names are cosmetic. Verified 2026-08-20 that the
+          ARCH trader role cannot read the employee table at all, so this is the
+          state a real trader lands in — and without saying so, the pick looks
+          real and the order is refused several steps later for a reason that
+          points nowhere.
+        */}
+        {repsLoaded && liveReps.length === 0 && customer && (
+          <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
+            ⚠️ These team names are for reference only — your role cannot read the employee
+            list, so the rep is decided by NetSuite configuration rather than by this choice.
+          </div>
+        )}
         {(SALES_TEAMS[salesTeam] || []).length > 0 && (
           <div style={{ marginTop: 8, border: '1px solid #E2E8F0', borderRadius: 9, overflow: 'hidden' }}>
             <div

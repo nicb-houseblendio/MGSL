@@ -72,6 +72,33 @@
       <setting></setting>
       <storevalue>T</storevalue>
     </scriptcustomfield>
+    <scriptcustomfield scriptid="custscript_arch_default_sales_rep">
+      <accesslevel>2</accesslevel>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>Employee internal id of the sales rep to credit when nothing else resolves one. LAST RESORT: the endpoint first uses the rep the request names, then the calling user if they are a sales rep, then the customer's assigned rep. DELIBERATELY EMPTY by default, and it should stay empty unless MGSL chooses a value: filling it in attributes commission on real sales documents to a person nobody selected, whereas leaving it empty produces a refusal, which is recoverable. Verified 2026-08-20 that an ARCH trader hits all three earlier legs — the role cannot read the employee table, employee 3293 has issalesrep=F, and the test customer has no rep — so the real fix is upstream: tick Sales Rep on the trader's employee record. Whatever is set here must be an ACTIVE employee with Sales Rep ticked, or NetSuite rejects the whole save.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>INTEGER</fieldtype>
+      <help>Employee internal id. Leave empty unless MGSL has chosen a rep.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>Default Sales Rep</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
   </scriptcustomfields>
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploy_mcgi_sl_arch_order_create">
