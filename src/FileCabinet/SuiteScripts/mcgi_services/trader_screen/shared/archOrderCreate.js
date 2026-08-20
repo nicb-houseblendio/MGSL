@@ -41,11 +41,19 @@
  * here; Veneer and Ovals are rate 1 and pass a wrong conversion through
  * unchanged. Do not "simplify" either side.
  *
- * ⚠️ The base-unit side carries residual risk. It is grounded in how the builder
- * READS existing assignments, not in an observed WRITE, because no ARCH order
- * has ever carried inventory detail. `verifyAssignments` re-reads what NetSuite
- * actually stored and reports a mismatch rather than letting a half-correct
- * order look successful. Delete that check only once a real order has proven it.
+ * 🔴 AND THE ASSIGNMENT SIDE IS DIFFERENT AGAIN ON A SALES ORDER. The note that
+ * used to sit here said the base-unit side was inferred and unverified. It was,
+ * and it was WRONG. Measured on SO 126446: passing the base figure 0.4 stored
+ * 0.0004, because NetSuite reads a sales order's assignment quantity as DISPLAY
+ * units and converts it itself. An Inventory Adjustment takes BASE for the same
+ * field. So:
+ *
+ *   SO line `quantity`                     DISPLAY
+ *   SO   inventoryassignment.quantity      DISPLAY
+ *   IA   inventoryassignment.quantity      BASE
+ *
+ * `verifyAssignments` is what caught this, by re-reading what NetSuite actually
+ * stored instead of trusting the inference. Keep it.
  *
  * ── What is deliberately NOT accepted from the caller ────────────────────────
  * Subsidiary and department come from the customer and the location, never from
@@ -400,6 +408,49 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
         }
         rec.setValue({ fieldId: fieldId, value: value });
         return true;
+    };
+
+    /**
+     * The customer address to ship to.
+     *
+     * 🔴 MANDATORY ON THE ARCH FORM, and not on Industriel — form 386 refuses with
+     * "Please enter value(s) for: Ship To Select". Different form, different
+     * mandatory fields, so this only surfaced once orders started landing on 386.
+     *
+     * Derived rather than demanded, because the caller should not have to know a
+     * customer's address ids. Preference order: what the request names, then the
+     * customer's default SHIPPING address, then its default BILLING address, then
+     * its only address. The billing fallback matters: the test customer carries
+     * one address flagged billing-but-not-shipping, which is a perfectly ordinary
+     * way for a customer record to be set up.
+     *
+     * Returns null when the customer has no addresses at all, which is a refusal
+     * rather than something to invent.
+     */
+    const resolveShipAddress = (customerId, requested) => {
+        const asked = int(requested);
+        if (asked) return asked;
+
+        const rows = query.runSuiteQL({
+            query:
+                // ⚠️ `internalid`, the ADDRESS BOOK entry, not `addressbookaddress`.
+                // The latter is the address record itself and NetSuite rejects it:
+                // "Invalid Field Value 9460 for the following field: shipaddresslist".
+                'SELECT internalid AS addr, defaultshipping, defaultbilling ' +
+                'FROM customeraddressbook WHERE entity = ?',
+            params: [customerId],
+        }).asMappedResults();
+        if (!rows.length) return null;
+
+        const pick = (test) => {
+            for (let i = 0; i < rows.length; i++) {
+                if (test(rows[i])) return int(rows[i].addr);
+            }
+            return null;
+        };
+        return pick((r) => String(r.defaultshipping) === 'T')
+            || pick((r) => String(r.defaultbilling) === 'T')
+            || int(rows[0].addr);
     };
 
     /** The one location every line ships from, or null when they differ. */
@@ -990,18 +1041,47 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
                 const detail = so.getSublistSubrecord({
                     sublistId: 'item', fieldId: 'inventorydetail', line: target,
                 });
-                detail.selectNewLine({ sublistId: 'inventoryassignment' });
-                detail.setCurrentSublistValue({
+
+                // ⚠️ STANDARD-mode subrecord API. `selectNewLine` /
+                // `setCurrentSublistValue` / `commitLine` are DYNAMIC-mode only and
+                // are not even defined here — the failure is a bare
+                // `TypeError: detail.selectNewLine is not a function`, which reads
+                // like a missing subrecord rather than the wrong API flavour.
+                //
+                // Assignments are appended after whatever the line already has, so
+                // re-running against a line that is already assigned adds rather
+                // than overwrites.
+                const assignLine = detail.getLineCount({ sublistId: 'inventoryassignment' });
+                const at = assignLine < 0 ? 0 : assignLine;
+
+                detail.setSublistValue({
                     sublistId: 'inventoryassignment',
                     fieldId:   'issueinventorynumber',
+                    line:      at,
                     value:     Number(line.lotId),
                 });
-                detail.setCurrentSublistValue({
+                // 🔴 DISPLAY UNITS HERE, and this is the FOURTH time this codebase
+                // has been caught by a unit direction. Measured 2026-08-20 on SO
+                // 126446: passing the BASE figure 0.4 stored 0.0004, i.e. NetSuite
+                // read 0.4 as board feet and converted it to MBF itself. Passing
+                // the display figure 400 stores 0.4, which is what we want.
+                //
+                // ⚠️ THIS IS THE OPPOSITE OF AN INVENTORY ADJUSTMENT. archSplitExecute
+                // passes BASE to the same-named field and is correct to, verified
+                // against IA-CWP-347 where assignment quantity equals line quantity
+                // in MBF. So the rule is per record type, not per field name:
+                //
+                //   Inventory Adjustment  inventoryassignment.quantity = BASE
+                //   Sales Order           inventoryassignment.quantity = DISPLAY
+                //
+                // Do not "make these consistent". They are consistent with
+                // NetSuite, which is what matters.
+                detail.setSublistValue({
                     sublistId: 'inventoryassignment',
                     fieldId:   'quantity',
-                    value:     line.storedQty,
+                    line:      at,
+                    value:     line.displayQty,
                 });
-                detail.commitLine({ sublistId: 'inventoryassignment' });
             } catch (e) {
                 unplaced.push(line.lotName + ' (' + (e.name || 'Error') + ': ' +
                               (e.message || String(e)) + ')');
@@ -1380,6 +1460,14 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
                               'send header.locationId.');
             }
             so.setValue({ fieldId: 'location', value: headerLocation });
+
+            // Mandatory on form 386. See resolveShipAddress.
+            const shipAddr = resolveShipAddress(customerId, h.shipAddressId);
+            if (!shipAddr) {
+                throw refusal('That customer has no address on file, so the order has ' +
+                              'nowhere to ship to. Add an address to the customer first.');
+            }
+            so.setValue({ fieldId: 'shipaddresslist', value: shipAddr });
 
             // ── Sales Team is a mandatory SUBLIST, not a field ───────────────
             //
