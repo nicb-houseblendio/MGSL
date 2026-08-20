@@ -107,12 +107,26 @@
              - subsidiaryoption=SELECTED covers subsidiary 5, where hardwood lives
              - Sales Order = EDIT, so it can create
 
-           ⚠️ Do NOT "fix" this to the obvious customrole2181, "CWP ARC - Trader".
-           That role has subsidiaryoption=OWN, scoping it to the ARC subsidiary,
-           which holds no hardwood. Its reads return ZERO ROWS instead of erroring,
-           so every order is refused with a misleading "lot has no stock at that
-           location any more". Verified 2026-08-20 across all ten roles the ARCH
-           form is preferred for.
+           ⚠️ Why NOT customrole2181, "CWP ARC - Trader", which is the role the
+           ARCH form was built for. It is subsidiaryoption=OWN, meaning it sees the
+           EXECUTING USER's subsidiary rather than a fixed list. That makes it
+           caller-dependent: it works for a trader in subsidiary 5, where hardwood
+           lives, and silently sees nothing for a caller anywhere else. Our own
+           integration user is in subsidiary 1, which is exactly how this was
+           found — reads returned ZERO ROWS instead of erroring, and every order
+           was refused with a misleading "lot has no stock at that location any
+           more".
+
+           ⚠️ CORRECTION worth keeping, because the first read of this was wrong:
+           2181 is not broken and an ARCH trader is not blind. Employee 3293
+           "Trader Hardwood", the one account holding that role, IS in subsidiary
+           5 and would see the wood. The problem is only that OWN makes visibility
+           depend on who calls.
+
+           2184 is chosen because subsidiaryoption=SELECTED is a FIXED list, so
+           this endpoint behaves identically no matter which user reaches it. For
+           a server endpoint that is the property that matters. Verified
+           2026-08-20 across all ten roles the ARCH form is preferred for.
 
            NOT Administrator, despite the split endpoint using it: that one posts
            Inventory Adjustments, which a trader cannot. Creating a sales order
