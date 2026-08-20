@@ -74,6 +74,8 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
     // so this is null until the customer picker returns an internal id — the
     // server refuses with "The order needs a customer" rather than guessing.
     customerId: draft.header.customerId || undefined,
+    shipAddressId: draft.header.shipAddressId || undefined,
+    salesRepId: draft.header.salesRepId || undefined,
     customerPO: draft.header.customerPO || undefined,
     incoterms: draft.header.incoterms || undefined,
     shipDate: draft.header.shipDate || undefined,

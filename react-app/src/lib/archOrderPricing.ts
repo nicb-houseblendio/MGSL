@@ -180,13 +180,31 @@ export const sumEconomics = (rows: ArchLineEconomics[]): ArchOrderTotals => {
 
 /* ── Formatting ─────────────────────────────────────────────────────────────*/
 
-export const fmtMoney = (n: number, currency = 'USD', decimals = 2): string =>
-  n.toLocaleString(undefined, {
-    style: 'currency',
-    currency,
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  });
+/**
+ * Money, and it must never be able to take the screen down.
+ *
+ * 🔴 `Intl` THROWS on a bad currency code, and this is called inside render, so an
+ * unhandled RangeError unmounts the whole React tree and leaves a blank page.
+ * That is not hypothetical: passing "US Dollar" instead of "USD" did exactly
+ * that on 2026-08-20, and neither tsc nor the build caught it because both types
+ * are `string`. Only clicking it did.
+ *
+ * So a bad code degrades to a plain number with the code appended, which is
+ * legible and obviously wrong, rather than destroying the page. Fixing the caller
+ * is still the right response — this is a floor, not a licence.
+ */
+export const fmtMoney = (n: number, currency = 'USD', decimals = 2): string => {
+  try {
+    return n.toLocaleString(undefined, {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+  } catch {
+    return `${n.toFixed(decimals)} ${currency}`;
+  }
+};
 
 export const fmtPct = (n: number): string => `${n.toFixed(1)}%`;
 

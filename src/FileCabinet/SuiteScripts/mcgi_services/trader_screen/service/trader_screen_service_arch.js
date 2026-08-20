@@ -365,11 +365,19 @@ define([
                     '  c.companyname            AS companyname, ' +
                     '  c.entityid               AS entityid, ' +
                     '  c.currency               AS currencyid, ' +
+                    // 🔴 The ISO CODE, not just the display name. The screen feeds
+                    // this to toLocaleString({style:"currency"}), which throws
+                    // RangeError on "US Dollar" and takes the whole React app down
+                    // with it. `currency.symbol` is the code; BUILTIN.DF is the
+                    // label. Both are returned because both are wanted, for
+                    // different jobs.
+                    '  cur.symbol               AS currencycode, ' +
                     '  BUILTIN.DF(c.currency)   AS currencyname, ' +
                     '  c.terms                  AS termsid, ' +
                     '  BUILTIN.DF(c.terms)      AS termsname, ' +
                     '  c.subsidiary             AS subsidiaryid ' +
                     'FROM customer c ' +
+                    'LEFT JOIN currency cur ON cur.id = c.currency ' +
                     "WHERE c.isinactive = 'F' " +
                     // Sorted on the DISPLAYED name, not on companyname. Sorting
                     // by companyname alone puts every record that lacks one at
@@ -388,6 +396,7 @@ define([
                     // alone is a reliable label.
                     name: String(r.companyname || r.entityid || ('Customer ' + r.id)),
                     currencyId: r.currencyid ? String(r.currencyid) : null,
+                    currencyCode: r.currencycode ? String(r.currencycode) : null,
                     currencyName: r.currencyname ? String(r.currencyname) : null,
                     termsId: r.termsid ? String(r.termsid) : null,
                     termsName: r.termsname ? String(r.termsname) : null,
@@ -406,6 +415,123 @@ define([
         }
     };
 
+    /**
+     * Ship-to addresses for one customer.
+     *
+     * 🔴 Needed the moment customers became real. The wizard's ship-to list was a
+     * fixture keyed by the fixture customer NAMES, so selecting a real customer
+     * emptied it — and ship-to is a required field, which blocked the whole flow.
+     * Found by clicking through the deployed screen; nothing in the types or the
+     * build could have caught it.
+     *
+     * Per customer rather than bundled into the customer list: 3,755 address rows
+     * across 778 customers would roughly quintuple that payload for data almost
+     * all of which is never looked at.
+     *
+     * The server still resolves ship-to itself when the request omits it (see
+     * `resolveShipAddress` in archOrderCreate), so this exists to let a trader SEE
+     * and CHOOSE, not because the write depends on it.
+     */
+    const handleGetCustomerAddresses = (dataIn) => {
+        const customerId = parseInt((dataIn && dataIn.customerId) || '', 10);
+        if (!customerId) {
+            return { success: false, error: 'customerId is required.' };
+        }
+        try {
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT ' +
+                    // internalid = the ADDRESS BOOK entry, which is what
+                    // `shipaddresslist` on a transaction takes. Passing the
+                    // address id instead gets INVALID_FLD_VALUE.
+                    '  ab.internalid           AS id, ' +
+                    '  ab.label                AS label, ' +
+                    '  ab.defaultshipping      AS defaultshipping, ' +
+                    '  ab.defaultbilling       AS defaultbilling, ' +
+                    '  ea.addrtext             AS addrtext, ' +
+                    '  ea.city                 AS city, ' +
+                    '  ea.state                AS state, ' +
+                    '  ea.zip                  AS zip, ' +
+                    '  ea.country              AS country ' +
+                    'FROM customeraddressbook ab ' +
+                    'LEFT JOIN customeraddressbookentityaddress ea ' +
+                    '       ON ea.nkey = ab.addressbookaddress ' +
+                    'WHERE ab.entity = ? ' +
+                    'ORDER BY ab.defaultshipping DESC, ab.defaultbilling DESC',
+                params: [customerId],
+            }).asMappedResults();
+
+            return {
+                success: true,
+                addresses: rows.map((r) => ({
+                    id: String(r.id),
+                    // A one-line label for a dropdown. `addrtext` is multi-line, so
+                    // the newlines are collapsed rather than rendered as gaps.
+                    label: String(r.addrtext || r.label || ('Address ' + r.id))
+                        .split(String.fromCharCode(10)).filter(Boolean).join(', '),
+                    city: r.city ? String(r.city) : null,
+                    state: r.state ? String(r.state) : null,
+                    isDefaultShipping: String(r.defaultshipping) === 'T',
+                    isDefaultBilling: String(r.defaultbilling) === 'T',
+                })),
+            };
+        } catch (e) {
+            log.error('ARCH service — customer addresses failed',
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return {
+                success: false,
+                error: 'The addresses for that customer could not be loaded: ' +
+                       (e.message || String(e)),
+            };
+        }
+    };
+
+    /**
+     * Sales reps an order can be credited to.
+     *
+     * 🔴 The order endpoint REFUSES without one. `resolveSalesRep` will not guess:
+     * NetSuite rejects the whole save if the sales-team employee is not a real
+     * sales rep, and picking an arbitrary one misattributes commission on a real
+     * document. So the wizard has to send an id, and its Sales team dropdown was
+     * a fixture with none.
+     *
+     * Found by driving the deployed wizard: the flow reached the final step and
+     * was refused with "No sales rep could be determined". The guard did its job;
+     * the UI simply had nothing to send.
+     *
+     * 27 active reps, so no filtering and no paging. Subsidiary is returned for
+     * display only — filtering on it would repeat the customers mistake, where
+     * scoping to the requested subsidiary would have returned an empty list.
+     */
+    const handleGetSalesReps = () => {
+        try {
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT e.id AS id, e.entityid AS name, e.subsidiary AS subsidiaryid, ' +
+                    '       BUILTIN.DF(e.subsidiary) AS subsidiaryname ' +
+                    'FROM employee e ' +
+                    "WHERE e.issalesrep = 'T' AND e.isinactive = 'F' " +
+                    'ORDER BY e.entityid',
+            }).asMappedResults();
+            return {
+                success: true,
+                salesReps: rows.map((r) => ({
+                    id: String(r.id),
+                    name: String(r.name || ('Employee ' + r.id)),
+                    subsidiaryId: r.subsidiaryid ? String(r.subsidiaryid) : null,
+                    subsidiaryName: r.subsidiaryname ? String(r.subsidiaryname) : null,
+                })),
+            };
+        } catch (e) {
+            log.error('ARCH service — sales rep list failed',
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return {
+                success: false,
+                error: 'The sales rep list could not be loaded: ' + (e.message || String(e)),
+            };
+        }
+    };
+
     const getHandler = (dataIn) => {
         const action = (dataIn && dataIn.action) || 'get';
         const handlers = {
@@ -414,6 +540,8 @@ define([
             summary:    handleGetSummary,
             detail:     handleGetDetail,
             customers:  handleGetCustomers,
+            customerAddresses: handleGetCustomerAddresses,
+            salesReps:  handleGetSalesReps,
         };
         const handler = handlers[action];
         if (!handler) return { success: false, error: 'Unknown action: ' + action };

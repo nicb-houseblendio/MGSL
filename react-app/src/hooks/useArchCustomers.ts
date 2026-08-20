@@ -28,6 +28,12 @@ export interface ArchCustomer {
   id: string | null;
   name: string;
   currencyId?: string | null;
+  /**
+   * ISO code, e.g. "USD". This is the one the screen formats money with.
+   * `currencyName` is a label only — passing it to Intl throws RangeError and
+   * unmounts the whole app.
+   */
+  currencyCode?: string | null;
   currencyName?: string | null;
   termsId?: string | null;
   termsName?: string | null;
@@ -55,6 +61,67 @@ const ARCH_SUBSIDIARY_ID = 9;
 
 const asFixtures = (): ArchCustomer[] =>
   FIXTURE_CUSTOMERS.map((name) => ({ id: null, name }));
+
+export interface ArchCustomerAddress {
+  id: string;
+  label: string;
+  isDefaultShipping: boolean;
+  isDefaultBilling: boolean;
+}
+
+/**
+ * Ship-to addresses for one customer, fetched on selection.
+ *
+ * 🔴 This exists because making customers real BROKE the ship-to dropdown. The
+ * fixture addresses were keyed by fixture customer NAMES, so a real customer
+ * matched nothing, the list came back empty, and ship-to is a required field —
+ * which blocked the entire wizard. Found by clicking the deployed screen; the
+ * types were all still valid.
+ *
+ * Per customer rather than bundled with the customer list: 3,755 addresses across
+ * 778 customers, almost all of which are never looked at.
+ *
+ * Returns [] on failure rather than throwing. The server resolves ship-to itself
+ * when the request omits it, so an empty list must not be fatal.
+ */
+export const fetchCustomerAddresses = async (customerId: string): Promise<ArchCustomerAddress[]> => {
+  if (!customerId) return [];
+  try {
+    const res = await apiGet<{ success?: boolean; addresses?: ArchCustomerAddress[] }>(
+      'customerAddresses',
+      { subsidiaryId: ARCH_SUBSIDIARY_ID, customerId }
+    );
+    return res && res.success && Array.isArray(res.addresses) ? res.addresses : [];
+  } catch {
+    return [];
+  }
+};
+
+export interface ArchSalesRep {
+  id: string;
+  name: string;
+  subsidiaryName?: string | null;
+}
+
+/**
+ * Sales reps the order can be credited to.
+ *
+ * 🔴 The write path REFUSES without one — NetSuite rejects the save if the
+ * sales-team employee is not a real sales rep, and `resolveSalesRep` will not
+ * pick one on the trader's behalf because that misattributes commission. So this
+ * is not decoration: with an empty list the wizard cannot complete.
+ */
+export const fetchSalesReps = async (): Promise<ArchSalesRep[]> => {
+  try {
+    const res = await apiGet<{ success?: boolean; salesReps?: ArchSalesRep[] }>(
+      'salesReps',
+      { subsidiaryId: ARCH_SUBSIDIARY_ID }
+    );
+    return res && res.success && Array.isArray(res.salesReps) ? res.salesReps : [];
+  } catch {
+    return [];
+  }
+};
 
 export const useArchCustomers = (enabled: boolean): ArchCustomersState => {
   const [customers, setCustomers] = React.useState<ArchCustomer[]>([]);

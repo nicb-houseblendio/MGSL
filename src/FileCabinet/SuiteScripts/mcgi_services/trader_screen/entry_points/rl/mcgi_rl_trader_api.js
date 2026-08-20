@@ -14,6 +14,10 @@ define(['../../service/trader_screen_service_factory'], ServiceFactory => {
             locationId: p.locationId,
             bucket: p.bucket,
             subsidiaryId: p.subsidiaryId,
+            // ⚠️ This is an ALLOWLIST — anything not named here is silently
+            // dropped, so a new service action that reads a new parameter has to
+            // be added in both places or it sees undefined and refuses.
+            customerId: p.customerId,
             location: p.location,
             item: p.item,
             greaterThanZero: p.greaterThanZero !== 'false',

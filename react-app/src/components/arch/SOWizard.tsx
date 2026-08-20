@@ -2,7 +2,14 @@ import * as React from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
-import { useArchCustomers, type ArchCustomer } from '@/hooks/useArchCustomers';
+import {
+  useArchCustomers,
+  fetchCustomerAddresses,
+  fetchSalesReps,
+  type ArchCustomer,
+  type ArchCustomerAddress,
+  type ArchSalesRep,
+} from '@/hooks/useArchCustomers';
 import {
   SPLIT_FEE_PLACEHOLDER,
   splitFee,
@@ -297,6 +304,23 @@ export const SOWizard = ({
     useArchCustomers(true);
   const customerOptions: ArchCustomer[] = liveCustomers;
   const customersAreLive = customerSource === 'netsuite';
+
+  /**
+   * Real ship-to addresses for the selected customer. Empty until one is picked.
+   * `shipAddressId` is what the write path wants; `shipTo` stays the label the
+   * rest of the wizard renders.
+   */
+  const [liveAddresses, setLiveAddresses] = React.useState<ArchCustomerAddress[]>([]);
+  const [shipAddressId, setShipAddressId] = React.useState('');
+
+  /**
+   * Real sales reps, and the id is what the write path needs. Loaded once with
+   * the wizard rather than per customer: 27 rows, and they do not depend on who
+   * is being sold to.
+   */
+  const [liveReps, setLiveReps] = React.useState<ArchSalesRep[]>([]);
+  const [salesRepId, setSalesRepId] = React.useState('');
+  React.useEffect(() => { fetchSalesReps().then(setLiveReps); }, []);
   const [customerPO, setCustomerPO] = React.useState('');
   const [shipTo, setShipTo] = React.useState('');
   const [currency, setCurrency] = React.useState('');
@@ -480,7 +504,31 @@ export const SOWizard = ({
     setCustomer(name);
     setShipTo('');
     setSalesTeam(salesTeamFor(name));
-    setCurrency(hit?.currencyName || currenciesFor(name)[0]);
+    // 🔴 currencyCode (ISO), NEVER currencyName. `currency` is fed to
+    // toLocaleString({ style: 'currency' }), so "US Dollar" throws
+    // `RangeError: Invalid currency code` and takes the entire wizard down —
+    // found by clicking it, after typecheck and build both passed clean.
+    setCurrency(hit?.currencyCode || currenciesFor(name)[0]);
+
+    // Addresses belong to the customer, so they are loaded with it. Preselecting
+    // the default shipping address (falling back to billing, then the only one)
+    // matches what the server would resolve anyway, so the trader sees the same
+    // answer rather than an empty required field.
+    setLiveAddresses([]);
+    setShipAddressId('');
+    if (hit && hit.id) {
+      fetchCustomerAddresses(hit.id).then((addrs) => {
+        setLiveAddresses(addrs);
+        const preferred =
+          addrs.find((a) => a.isDefaultShipping) ||
+          addrs.find((a) => a.isDefaultBilling) ||
+          addrs[0];
+        if (preferred) {
+          setShipAddressId(preferred.id);
+          setShipTo(preferred.label);
+        }
+      });
+    }
   };
 
   /** Fixture path: no id, so the order cannot be submitted. */
@@ -556,6 +604,8 @@ export const SOWizard = ({
     header: {
       customer,
       customerId: customerId || undefined,
+      shipAddressId: shipAddressId || undefined,
+      salesRepId: salesRepId || undefined,
       customerPO,
       shipTo,
       currency,
@@ -1048,7 +1098,13 @@ export const SOWizard = ({
             style={{ ...field(!!shipTo), cursor: customer ? 'pointer' : 'not-allowed', opacity: customer ? 1 : 0.6 }}
           >
             <option value="">{customer ? '— Select address —' : 'Select a customer first'}</option>
-            {allAddresses.map((a) => (
+            {/*
+              Real addresses when the customer came from NetSuite, fixtures only
+              when it did not. Keyed by LABEL for the value because the rest of the
+              wizard renders `shipTo` as text; the id travels separately in
+              `shipAddressId`, which is what the write path needs.
+            */}
+            {(liveAddresses.length ? liveAddresses.map((a) => a.label) : allAddresses).map((a) => (
               <option key={a} value={a}>
                 {a}
               </option>
@@ -1236,15 +1292,40 @@ export const SOWizard = ({
         <select
           value={salesTeam}
           disabled={!customer}
-          onChange={(e) => setSalesTeam(e.target.value)}
+          onChange={(e) => {
+            setSalesTeam(e.target.value);
+            // When the list is live the value IS the rep id; the fixture path
+            // has none, which is why it cannot submit.
+            setSalesRepId(liveReps.some((r) => r.id === e.target.value) ? e.target.value : '');
+          }}
           style={{ ...field(!!salesTeam), cursor: customer ? 'pointer' : 'not-allowed', opacity: customer ? 1 : 0.6 }}
         >
-          <option value="">{customer ? '— Select sales team —' : 'Select a customer first'}</option>
-          {SALES_TEAM_NAMES.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
+          <option value="">
+            {customer
+              ? liveReps.length
+                ? `— Select sales rep (${liveReps.length}) —`
+                : '— Select sales team —'
+              : 'Select a customer first'}
+          </option>
+          {/*
+            🔴 Real sales reps when NetSuite gave us any, because the write path
+            REFUSES without a rep id: NetSuite rejects the save outright if the
+            sales-team employee is not a real sales rep, so there is nothing to
+            fall back on. The fixture team names remain only for the disconnected
+            case, where no order can be created anyway.
+          */}
+          {liveReps.length
+            ? liveReps.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                  {r.subsidiaryName ? ` · ${r.subsidiaryName}` : ''}
+                </option>
+              ))
+            : SALES_TEAM_NAMES.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
         </select>
         {(SALES_TEAMS[salesTeam] || []).length > 0 && (
           <div style={{ marginTop: 8, border: '1px solid #E2E8F0', borderRadius: 9, overflow: 'hidden' }}>

@@ -129,6 +129,18 @@ export interface ArchOrderHeader {
    * `customer` above stays as the label to render.
    */
   customerId?: string;
+  /**
+   * Address BOOK entry id for ship-to. Optional: the server resolves the
+   * customer's default when omitted, so this is the trader's explicit choice
+   * rather than a requirement.
+   */
+  shipAddressId?: string;
+  /**
+   * Sales rep employee id. The write path REFUSES without one: NetSuite rejects
+   * the save if the sales-team employee is not a real sales rep, and guessing
+   * would misattribute commission.
+   */
+  salesRepId?: string;
   customerPO: string;
   shipTo: string;
   currency: string;
