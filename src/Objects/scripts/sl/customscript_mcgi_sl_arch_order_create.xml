@@ -1,5 +1,5 @@
 <suitelet scriptid="customscript_mcgi_sl_arch_order_create">
-  <description>CWP ARCH sales-order creation write path. Creates the Sales Order from the trader screen's wizard, with each line carrying its lot in inventory detail so the bundle leaves availability on save. Runs as Administrator because a trader role cannot reliably write inventory detail; authorisation is therefore enforced in script against custscript_arch_order_roles, which fails closed to Administrator only when unset.</description>
+  <description>CWP ARCH sales-order creation write path. Creates the Sales Order from the trader screen's wizard, with each line carrying its lot in inventory detail so the bundle leaves availability on save. Runs as customrole2184 because the executing role is what decides which SO form is used, and only a form with Inventory Detail enabled can carry a lot; see the runasrole comment on the deployment. Authorisation is enforced in script against custscript_arch_order_roles, which fails closed to Administrator only when unset.</description>
   <isinactive>F</isinactive>
   <name>MCGI SL ARCH Order Create</name>
   <!-- admins=F matches every other script in this account. This endpoint is hit
@@ -25,7 +25,7 @@
       <defaultchecked>F</defaultchecked>
       <defaultselection></defaultselection>
       <defaultvalue></defaultvalue>
-      <description>Comma separated role internal IDs permitted to create an ARCH sales order from the trader screen. Empty means Administrator only, which is the safe default for a deployment that writes as Administrator. Administrator is always retained even if omitted from the list, so a bad entry cannot lock out the person who has to fix it. This is DELIBERATELY a separate parameter from custscript_arch_split_roles: creating an order is a lower-privilege act than posting an inventory adjustment, so this list will end up wider, and sharing one list would force whoever widens this to also widen adjustment-posting rights.</description>
+      <description>Comma separated role internal IDs permitted to create an ARCH sales order from the trader screen. Empty means Administrator only, which is the safe default for a deployment that writes with elevated rights. Administrator is always retained even if omitted from the list, so a bad entry cannot lock out the person who has to fix it. This is DELIBERATELY a separate parameter from custscript_arch_split_roles: creating an order is a lower-privilege act than posting an inventory adjustment, so this list will end up wider, and sharing one list would force whoever widens this to also widen adjustment-posting rights.</description>
       <displayheight></displayheight>
       <displaytype>NORMAL</displaytype>
       <displaywidth></displaywidth>
@@ -91,7 +91,34 @@
       <isdeployed>T</isdeployed>
       <isonline>F</isonline>
       <loglevel>DEBUG</loglevel>
-      <runasrole>ADMINISTRATOR</runasrole>
+      <!-- 🔴 runasrole IS LOAD-BEARING. It is not a security setting here, it is
+           what decides whether an order can carry its lot at all.
+
+           `customform` cannot be set from a server script in this account
+           (MODULE_DOES_NOT_EXIST on setValue/save, for every form), so the form
+           comes from the EXECUTING ROLE's preference. Inventory Detail is a
+           per-form column: the globally preferred Industriel form has it OFF, so
+           an Administrator-as-role deployment produces orders that silently carry
+           no lots.
+
+           customrole2184 "MGSL - CWP MTL - Hardwood AP/AR Analyst" is used because
+           it is the only kind of role that satisfies BOTH halves:
+             - the ARCH form (386) is preferred for it, so Inventory Detail exists
+             - subsidiaryoption=SELECTED covers subsidiary 5, where hardwood lives
+             - Sales Order = EDIT, so it can create
+
+           ⚠️ Do NOT "fix" this to the obvious customrole2181, "CWP ARC - Trader".
+           That role has subsidiaryoption=OWN, scoping it to the ARC subsidiary,
+           which holds no hardwood. Its reads return ZERO ROWS instead of erroring,
+           so every order is refused with a misleading "lot has no stock at that
+           location any more". Verified 2026-08-20 across all ten roles the ARCH
+           form is preferred for.
+
+           NOT Administrator, despite the split endpoint using it: that one posts
+           Inventory Adjustments, which a trader cannot. Creating a sales order
+           needs only Sales Order permission. The role allowlist in the script is
+           still what governs WHO may call this. -->
+      <runasrole>[scriptid=customrole2184]</runasrole>
       <status>RELEASED</status>
       <title>MCGI SL ARCH Order Create</title>
     </scriptdeployment>
