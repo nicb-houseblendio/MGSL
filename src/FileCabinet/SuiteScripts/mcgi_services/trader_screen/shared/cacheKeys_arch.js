@@ -73,8 +73,9 @@ define([], () => {
     // read the note above before changing either of these.
     const TTL_SUMMARY           = 43200;       // 12h
     const TTL_DETAIL            = 43200;       // 12h
-    const TTL_LAST_RUN          = 86400;       // 24h, N/cache's maximum
     const MAX_CACHE_VALUE_BYTES = 500 * 1024;  // 500 KB, N/cache's hard per-value ceiling
+    // No TTL_LAST_RUN: it existed only for the LAST_RUN key, which is gone. See
+    // the note on the return block below.
 
     const detailKey = (itemId, locationId) =>
         TS_ARCH_DETAIL_PREFIX + itemId + '__' + locationId;
@@ -85,18 +86,43 @@ define([], () => {
     const buildSummaryDataKey = (index) =>
         TS_ARCH_SUMMARY_DATA_PREFIX + index;
 
+    /* ── Five keys were DELETED here on 2026-08-19, deliberately ──────────────
+     *
+     * `LAST_RUN`, `LAST_FULL`, `LAST_INPUT_MODE`, `LOCATION_NAMES` and
+     * `ACTIVE_HOLDS` were copied from MTL's key surface and never written by
+     * anything. Measured before removing: zero references in the ARCH builder,
+     * zero in the ARCH service, zero anywhere else in the tree. IND and MTL have
+     * their own key modules (`cacheKeys.js`, `cacheKeys_mtl.js`) and are
+     * untouched by this.
+     *
+     * A key surface is a contract. Declaring a delta-mode key on a builder that
+     * only ever does FULL rebuilds advertises a capability that does not exist,
+     * which is exactly what made these worth deleting rather than leaving.
+     *
+     * ➕ **`CACHE_NAME` went too, 2026-08-20**, found by auditing the first pass
+     * rather than by it. It also had zero consumers in the builder and the
+     * service, and worse, it implied ARCH owns a cache. It does not:
+     * `cacheClient.js` is `define(['N/cache', './cacheKeys'])` and takes the
+     * cache name from **IND's** key module, so all three screens share ONE
+     * N/cache instance and are separated only by their key prefixes
+     * (`TS_ARCH_*` here). Anyone needing the cache name must go through
+     * CacheClient; do not re-declare it here.
+     *
+     * ⚠️ `LAST_RUN` was NOT repopulated, and the note suggesting it should be is
+     * wrong. Its stated purpose was to let the service say "last updated 3h ago,
+     * not refreshing" instead of a bare cache miss — but META ALREADY CARRIES
+     * THAT, and more precisely: `lastUpdated` (when SUMMARY was last actually
+     * written) and `lastAttempt` (when a run last tried), which diverge exactly
+     * when the shrink guard refuses. The service already surfaces both. A
+     * separate LAST_RUN key would be a second source of truth for the same fact,
+     * written non-atomically beside the payload, i.e. free drift. If more
+     * run-state is ever needed, add a field to META rather than a key here.
+     */
     return {
-        CACHE_NAME:            'MGSL_TRADERSCREEN_CACHE',
         SUMMARY:               'TS_ARCH_SUMMARY',
         META:                  'TS_ARCH_META',
-        LAST_RUN:              'TS_ARCH_LAST_RUN_TIMESTAMP',
-        LAST_FULL:             'TS_ARCH_LAST_FULL_TIMESTAMP',
-        LAST_INPUT_MODE:       'TS_ARCH_LAST_INPUT_MODE',
-        LOCATION_NAMES:        'TS_ARCH_LOCATION_NAMES',
-        ACTIVE_HOLDS:          'TS_ARCH_ACTIVE_HOLDS',
         TTL_SUMMARY:           TTL_SUMMARY,
         TTL_DETAIL:            TTL_DETAIL,
-        TTL_LAST_RUN:          TTL_LAST_RUN,
         MAX_CACHE_VALUE_BYTES: MAX_CACHE_VALUE_BYTES,
         detailKey:             detailKey,
         buildDetailBucketKey:  buildDetailBucketKey,

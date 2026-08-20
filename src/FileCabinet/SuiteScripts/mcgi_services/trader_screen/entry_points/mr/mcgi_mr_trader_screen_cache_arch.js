@@ -8,6 +8,31 @@
  * lot-level detail payload per pair, and writes both to N/cache so the React
  * screen loads with zero search governance.
  *
+ * ═══ 🔴 DEPLOY ORDER: bundle.js FIRST, THEN THIS FILE ═══════════════════════
+ * Mandatory, not a preference. This builder's payload no longer carries
+ * row-level `containers` (removed 2026-08-19 with the Container column), and the
+ * pre-2026-08-19 front end does `row.original.containers.length` on it, which
+ * throws on undefined.
+ *
+ * **In production that is a HARD break, not a degraded view.** The Suitelet
+ * INLINES bundle.js into every HTML response, so there is no per-browser caching
+ * to soften it: an old bundle plus a new payload throws during render on every
+ * page load for every user until the bundle is uploaded.
+ *
+ * The reverse order is always safe, because the current front end ignores extra
+ * fields on an older cached payload. So: bundle.js, then this file, then let the
+ * hourly schedule rebuild. `deploy.xml` is banned here (it clobbers ungit'd
+ * sandbox work), which means every ARCH deploy is hand-scoped — exactly the
+ * situation where an ordering rule gets missed.
+ *
+ * ⚠️ Nothing in the code enforces this yet. `cacheVersion` in META is the
+ * obvious place to make it self-detecting, but it is currently decorative: this
+ * file hardcodes 1 and the service only forwards it, never compares it. Bumping
+ * it without adding that comparison would change nothing. See todo-list 5.6.
+ *
+ * ANY future change to the summary row's shape inherits this constraint. Adding
+ * a field is safe in both directions; REMOVING one is not.
+ *
  * ═══ STATUS: FIVE OF SIX BUCKETS BUILT ══════════════════════════════════════
  * Updated 2026-08-18. The original version of this header said "On Hand only",
  * which was true when there was not a single ARCH sales or purchase order in the
@@ -71,7 +96,16 @@
  * are. FULL rebuild only, until there is something to be incremental about.
  */
 define([
-    'N/query', 'N/search', 'N/cache', 'N/log', 'N/runtime',
+    // The N/cache module is deliberately NOT imported: every cache touch goes
+    // through CacheClient, which owns the name and the getCache() call. Removed
+    // 2026-08-19. N/runtime IS used and must stay, for two script parameters:
+    // the cost book and the force-full override.
+    //
+    // AMD binds these POSITIONALLY. Never delete a module id without deleting
+    // its parameter below in the same edit. (Module ids are written unquoted in
+    // this comment on purpose: a quoted one here is picked up by naive scripts
+    // that count the array's entries, which cost me a false misalignment report.)
+    'N/query', 'N/search', 'N/log', 'N/runtime',
     '../../shared/cacheKeys_arch',
     '../../shared/cacheClient',
     // Shared FIFO lot-cost engine, validated to the cent against production GL
@@ -80,7 +114,7 @@ define([
     // environment, so treat its output as data to be checked, not as a given.
     // Every call here is wrapped: costing must never take down the cache build.
     '/SuiteScripts/MCGI_LIB_LotCost',
-], (query, search, cache, log, runtime, CacheKeys, CacheClient, LotCostLib) => {
+], (query, search, log, runtime, CacheKeys, CacheClient, LotCostLib) => {
 
     /**
      * ⚠️ ARCH STOCK IS **NOT** SCOPED BY SUBSIDIARY OR LOCATION. Do not "fix"
@@ -923,6 +957,12 @@ define([
                 // carry is a PO. Container survives at LOT level only, where the
                 // detail tables render it, and it is empty there until the
                 // packing-list capture exists.
+                //
+                // 🔴 THIS REMOVAL IS WHY DEPLOY ORDER IS MANDATORY — bundle.js
+                // before this file. See the header. Removing a field from this
+                // object breaks any older front end that still reads it, and in
+                // production that breaks every page load, because the Suitelet
+                // inlines the bundle rather than letting the browser cache it.
                 lots:         lots,
                 unit:         pair.unit,
                 onHand:       onHand,
