@@ -526,6 +526,11 @@ export const SOWizard = ({
     },
     lines: lines.map((l) => ({
       lotNo: l.lotNo,
+      // Internal ids, threaded through from the cart so the write path is given
+      // ids rather than names. See ArchCartLine.
+      itemId: l.internalId,
+      locationId: l.locationId,
+      lotId: l.lotId,
       itemCode: l.itemCode,
       description: l.description,
       locationName: l.locationName,

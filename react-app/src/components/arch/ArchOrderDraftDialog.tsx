@@ -4,20 +4,27 @@ import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import { fmtMoney, fmtPct, marginColor } from '@/lib/archOrderPricing';
 import type { ArchOrderDraft } from '@/types/archOrder';
+import type { ArchOrderResult } from '@/lib/archOrderApi';
 
 /**
- * What the wizard produced.
+ * What the wizard produced, and what NetSuite did with it.
  *
- * This exists BECAUSE nothing is written to NetSuite yet. Rather than fake a
- * success toast and an SO number that does not exist, the flow ends by showing
- * exactly what it assembled — the header, every line, the split and service
- * intents, and the economics. That makes the missing decisions concrete: you can
- * point at "isSplit: true, 300 of 690 BF" and ask what that should become on the
- * sales order.
+ * This used to exist BECAUSE nothing was written — it showed the assembled draft
+ * instead of faking a success toast. The write path landed on 2026-08-20, so it
+ * now reports the outcome as well, and the draft remains visible underneath
+ * because a refusal is much easier to act on next to the thing that was refused.
+ *
+ * Three outcomes it must tell apart, and they are NOT the same:
+ *   - not connected     nothing was attempted, the cart is intact
+ *   - refused           nothing was written, the cart is intact, here is why
+ *   - created           an SO exists, and its bundles may or may not be locked
  */
 
 interface ArchOrderDraftDialogProps {
   draft: ArchOrderDraft;
+  /** Null when the screen is not connected to NetSuite, so nothing was attempted. */
+  result?: ArchOrderResult | null;
+  submitting?: boolean;
   onClose: () => void;
 }
 
@@ -26,6 +33,17 @@ const cell: React.CSSProperties = {
   borderBottom: '1px solid #E2E8F0',
   fontSize: 12,
   color: ARCH_SURFACE.text,
+};
+
+const notice: React.CSSProperties = {
+  display: 'flex',
+  gap: 9,
+  alignItems: 'flex-start',
+  padding: '10px 12px',
+  borderRadius: 9,
+  fontSize: 11.5,
+  lineHeight: 1.55,
+  marginBottom: 16,
 };
 
 const head: React.CSSProperties = {
@@ -41,7 +59,90 @@ const head: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-export const ArchOrderDraftDialog = ({ draft, onClose }: ArchOrderDraftDialogProps) => {
+/**
+ * The outcome, when there is one.
+ *
+ * Deliberately distinguishes "the order exists but its bundles are NOT locked"
+ * from a plain success, because that state is the dangerous one: the stock reads
+ * as committed at row level while no lot claims it, so the drawer shows nothing
+ * and the bundle stays sellable. `lotsNotAttributed` and `formWarning` are how
+ * the server reports it, and both are worth surfacing verbatim rather than
+ * flattening into a tick.
+ */
+const OutcomeNotice = ({
+  result,
+  submitting,
+}: {
+  result?: ArchOrderResult | null;
+  submitting?: boolean;
+}) => {
+  if (submitting) {
+    return (
+      <div style={{ ...notice, background: '#EFF6FF', border: '1px solid #93C5FD', color: '#1E3A8A' }}>
+        <span>Sending to NetSuite. Do not close this window or press Create again.</span>
+      </div>
+    );
+  }
+  if (!result) return null;
+
+  if (!result.ok) {
+    return (
+      <div style={{ ...notice, background: '#FEF2F2', border: '1px solid #FCA5A5', color: '#7F1D1D' }}>
+        <div>
+          <strong>Nothing was written.</strong> Your selection is intact, so you can fix the
+          problem and try again.
+          <div style={{ marginTop: 6 }}>{result.error}</div>
+          {result.problems && result.problems.length > 1 && (
+            <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
+              {result.problems.map((p, i) => (
+                <li key={i} style={{ marginTop: 2 }}>{p}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const unlocked = (result.lotsNotAttributed || []).length > 0;
+  if (unlocked || result.formWarning) {
+    return (
+      <div style={{ ...notice, background: '#FFF7ED', border: '1px solid #FDBA74', color: '#7C2D12' }}>
+        <div>
+          <strong>The order exists, but its bundles are not locked.</strong> The quantities are
+          right, yet no lot claims them, so the wood still reads as sellable to everyone else.
+          {result.formWarning && <div style={{ marginTop: 6 }}>{result.formWarning}</div>}
+          {unlocked && (
+            <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
+              {(result.lotsNotAttributed || []).map((p, i) => (
+                <li key={i} style={{ marginTop: 2 }}>{p}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...notice, background: '#F0FDF4', border: '1px solid #86EFAC', color: '#14532D' }}>
+      <span>
+        Created and the bundles are locked.
+        {result.splitLinesQueued
+          ? ` ${result.splitLinesQueued} line${result.splitLinesQueued === 1 ? '' : 's'} queued for the warehouse to split.`
+          : ''}{' '}
+        The trader screen catches up at the next cache refresh.
+      </span>
+    </div>
+  );
+};
+
+export const ArchOrderDraftDialog = ({
+  draft,
+  result,
+  submitting,
+  onClose,
+}: ArchOrderDraftDialogProps) => {
   const cur = draft.header.currency || 'USD';
   const splitCount = draft.lines.filter((l) => l.isSplit).length;
   const remanCount = draft.lines.filter((l) => l.reman.planing || l.reman.cutting).length;
@@ -62,11 +163,19 @@ export const ArchOrderDraftDialog = ({ draft, onClose }: ArchOrderDraftDialogPro
           }}
         >
           <div style={{ color: '#fff', fontSize: 15, fontWeight: 700 }}>
-            Order assembled — not yet sent to NetSuite
+            {submitting
+              ? 'Sending to NetSuite…'
+              : !result
+                ? 'Order assembled — not sent, this screen is not connected to NetSuite'
+                : result.ok
+                  ? `Sales order created${result.salesOrderId ? ` — internal id ${result.salesOrderId}` : ''}`
+                  : 'NetSuite refused this order — nothing was written'}
           </div>
           <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: 11.5, marginTop: 2 }}>
-            {draft.mode === 'existing' ? `Would append to ${draft.existingSO}` : 'Would create a new sales order'} ·{' '}
-            {draft.lines.length} line{draft.lines.length === 1 ? '' : 's'}
+            {draft.mode === 'existing'
+              ? `${result?.ok ? 'Appended to' : 'Would append to'} ${draft.existingSO}`
+              : `${result?.ok ? 'Created' : 'Would create'} a new sales order`}{' '}
+            · {draft.lines.length} line{draft.lines.length === 1 ? '' : 's'}
             {splitCount > 0 && ` · ${splitCount} split`}
             {remanCount > 0 && ` · ${remanCount} with services`}
           </div>
@@ -90,12 +199,13 @@ export const ArchOrderDraftDialog = ({ draft, onClose }: ArchOrderDraftDialogPro
           >
             <span style={{ fontSize: 13, lineHeight: 1 }}>⚠️</span>
             <span>
-              Writing this to NetSuite needs four decisions that are still open: how a{' '}
-              <strong>split line is marked</strong> on the SO, where{' '}
-              <strong>remanufacturing and cutting</strong> live, the real <strong>fee rates</strong>, and the{' '}
-              <strong>SO header field IDs</strong>. The margins below use placeholder rates.
+              The <strong>planing and cutting rates</strong> below are still placeholders, and the
+              split fee is not charged at all until it is configured. Operations &amp; insurance is
+              real. <strong>Do not quote a customer from these margins.</strong>
             </span>
           </div>
+
+          <OutcomeNotice result={result} submitting={submitting} />
 
           <div
             style={{

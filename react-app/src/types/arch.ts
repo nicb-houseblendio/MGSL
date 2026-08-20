@@ -34,6 +34,14 @@ export type ArchDetailKey = ArchQtyKey | 'available';
 export interface ArchLot {
   lotNo: string;
   /**
+   * NetSuite internal id of the inventory number.
+   *
+   * The cache has always sent this; the type simply did not declare it. It is
+   * what the order endpoint identifies a bundle by — a lot NUMBER is not unique
+   * across items, and `issueinventorynumber` rejects a name outright.
+   */
+  lotId: string;
+  /**
    * Purchase order that brought the lot in, derived from the lot-number prefix.
    *
    * `316027-1` … `316027-14` are bundles from PO 316027. Marc-Antoine confirmed

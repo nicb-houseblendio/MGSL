@@ -92,7 +92,32 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record', 'N/log'
         const feeAmountRaw = parseFloat(script.getParameter({ name: 'custscript_arch_split_fee_amt' }));
         const feeAmount = (isFinite(feeAmountRaw) && feeAmountRaw >= 0) ? feeAmountRaw : 0;
 
+        /**
+         * Where the ARCH screen POSTs a new sales order.
+         *
+         * Resolved rather than hardcoded so the same bundle works in any account,
+         * and passed IN rather than derived in the browser: the front end has no
+         * business guessing a Suitelet URL. If this is absent the screen refuses
+         * to submit rather than firing a write at a URL it invented — see
+         * `orderEndpointConfigured` in lib/archOrderApi.ts.
+         *
+         * ARCH-only in effect. IND and MTL never read this key.
+         */
+        let orderEndpointUrl = '';
+        try {
+            orderEndpointUrl = url.resolveScript({
+                scriptId:     'customscript_mcgi_sl_arch_order_create',
+                deploymentId: 'customdeploy_mcgi_sl_arch_order_create',
+                returnExternalUrl: false,
+            });
+        } catch (e) {
+            log.error('Trader Screen',
+                'Could not resolve the ARCH order endpoint, so the screen will not be able to ' +
+                'create orders: ' + e.message);
+        }
+
         const configObj = {
+            orderEndpointUrl: orderEndpointUrl,
             splitFeeEnabled: feeEnabled,
             splitFeeAmount: feeAmount,
             restletUrl: restletUrl,

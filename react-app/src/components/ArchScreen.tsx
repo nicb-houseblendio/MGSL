@@ -13,6 +13,12 @@ import { exportToExcelARCH } from '@/lib/exportARCH';
 import type { FilterState } from '@/types';
 import type { ArchSummaryRow, ArchDetailKey } from '@/types/arch';
 import type { ArchCartLine, ArchOrderDraft } from '@/types/archOrder';
+import {
+  createArchOrder,
+  newIdempotencyKey,
+  orderEndpointConfigured,
+  type ArchOrderResult,
+} from '@/lib/archOrderApi';
 
 /**
  * CWP ARCH (hardwood) trader screen.
@@ -86,6 +92,18 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange }: ArchScree
     setWizardOpen(true);
   }, []);
   const [createdDraft, setCreatedDraft] = React.useState<ArchOrderDraft | null>(null);
+  const [orderResult, setOrderResult] = React.useState<ArchOrderResult | null>(null);
+  const [submitting, setSubmitting] = React.useState(false);
+
+  /**
+   * One idempotency key per order ATTEMPT, reused across retries of that order.
+   *
+   * 🔴 Regenerating it on retry is what creates a duplicate. A failed fetch does
+   * not mean the server did nothing — it may have created the order and lost the
+   * response — so a retry has to carry the same key to be refused rather than
+   * duplicated. Cleared only once an order actually succeeds.
+   */
+  const orderKeyRef = React.useRef<string | null>(null);
 
   const cartLotNos = React.useMemo(() => new Set(cart.map((l) => l.lotNo)), [cart]);
 
@@ -114,6 +132,11 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange }: ArchScree
             internalId: row.internalId,
             itemCode: row.itemCode,
             description: row.description,
+            // Internal ids for the write path. Carried from the row and the lot
+            // rather than resolved later from names: a lot number is only unique
+            // within its item, and the endpoint checks that the pairing is real.
+            locationId: row.locationId,
+            lotId: lot.lotId,
             // Carried explicitly rather than parsed back out of the description
             // downstream — the row knows it, and real NetSuite descriptions will
             // not reliably contain a parseable "n/4".
@@ -141,14 +164,35 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange }: ArchScree
     []
   );
 
-  const handleCreateOrder = React.useCallback((draft: ArchOrderDraft) => {
-    // No NetSuite write yet — see the note in SOWizard. Surface the draft so the
-    // flow can be reviewed end to end, and clear the cart as a real create would.
+  const handleCreateOrder = React.useCallback(async (draft: ArchOrderDraft) => {
     setCreatedDraft(draft);
     setWizardOpen(false);
     setEditingSO(null);
     setWizardKey((k) => k + 1);
-    setCart([]);
+
+    // Not connected to NetSuite — a local preview or a storybook. Show the draft
+    // and keep the cart, because nothing was written and the trader has not lost
+    // their selection.
+    if (!orderEndpointConfigured()) {
+      setOrderResult(null);
+      return;
+    }
+
+    if (!orderKeyRef.current) orderKeyRef.current = newIdempotencyKey();
+
+    setSubmitting(true);
+    setOrderResult(null);
+    const result = await createArchOrder(draft, orderKeyRef.current);
+    setSubmitting(false);
+    setOrderResult(result);
+
+    if (result.ok) {
+      // 🔴 The cart is cleared ONLY on success. Clearing it on failure would
+      // destroy the trader's selection while the stock is still sellable, which
+      // is worse than leaving a cart they can retry from.
+      setCart([]);
+      orderKeyRef.current = null;
+    }
   }, []);
 
   const rowSelectionRef = React.useRef<Record<string, boolean>>({});
@@ -317,7 +361,15 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange }: ArchScree
       />
 
       {createdDraft && (
-        <ArchOrderDraftDialog draft={createdDraft} onClose={() => setCreatedDraft(null)} />
+        <ArchOrderDraftDialog
+          draft={createdDraft}
+          submitting={submitting}
+          result={orderResult}
+          onClose={() => {
+            setCreatedDraft(null);
+            setOrderResult(null);
+          }}
+        />
       )}
     </>
   );

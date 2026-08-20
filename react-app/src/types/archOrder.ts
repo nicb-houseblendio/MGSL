@@ -33,7 +33,15 @@ export interface ArchCartLine {
    */
   thickness?: string;
   locationName: string;
+  /**
+   * NetSuite internal ids, carried so the order endpoint can be given ids rather
+   * than names. Names are ambiguous — two customers can share one, and a lot
+   * number is only unique within its item — and the endpoint validates that the
+   * lot really belongs to the item it was sent with.
+   */
+  locationId: string;
   lotNo: string;
+  lotId: string;
   containerNo: string;
   /**
    * The item's stock unit, carried from the summary row.
@@ -111,6 +119,16 @@ export interface ArchRemanIntent {
 
 export interface ArchOrderHeader {
   customer: string;
+  /**
+   * NetSuite internal id of the customer.
+   *
+   * ⚠️ Undefined until the wizard's customer step returns an id rather than a
+   * display name. The order endpoint REQUIRES it and refuses with "The order
+   * needs a customer" otherwise, which is the correct failure: guessing a
+   * customer from a typed name is how an order ends up on the wrong account.
+   * `customer` above stays as the label to render.
+   */
+  customerId?: string;
   customerPO: string;
   shipTo: string;
   currency: string;
@@ -133,6 +151,10 @@ export interface ArchOrderDraft {
 
 export interface ArchOrderDraftLine {
   lotNo: string;
+  /** Internal ids for the write path. See the note on `ArchCartLine`. */
+  itemId: string;
+  locationId: string;
+  lotId: string;
   itemCode: string;
   description: string;
   locationName: string;

@@ -100,6 +100,10 @@ const buildRow = (index: number): ArchSummaryRow => {
 
     return {
       lotNo: `${itemCode}-${String(i + 1).padStart(3, '0')}`,
+      // Fixture lots get a fake internal id. Deliberately out of the range real
+      // ARCH lots occupy (five figures) so a fixture id reaching a write path
+      // fails to resolve rather than matching somebody's real bundle.
+      lotId: `9${String(index).padStart(3, '0')}${String(i + 1).padStart(2, '0')}`,
       po: `PO-${lotInt(10000, 99999)}`,
       containerNo: `${CONTAINER_PREFIXES[lotInt(0, CONTAINER_PREFIXES.length - 1)]}${lotInt(1000000, 9999999)}`,
       onHand,
