@@ -80,6 +80,35 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
     const STATUS_PENDING = 'Pending';
 
     /**
+     * Internal id of the "Pending" value on `customlist_mgsl_split_status`.
+     *
+     * Needed because standard mode has no `setSublistText`, so the value has to
+     * go in by id rather than by label. Looked up rather than assumed: the list
+     * holds 1 = Pending, 2 = Done (read 2026-08-20).
+     *
+     * Resolved at runtime with the measured value as a fallback, because a list
+     * value id is exactly the sort of thing a sandbox refresh moves. If the lookup
+     * fails the split still records, and the warehouse queue reads the status by
+     * text, so a wrong id would surface as a queue miss rather than silent data
+     * loss.
+     */
+    const splitStatusPendingId = () => {
+        try {
+            const rows = query.runSuiteQL({
+                query: 'SELECT id FROM customlist_mgsl_split_status WHERE name = ?',
+                params: [STATUS_PENDING],
+            }).asMappedResults();
+            const id = rows.length ? int(rows[0].id) : null;
+            if (id) return id;
+        } catch (e) {
+            log.audit('ARCH Order Create',
+                'Could not resolve the Pending split-status id, falling back to 1: ' +
+                (e.message || String(e)));
+        }
+        return 1;
+    };
+
+    /**
      * Header fields. Every id below was confirmed to resolve against live
      * NetSuite on 2026-08-20 by selecting it from `transaction`.
      *
@@ -119,6 +148,42 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
      * change.
      */
     const DEPARTMENT_DEFAULT = 11;
+
+    /**
+     * The sales-order form ARCH orders MUST end up on, and how they get there.
+     *
+     * 🔴 THE FORM DECIDES WHETHER A LOT CAN BE ATTACHED AT ALL. Inventory Detail
+     * is a per-form column on the ITEM sublist, and its visibility decides whether
+     * `inventorydetail` exists as a subrecord. Read out of the form definitions
+     * on 2026-08-20:
+     *
+     *   Industriel - Sales Order   INVENTORYDETAIL visible=F   globally preferred
+     *   CWP MTL - Sales Order      INVENTORYDETAIL visible=T
+     *   CWP ARC - Sales Order      INVENTORYDETAIL visible=T
+     *
+     * ⛔ AND IT CANNOT BE SELECTED IN CODE. `setValue` on `customform` throws
+     * `MODULE_DOES_NOT_EXIST: /NLRecordScripting.scriptInit$sys.js` — at setValue
+     * in dynamic mode, and at save in standard mode. Measured against BOTH the MTL
+     * and ARCH forms, which fail identically, so this is a platform constraint in
+     * this account and not a broken form. Do not try again.
+     *
+     * ✅ SO THE FORM COMES FROM THE EXECUTING ROLE. Julie already made the ARCH
+     * form preferred for "MGSL - CWP ARC - Trader" (customrole2181) and nine other
+     * roles. Administrator is not among them, and Industriel is globally
+     * preferred, which is why an order created by an Administrator-as-role
+     * deployment lands on a form that cannot carry a lot.
+     *
+     * 🔴 THEREFORE THIS DEPLOYMENT'S `runasrole` IS LOAD-BEARING, not a security
+     * detail. It must be a role the ARCH form is preferred for. Note this is not a
+     * compromise on the split endpoint's reasoning: THAT one needs Administrator
+     * because it posts Inventory Adjustments, which a trader cannot. Creating a
+     * sales order needs only Sales Order permission, so the trader role is the
+     * more correct executor here, not a weaker one.
+     *
+     * The id below is recorded for diagnostics and for the check in
+     * `warnIfFormUnavailable`; nothing sets it.
+     */
+    const ARCH_SO_FORM_DEFAULT = 386;
 
     /** Hard cap on lines per request. Real ARCH orders are a handful. */
     const MAX_LINES = 200;
@@ -226,6 +291,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
     };
 
     const departmentId = () => int(param('custscript_arch_department')) || DEPARTMENT_DEFAULT;
+
+    const archFormId = () => int(param('custscript_arch_so_form')) || ARCH_SO_FORM_DEFAULT;
 
     /**
      * Incoterms fallback when the wizard sends none.
@@ -839,20 +906,25 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
      * standard mode, where client scripts do not run. Relevant if an ARCH form is
      * ever made preferred.
      */
-    const addLine = (so, line) => {
-        so.selectNewLine({ sublistId: 'item' });
-        so.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item',     value: line.itemId });
-        so.setCurrentSublistValue({ sublistId: 'item', fieldId: 'location', value: line.locationId });
-        so.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: line.displayQty });
-        so.setCurrentSublistValue({ sublistId: 'item', fieldId: 'rate',     value: line.pricePerUnit });
+    const addLine = (so, line, index) => {
+        const set = (fieldId, value) =>
+            so.setSublistValue({ sublistId: 'item', fieldId: fieldId, line: index, value: value });
+
+        set('item',     line.itemId);
+        set('location', line.locationId);
+        set('quantity', line.displayQty);
+        set('rate',     line.pricePerUnit);
 
         if (line.isSplit) {
-            so.setCurrentSublistValue({ sublistId: 'item', fieldId: F_SPLIT,    value: true });
-            so.setCurrentSublistValue({ sublistId: 'item', fieldId: F_SPLIT_BF, value: line.displayQty });
-            so.setCurrentSublistText({ sublistId: 'item', fieldId: F_SPLIT_STATUS, text: STATUS_PENDING });
+            set(F_SPLIT,    true);
+            set(F_SPLIT_BF, line.displayQty);
+            // setSublistText is not available in standard mode, so the split
+            // status goes in by its list value id rather than its label.
+            so.setSublistValue({
+                sublistId: 'item', fieldId: F_SPLIT_STATUS, line: index,
+                value: splitStatusPendingId(),
+            });
         }
-
-        so.commitLine({ sublistId: 'item' });
     };
 
     /**
@@ -1174,6 +1246,36 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
         };
     };
 
+    /**
+     * Reports the form an order actually landed on, so a misconfigured
+     * `runasrole` explains itself instead of silently producing orders with no
+     * lots. Returns a warning string, or null when the form is the expected one.
+     *
+     * This is the diagnosis that took the longest to reach, so it is worth having
+     * the code say it: unattributed lots on an ARCH order almost always mean the
+     * order is on the wrong form, and the wrong form almost always means the
+     * deployment is executing as a role the ARCH form is not preferred for.
+     */
+    const formWarning = (soId) => {
+        const expected = archFormId();
+        try {
+            const rows = query.runSuiteQL({
+                query: 'SELECT t.customform AS formid, BUILTIN.DF(t.customform) AS formname ' +
+                       'FROM transaction t WHERE t.id = ?',
+                params: [soId],
+            }).asMappedResults();
+            if (!rows.length) return null;
+            const actual = int(rows[0].formid);
+            if (actual === expected) return null;
+            return 'landed on form ' + actual + ' (' + rows[0].formname + ') rather than ' +
+                   expected + '. Inventory Detail is not available on that form, so lots ' +
+                   'cannot be attached. The form comes from the EXECUTING ROLE, so check ' +
+                   'the runasrole on this deployment.';
+        } catch (e) {
+            return null;
+        }
+    };
+
     /** Marker recorded on an appended-to order so a retry can recognise itself. */
     const appendMarker = (key) => '[ARCH-APPEND:' + key + ']';
 
@@ -1203,14 +1305,31 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
             throw refusal(resolved.problems.join(' '));
         }
 
+        // ── STANDARD mode, not dynamic, and the reason is `customform` ──────
+        //
+        // Setting `customform` in DYNAMIC mode throws
+        // `MODULE_DOES_NOT_EXIST: /NLRecordScripting.scriptInit$sys.js` — it tries
+        // to reinitialise the form through client-script infrastructure that does
+        // not exist server-side. It is a dynamic-mode limitation, not a property
+        // of any particular form: 373 and 386 both fail, and both set cleanly in
+        // standard mode.
+        //
+        // Nothing here needs dynamic mode any more. Inventory detail moved to
+        // phase two the moment it turned out not to exist on an unsaved line, and
+        // that was the only reason for it.
         const so = appending
-            ? record.load({ type: record.Type.SALES_ORDER, id: existingId, isDynamic: true })
-            : record.create({ type: record.Type.SALES_ORDER, isDynamic: true });
+            ? record.load({ type: record.Type.SALES_ORDER, id: existingId, isDynamic: false })
+            : record.create({ type: record.Type.SALES_ORDER, isDynamic: false });
 
         if (!appending) {
             const h = input.header || {};
             const customerId = int(h.customerId);
             if (!customerId) throw refusal('The order needs a customer.');
+
+            // ⛔ `customform` is deliberately NOT set. See ARCH_SO_FORM_DEFAULT:
+            // setting it breaks the SAVE from a server script in this account, for
+            // every form, so the form comes from the EXECUTING ROLE's preference
+            // instead. That is why this deployment's runasrole matters.
 
             // Subsidiary and department are deliberately NOT set from the
             // request. NetSuite sources them from the customer and the location,
@@ -1288,8 +1407,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
                               'to credit. Send header.salesRepId.');
             }
             {
-                so.selectNewLine({ sublistId: 'salesteam' });
-                so.setCurrentSublistValue({ sublistId: 'salesteam', fieldId: 'employee', value: repId });
+                so.setSublistValue({ sublistId: 'salesteam', fieldId: 'employee', line: 0, value: repId });
                 // `salesrole` is deliberately NOT set. -2 is what the stored data
                 // shows, but a value read out of a saved record is not necessarily
                 // a value the API accepts, and setting it turned a clear
@@ -1300,7 +1418,6 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
                 // FRACTION rather than a percentage, so passing 100 would mean
                 // 10,000%. With a single line NetSuite fills it in itself, and
                 // both real lines carry isprimary=F, so asserting it is wrong too.
-                so.commitLine({ sublistId: 'salesteam' });
             }
 
             // Incoterms is a SELECT. The wizard may send either an internal id or
@@ -1379,7 +1496,10 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
             }
         }
 
-        resolved.lines.forEach((line) => addLine(so, line));
+        // Standard mode addresses lines by index, so new lines start after
+        // whatever the order already has.
+        const firstNewLine = appending ? so.getLineCount({ sublistId: 'item' }) : 0;
+        resolved.lines.forEach((line, i) => addLine(so, line, firstNewLine + i));
 
         let soId;
         try {
@@ -1401,11 +1521,13 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
         // reported rather than thrown: throwing would tell the trader the order
         // failed when it is sitting in NetSuite with correct quantities.
         const unplaced = assignLots(soId, resolved.lines, priorLineKeys);
+        const wrongForm = unplaced.length ? formWarning(soId) : null;
         if (unplaced.length) {
             log.error('ARCH Order Create — LOTS NOT ATTRIBUTED on SO ' + soId,
                 'The order exists with correct quantities but ' + unplaced.length + ' of ' +
                 resolved.lines.length + ' line(s) carry no lot, so the bundles are NOT locked: ' +
-                unplaced.join('; '));
+                unplaced.join('; ') +
+                (wrongForm ? ' | LIKELY CAUSE: the order ' + wrongForm : ''));
         }
 
         const check = verifyAssignments(soId, resolved.lines, priorAssignments);
@@ -1450,6 +1572,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
             idempotencyKey: idempotencyKey,
             // Non-empty means the order exists but those bundles are NOT locked.
             lotsNotAttributed: unplaced,
+            formWarning: wrongForm,
         };
     };
 
