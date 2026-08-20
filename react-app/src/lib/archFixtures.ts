@@ -120,8 +120,10 @@ const buildRow = (index: number): ArchSummaryRow => {
   const onOrder = sum('onOrder');
   const inTransit = sum('inTransit');
 
-  const containers = [...new Set(lots.map((l) => l.containerNo).filter(Boolean))];
-
+  // Row-level container aggregation removed 2026-08-19 with the grid column it
+  // fed. Lots still carry a container so the detail tables have something to
+  // show in demo mode; live rows leave it empty, and the header badge always
+  // names which source you are looking at.
   return {
     internalId,
     itemCode,
@@ -133,8 +135,6 @@ const buildRow = (index: number): ArchSummaryRow => {
     category,
     grade,
     grain,
-    containerNo: containers[0] || '',
-    containers,
     lots,
     unit: unitForCategory(category),
     onHand,

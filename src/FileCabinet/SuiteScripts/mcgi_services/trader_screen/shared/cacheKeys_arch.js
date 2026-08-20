@@ -59,7 +59,7 @@
  *
  * ── What ARCH adds that IND and MTL do not have ─────────────────────────────
  * Two extra buckets, `reserve` and `readyToBuild`, and lot-level payloads with
- * per-lot tallies and container numbers. That is the main reason ARCH gets its
+ * per-lot tallies, PO numbers and costs. That is the main reason ARCH gets its
  * own fork rather than reusing the IND builder with a subsidiary parameter, as
  * Nic's SDD suggests: MTL already needed a fork, and MTL diverges from IND far
  * less than ARCH does.

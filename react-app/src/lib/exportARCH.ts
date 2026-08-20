@@ -51,7 +51,12 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
     'Category',
     'Grade',
     'Grain',
-    'Containers',
+    // Was 'Containers' until 2026-08-19. Same cell, honest label: the value is a
+    // PO number. Marc-Antoine confirmed the lot prefix is the PO, and a container
+    // can span several POs, so this column never held containers. Derived here
+    // from the lots rather than from a row field, so the cache contract does not
+    // grow a `pos` array nobody else needs.
+    'POs',
     'Bundles',
     'Unit',
     'Available',
@@ -75,7 +80,7 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
     escAmp(r.category || ''),
     escAmp(r.grade || ''),
     escAmp(r.grain || ''),
-    escAmp(r.containers.join(', ')),
+    escAmp([...new Set(r.lots.map((l) => l.po).filter(Boolean))].join(', ')),
     r.lots.length,
     displaySuffix(r.unit, uom),
     qty(r.available, r.unit, uom),

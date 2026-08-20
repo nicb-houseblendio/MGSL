@@ -17,10 +17,10 @@
  * the split queue hook.
  *
  * ── Filters ────────────────────────────────────────────────────────────────
- * ARCH filters on its own axes — species, thickness, category, grade, container
- * — not IND's width/length/country/vendor. Several of those segments are not
- * populated on the hardwood items yet, so their filters will legitimately match
- * nothing; that is a data gap, not a bug here.
+ * ARCH filters on its own axes — location, species, thickness, category, grade
+ * — not IND's width/length/country/vendor, and NOT container (see applyFilters).
+ * Several of those segments are not populated on the hardwood items yet, so their
+ * filters will legitimately match nothing; that is a data gap, not a bug here.
  */
 define([
     'N/runtime', 'N/log',
@@ -81,12 +81,16 @@ define([
                 filtered = filtered.filter((r) => vals.indexOf(String(r[field] || '').trim()) >= 0);
             }
         });
-        if (params.containerNo && toValueList(params.containerNo).length > 0) {
-            const vals = toValueList(params.containerNo);
-            // Lot-level: keep the row if ANY of its lots is in a selected container.
-            filtered = filtered.filter((r) =>
-                Array.isArray(r.lots) && r.lots.some((l) => l.containerNo && vals.indexOf(l.containerNo) >= 0));
-        }
+        // `containerNo` is DELIBERATELY NOT A FILTER, removed 2026-08-19 with the
+        // grid column. It was going to be fed from the lot-number prefix, and
+        // Marc-Antoine confirmed that prefix is the PO number; a container can
+        // also span several POs, so neither derives from the other.
+        //
+        // Removed rather than left as a dead branch because it fails LOUDLY in
+        // the wrong direction: every lot's containerNo is empty today, so a
+        // stale saved filter arriving here would match nothing and blank the
+        // whole grid with no reason given. Ignoring the parameter is the honest
+        // behaviour for a filter the screen no longer offers.
         // greaterThanZero: default true — hide rows with nothing in ANY bucket.
         //
         // Every bucket, not just the incoming three. A row that is entirely

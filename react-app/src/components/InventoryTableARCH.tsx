@@ -246,38 +246,13 @@ export const InventoryTableARCH = ({
         ),
         size: 205,
       },
-      {
-        id: 'containerNo',
-        accessorKey: 'containerNo',
-        header: ({ column }) => <SortHeader label="CONTAINER #" column={column} />,
-        cell: ({ row }) => {
-          const containers = row.original.containers;
-          if (!containers.length) return <span className="font-mono text-xs">—</span>;
-          const first = containers[0];
-          return (
-            <div className="flex items-center gap-1">
-              <AttrCell
-                value={first}
-                filterKey="containerNo"
-                filterValue={first}
-                activeFilters={activeFilters}
-                onCellFilter={onCellFilter}
-                mono
-              />
-              {containers.length > 1 && (
-                <span
-                  className="text-[9px] font-bold px-1 rounded shrink-0"
-                  style={{ background: 'var(--border)', color: 'var(--text-mid)' }}
-                  title={containers.join('\n')}
-                >
-                  +{containers.length - 1}
-                </span>
-              )}
-            </div>
-          );
-        },
-        size: 135,
-      },
+      // CONTAINER # was a column here until 2026-08-19. It is gone because the
+      // value it was about to be fed is a PO number, not a container: the lot
+      // prefix `316027` is the purchase order, per Marc-Antoine, and a container
+      // can span several POs so neither derives from the other. He also asked for
+      // it off the main screen. Container still renders on the lot detail tables
+      // (ArchLotTable, ArchReservedSection, ArchPOListView), where the PO # column
+      // beside it is now populated.
       {
         id: 'location',
         accessorKey: 'locationName',

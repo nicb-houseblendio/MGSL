@@ -3,7 +3,7 @@
  *
  * Deliberately separate from `SummaryRow` (lib/api.ts) — ARCH is multi-unit,
  * has no packs/PPP, and carries three things IND/MTL do not: a `readyToBuild`
- * bucket, per-lot tallies, and lot-level container numbers.
+ * bucket, per-lot tallies, and per-lot PO attribution.
  *
  * This is the shape the ARCH RESTlet is expected to return once it exists. Until
  * then `lib/archFixtures.ts` produces it. Keeping the contract explicit here means
@@ -33,8 +33,25 @@ export type ArchDetailKey = ArchQtyKey | 'available';
 
 export interface ArchLot {
   lotNo: string;
-  /** Purchase order that brought the lot in (On Order / In Transit / received). */
+  /**
+   * Purchase order that brought the lot in, derived from the lot-number prefix.
+   *
+   * `316027-1` … `316027-14` are bundles from PO 316027. Marc-Antoine confirmed
+   * the convention on 2026-08-19: *« le 316027 c'est le numéro du PO qu'on
+   * utilise dans notre nomenclature du bundle. »* It is a naming convention, not
+   * a NetSuite link, so it can be wrong without being an error. Empty when the
+   * lot number does not match the pattern.
+   */
   po: string;
+  /**
+   * Shipping container, and it is NOT the lot prefix.
+   *
+   * A container can cover more than one PO, so the prefix that yields `po`
+   * cannot yield a container in either direction. There is no source for this in
+   * NetSuite today — it needs the packing-list lot → container capture — so it
+   * is empty on every lot and the detail tables render an em dash. Container is
+   * mostly a decking/IPE concern rather than a hardwood one.
+   */
   containerNo: string;
   /** Physically on hand, in the parent row's `unit`. */
   onHand: number;
@@ -99,10 +116,9 @@ export interface ArchSummaryRow {
    * `normalizeUnit`. Defaults to BF when absent, which is the majority case.
    */
   unit: ArchUnit;
-  /** First container of the lot set, for the collapsed grid cell. */
-  containerNo: string;
-  /** Every distinct container across this row's lots (drives the filter). */
-  containers: string[];
+  // Row-level `containerNo` and `containers` were removed 2026-08-19. They fed a
+  // Container column and filter on the main grid, and the value they were going
+  // to carry turned out to be a PO number. Container lives on the LOT only.
   lots: ArchLot[];
 
   onHand: number;

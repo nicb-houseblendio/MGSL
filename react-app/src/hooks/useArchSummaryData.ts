@@ -51,11 +51,10 @@ const applyArchFilters = (rows: ArchSummaryRow[], filters: FilterState): ArchSum
     const set = new Set(filters.grade);
     out = out.filter((r) => !!r.grade && set.has(r.grade));
   }
-  if (filters.containerNo?.length) {
-    const set = new Set(filters.containerNo);
-    // Lot-level: keep the row if ANY of its lots is in a selected container.
-    out = out.filter((r) => r.lots.some((l) => !!l.containerNo && set.has(l.containerNo)));
-  }
+  // No containerNo branch, removed 2026-08-19 with the filter itself. `FilterState`
+  // still declares the key because it is shared with IND/MTL, so a stale saved
+  // filter could still carry one — ignoring it is correct, since ARCH no longer
+  // offers the filter and every lot's containerNo is empty anyway.
   return out;
 };
 
@@ -321,9 +320,7 @@ export const useArchSummaryData = (enabled: boolean) => {
         ]),
         category: optionsFor(allRows, filters, 'category', (r) => [{ value: r.category, label: r.category }]),
         grade: optionsFor(allRows, filters, 'grade', (r) => [{ value: r.grade, label: r.grade }]),
-        containerNo: optionsFor(allRows, filters, 'containerNo', (r) =>
-          r.lots.filter((l) => !!l.containerNo).map((l) => ({ value: l.containerNo, label: l.containerNo }))
-        ),
+        // No containerNo options — the filter was removed 2026-08-19. See applyArchFilters.
       };
       Object.values(out).forEach((list) => list.sort((a, b) => compareLabels(a.label, b.label)));
       return out;

@@ -46,9 +46,16 @@ export const BUSINESS_CONFIG: Record<string, BusinessConfig> = {
     columns: ['width', 'length', 'onHand', 'committed', 'outbound', 'inTransit', 'available'],
   },
   // Hardwood: no width/length columns (variable within a bundle — that is what the
-  // tally is for) and no packs. Container is a LOT attribute, filtered per lot.
+  // tally is for) and no packs.
+  //
+  // NO CONTAINER FILTER, removed 2026-08-19. It was going to be fed from the
+  // lot-number prefix, and Marc-Antoine confirmed that prefix is the PO number,
+  // not the container; a container can also span several POs, so the two are not
+  // derivable from each other. Container survives on the lot detail tables only.
+  // A PO filter is NOT its replacement — the row would need a `pos` option list
+  // first, and nobody has asked for one.
   CWP_ARCH: {
-    filters: ['location', 'containerNo', 'species', 'thickness', 'category', 'grade'],
+    filters: ['location', 'species', 'thickness', 'category', 'grade'],
     columns: [
       'available',
       'onHand',

@@ -167,7 +167,6 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange }: ArchScree
       thickness: filters.thickness || [],
       category: filters.category || [],
       grade: filters.grade || [],
-      containerNo: filters.containerNo || [],
     }),
     [filters]
   );

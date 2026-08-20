@@ -38,10 +38,10 @@
  * A DEPARTURE from IND and MTL, which each drive off six saved searches. Three
  * reasons it is the right call here and not merely convenient:
  *
- *  1. ARCH is LOT-CENTRIC. The screen shows per-lot rows, tallies and container
- *     numbers. IND/MTL aggregate to item × location and never descend to the
- *     lot. Saved searches express lot-level joins awkwardly; SuiteQL expresses
- *     them directly.
+ *  1. ARCH is LOT-CENTRIC. The screen shows per-lot rows, tallies, per-lot PO
+ *     numbers and per-lot costs. IND/MTL aggregate to item × location and never
+ *     descend to the lot. Saved searches express lot-level joins awkwardly;
+ *     SuiteQL expresses them directly.
  *  2. Saved searches live in the NetSuite UI, not in this repo. They cannot be
  *     reviewed, diffed or deployed with the code, and the existing ones are
  *     already documented as a fragility.
@@ -245,6 +245,59 @@ define([
     const num = (v) => {
         const n = parseFloat(v);
         return isFinite(n) ? n : 0;
+    };
+
+    /* ══ PO from the lot number ════════════════════════════════════════════════
+     *
+     * The lot-number prefix is the PURCHASE ORDER number. Marc-Antoine, asked
+     * directly on 2026-08-19 whether it was the container or the PO:
+     *
+     *   « le 316027 c'est le numéro du PO qu'on utilise dans notre nomenclature
+     *     du bundle. »
+     *
+     * So `316027-1` … `316027-14` are fourteen bundles from PO 316027, and the
+     * prefix is the only per-lot PO attribution available: SuiteQL exposes just
+     * id, inventorynumber, item and lastmodifieddate on `inventorynumber`, and
+     * there is no PO link on the record.
+     *
+     * ⚠️ THIS IS A NAMING CONVENTION, NOT A NETSUITE REFERENCE, and it cannot be
+     * corroborated here. Measured 2026-08-19: no PO in the account carries 316027
+     * or 315970 in `tranid` or `otherrefnum`, and hardwood touches only 177
+     * Inventory Adjustments, 4 PO lines (our own seed) and 3 SO lines — Julie's
+     * data was imported, never received against a PO. So these are MGSL's own PO
+     * numbers, and nothing in NetSuite can confirm or contradict one. A mistyped
+     * lot number therefore yields a wrong PO rather than an error, which is why
+     * silence is the failure mode: no match means no PO, never a guess.
+     *
+     * 🔴 DO NOT REUSE THIS FOR containerNo. The same answer said a container can
+     * span more than one PO, so the mapping is not invertible in either
+     * direction — a prefix can never yield a container number. The original plan
+     * on this screen was to derive `containerNo` from exactly this prefix, and it
+     * would have shipped a column headed Container that held PO numbers.
+     *
+     * ── Why the pattern is this strict ──────────────────────────────────────
+     * Run against all 103 real hardwood lot numbers: 92 yield one of 12 POs, all
+     * in the 31xxxx range, and 11 correctly yield nothing —
+     *
+     *   `1` `2` `3` `4`      manual lots with no PO in the name
+     *   `no name A-2`        does not start with digits
+     *   `49839.0` `49846.0`  our own seeder wrote a lot INTERNAL ID into the name
+     *   `414983`             6 digits but NO bundle suffix, and outside the range
+     *                        every other lot uses. Ambiguous, so it is declined:
+     *                        requiring the separator is what declines it.
+     *
+     * The separator is required for that last case specifically. `^(\d{5,})$`
+     * would also accept `414983` and invent a 13th PO out of the one lot that
+     * does not follow the convention.
+     *
+     * Note it would also read `00000-442` as PO `00000` — but softwood lots like
+     * that never reach this function, because getInputData is scoped to the
+     * hardwood segment. Do not lift this helper out of that scope.
+     */
+    const PO_FROM_LOT_RE = /^(\d{5,})-/;
+    const poFromLotNo = (lotNo) => {
+        const m = PO_FROM_LOT_RE.exec(String(lotNo || '').trim());
+        return m ? m[1] : '';
     };
 
     /* ══ Lot costing ═══════════════════════════════════════════════════════════
@@ -734,8 +787,17 @@ define([
                 return {
                     lotNo:         l.lotNo,
                     lotId:         l.lotId,
-                    po:            '',      // still no per-lot PO attribution — see containerNo
-                    containerNo:   '',      // not on inventorynumber; open question with Marc-Antoine
+                    // Derived from the lot-number prefix, which IS the PO by
+                    // Marc-Antoine's own bundle nomenclature — see poFromLotNo.
+                    po:            poFromLotNo(l.lotNo),
+                    // ⛔ NO SOURCE, and there cannot be one from the lot number.
+                    // A container can span several POs (2026-08-19), so the
+                    // prefix that gives `po` above can never give a container.
+                    // Real container tracking needs the packing-list lot →
+                    // container capture and has no other route. Container is
+                    // also mostly a decking/IPE concern, which this screen is
+                    // not for, so this is a display nicety and not Phase 1.
+                    containerNo:   '',
                     onHand:        l.storedQty / rate,
                     // Per-lot figures exist ONLY where the order line carries an
                     // inventory-detail assignment. A line without one contributes
@@ -855,8 +917,12 @@ define([
                 thickness:    pair.thickness || '',
                 grade:        '',   // see below — cseggrade is NOT an item field
                 grain:        '',   // no such segment — needs a source decision
-                containerNo:  '',
-                containers:   [],
+                // Row-level `containerNo`/`containers` were REMOVED 2026-08-19.
+                // They existed to feed a Container column and filter on the main
+                // grid; that column is gone, because the value it was going to
+                // carry is a PO. Container survives at LOT level only, where the
+                // detail tables render it, and it is empty there until the
+                // packing-list capture exists.
                 lots:         lots,
                 unit:         pair.unit,
                 onHand:       onHand,
