@@ -1,0 +1,99 @@
+<suitelet scriptid="customscript_mcgi_sl_arch_order_create">
+  <description>CWP ARCH sales-order creation write path. Creates the Sales Order from the trader screen's wizard, with each line carrying its lot in inventory detail so the bundle leaves availability on save. Runs as Administrator because a trader role cannot reliably write inventory detail; authorisation is therefore enforced in script against custscript_arch_order_roles, which fails closed to Administrator only when unset.</description>
+  <isinactive>F</isinactive>
+  <name>MCGI SL ARCH Order Create</name>
+  <!-- admins=F matches every other script in this account. This endpoint is hit
+       by traders, and it already handles expected refusals itself, returning
+       JSON and logging them at AUDIT. Emailing all administrators on top of that
+       is noise, and noise is how real failures get ignored. -->
+  <notifyadmins>F</notifyadmins>
+  <notifyemails>aserban@houseblend.io</notifyemails>
+  <!-- Notifications go to Andrei ONLY while ARCH is being built. notifyowner=T
+       sends them to the script owner, "House Blend 2"
+       (credentials.ns_mcg2@houseblend.io) — a shared HouseBlend credentials
+       mailbox, so the person actually building this never sees them.
+       notifyadmins stays F: MGSL admins must not be paged by our in-progress
+       work. -->
+  <notifyowner>F</notifyowner>
+  <notifyuser>F</notifyuser>
+  <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/sl/mcgi_sl_arch_order_create.js]</scriptfile>
+  <scriptcustomfields>
+    <scriptcustomfield scriptid="custscript_arch_order_roles">
+      <accesslevel>2</accesslevel>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>Comma separated role internal IDs permitted to create an ARCH sales order from the trader screen. Empty means Administrator only, which is the safe default for a deployment that writes as Administrator. Administrator is always retained even if omitted from the list, so a bad entry cannot lock out the person who has to fix it. This is DELIBERATELY a separate parameter from custscript_arch_split_roles: creating an order is a lower-privilege act than posting an inventory adjustment, so this list will end up wider, and sharing one list would force whoever widens this to also widen adjustment-posting rights.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>TEXT</fieldtype>
+      <help>Example: 1057,1063. Empty is safe and means Administrator only.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>Permitted Order Roles</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
+    <scriptcustomfield scriptid="custscript_arch_insurance_rate">
+      <accesslevel>2</accesslevel>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue>0.003</defaultvalue>
+      <description>Operations and insurance rate stamped onto ARCH sales orders as a fraction of material cost. Measured across all 4,216 sales orders in this account on 2026-08-20: 3,979 (94.4%) carry 0.003, the range is 0.0015 to 0.015 and 48 are null. Configured here rather than accepted from the browser, for the same reason the split endpoint stopped accepting a GL account: a screen must not choose financial context. Leave at 0.003 unless the client states otherwise. Values outside 0 to 1 are ignored in favour of the 0.003 default.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>FLOAT</fieldtype>
+      <help>Fraction, not a percentage. 0.003 means 0.3%.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>Ops and Insurance Rate</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
+  </scriptcustomfields>
+  <scriptdeployments>
+    <scriptdeployment scriptid="customdeploy_mcgi_sl_arch_order_create">
+      <custscript_arch_insurance_rate>0.003</custscript_arch_insurance_rate>
+      <allemployees>F</allemployees>
+      <allpartners>F</allpartners>
+      <allroles>F</allroles>
+      <!-- Administrator only, until the trader role is settled with the client.
+           allemployees=F is not by itself enough: an admin does NOT bypass a
+           Suitelet audience, so with no role listed the endpoint refuses
+           everyone including the person who has to test it. Add the trader role
+           HERE as well as to custscript_arch_order_roles when it is known; the
+           audience decides who can reach the URL, the parameter decides who the
+           script will act for. -->
+      <audslctrole>ADMINISTRATOR</audslctrole>
+      <eventtype></eventtype>
+      <isdeployed>T</isdeployed>
+      <isonline>F</isonline>
+      <loglevel>DEBUG</loglevel>
+      <runasrole>ADMINISTRATOR</runasrole>
+      <status>RELEASED</status>
+      <title>MCGI SL ARCH Order Create</title>
+    </scriptdeployment>
+  </scriptdeployments>
+</suitelet>

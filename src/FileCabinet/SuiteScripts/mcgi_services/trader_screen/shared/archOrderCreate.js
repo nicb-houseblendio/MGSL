@@ -1,0 +1,1497 @@
+/**
+ * CWP ARCH sales-order creation — the library behind the trader screen's wizard.
+ *
+ * The differentiator for this screen: hardwood traders build the SO from the
+ * trader screen rather than the NetSuite SO form ("la grosse différence avec les
+ * autres trader screens, c'est qu'on a la fonctionnalité de créer des SO à partir
+ * du trader screen", 2026-08-11 call).
+ *
+ * ── Why this writes inventory detail, and why that is the whole point ────────
+ * The reservation lock is NOT a new mechanism. Committed already derives from SO
+ * lines, so a line that carries its lot in inventory detail locks that bundle
+ * for free, and it locks it identically for orders raised on the native form.
+ * That is what makes Marc-Antoine's "form fallback" safe.
+ *
+ * A line WITHOUT inventory detail still contributes correct quantity to the row
+ * but cannot be attributed to any lot, which the ARCH cache publishes as
+ * `unattributed`. Today every seeded line lands there: 526 units of reserve that
+ * no lot claims (measured 2026-08-20). Writing detail here is what moves that
+ * figure to 0 and makes the drill-down agree with the column.
+ *
+ * So `unattributed` is also this module's acceptance test. Create an order, let
+ * the cache rebuild, and assert that per-lot reserve rose by what was ordered
+ * while `unattributed` stayed flat.
+ *
+ * ── Units: the two sides are NOT the same, and the codebase has been bitten ──
+ * Three separate bugs have come from this asymmetry, so it is stated once here
+ * and relied on below:
+ *
+ *   SO line `quantity`        DISPLAY units (board feet). NetSuite converts to
+ *                             base on save. Verified by `trueUpSalesOrderLine`
+ *                             in archSplitExecute, which writes a measured
+ *                             board-foot figure straight into this field.
+ *   inventoryassignment       BASE units. The ARCH cache builder divides BOTH
+ *   `quantity`                `inventoryassignment.quantity` and
+ *                             `transactionline.quantity` by the same rate
+ *                             (builder lines 839-842 and 904-912), which is the
+ *                             only way its `unattributed = totals - claimed`
+ *                             subtraction can be meaningful.
+ *
+ * Lumber is rate 0.001 and is the only ARCH category that exposes a mistake
+ * here; Veneer and Ovals are rate 1 and pass a wrong conversion through
+ * unchanged. Do not "simplify" either side.
+ *
+ * ⚠️ The base-unit side carries residual risk. It is grounded in how the builder
+ * READS existing assignments, not in an observed WRITE, because no ARCH order
+ * has ever carried inventory detail. `verifyAssignments` re-reads what NetSuite
+ * actually stored and reports a mismatch rather than letting a half-correct
+ * order look successful. Delete that check only once a real order has proven it.
+ *
+ * ── What is deliberately NOT accepted from the caller ────────────────────────
+ * Subsidiary and department come from the customer and the location, never from
+ * the request, for the same reason the split endpoint stopped accepting a GL
+ * account: a screen must not choose where a transaction posts. Every item is
+ * checked against the hardwood segment, so this endpoint cannot be used to write
+ * IND or MTL orders even by someone crafting their own payload.
+ */
+define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExecute'],
+(record, query, search, runtime, log, splitLib) => {
+
+    /**
+     * `cseg_subsidiary_loc` = 1 is Hardwood. Named `_loc` because Lucas and Julie
+     * first built it on locations; the 2026-08-17 call moved it to the SKU and
+     * the name did not follow. Scoping by location would have been wrong anyway:
+     * CWP Prevost is tagged Softwood and holds most of the hardwood volume.
+     */
+    const HARDWOOD_SEGMENT = 1;
+
+    /**
+     * Split marker columns. These ALREADY EXIST — they were created for the
+     * Phase 2 split mechanism and `archSplitExecute` reads them off the SO
+     * sublist. Nothing new has to be created to mark a split line; the earlier
+     * note claiming "no split marker field" predates them.
+     *
+     * Marc-Antoine's desired-state PDF settles the granularity: "Split specified
+     * at the SO line level", not a custom record.
+     */
+    const F_SPLIT        = 'custcol_mgsl_split';
+    const F_SPLIT_BF     = 'custcol_mgsl_split_bf';
+    const F_SPLIT_STATUS = 'custcol_mgsl_split_status';
+    const STATUS_PENDING = 'Pending';
+
+    /**
+     * Header fields. Every id below was confirmed to resolve against live
+     * NetSuite on 2026-08-20 by selecting it from `transaction`.
+     *
+     * ⚠️ Customer PO is `otherrefnum`, NOT `custbody_customer_po_num`. The
+     * latter exists and is dead: 0 of 1,728 SOs carry it, against 1,200 for
+     * `otherrefnum`. Do not "correct" this to the more descriptive name.
+     */
+    const H_CUSTOMER_PO = 'otherrefnum';
+    const H_INCOTERMS   = 'custbody_incoterms';
+    const H_SHIP_DATE   = 'custbody_mgsl_expectedshipdate';
+    const H_SALES_REP   = 'custbody_sales_rep';
+    const H_INSURANCE   = 'custbody_mgsl_insurancerate';
+
+    /**
+     * Operations + insurance rate stamped onto the order.
+     *
+     * Measured across all 4,216 SOs in the account on 2026-08-20: 3,979 (94.4%)
+     * carry 0.003, the range is 0.0015-0.015 and only 48 are null. The front end
+     * prices the draft against the same default, so stamping it here keeps the
+     * margin the trader saw and the margin the order records in agreement. If it
+     * were left to NetSuite's own default the two could silently diverge.
+     */
+    const INSURANCE_RATE_DEFAULT = 0.003;
+
+    /**
+     * Department stamped on ARCH orders.
+     *
+     * 11 is "Hardwood" in this account (9 Trading, 10 Softwood, 11 Hardwood,
+     * read 2026-08-20). NetSuite makes department MANDATORY on the sales-order
+     * form and does not source it from the customer, so it has to come from
+     * somewhere; Nic's design says it should follow the trader's role, and until
+     * roles are settled the screen's own subject matter is the honest default.
+     *
+     * Overridable by script parameter so it never needs a deploy to change. Note
+     * the real MTL orders in this account use 9 (Trading) rather than 10, so if
+     * MGSL turns out to book hardwood under Trading too, this is the one value to
+     * change.
+     */
+    const DEPARTMENT_DEFAULT = 11;
+
+    /** Hard cap on lines per request. Real ARCH orders are a handful. */
+    const MAX_LINES = 200;
+
+    /**
+     * Sanity ceiling on price per unit. The dearest thing on this screen is
+     * zebrawood at roughly $14/BF, and the veneer's $1,695/SQFT is Marc-Antoine's
+     * own quantity problem rather than a real price, so this is orders of
+     * magnitude clear of anything legitimate.
+     */
+    const MAX_PRICE_PER_UNIT = 100000;
+
+    /**
+     * Strict positive integer, or null.
+     *
+     * `parseInt` is deliberately NOT used. It accepts trailing garbage and
+     * truncates, so an id can silently resolve to a DIFFERENT valid record:
+     * measured 2026-08-20, `parseInt` turned "49783abc" into 49783, 49783.9 into
+     * 49783 and — worst — "1e5" into 1. The last one only failed safe because lot
+     * 1 happened to have no stock at that location.
+     */
+    const int = (v) => {
+        if (typeof v === 'number') return Number.isInteger(v) && v > 0 ? v : null;
+        if (typeof v !== 'string') return null;
+        if (!/^\d+$/.test(v.trim())) return null;
+        const n = Number(v.trim());
+        return Number.isSafeInteger(n) && n > 0 ? n : null;
+    };
+
+    /**
+     * Strict finite number, or null. Rejects trailing garbage the same way, so
+     * "100abc" is refused rather than silently becoming 100.
+     */
+    const num = (v) => {
+        if (typeof v === 'number') return isFinite(v) ? v : null;
+        if (typeof v !== 'string') return null;
+        if (!/^-?\d+(\.\d+)?$/.test(v.trim())) return null;
+        const n = Number(v.trim());
+        return isFinite(n) ? n : null;
+    };
+
+    const dedupe = (arr) => {
+        const seen = {};
+        const out = [];
+        arr.forEach((v) => {
+            const k = String(v);
+            if (!seen[k]) { seen[k] = true; out.push(v); }
+        });
+        return out;
+    };
+
+    /** Lenient parse, for values NetSuite itself returns and we already trust. */
+    const numOr = (v, fallback) => {
+        const n = parseFloat(v);
+        return isFinite(n) ? n : fallback;
+    };
+
+    /**
+     * JSON over HTTP loses boolean typing constantly, so `=== true` is not enough.
+     *
+     * 🔴 Measured 2026-08-20: with the strict check, a payload of
+     * `isSplit: "true", splitTargetQty: 300, qty: 2206` was accepted as a
+     * NON-split line and committed the WHOLE 2,206 BF bundle when 300 was asked
+     * for. Same normalization the MTL builder uses for `forceFull`, which exists
+     * because of the same class of bug.
+     */
+    const bool = (v) =>
+        v === true || v === 1 || v === 'T' || v === 't' ||
+        (typeof v === 'string' && v.trim().toLowerCase() === 'true');
+
+    /**
+     * Parses YYYY-MM-DD into a Date, or null.
+     *
+     * Built explicitly rather than handed to `new Date(str)`, which parses an
+     * ISO date as UTC midnight and can therefore land on the previous day once
+     * NetSuite renders it in the account's timezone. This project already has two
+     * clocks to worry about (scriptnote is PT, file timestamps render ET), and a
+     * ship date that is a day early is the kind of thing nobody notices until a
+     * truck is booked.
+     */
+    const parseIsoDate = (s) => {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s).trim());
+        if (!m) return null;
+        const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+        if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+        const dt = new Date(y, mo - 1, d);
+        // Rejects 2026-02-30, which would otherwise roll into March.
+        if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+        return dt;
+    };
+
+    /**
+     * Operations + insurance rate, from configuration rather than the request.
+     *
+     * Falls back to the measured account default when the parameter is unset, so
+     * an unconfigured deployment still stamps the right figure rather than 0.
+     */
+    /** Reads a script parameter, tolerating a library loaded outside a script. */
+    const param = (name) => {
+        try {
+            return runtime.getCurrentScript().getParameter({ name: name });
+        } catch (e) {
+            return null;
+        }
+    };
+
+    const departmentId = () => int(param('custscript_arch_department')) || DEPARTMENT_DEFAULT;
+
+    /**
+     * Incoterms fallback when the wizard sends none.
+     *
+     * Every one of the 1,728 sales orders since 2026-06-01 carries a value, so
+     * there is no "blank" precedent to copy, and the field is mandatory. 3 is what
+     * the real form-373 orders in this account use.
+     */
+    const incotermsDefault = () => int(param('custscript_arch_incoterms')) || 3;
+
+    const insuranceRate = () => {
+        const n = num(param('custscript_arch_insurance_rate'));
+        return n !== null && n >= 0 && n < 1 ? n : INSURANCE_RATE_DEFAULT;
+    };
+
+    /**
+     * A refusal the caller can act on, as opposed to a system failure.
+     *
+     * The name is the ONLY classifier. The Suitelet used to pattern-match the
+     * message text, which meant a genuine NetSuite error containing a word like
+     * "already" would be logged at AUDIT and lost among the routine refusals.
+     */
+    const refusal = (message) => {
+        const e = new Error(message);
+        e.name = 'ARCH_ORDER_REFUSED';
+        return e;
+    };
+
+    /**
+     * The employee to credit on the mandatory Sales Team line.
+     *
+     * 🔴 The candidate MUST be a real sales rep. NetSuite rejects the whole save
+     * with an opaque `UNEXPECTED_ERROR` if it is not, which cost real time to
+     * diagnose: the integration user this endpoint's token runs as ("House Blend
+     * 2", id 3136) has `issalesrep = F`, while both employees on the real order
+     * that was used as a template are `T`.
+     *
+     * Order of preference, and it is a business order rather than a technical one:
+     *   1. whoever the request names, so a trader ordering on someone's behalf works
+     *   2. the requesting user, which is the normal case and the right attribution
+     *      for an order a trader builds on this screen
+     *   3. the customer's assigned rep, when the caller is not one
+     *
+     * If none of those is a sales rep the order is REFUSED. Picking an arbitrary
+     * rep would misattribute commission on a real sales document, and that is not
+     * a guess worth making silently.
+     */
+    const resolveSalesRep = (requestedId, userId, customerId) => {
+        const candidates = dedupe([requestedId, userId].filter(Boolean));
+
+        if (candidates.length) {
+            const valid = query.runSuiteQL({
+                query:
+                    'SELECT id FROM employee ' +
+                    'WHERE id IN (' + candidates.join(',') + ') ' +
+                    "  AND issalesrep = 'T' AND isinactive = 'F'",
+            }).asMappedResults().map((r) => int(r.id));
+
+            for (let i = 0; i < candidates.length; i++) {
+                if (valid.indexOf(candidates[i]) !== -1) return candidates[i];
+            }
+        }
+
+        // Fall back to whoever covers the customer.
+        const rows = query.runSuiteQL({
+            query:
+                'SELECT c.salesrep AS repid FROM customer c ' +
+                'JOIN employee e ON e.id = c.salesrep ' +
+                "WHERE c.id = ? AND e.issalesrep = 'T' AND e.isinactive = 'F'",
+            params: [customerId],
+        }).asMappedResults();
+
+        return rows.length ? int(rows[0].repid) : null;
+    };
+
+    /**
+     * Sets an OPTIONAL field only if the record actually has it.
+     *
+     * 🔴 A `setValue` on a field the record does not carry throws
+     * `UNEXPECTED_ERROR` from `record.save` with no usable message, taking the
+     * whole order down. That happened with `custbody_mgsl_expectedshipdate`:
+     * SuiteQL will happily SELECT that column from `transaction`, which is how it
+     * came to be treated as verified, but it is not on the sales-order record and
+     * the fields that are are `custbody_ship_week`, `custbody_delivery_date` and
+     * `custbody_pickup_date`.
+     *
+     * Lesson worth keeping: a column being selectable in SuiteQL says nothing
+     * about whether a field exists on a record or can be written to it.
+     *
+     * Mandatory fields are deliberately NOT routed through this. If `department`
+     * or `location` ever vanished, failing loudly is correct.
+     */
+    const setIfPresent = (rec, fieldId, value, label) => {
+        let field = null;
+        try {
+            field = rec.getField({ fieldId: fieldId });
+        } catch (e) {
+            field = null;
+        }
+        if (!field) {
+            log.audit('ARCH Order Create',
+                'Field ' + fieldId + ' is not on the sales-order record, so ' +
+                (label || 'that value') + ' was not set. The order is otherwise complete.');
+            return false;
+        }
+        rec.setValue({ fieldId: fieldId, value: value });
+        return true;
+    };
+
+    /** The one location every line ships from, or null when they differ. */
+    const soleLocation = (lines) => {
+        const ids = dedupe(lines.map((l) => l.locationId));
+        return ids.length === 1 ? ids[0] : null;
+    };
+
+
+    /* ── Resolution and validation ───────────────────────────────────────────*/
+
+    /**
+     * Reads live state for every (lot, location) the order touches, in ONE query.
+     *
+     * Keyed `lotId__locationId`. Every id is parsed to a positive integer before
+     * it reaches the SQL, so the IN lists cannot carry anything but numbers.
+     *
+     * Reads `inventorynumberlocation`, the same table the cache builder and the
+     * split library both use, so a quantity refused here matches what the trader
+     * was looking at rather than being a second opinion.
+     *
+     * The conversion rate is joined in here rather than looked up per line. A
+     * twelve-line order calling `stockUnitRate` once per line is twelve extra
+     * SuiteQL round trips at 10 governance units each, on an endpoint with a
+     * 1,000-unit budget that also has to save a transaction.
+     *
+     * The join returns the cross product of the requested lots and locations, so
+     * it can carry pairs nobody asked for. That is harmless: every read is by an
+     * exact `lotId__locationId` key taken from the line itself.
+     */
+    const readLotStates = (lotIds, locationIds) => {
+        const lots = lotIds.map(int).filter(Boolean);
+        const locs = locationIds.map(int).filter(Boolean);
+        if (!lots.length || !locs.length) return {};
+
+        const rows = query.runSuiteQL({
+            query:
+                'SELECT ' +
+                '  inl.inventorynumber   AS lotid, ' +
+                '  inv.inventorynumber   AS lotname, ' +
+                '  inv.item              AS itemid, ' +
+                '  i.itemid              AS itemcode, ' +
+                '  i.cseg_subsidiary_loc AS segment, ' +
+                '  inl.location          AS locationid, ' +
+                '  inl.quantityonhand    AS storedqty, ' +
+                '  u.conversionrate      AS rate ' +
+                'FROM inventorynumberlocation inl ' +
+                'JOIN inventorynumber inv ON inv.id = inl.inventorynumber ' +
+                'JOIN item i              ON i.id  = inv.item ' +
+                'LEFT JOIN unitstypeuom u ON u.internalid = i.stockunit ' +
+                'WHERE inl.inventorynumber IN (' + lots.join(',') + ') ' +
+                '  AND inl.location        IN (' + locs.join(',') + ')',
+        }).asMappedResults();
+
+        const byKey = {};
+        rows.forEach((r) => {
+            byKey[String(r.lotid) + '__' + String(r.locationid)] = {
+                lotId:      int(r.lotid),
+                lotName:    String(r.lotname),
+                itemId:     int(r.itemid),
+                itemCode:   String(r.itemcode),
+                segment:    int(r.segment),
+                locationId: int(r.locationid),
+                storedQty:  numOr(r.storedqty, 0),
+                rate:       numOr(r.rate, 0),
+            };
+        });
+        return byKey;
+    };
+
+    /**
+     * How much of each lot is ALREADY committed on another sales order.
+     *
+     * 🔴 THIS IS THE CHECK THAT STOPS OVERSELLING, and its absence was the worst
+     * defect in the first version of this file. `quantityonhand` is PHYSICAL
+     * stock: it does not net what is already sold. Proven in this account on
+     * 2026-08-20 — lot 49409 reads 194.56 on hand while two separate open,
+     * unshipped sales orders each assign 28.16 of it.
+     *
+     * ⚠️ And `inventorynumberlocation.quantityavailable` is NOT a shortcut for
+     * this. It equalled `quantityonhand` on all 1,627 rows in the account despite
+     * those commitments existing, so it is not commitment-aware here. Do not
+     * "simplify" this function away by reading that column.
+     *
+     * Keyed `lotId__locationId`, in BASE units, matching `ia.quantity`.
+     *
+     * ── Why shipped quantity is apportioned ─────────────────────────────────
+     * Once a line ships, that wood physically left, so `quantityonhand` has
+     * already dropped by it. Counting the whole assignment again would deduct it
+     * twice and under-report what is sellable. Assignments are per lot while
+     * shipping is per line, so the open share of the line is applied to its
+     * assignments: fully unshipped gives 1 (the normal case), fully shipped gives
+     * 0, and a part-shipped line gives the remainder.
+     */
+    const readCommitments = (lotIds) => {
+        const lots = dedupe(lotIds.map(int).filter(Boolean));
+        if (!lots.length) return {};
+
+        const rows = query.runSuiteQL({
+            query:
+                'SELECT ' +
+                '  ia.inventorynumber   AS lotid, ' +
+                '  tl.location          AS locationid, ' +
+                '  ia.quantity          AS assignedqty, ' +
+                '  tl.quantity          AS lineqty, ' +
+                '  tl.quantityshiprecv  AS shipped ' +
+                'FROM transactionline tl ' +
+                'JOIN transaction t ON t.id = tl.transaction ' +
+                // Both keys. `transactionline.id` is unique only WITHIN a
+                // transaction, so joining on the line id alone cross-matches
+                // unrelated transactions that share a line number. Measured: 35%
+                // of lines have id <> linesequencenumber.
+                'JOIN inventoryassignment ia ' +
+                '       ON ia.transaction = t.id AND ia.transactionline = tl.id ' +
+                "WHERE t.type = 'SalesOrd' " +
+                "  AND tl.mainline = 'F' " +
+                "  AND tl.isclosed = 'F' " +
+                '  AND ia.inventorynumber IN (' + lots.join(',') + ')',
+        }).asMappedResults();
+
+        const byKey = {};
+        rows.forEach((r) => {
+            const ordered = Math.abs(numOr(r.lineqty, 0));
+            const moved   = Math.abs(numOr(r.shipped, 0));
+            const openShare = ordered > 0 ? Math.max(0, (ordered - moved) / ordered) : 0;
+            const assigned  = Math.abs(numOr(r.assignedqty, 0)) * openShare;
+            if (assigned <= 0) return;
+            const key = String(int(r.lotid)) + '__' + String(int(r.locationid));
+            byKey[key] = (byKey[key] || 0) + assigned;
+        });
+        return byKey;
+    };
+
+    /**
+     * Commitment on an item at a location that NO lot claims, in BASE units.
+     *
+     * 🔴 WITHOUT THIS THE LOT-LEVEL GUARD IS BLIND. `readCommitments` joins
+     * `inventoryassignment`, so it only sees commitments that carry lot detail —
+     * and an ARCH sales order that never got lot detail carries none. Demonstrated
+     * 2026-08-20: four orders totalling 2,000 BF against lot 315604-1, a 2,206 BF
+     * bundle, and the lot-level check still accepted another 500 because not one
+     * of them had an assignment to join to.
+     *
+     * The gap is circular, which is what makes it dangerous: the guard depends on
+     * lot attribution, and lot attribution is the thing that is currently blocked.
+     *
+     * Keyed `itemId__locationId`. Since nothing says WHICH lot an unattributed
+     * commitment is against, it has to be treated as potentially against any lot
+     * in the pair. That is deliberately conservative and will refuse more than
+     * strictly necessary; erring the other way oversells real wood. The builder
+     * publishes the same figure as `unattributed` rather than hiding it.
+     */
+    const readUnattributedCommitments = (itemLocationPairs) => {
+        const items = dedupe(itemLocationPairs.map((p) => p.itemId).filter(Boolean));
+        const locs  = dedupe(itemLocationPairs.map((p) => p.locationId).filter(Boolean));
+        if (!items.length || !locs.length) return {};
+
+        const rows = query.runSuiteQL({
+            query:
+                'SELECT ' +
+                '  tl.item             AS itemid, ' +
+                '  tl.location         AS locationid, ' +
+                '  tl.id               AS lineid, ' +
+                '  t.id                AS tranid, ' +
+                '  tl.quantity         AS lineqty, ' +
+                '  tl.quantityshiprecv AS shipped, ' +
+                '  ia.quantity         AS assignedqty ' +
+                'FROM transactionline tl ' +
+                'JOIN transaction t ON t.id = tl.transaction ' +
+                'LEFT JOIN inventoryassignment ia ' +
+                '       ON ia.transaction = t.id AND ia.transactionline = tl.id ' +
+                "WHERE t.type = 'SalesOrd' " +
+                "  AND tl.mainline = 'F' " +
+                "  AND tl.isclosed = 'F' " +
+                '  AND tl.item     IN (' + items.join(',') + ') ' +
+                '  AND tl.location IN (' + locs.join(',') + ')',
+        }).asMappedResults();
+
+        // A line fans out over its assignments, so line-level figures are taken
+        // once per line and assignment totals accumulated separately. Same shape
+        // as the cache builder's own dedupe.
+        const lines = {};
+        rows.forEach((r) => {
+            const lineKey = String(r.tranid) + '#' + String(r.lineid);
+            const pairKey = String(int(r.itemid)) + '__' + String(int(r.locationid));
+            if (!lines[lineKey]) {
+                const ordered = Math.abs(numOr(r.lineqty, 0));
+                const moved   = Math.abs(numOr(r.shipped, 0));
+                lines[lineKey] = { pairKey: pairKey, open: Math.max(0, ordered - moved), claimed: 0 };
+            }
+            lines[lineKey].claimed += Math.abs(numOr(r.assignedqty, 0));
+        });
+
+        const byPair = {};
+        Object.keys(lines).forEach((k) => {
+            const l = lines[k];
+            const unclaimed = Math.max(0, l.open - l.claimed);
+            if (unclaimed <= 0) return;
+            byPair[l.pairKey] = (byPair[l.pairKey] || 0) + unclaimed;
+        });
+        return byPair;
+    };
+
+    /**
+     * Lots under an ACTIVE inventory hold, as a set of `itemId__locationId__lotName`.
+     *
+     * Mirrors `loadActiveHolds` in the ARCH cache builder deliberately, including
+     * its two non-obvious rules, because an endpoint that disagreed with the
+     * screen about what is sellable would be worse than one with no holds at all:
+     *
+     *   1. A hold withholds the lot ENTIRELY. The quantity field is
+     *      `custrecord_mgsl_hold_packs` and ARCH has no packs, so subtracting a
+     *      pack figure from a board-foot balance would produce a confidently
+     *      wrong number.
+     *   2. Blank or zero packs still counts as a hold. MTL rejects those rows;
+     *      here that would silently leave held stock sellable.
+     *
+     * Status is filtered in JS for the same reason the builder does it: the SDF
+     * customlist's value internal id is not known at deploy time.
+     *
+     * On failure this THROWS rather than returning empty. The builder swallows
+     * the error because a failed hold read must not kill a whole cache rebuild,
+     * but the trade is inverted here: an empty holds map on a WRITE path means
+     * held stock gets sold, and refusing to write is always recoverable.
+     */
+    const readActiveHolds = () => {
+        const held = {};
+        search.create({
+            type: 'customrecord_mgsl_inventory_hold',
+            columns: [
+                search.createColumn({ name: 'custrecord_mgsl_hold_item' }),
+                search.createColumn({ name: 'custrecord_mgsl_hold_location' }),
+                search.createColumn({ name: 'custrecord_mgsl_hold_lot' }),
+                search.createColumn({ name: 'custrecord_mgsl_hold_status' }),
+            ],
+        }).run().each((r) => {
+            if (r.getText({ name: 'custrecord_mgsl_hold_status' }) !== 'Active') return true;
+            const itemId  = r.getValue({ name: 'custrecord_mgsl_hold_item' });
+            const locId   = r.getValue({ name: 'custrecord_mgsl_hold_location' });
+            const lotName = r.getText({ name: 'custrecord_mgsl_hold_lot' });
+            if (!itemId || !locId || !lotName) return true;
+            held[String(itemId) + '__' + String(locId) + '__' + String(lotName)] = true;
+            return true;
+        });
+        return held;
+    };
+
+    /**
+     * Turns the request's lines into resolved, checked lines.
+     *
+     * Returns `{ lines, problems }`. Problems are collected rather than thrown on
+     * the first one: a trader who built a twelve-line order deserves to see every
+     * bad line at once, not to fix them one refusal at a time.
+     *
+     * Each problem is phrased as something the trader can act on, because the
+     * wizard shows these verbatim.
+     */
+    const resolveLines = (rawLines) => {
+        const problems = [];
+        const lines = [];
+
+        if (!Array.isArray(rawLines) || !rawLines.length) {
+            return { lines: [], problems: ['The order has no lines.'] };
+        }
+
+        if (rawLines.length > MAX_LINES) {
+            return {
+                lines: [],
+                problems: ['This order has ' + rawLines.length + ' lines, which is past the ' +
+                           MAX_LINES + '-line limit. Split it into several orders.'],
+            };
+        }
+
+        const states = readLotStates(
+            rawLines.map((l) => l && l.lotId),
+            rawLines.map((l) => l && l.locationId)
+        );
+        const committed = readCommitments(rawLines.map((l) => l && l.lotId));
+        const holds = readActiveHolds();
+        // Pair-level commitment that no lot claims. Read from the resolved states
+        // rather than the raw request so the ids are the ones the lot actually
+        // belongs to, not the ones the caller asserted.
+        const unattributed = readUnattributedCommitments(
+            Object.keys(states).map((k) => ({
+                itemId: states[k].itemId, locationId: states[k].locationId,
+            })));
+
+        // Two lines drawing on the SAME lot at the same location would each pass
+        // an individual on-hand check and jointly oversell it. Accumulated here
+        // rather than per line for exactly that reason.
+        const claimed = {};
+
+        rawLines.forEach((raw, idx) => {
+            const label = 'Line ' + (idx + 1);
+            const lotId = int(raw && raw.lotId);
+            const locId = int(raw && raw.locationId);
+
+            if (!lotId || !locId) {
+                problems.push(label + ': the lot or location is missing. Re-pick it from the grid.');
+                return;
+            }
+
+            const key = String(lotId) + '__' + String(locId);
+            const st = states[key];
+            if (!st) {
+                problems.push(label + ': lot ' + lotId + ' has no stock at that location any more. ' +
+                              'Someone may have moved or sold it since the screen loaded.');
+                return;
+            }
+
+            if (st.segment !== HARDWOOD_SEGMENT) {
+                // Not a caller mistake to explain away. This endpoint exists for
+                // hardwood and must refuse anything else outright.
+                problems.push(label + ': ' + st.itemCode + ' is not tagged as hardwood and cannot be ' +
+                              'ordered from the ARCH screen.');
+                return;
+            }
+
+            // The item the caller believes it is ordering must be the item the
+            // lot actually belongs to. Without this a stale grid could pair a lot
+            // with the wrong item and the order would still save.
+            const claimedItem = int(raw.itemId);
+            if (claimedItem && claimedItem !== st.itemId) {
+                problems.push(label + ': lot ' + st.lotName + ' belongs to ' + st.itemCode +
+                              ', not to the item the screen sent. Reload the screen.');
+                return;
+            }
+
+            // Refuse rather than fall back to 1:1. `splitLib.stockUnitRate` treats
+            // a missing rate as 1 and logs it, which is right for reading a
+            // warehouse queue but wrong here: this document COMMITS stock, and at
+            // rate 1 a Lumber line would be off by a factor of a thousand. The
+            // cache builder makes the same call, excluding rateless lots rather
+            // than counting them.
+            const rate = st.rate;
+            if (!(rate > 0)) {
+                problems.push(label + ': ' + st.itemCode + ' has no usable stock-unit conversion rate, ' +
+                              'so its quantity cannot be trusted. It was refused rather than guessed at 1:1.');
+                return;
+            }
+
+            // ── Commitment nothing can attribute to a lot ───────────────────
+            //
+            // Exists on this item at this location but names no lot, so it could
+            // be against THIS bundle and nothing in the data says otherwise. It
+            // therefore locks the bundle too. See `readUnattributedCommitments`
+            // for why this is the conservative direction.
+            const pairKey = String(st.itemId) + '__' + String(st.locationId);
+            const unclaimed = unattributed[pairKey] || 0;
+            if (unclaimed > 0) {
+                problems.push(label + ': ' + st.itemCode + ' at this location carries ' +
+                              splitLib.toDisplay(unclaimed, rate).toFixed(3) + ' committed on open ' +
+                              'sales orders that name no lot, so it cannot be told apart from ' +
+                              'bundle ' + st.lotName + '. Attribute those orders to their lots first.');
+                return;
+            }
+
+            // ── The bundle lock, matching the screen exactly ─────────────────
+            //
+            // `isLotLocked` in lib/archLots.ts is `commitmentOn(lot) > 0`, where
+            // commitment is reserve + readyToBuild + outbound, and its comment is
+            // explicit that a PARTIALLY committed bundle is the case the rule
+            // exists for. The physical remainder of a part-sold bundle is unknown
+            // until the warehouse measures it, so the whole thing is spoken for.
+            //
+            // The screen therefore never OFFERS such a lot. Enforcing it here too
+            // is what makes the endpoint the real boundary rather than the UI: a
+            // stale cart or a hand-made payload gets the same answer.
+            const alreadyCommitted = committed[key] || 0;
+            if (alreadyCommitted > 0) {
+                problems.push(label + ': ' + st.itemCode + ' lot ' + st.lotName + ' is already ' +
+                              'committed on another sales order (' +
+                              splitLib.toDisplay(alreadyCommitted, rate).toFixed(3) +
+                              ' of ' + splitLib.toDisplay(st.storedQty, rate).toFixed(3) +
+                              '). The whole bundle is locked until that order is settled.');
+                return;
+            }
+
+            if (holds[String(st.itemId) + '__' + String(st.locationId) + '__' + String(st.lotName)]) {
+                problems.push(label + ': ' + st.itemCode + ' lot ' + st.lotName + ' is on hold ' +
+                              'pending an inventory correction and cannot be sold.');
+                return;
+            }
+
+            // On-hand net of commitments. Redundant while the bundle lock above
+            // refuses any committed lot, and kept deliberately: if that rule is
+            // ever relaxed to allow selling a partial remainder, the arithmetic
+            // guard against overselling must not have to be remembered.
+            // Nets BOTH kinds of commitment. Either refusal above already stops a
+            // committed bundle, so this is unreachable today — but the comment
+            // below promises it is the safety net if those rules are relaxed, and
+            // subtracting only the attributed half would not have been one.
+            const onHandDisplay = splitLib.toDisplay(
+                Math.max(0, st.storedQty - alreadyCommitted - unclaimed), rate);
+            const isSplit = bool(raw.isSplit);
+
+            // A split target on a line not being treated as a split means the two
+            // fields disagree about intent. Refusing beats picking one: guessing
+            // `qty` would sell the whole bundle, which is exactly what the loose
+            // boolean check used to do silently.
+            if (!isSplit && raw.splitTargetQty !== undefined && raw.splitTargetQty !== null) {
+                problems.push(label + ': the line carries a split target but is not marked as a ' +
+                              'split. Refusing rather than guessing whether to split it.');
+                return;
+            }
+
+            // On a split line the ORDER carries the target, not the bundle. The
+            // whole bundle still leaves availability, because the front end locks
+            // a lot on any commitment at all (`isLotLocked` = commitment > 0), so
+            // there is nothing extra to reserve here.
+            const wanted = num(isSplit ? raw.splitTargetQty : raw.qty);
+
+            if (wanted === null || wanted <= 0) {
+                problems.push(label + ': ' + (isSplit ? 'the split target' : 'the quantity') +
+                              ' must be a number greater than zero.');
+                return;
+            }
+
+            const already = claimed[key] || 0;
+            if (wanted + already > onHandDisplay + 1e-9) {
+                problems.push(
+                    label + ': ' + st.itemCode + ' lot ' + st.lotName + ' has ' +
+                    onHandDisplay.toFixed(3) + ' on hand' +
+                    (already ? ' and ' + already.toFixed(3) + ' is already claimed by another line' : '') +
+                    ', so ' + wanted.toFixed(3) + ' cannot be committed.'
+                );
+                return;
+            }
+
+            if (isSplit && wanted >= onHandDisplay - 1e-9) {
+                // A "split" that takes the whole bundle is not a split, and would
+                // queue warehouse work that produces a zero remainder.
+                problems.push(label + ': a split of ' + wanted.toFixed(3) + ' takes the whole ' +
+                              onHandDisplay.toFixed(3) + ' bundle. Order the bundle instead of splitting it.');
+                return;
+            }
+
+            // A ceiling as well as a floor. 1e300 was accepted before this, which
+            // would have written a nonsense rate onto a real order and overflowed
+            // every downstream total. The bound is deliberately far above any real
+            // hardwood price so it can only ever catch a bug or a bad payload.
+            const price = num(raw.pricePerUnit);
+            if (price === null || price < 0) {
+                problems.push(label + ': the price must be a number and cannot be negative.');
+                return;
+            }
+            if (price > MAX_PRICE_PER_UNIT) {
+                problems.push(label + ': a price of ' + price + ' per unit is not credible. ' +
+                              'Check the figure before committing the order.');
+                return;
+            }
+
+            claimed[key] = already + wanted;
+
+            lines.push({
+                itemId:       st.itemId,
+                itemCode:     st.itemCode,
+                locationId:   st.locationId,
+                lotId:        st.lotId,
+                lotName:      st.lotName,
+                rate:         rate,
+                // DISPLAY units, straight onto the SO line.
+                displayQty:   wanted,
+                // BASE units, for the inventory assignment. See the header.
+                storedQty:    splitLib.toStored(wanted, rate),
+                pricePerUnit: price,
+                isSplit:      isSplit,
+                bundleDisplayQty: onHandDisplay,
+            });
+        });
+
+        return { lines: lines, problems: problems };
+    };
+
+    /* ── Writing ─────────────────────────────────────────────────────────────*/
+
+    /**
+     * Adds one resolved line. NO inventory detail — see `assignLots` below.
+     *
+     * 🔴 INVENTORY DETAIL CANNOT BE SET ON AN UNSAVED SALES ORDER LINE in this
+     * account, so this is deliberately a two-phase write. Established 2026-08-20
+     * by probing every structural route on a NEW order, all of which fail with
+     * `FIELD_1_IS_NOT_A_SUBRECORD_FIELD: Field inventorydetail is not a
+     * subrecord field`:
+     *
+     *   dynamic mode, default form 359          getCurrentSublistSubrecord  FAIL
+     *   dynamic mode, commitinventory = 1       getCurrentSublistSubrecord  FAIL
+     *   standard mode, default form             getSublistSubrecord         FAIL
+     *   standard mode, form 373 (set OK)        getSublistSubrecord         FAIL
+     *   dynamic mode                            hasCurrentSublistSubrecord  FAIL
+     *   ── against an EXISTING saved order ──
+     *   standard mode, load SO 121144           hasSublistSubrecord         TRUE
+     *
+     * So the field materialises only once the line exists. Two things were ruled
+     * out along the way and should not be retried: `commitinventory` is not the
+     * gate (setting it to 1, Available Qty, changes nothing), and the form is not
+     * the gate either. Every one of the 157 SO-level assignments in this account
+     * sits on form 373, which made the form look like the variable, but a new
+     * order on 373 fails identically.
+     *
+     * ⚠️ Switching `customform` in DYNAMIC mode throws
+     * `MODULE_DOES_NOT_EXIST: /NLRecordScripting.scriptInit$sys.js` because form
+     * 373 carries a client script that cannot load server-side. It works in
+     * standard mode, where client scripts do not run. Relevant if an ARCH form is
+     * ever made preferred.
+     */
+    const addLine = (so, line) => {
+        so.selectNewLine({ sublistId: 'item' });
+        so.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item',     value: line.itemId });
+        so.setCurrentSublistValue({ sublistId: 'item', fieldId: 'location', value: line.locationId });
+        so.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: line.displayQty });
+        so.setCurrentSublistValue({ sublistId: 'item', fieldId: 'rate',     value: line.pricePerUnit });
+
+        if (line.isSplit) {
+            so.setCurrentSublistValue({ sublistId: 'item', fieldId: F_SPLIT,    value: true });
+            so.setCurrentSublistValue({ sublistId: 'item', fieldId: F_SPLIT_BF, value: line.displayQty });
+            so.setCurrentSublistText({ sublistId: 'item', fieldId: F_SPLIT_STATUS, text: STATUS_PENDING });
+        }
+
+        so.commitLine({ sublistId: 'item' });
+    };
+
+    /**
+     * Phase two: attach each lot to its saved line.
+     *
+     * ── Why lines are matched on content, not on index ───────────────────────
+     * Orders in this account acquire extra lines by themselves. The seeded ARCH
+     * order came back carrying two `CA-E` lines, and the seeded PO two `TAXQC`
+     * lines, added by existing user events. Index matching would therefore attach
+     * a lot to a tax line. Each resolved line is matched on item, location and
+     * quantity, and a saved line is consumed once so two identical requested
+     * lines take two distinct saved lines rather than both claiming the first.
+     *
+     * `issueinventorynumber` takes the internal ID of an EXISTING lot and rejects
+     * a name outright, the same trap documented in `archSplitExecute.addLine`. A
+     * sales order ISSUES stock, so it is always the issue side; the receipt side
+     * is only for minting a lot that does not exist yet.
+     *
+     * Returns the lines it could not place. A failure here leaves an order whose
+     * ROW quantities are correct but whose lots are unattributed, which is a state
+     * the ARCH cache already reports honestly as `unattributed` rather than
+     * hiding. That is a real degradation and the caller is told about it, but it
+     * is not corruption.
+     */
+    const assignLots = (soId, lines, priorLineKeys) => {
+        const so = record.load({ type: record.Type.SALES_ORDER, id: soId, isDynamic: false });
+        const count = so.getLineCount({ sublistId: 'item' });
+        const used = {};
+        const unplaced = [];
+        const prior = priorLineKeys || {};
+
+        lines.forEach((line) => {
+            let target = -1;
+            for (let i = 0; i < count; i++) {
+                if (used[i]) continue;
+                // 🔴 Never attach to a line that existed before this call. On an
+                // append, an order may already carry a line with the same item,
+                // location and quantity, and matching on content alone would hang
+                // this request's lot on the PREVIOUS request's line. `lineuniquekey`
+                // is only assigned at save, so it cannot be captured when the line
+                // is built — it has to be snapshotted from the order beforehand.
+                const key = String(so.getSublistValue({
+                    sublistId: 'item', fieldId: 'lineuniquekey', line: i,
+                }));
+                if (prior[key]) continue;
+                const itemId = int(so.getSublistValue({ sublistId: 'item', fieldId: 'item', line: i }));
+                const locId  = int(so.getSublistValue({ sublistId: 'item', fieldId: 'location', line: i }));
+                const qty    = numOr(so.getSublistValue({ sublistId: 'item', fieldId: 'quantity', line: i }), NaN);
+                if (itemId === line.itemId && locId === line.locationId &&
+                    Math.abs(Math.abs(qty) - line.displayQty) < 1e-6) {
+                    target = i;
+                    break;
+                }
+            }
+            if (target < 0) {
+                unplaced.push(line.lotName + ' (no saved line matched item ' + line.itemCode +
+                              ' at location ' + line.locationId + ' for ' + line.displayQty + ')');
+                return;
+            }
+            used[target] = true;
+
+            try {
+                const detail = so.getSublistSubrecord({
+                    sublistId: 'item', fieldId: 'inventorydetail', line: target,
+                });
+                detail.selectNewLine({ sublistId: 'inventoryassignment' });
+                detail.setCurrentSublistValue({
+                    sublistId: 'inventoryassignment',
+                    fieldId:   'issueinventorynumber',
+                    value:     Number(line.lotId),
+                });
+                detail.setCurrentSublistValue({
+                    sublistId: 'inventoryassignment',
+                    fieldId:   'quantity',
+                    value:     line.storedQty,
+                });
+                detail.commitLine({ sublistId: 'inventoryassignment' });
+            } catch (e) {
+                unplaced.push(line.lotName + ' (' + (e.name || 'Error') + ': ' +
+                              (e.message || String(e)) + ')');
+            }
+        });
+
+        if (unplaced.length < lines.length) {
+            so.save({ enableSourcing: false, ignoreMandatoryFields: true });
+        }
+        return unplaced;
+    };
+
+    /**
+     * Re-reads what NetSuite actually stored against the saved order.
+     *
+     * This exists because the base-unit side of the assignment is inferred from
+     * how the cache builder READS assignments, never from a write we have
+     * observed — no ARCH order has ever carried inventory detail. Rather than
+     * trust that, the order is read back and compared against what was intended.
+     *
+     * A mismatch is reported, not thrown: the order exists either way and hiding
+     * it would be worse than saying so. If the first real order comes back clean
+     * this check has done its job and can go.
+     *
+     * Note the join carries BOTH keys. `transactionline.id` is unique only within
+     * a transaction, so joining assignments on the line id alone cross-matches
+     * other transactions that happen to share a line number.
+     */
+    /**
+     * Assignment totals per lot on one transaction, in BASE units.
+     *
+     * Signed sum kept alongside the magnitude: a sales order's stored assignments
+     * are negative (measured: -28.16 against a -28.16 line), and this module
+     * passes a POSITIVE quantity in and lets NetSuite sign it. Comparing only
+     * magnitudes would hide an inverted sign, so the sign is reported.
+     */
+    const assignmentsByLot = (txnId) => {
+        const rows = query.runSuiteQL({
+            query:
+                'SELECT ia.inventorynumber AS lotid, ia.quantity AS assignedqty ' +
+                'FROM transactionline tl ' +
+                'JOIN inventoryassignment ia ' +
+                '       ON ia.transaction = tl.transaction AND ia.transactionline = tl.id ' +
+                "WHERE tl.transaction = ? AND tl.mainline = 'F'",
+            params: [txnId],
+        }).asMappedResults();
+
+        const byLot = {};
+        rows.forEach((r) => {
+            const k = String(int(r.lotid));
+            const q = numOr(r.assignedqty, 0);
+            if (!byLot[k]) byLot[k] = { magnitude: 0, signed: 0, rows: 0 };
+            byLot[k].magnitude += Math.abs(q);
+            byLot[k].signed    += q;
+            byLot[k].rows      += 1;
+        });
+        return byLot;
+    };
+
+    const verifyAssignments = (soId, lines, priorAssignments) => {
+        const after = assignmentsByLot(soId);
+        const before = priorAssignments || {};
+
+        // Several lines may draw on one lot, so the intended figure is summed the
+        // same way the observed one is.
+        const intended = {};
+        const nameOf = {};
+        lines.forEach((l) => {
+            const k = String(l.lotId);
+            intended[k] = (intended[k] || 0) + Math.abs(l.storedQty);
+            nameOf[k] = l.lotName;
+        });
+
+        const mismatches = [];
+        let rowsSeen = 0;
+
+        Object.keys(after).forEach((k) => { rowsSeen += after[k].rows; });
+
+        Object.keys(intended).forEach((k) => {
+            const want = intended[k];
+            const got = (after[k] ? after[k].magnitude : 0) -
+                        (before[k] ? before[k].magnitude : 0);
+            const name = nameOf[k] || k;
+
+            if (!after[k]) {
+                mismatches.push('lot ' + name + ' has no assignment on the saved order');
+                return;
+            }
+            // Base units on both sides. Tolerance is generous relative to the
+            // 5-decimal storage NetSuite uses for quantity.
+            if (Math.abs(got - want) > 1e-6) {
+                mismatches.push('lot ' + name + ' stored ' + got + ' where ' + want +
+                                ' was intended (delta against ' +
+                                (before[k] ? before[k].magnitude : 0) + ' already on the order)');
+            }
+        });
+
+        // An assignment for a lot nobody ordered. Invisible to the loop above,
+        // which only walks what was intended.
+        Object.keys(after).forEach((k) => {
+            const added = after[k].magnitude - (before[k] ? before[k].magnitude : 0);
+            if (!intended[k] && added > 1e-6) {
+                mismatches.push('lot ' + k + ' gained ' + added +
+                                ' but was not on this request');
+            }
+        });
+
+        // Sign is reported, never asserted. A sales order's assignments are
+        // stored negative and this module passes a positive quantity, so the
+        // first real order is what establishes whether NetSuite signs it for us.
+        const signs = Object.keys(intended)
+            .filter((k) => after[k])
+            .map((k) => nameOf[k] + '=' + after[k].signed);
+
+        return { assignmentRows: rowsSeen, mismatches: mismatches, storedSigns: signs };
+    };
+
+    /**
+     * States an order can no longer accept lines in.
+     *
+     * A deny-list, not an allow-list, and deliberately so: NetSuite's sales-order
+     * status codes are single letters and getting one wrong in an ALLOW-list
+     * silently blocks legitimate work, while getting one wrong in a DENY-list
+     * only means NetSuite refuses the save itself a moment later. So this catches
+     * the three that are certainly wrong and leaves the rest to NetSuite.
+     *
+     * Verified against live data 2026-08-20: 'B' is Pending Fulfillment and 'G'
+     * is Billed.
+     */
+    const CLOSED_STATUSES = { C: 'Cancelled', G: 'Billed', H: 'Closed' };
+
+    /**
+     * Refuses an append onto an order that cannot take one.
+     *
+     * Without this the failure surfaces as whatever NetSuite says when a save
+     * fails, which a trader cannot act on. `record.load` already throws for an
+     * order that does not exist, so only the state needs checking here.
+     *
+     * ⚠️ This does NOT verify the order is an ARCH order, and it cannot today.
+     * All three hardwood locations sit in subsidiary 5 alongside MTL, so
+     * subsidiary does not separate them and there is no ARCH marker on the
+     * header. The lines are still guaranteed hardwood by the segment check, so
+     * the worst case is hardwood lines landing on a non-ARCH order that a trader
+     * chose deliberately. Worth a real discriminator once one exists; not worth
+     * inventing a rule now.
+     */
+    const assertAppendable = (soId) => {
+        const rows = query.runSuiteQL({
+            query:
+                'SELECT t.status AS status, BUILTIN.DF(t.status) AS label, t.tranid AS tranid, ' +
+                '       t.externalid AS externalid ' +
+                'FROM transaction t WHERE t.id = ? AND t.type = ?',
+            params: [soId, 'SalesOrd'],
+        }).asMappedResults();
+
+        if (!rows.length) throw refusal('That sales order does not exist.');
+
+        const code = String(rows[0].status || '').toUpperCase();
+        if (CLOSED_STATUSES[code]) {
+            throw refusal('Sales order ' + rows[0].tranid + ' is ' +
+                            (rows[0].label || CLOSED_STATUSES[code]) +
+                            ' and can no longer take new lines. Create a new order instead.');
+        }
+        return { tranId: rows[0].tranid, externalId: String(rows[0].externalid || '') };
+    };
+
+    /**
+     * ORDER-level validation, shared by the dry run and the write.
+     *
+     * 🔴 THIS RUNS BEFORE THE LINES, and both halves of that matter.
+     *
+     * Before, because line validation used to run first and throw, which made
+     * every check in here unreachable. Measured 2026-08-20: appending to sales
+     * order 999999, which does not exist, reported "WAL44OVLOUTKD at this
+     * location carries 6.000 committed on open sales orders that name no lot".
+     * The caller was told about stock when the real problem was a dead order id.
+     *
+     * Shared, because `validateOrder` used to validate only lines, so a dry run
+     * answered ok=true for a non-existent target, a Billed target, a missing
+     * order id, AND a mode of "sideways". The dry run exists precisely so a
+     * trader does not confirm something that cannot succeed, and it was
+     * green-lighting four cases that could not.
+     *
+     * `mode` is checked HERE rather than only in the Suitelet. The entry point
+     * checked it, but this library is reached by more than one caller — the test
+     * harness did exactly that — and `createOrder` treats anything that is not
+     * 'existing' as 'new', so an unrecognised mode would have created an order.
+     */
+    const resolveOrderContext = (input) => {
+        const mode = input && input.mode;
+        if (mode !== 'new' && mode !== 'existing') {
+            throw refusal('The order mode must be "new" or "existing", not "' +
+                          String(mode) + '".');
+        }
+
+        const appending = mode === 'existing';
+        const existingId = int(input.existingSO);
+        if (appending && !existingId) {
+            throw refusal('Adding to an existing order needs the internal id of that order.');
+        }
+
+        // Restricted to characters that are safe in an externalid and cannot be
+        // used to collide with another convention. A missing key is allowed so
+        // the endpoint stays callable by hand, but the wizard must always send
+        // one — that is what makes a retry safe.
+        const rawKey = String((input && input.idempotencyKey) || '').trim();
+        if (rawKey && !/^[A-Za-z0-9_-]{8,64}$/.test(rawKey)) {
+            throw refusal('The idempotency key must be 8 to 64 characters of letters, ' +
+                          'digits, dash or underscore.');
+        }
+        const idempotencyKey = rawKey || null;
+
+        let target = null;
+        if (appending) {
+            target = assertAppendable(existingId);
+
+            // ── Idempotency on the APPEND path ──────────────────────────────
+            //
+            // Create is protected by NetSuite's unique `externalid`, so a
+            // duplicate fails in the database. Append has no such constraint: the
+            // lines simply go on twice, double-committing stock on a live order.
+            // That makes a retried append MORE dangerous than a retried create,
+            // and the first version of this module protected only the create.
+            //
+            // So the key is recorded on the order it appended to, and a repeat is
+            // refused by reading it back. This is a lookup rather than a database
+            // constraint, so it is not race-proof the way create is; it closes the
+            // realistic case, which is a human clicking twice or a browser
+            // retrying after a timeout.
+            if (idempotencyKey && target.externalId.indexOf(appendMarker(idempotencyKey)) !== -1) {
+                throw refusal('These lines were already added to ' + target.tranId +
+                              ' by an identical request. Nothing was duplicated.');
+            }
+        }
+
+        return {
+            mode: mode,
+            appending: appending,
+            existingId: existingId,
+            idempotencyKey: idempotencyKey,
+            target: target,
+        };
+    };
+
+    /** Marker recorded on an appended-to order so a retry can recognise itself. */
+    const appendMarker = (key) => '[ARCH-APPEND:' + key + ']';
+
+    /**
+     * Creates the order, or appends to an existing one.
+     *
+     * @param {Object} input
+     * @param {string} input.mode          'new' | 'existing'
+     * @param {number} [input.existingSO]  internal id, required when mode is 'existing'
+     * @param {Object} input.header
+     * @param {Array}  input.lines
+     */
+    const createOrder = (input) => {
+        // ORDER first, LINES second. See `resolveOrderContext`.
+        const ctx = resolveOrderContext(input);
+        const appending = ctx.appending;
+        const existingId = ctx.existingId;
+        const idempotencyKey = ctx.idempotencyKey;
+
+        if (!idempotencyKey) {
+            log.audit('ARCH Order Create',
+                'No idempotency key supplied — a retry of this request would create a second order.');
+        }
+
+        const resolved = resolveLines(input.lines);
+        if (resolved.problems.length) {
+            throw refusal(resolved.problems.join(' '));
+        }
+
+        const so = appending
+            ? record.load({ type: record.Type.SALES_ORDER, id: existingId, isDynamic: true })
+            : record.create({ type: record.Type.SALES_ORDER, isDynamic: true });
+
+        if (!appending) {
+            const h = input.header || {};
+            const customerId = int(h.customerId);
+            if (!customerId) throw refusal('The order needs a customer.');
+
+            // Subsidiary and department are deliberately NOT set from the
+            // request. NetSuite sources them from the customer and the location,
+            // which is what the order should book against; asserting them here
+            // would let a crafted payload post an ARCH order anywhere.
+            so.setValue({ fieldId: 'entity', value: customerId });
+
+            // ⚠️ Guard on the PARSED id, not the raw value. `if (h.currencyId)`
+            // is true for "USD", and int("USD") is null, so the earlier version
+            // set currency to null. Not hypothetical: ArchOrderHeader.currency is
+            // typed as a string and carries a code, so it would have fired the
+            // moment the wizard was wired up.
+            const currencyId = int(h.currencyId);
+            const termsId    = int(h.termsId);
+            if (currencyId) so.setValue({ fieldId: 'currency', value: currencyId });
+            if (termsId)    so.setValue({ fieldId: 'terms',    value: termsId });
+
+            if (h.customerPO) setIfPresent(so, H_CUSTOMER_PO, String(h.customerPO), 'the customer PO');
+            if (h.salesRep)   setIfPresent(so, H_SALES_REP,   String(h.salesRep),   'the sales rep name');
+
+            // ── Mandatory on the sales-order form, so not optional here ──────
+            //
+            // NetSuite refuses the save with "Please enter value(s) for: Reload
+            // (Ship From), Incoterms, Department" otherwise. Worth recording that
+            // our own seeded ARCH order (SO 125745) has neither incoterms nor
+            // department, which made them look optional; that order was written by
+            // the temporary seed Suitelet, which evidently bypassed mandatory
+            // fields. Absence on an existing record is not evidence a field is
+            // optional.
+            so.setValue({ fieldId: 'department', value: departmentId() });
+
+            // ── "Reload (Ship From)" is the standard `location` header field ──
+            //
+            // Do not go looking for a custom field: the mandatory-field message
+            // names the LABEL, and on this form `location` is relabelled "Reload
+            // (Ship From)". Established 2026-08-20 by asking NetSuite which fields
+            // it considers mandatory on a new order rather than guessing at ids —
+            // four `custbody*reload*` fields exist and none of them is this one.
+            //
+            // Derived from the lines rather than accepted blindly, because it is
+            // the warehouse the wood physically leaves from and the lines already
+            // say which one that is. When the lines disagree the answer is a real
+            // business decision, so it is refused rather than guessed.
+            const headerLocation = int(h.locationId) || soleLocation(resolved.lines);
+            if (!headerLocation) {
+                throw refusal('The lines ship from more than one location, so the order needs ' +
+                              'an explicit ship-from location. Raise one order per location, or ' +
+                              'send header.locationId.');
+            }
+            so.setValue({ fieldId: 'location', value: headerLocation });
+
+            // ── Sales Team is a mandatory SUBLIST, not a field ───────────────
+            //
+            // The form refuses with "You must enter at least one line for
+            // sublist: Sales Team".
+            //
+            // ONLY `employee` is set. The stored data on a real order shows
+            // salesrole -2 and contribution 0.5, and both were tried: setting
+            // salesrole turned a clear USER_ERROR into an opaque
+            // UNEXPECTED_ERROR at save, and contribution is a FRACTION rather
+            // than a percentage, so the 100 that looks right means 10,000%.
+            // A value read out of a saved record is not necessarily a value the
+            // API accepts. NetSuite fills both in for a single-line team.
+            //
+            // Attributed to the REQUESTING USER where possible. This deployment
+            // runs as Administrator, but `getCurrentUser` still returns the person
+            // who actually called it, so the order records the trader who built
+            // it. See `resolveSalesRep` for the fallbacks and why a rep that is
+            // not a real sales rep breaks the save outright.
+            const repId = resolveSalesRep(
+                int(h.salesRepId), int(runtime.getCurrentUser().id), customerId);
+            if (!repId) {
+                throw refusal('No sales rep could be determined for this order. The caller is not ' +
+                              'a sales rep and the customer has none assigned, so there is nobody ' +
+                              'to credit. Send header.salesRepId.');
+            }
+            {
+                so.selectNewLine({ sublistId: 'salesteam' });
+                so.setCurrentSublistValue({ sublistId: 'salesteam', fieldId: 'employee', value: repId });
+                // `salesrole` is deliberately NOT set. -2 is what the stored data
+                // shows, but a value read out of a saved record is not necessarily
+                // a value the API accepts, and setting it turned a clear
+                // USER_ERROR into an opaque UNEXPECTED_ERROR at save. NetSuite
+                // fills the role in itself for a single-line sales team.
+                // Contribution and isprimary are deliberately NOT set. The real
+                // orders store contribution as 0.5 for a two-way split, i.e. a
+                // FRACTION rather than a percentage, so passing 100 would mean
+                // 10,000%. With a single line NetSuite fills it in itself, and
+                // both real lines carry isprimary=F, so asserting it is wrong too.
+                so.commitLine({ sublistId: 'salesteam' });
+            }
+
+            // Incoterms is a SELECT. The wizard may send either an internal id or
+            // the label a trader picked, so both are handled rather than assuming.
+            const incotermsId = int(h.incoterms);
+            if (incotermsId) {
+                so.setValue({ fieldId: H_INCOTERMS, value: incotermsId });
+            } else if (h.incoterms) {
+                so.setText({ fieldId: H_INCOTERMS, text: String(h.incoterms) });
+            } else {
+                so.setValue({ fieldId: H_INCOTERMS, value: incotermsDefault() });
+            }
+
+            if (h.shipDate) {
+                // setValue with a real Date, NOT setText. setText parses against
+                // the executing user's date-format preference, so an ISO string
+                // throws, and the old catch swallowed it at audit level — the
+                // order saved with the field silently empty.
+                const d = parseIsoDate(h.shipDate);
+                if (d) {
+                    setIfPresent(so, H_SHIP_DATE, d, 'the expected ship date');
+                } else {
+                    // Still not fatal: the order is correct without it. But it is
+                    // now a refusal to guess rather than a swallowed exception.
+                    log.audit('ARCH Order Create',
+                        'Ship date "' + h.shipDate + '" is not YYYY-MM-DD and was not set.');
+                }
+            }
+
+            // Not taken from the request. An earlier version accepted
+            // `input.insuranceRate` from the browser, unbounded, which
+            // contradicts this module's own rule about not letting a screen
+            // choose financial context. It is configuration now.
+            setIfPresent(so, H_INSURANCE, insuranceRate(), 'the ops and insurance rate');
+
+            // ── Idempotency ─────────────────────────────────────────────────
+            //
+            // 🔴 Without this a double-click or a retry creates a SECOND order
+            // committing the same stock. This project has already been bitten by
+            // the underlying cause: a client-side fetch timeout does NOT cancel
+            // the server, and re-firing the P6 suite produced overlapping runs
+            // whose "failures" were the library correctly refusing stock the
+            // first run had taken.
+            //
+            // `externalid` is used rather than a lookup-then-create because
+            // NetSuite enforces uniqueness on it. A duplicate therefore fails in
+            // the database with no race window, which a read-before-write check
+            // cannot promise.
+            if (idempotencyKey) {
+                so.setValue({ fieldId: 'externalid', value: 'ARCH-ORDER-' + idempotencyKey });
+            }
+        } else if (idempotencyKey) {
+            // Append cannot use a unique externalid, because the order already has
+            // one (or none) and overwriting it would break whatever else keys off
+            // it. So the marker is APPENDED to the existing value, and
+            // `resolveOrderContext` reads it back to recognise a retry.
+            const existing = (ctx.target && ctx.target.externalId) || '';
+            so.setValue({ fieldId: 'externalid', value: existing + appendMarker(idempotencyKey) });
+        }
+
+        // Assignments already on the order BEFORE this call, so the verification
+        // below compares the DELTA. Without this, appending to an order that
+        // already carries the same lot reports a false mismatch at ERROR level.
+        const priorAssignments = appending ? assignmentsByLot(existingId) : {};
+
+        // The lines that already existed, so phase two cannot hang this request's
+        // lot on a previous request's line. Read off the loaded record rather than
+        // re-queried, so it is the same snapshot the lines are added to.
+        const priorLineKeys = {};
+        if (appending) {
+            const existingCount = so.getLineCount({ sublistId: 'item' });
+            for (let i = 0; i < existingCount; i++) {
+                priorLineKeys[String(so.getSublistValue({
+                    sublistId: 'item', fieldId: 'lineuniquekey', line: i,
+                }))] = true;
+            }
+        }
+
+        resolved.lines.forEach((line) => addLine(so, line));
+
+        let soId;
+        try {
+            soId = so.save({ enableSourcing: true, ignoreMandatoryFields: false });
+        } catch (e) {
+            // The unique externalid doing its job: this exact request already
+            // created an order. Report the refusal rather than a raw NetSuite
+            // error, so a retried double-click reads as "already done".
+            if (idempotencyKey && /extern|unique|duplicate/i.test(e.message || String(e))) {
+                const dup = new Error('This order was already created by an identical request. ' +
+                                      'Nothing was duplicated.');
+                dup.name = 'ARCH_ORDER_REFUSED';
+                throw dup;
+            }
+            throw e;
+        }
+
+        // Phase two. The order already exists at this point, so a failure here is
+        // reported rather than thrown: throwing would tell the trader the order
+        // failed when it is sitting in NetSuite with correct quantities.
+        const unplaced = assignLots(soId, resolved.lines, priorLineKeys);
+        if (unplaced.length) {
+            log.error('ARCH Order Create — LOTS NOT ATTRIBUTED on SO ' + soId,
+                'The order exists with correct quantities but ' + unplaced.length + ' of ' +
+                resolved.lines.length + ' line(s) carry no lot, so the bundles are NOT locked: ' +
+                unplaced.join('; '));
+        }
+
+        const check = verifyAssignments(soId, resolved.lines, priorAssignments);
+
+        // Only report a mismatch when at least one lot actually landed. When
+        // NOTHING was placed, every line is trivially a "mismatch" and the
+        // LOTS NOT ATTRIBUTED line above has already said so at error level.
+        // Logging both put two error entries on the log for one condition, and
+        // this account may email on error — `notifyowner` and `notifyemails` are
+        // not readable from SuiteQL, so it cannot be ruled out.
+        const somethingLanded = unplaced.length < resolved.lines.length;
+        if (check.mismatches.length && somethingLanded) {
+            // Deliberately ERROR: this is rare and abnormal, which is the bar
+            // this codebase sets for the error level. A quantity that did not
+            // land as intended on a trading document is not routine noise.
+            log.error('ARCH Order Create — ASSIGNMENT MISMATCH on SO ' + soId,
+                check.mismatches.join('; '));
+        }
+
+        log.audit('ARCH Order Create',
+            (appending ? 'Appended to' : 'Created') + ' SO ' + soId + ' with ' +
+            resolved.lines.length + ' line(s), ' + check.assignmentRows + ' assignment row(s)' +
+            (check.mismatches.length ? ' — WITH MISMATCHES' : ''));
+
+        return {
+            ok: true,
+            salesOrderId: soId,
+            appended: appending,
+            lines: resolved.lines.map((l) => ({
+                itemCode: l.itemCode,
+                lotName:  l.lotName,
+                quantity: l.displayQty,
+                isSplit:  l.isSplit,
+            })),
+            splitLinesQueued: resolved.lines.filter((l) => l.isSplit).length,
+            assignmentRows: check.assignmentRows,
+            assignmentMismatches: check.mismatches,
+            // Reported, not asserted — this is how the sign convention for a
+            // sales order's assignments gets established on the first real write.
+            storedSigns: check.storedSigns,
+            insuranceRate: insuranceRate(),
+            idempotencyKey: idempotencyKey,
+            // Non-empty means the order exists but those bundles are NOT locked.
+            lotsNotAttributed: unplaced,
+        };
+    };
+
+    /**
+     * Validates without writing, so the wizard can refuse a stale cart before the
+     * trader commits to it. Same code path as the write, so a dry run that passes
+     * and a write that then fails means the data moved underneath rather than the
+     * two disagreeing.
+     */
+    const validateOrder = (input) => {
+        // Same order-level checks as the write, and in the same order, so a dry
+        // run that passes means the write will get past this point too. When it
+        // fails, the refusal is returned as a problem rather than thrown: a dry
+        // run's job is to report, not to raise.
+        try {
+            resolveOrderContext(input);
+        } catch (e) {
+            if (e.name !== 'ARCH_ORDER_REFUSED') throw e;
+            return { ok: false, problems: [e.message], lines: [] };
+        }
+
+        const resolved = resolveLines(input.lines);
+        return {
+            ok: resolved.problems.length === 0,
+            problems: resolved.problems,
+            lines: resolved.lines.map((l) => ({
+                itemCode:         l.itemCode,
+                lotName:          l.lotName,
+                quantity:         l.displayQty,
+                storedQuantity:   l.storedQty,
+                bundleQuantity:   l.bundleDisplayQty,
+                isSplit:          l.isSplit,
+                remainderIfSplit: l.isSplit ? l.bundleDisplayQty - l.displayQty : 0,
+            })),
+        };
+    };
+
+    return {
+        createOrder: createOrder,
+        validateOrder: validateOrder,
+        // Exported for the test runner.
+        resolveLines: resolveLines,
+        verifyAssignments: verifyAssignments,
+    };
+});
