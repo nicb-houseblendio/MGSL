@@ -218,6 +218,38 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
     // dark mode, and this view's dark text vanished.
     <div style={{ margin: '0 4px 4px', borderRadius: 10, background: '#EEF1F6', color: ARCH_SURFACE.text }}>
       {/*
+        🔴 SAYS THESE ORDERS ARE NOT REAL, because nothing else did.
+        `getOpenOrders()` is entirely fixtures — invented customers, SO numbers and
+        quantities — and it sat next to a Hardwood tab showing genuine live
+        inventory with a "Live" badge. Anyone opening this tab would reasonably
+        read the orders as real, and MGSL are working in this sandbox.
+        Every other surface here declares its source (the grid's Live badge, the
+        split queue's `source`); this one did so only in code comments.
+        Remove this banner when the view is fed by real sales orders, not before.
+      */}
+      <div
+        style={{
+          display: 'flex',
+          gap: 9,
+          alignItems: 'flex-start',
+          margin: '0 0 2px',
+          padding: '9px 14px',
+          borderRadius: '10px 10px 0 0',
+          background: '#FFF8E1',
+          borderBottom: '1px solid #E6B800',
+          fontSize: 11.5,
+          color: '#7A4100',
+          lineHeight: 1.5,
+        }}
+      >
+        <span style={{ fontSize: 13, lineHeight: 1 }}>⚠️</span>
+        <span>
+          <strong>Demo data.</strong> These orders are placeholders, not real sales orders —
+          the customers, SO numbers and quantities are invented. The Hardwood tab is live;
+          this one is not yet.
+        </span>
+      </div>
+      {/*
         FULL WIDTH, no content cap. This view was capped at 1680 to keep the
         saccade from SO # to Est. profit short on a 2560px monitor, but Marc-Antoine
         chose full width on 2026-08-13 — "comme les autres TS" — so it now matches

@@ -570,7 +570,19 @@ export const SOWizard = ({
 
   const startOk = mode === 'new' || !!existingSO;
   const itemsOk = lines.length > 0;
-  const headerOk = !!(customer && shipTo && currency && shipDate && incoterms && salesTeam);
+  /**
+   * Customer PO is REQUIRED, and that is NetSuite's rule rather than a preference.
+   *
+   * It is mandatory on the ARCH sales-order form (386) and optional on Industriel
+   * (359), which is exactly the trap Ship To Select was: verified 2026-08-20 by
+   * driving the deployed wizard, where an otherwise complete order was refused at
+   * the final step with "Please enter value(s) for: Customer PO". Catching it here
+   * means the trader is told on the step that owns the field instead of after
+   * pricing every line.
+   */
+  const headerOk = !!(
+    customer && customerPO.trim() && shipTo && currency && shipDate && incoterms && salesTeam
+  );
   const splitOk = lines.every((l) => {
     const s = sp(l.key);
     if (!s.on) return true;
@@ -1075,7 +1087,7 @@ export const SOWizard = ({
           )}
         </div>
         <div style={{ flex: '1 1 220px' }}>
-          <label style={label}>Customer PO</label>
+          <label style={label}>Customer PO *</label>
           <input
             type="text"
             value={customerPO}
