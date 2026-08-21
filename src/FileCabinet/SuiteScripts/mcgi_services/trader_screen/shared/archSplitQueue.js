@@ -159,6 +159,32 @@ define(['N/query', 'N/log'], (query, log) => {
     /**
      * @returns {{jobs: Array, counts: Object}} jobs match ArchSplitJob[]
      */
+    /* ── ⚠️ ONE BUNDLE PER ROW, AND A LINE CAN YIELD SEVERAL ────────────────────
+     *
+     * The query fans out: joining assignments on tl.id returns one row per LOT on
+     * the line, so a line carrying two bundles produces two rows and the loop below
+     * pushes two bundles. That part is arguably right -- there really are two
+     * physical bundles.
+     *
+     * What is NOT right is that `requestedBF` comes from `custcol_mgsl_split_bf`,
+     * which is a LINE-level field. It is therefore repeated on every bundle of that
+     * line: a 400 BF split request against two lots reads as 400 twice, i.e. 800
+     * requested against a 400 BF request. Same cartesian trap the cache builder
+     * documents and handles by taking line values once per (transaction, line).
+     *
+     * NOT FIXED HERE ON PURPOSE. How a split request divides across two bundles is
+     * a warehouse decision nobody has made -- split both? which one absorbs the
+     * 400? -- and guessing it in code would bury the question. Left visible.
+     *
+     * REACHABILITY, measured 2026-08-20: today it cannot happen. The ARCH wizard
+     * writes exactly one lot per line, so every split-flagged line has exactly one
+     * assignment. It becomes reachable the moment the native SO form can flag a
+     * split (todo 4.3), because a user can attach two lots by hand there.
+     *
+     * Until the corrected join landed this was mostly masked: joining on the
+     * sequence returned NULL for 35% of lines rather than fanning out.
+     */
+
     const getPendingSplits = () => {
         const rows = fetchRows().filter((r) => String(r.splitstatus || '') === STATUS_PENDING);
         const units = unitsByItem([...new Set(rows.map((r) => String(r.itemid)))].filter(Boolean));
