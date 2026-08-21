@@ -156,8 +156,25 @@ export const lineEconomics = (
   const lotCost = bf * (line.costPerBF || 0);
 
   const splitCost = split?.on ? splitFee() : 0;
-  const planingCost = reman?.planing ? bf * PLANING_RATE : 0;
-  const cuttingCost = reman?.cutting ? bf * CUT_RATE : 0;
+  /*
+   * The reman rates are BOARD FOOT rates. The client confirmed the unit
+   * explicitly, which is what makes this a real constraint rather than a
+   * pedantic one: a cart can mix a Lumber line in BF with a Veneer line in
+   * SQFT or a UNIT line, and 3 of the 13 rows in the live ARCH cache are not
+   * BF. Multiplying a square-foot quantity by a per-board-foot rate produces a
+   * number with no meaning, and it would flow straight into the margin the
+   * trader prices against.
+   *
+   * So a non-BF line records its reman instructions and is NOT costed. That is
+   * a gap, deliberately visible: the alternative is to invent a rate the client
+   * never gave. The Remanufacturing step says so on the line itself rather than
+   * showing a dash that reads as "no services asked for".
+   *
+   * The split fee is untouched -- it is a flat charge per split, not per unit.
+   */
+  const remanChargeable = line.unit === 'BF';
+  const planingCost = reman?.planing && remanChargeable ? bf * PLANING_RATE : 0;
+  const cuttingCost = reman?.cutting && remanChargeable ? bf * CUT_RATE : 0;
   const processingCost = splitCost + planingCost + cuttingCost;
   // Charged on MATERIAL COST, not revenue. The prototype is explicit about this
   // (`opIns = l.mbf * l.avgPriceMBF * OPINS_RATE` — quantity x lot cost), and the

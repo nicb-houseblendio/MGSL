@@ -130,8 +130,8 @@ const OutcomeNotice = ({
     >
       <div>
         <strong>The reman instructions were not saved.</strong> The order and its quantities are
-        right, and the fee is in the margin, but planing and cutting have nowhere to live on the
-        sales order yet, so nothing on this order tells the mill what to do. Pass them on by hand
+        right, and the fee is in the margin, but the fields they go in do not exist in this
+        account yet, so nothing on this order tells the mill what to do. Pass them on by hand
         before you close this.
       </div>
     </div>
@@ -140,36 +140,42 @@ const OutcomeNotice = ({
   const unlocked = (result.lotsNotAttributed || []).length > 0;
   if (unlocked || result.formWarning) {
     return (
-      <div style={{ ...notice, background: '#FFF7ED', border: '1px solid #FDBA74', color: '#7C2D12' }}>
-        <div>
-          <strong>The order exists, but its bundles are not locked.</strong> The quantities are
-          right, yet no lot claims them, so the wood still reads as sellable to everyone else.
-          {result.formWarning && <div style={{ marginTop: 6 }}>{result.formWarning}</div>}
-          {unlocked && (
-            <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
-              {(result.lotsNotAttributed || []).map((p, i) => (
-                <li key={i} style={{ marginTop: 2 }}>{p}</li>
-              ))}
-            </ul>
-          )}
-          {remanNotice}
+      <>
+        <div style={{ ...notice, background: '#FFF7ED', border: '1px solid #FDBA74', color: '#7C2D12' }}>
+          <div>
+            <strong>The order exists, but its bundles are not locked.</strong> The quantities are
+            right, yet no lot claims them, so the wood still reads as sellable to everyone else.
+            {result.formWarning && <div style={{ marginTop: 6 }}>{result.formWarning}</div>}
+            {unlocked && (
+              <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
+                {(result.lotsNotAttributed || []).map((p, i) => (
+                  <li key={i} style={{ marginTop: 2 }}>{p}</li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
-      </div>
+        {remanNotice}
+      </>
     );
   }
 
   return (
-    <div style={{ ...notice, background: '#F0FDF4', border: '1px solid #86EFAC', color: '#14532D' }}>
-      <span>
-        Created and the bundles are locked.
-        {result.splitLinesQueued
-          ? ` ${result.splitLinesQueued} line${result.splitLinesQueued === 1 ? '' : 's'} queued for the warehouse to split.`
-          : ''}
-        {result.remanStored ? ' Planing and cutting are recorded on the lines.' : ''}{' '}
-        The trader screen catches up at the next cache refresh.
-      </span>
+    <>
+      <div style={{ ...notice, background: '#F0FDF4', border: '1px solid #86EFAC', color: '#14532D' }}>
+        <span>
+          Created and the bundles are locked.
+          {result.splitLinesQueued
+            ? ` ${result.splitLinesQueued} line${result.splitLinesQueued === 1 ? '' : 's'} queued for the warehouse to split.`
+            : ''}
+          {/* Not "planing and cutting": a line can ask for one service without
+              the other, and naming both would report work nobody ordered. */}
+          {result.remanStored ? ' The reman instructions are on the lines.' : ''}{' '}
+          The trader screen catches up at the next cache refresh.
+        </span>
+      </div>
       {remanNotice}
-    </div>
+    </>
   );
 };
 

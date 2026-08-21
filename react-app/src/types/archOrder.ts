@@ -13,10 +13,14 @@
  * The previous version of this note said "NOTHING HERE WRITES TO NETSUITE YET",
  * which stopped being true when the write path shipped.
  *
- * Still genuinely open on the client side: the split and reman RATES, and where
- * reman is recorded on the SO. The draft is still shaped as INTENT ("this line is
- * a split, target 300 BF") rather than as a NetSuite payload, which is what let the
- * persistence layer land without reshaping the UI.
+ * The reman rates and their placement were answered on 2026-08-21: $0.20/BF per
+ * service, stacking, recorded on line-level fields. What is still open is the
+ * SPLIT FEE, and it is not waiting on the client either -- the $200 came from the
+ * prototype and has never been put to them.
+ *
+ * The draft is still shaped as INTENT ("this line is a split, target 300 BF")
+ * rather than as a NetSuite payload, which is what let the persistence layer land
+ * without reshaping the UI.
  */
 
 import type { ArchDetailKey } from '@/types/arch';
@@ -131,9 +135,17 @@ export interface ArchSplitIntent {
  * Remanufacturing intent for one line.
  *
  * ARCH reman is a SERVICE with a fee, not the Industriel reman: no new SKU and no
- * inventory adjustment. Both the surfacing spec and the cut length are free-form
- * until the client decides whether these live in the line description or in
- * dedicated fields.
+ * inventory adjustment. The client confirmed on 2026-08-21 that it belongs on
+ * line-level SO fields, so this travels to the endpoint and is written to
+ * `custcol_mgsl_reman_*`.
+ *
+ * ⚠️ Only `planingOther` is free text. `planingSpec` and `cutLength` are chosen
+ * from lists, which is why the server caps just the one that can be typed. The
+ * previous version of this note called both specs free-form; that was never true
+ * of the cut length.
+ *
+ * ⚠️ The $0.20 rate is per BOARD FOOT, so a line measured in SQFT, LF or UNIT
+ * records its instructions but carries no estimated fee. See `lineEconomics`.
  */
 export interface ArchRemanIntent {
   planing: boolean;

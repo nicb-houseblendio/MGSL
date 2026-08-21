@@ -1075,11 +1075,33 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         set('quantity', line.displayQty);
         set('rate',     line.pricePerUnit);
 
+        /* Reman, and it must never be able to lose the order.
+         *
+         * `remanFieldsPresent` asks `getSublistFields`, which answers for the
+         * RECORD. A field could in principle be listed there and still refuse a
+         * write -- hidden on the form the record landed on, or restricted by
+         * role. The probe cannot rule that out, so the write is guarded too:
+         * an order that saves without its reman note is recoverable by hand,
+         * and one that fails to save BECAUSE of a note is not.
+         *
+         * Returning the outcome rather than swallowing it is the other half.
+         * If this fails, `remanStored` must come back false, or the screen
+         * would tell the trader the mill has instructions it never got. */
+        let remanWritten = true;
         if (line.reman && remanOk) {
-            set(F_REMAN_PLANE, line.reman.planing);
-            set(F_REMAN_CUT,   line.reman.cutting);
-            if (line.reman.planeTgt) set(F_REMAN_PLANE_TGT, line.reman.planeTgt);
-            if (line.reman.cutLen)   set(F_REMAN_CUT_LEN,   line.reman.cutLen);
+            try {
+                set(F_REMAN_PLANE, line.reman.planing);
+                set(F_REMAN_CUT,   line.reman.cutting);
+                if (line.reman.planeTgt) set(F_REMAN_PLANE_TGT, line.reman.planeTgt);
+                if (line.reman.cutLen)   set(F_REMAN_CUT_LEN,   line.reman.cutLen);
+            } catch (e) {
+                remanWritten = false;
+                log.error('ARCH Order reman NOT written',
+                    'Line ' + index + ' (' + (line.itemCode || line.itemId) + '): ' +
+                    (e.name || '') + ': ' + (e.message || String(e)) +
+                    ' | The fields passed the presence probe but refused the write. The order ' +
+                    'itself is unaffected and will be reported as reman-not-stored.');
+            }
         }
 
         if (line.isSplit) {
@@ -1092,6 +1114,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 value: splitStatusPendingId(),
             });
         }
+
+        return remanWritten;
     };
 
     /**
@@ -1882,7 +1906,11 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         const firstNewLine = appending ? so.getLineCount({ sublistId: 'item' }) : 0;
         const wantsReman = resolved.lines.some((l) => !!l.reman);
         const remanOk = wantsReman ? remanFieldsPresent(so) : false;
-        resolved.lines.forEach((line, i) => addLine(so, line, firstNewLine + i, remanOk));
+        // `every` over the write outcomes, not the intent: one refused line makes
+        // the whole order reman-not-stored, because a trader told "recorded" would
+        // stop carrying ANY of it across by hand.
+        const remanWrites = resolved.lines.map(
+            (line, i) => addLine(so, line, firstNewLine + i, remanOk));
 
         let soId;
         try {
@@ -1978,7 +2006,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
              * `false` with `remanRequested: true` means the trader typed
              * instructions that were NOT saved and must be passed on by hand. */
             remanRequested: wantsReman,
-            remanStored: wantsReman && remanOk,
+            remanStored: wantsReman && remanOk && remanWrites.every(Boolean),
             assignmentRows: check.assignmentRows,
             assignmentMismatches: check.mismatches,
             // Reported, not asserted — this is how the sign convention for a
@@ -2026,9 +2054,56 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         };
     };
 
+    /**
+     * Which line fields this endpoint can actually write. Read-only.
+     *
+     * ── Why this exists ─────────────────────────────────────────────────────
+     * `remanFieldsPresent` decides at write time whether reman can be stored,
+     * and its answer rests on an assumption worth proving rather than trusting:
+     * that `getSublistFields` lists CUSTOM column fields at all. If it does not,
+     * the reman write would be skipped forever, including after the four objects
+     * are deployed, and the endpoint would keep reporting `remanStored: false`
+     * while looking entirely healthy.
+     *
+     * So `split` is here as a CONTROL. `custcol_mgsl_split` is deployed and is
+     * written successfully on every split line, so it MUST read true. If it ever
+     * reads false, the probe mechanism is broken and the reman answer means
+     * nothing -- do not go looking for a missing deploy.
+     *
+     * Creates an UNSAVED sales order and asks it. `record.create` writes nothing;
+     * only `save` does. Runs under the deployment's `runasrole`, same as a real
+     * create, so it reflects what the writer would actually see rather than what
+     * an administrator would.
+     *
+     * ⚠️ It answers for the CREATE path specifically. A new record takes the form
+     * that follows the executing role, but an APPEND inherits the form stored on
+     * the order it is adding to, and a field hidden on that form is not
+     * guaranteed to appear here. `remanFieldsPresent` therefore probes the actual
+     * record being written rather than trusting this; treat this as "is the
+     * deploy done", not as a per-order guarantee.
+     */
+    const fieldReadiness = () => {
+        try {
+            const so = record.create({ type: record.Type.SALES_ORDER, isDynamic: false });
+            const fields = so.getSublistFields({ sublistId: 'item' }) || [];
+            const has = (id) => fields.indexOf(id) !== -1;
+            return {
+                split: has(F_SPLIT) && has(F_SPLIT_BF) && has(F_SPLIT_STATUS),
+                reman: has(F_REMAN_PLANE) && has(F_REMAN_PLANE_TGT)
+                    && has(F_REMAN_CUT) && has(F_REMAN_CUT_LEN),
+                remanMissing: [F_REMAN_PLANE, F_REMAN_PLANE_TGT, F_REMAN_CUT, F_REMAN_CUT_LEN]
+                    .filter((id) => !has(id)),
+                itemFieldCount: fields.length,
+            };
+        } catch (e) {
+            return { error: (e.name || '') + ': ' + (e.message || String(e)) };
+        }
+    };
+
     return {
         createOrder: createOrder,
         validateOrder: validateOrder,
+        fieldReadiness: fieldReadiness,
         // Exported for the test runner.
         resolveLines: resolveLines,
         verifyAssignments: verifyAssignments,

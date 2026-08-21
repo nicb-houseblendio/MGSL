@@ -115,6 +115,9 @@ define(['N/runtime', 'N/log', './../../shared/archOrderCreate'],
                 role: user.role,
                 permittedRoles: allowed,
                 rolesConfigured: allowed.length > 1,
+                // Which line fields the writer can actually reach. `split` is a
+                // control that must read true; see fieldReadiness.
+                lineFields: orderLib.fieldReadiness(),
             });
         }
 

@@ -1970,8 +1970,22 @@ export const SOWizard = ({
                   )}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }} className="font-mono">
+                  {/* Three states, not two. A dash where a service WAS asked for
+                      would read as "nothing ordered" when it really means "we
+                      have no rate for this unit" -- see lineEconomics. */}
                   {e.planingCost + e.cuttingCost > 0 ? (
                     fmtMoney(e.planingCost + e.cuttingCost, currency || 'USD')
+                  ) : (r.planing || r.cutting) && l.unit !== 'BF' ? (
+                    <span
+                      style={{ color: '#7C2D12', fontSize: 10.5 }}
+                      title={
+                        'The confirmed reman rate is per board foot and this line is in ' +
+                        l.unit +
+                        '. The instructions are recorded, but no fee is estimated.'
+                      }
+                    >
+                      no {l.unit} rate
+                    </span>
                   ) : (
                     <span style={{ color: ARCH_SURFACE.textLight }}>—</span>
                   )}
@@ -1982,8 +1996,10 @@ export const SOWizard = ({
         </tbody>
       </table>
       <div style={{ marginTop: 10, fontSize: 11, color: ARCH_SURFACE.textLight }}>
-        Planing {fmtMoney(PLANING_RATE)}/BF · Cutting {fmtMoney(CUT_RATE)}/BF · client-confirmed. Both
-        services on one line is $0.40/BF.
+        Planing {fmtMoney(PLANING_RATE)}/BF · Cutting {fmtMoney(CUT_RATE)}/BF · client-confirmed.
+        Both services on one line is $0.40/BF. These are <strong>board foot</strong> rates: a line
+        measured in SQFT, LF or UNIT records its instructions but is not costed, because there is no
+        confirmed rate for those units.
       </div>
     </div>
   );
@@ -2513,11 +2529,23 @@ export const SOWizard = ({
       {remanLines.length > 0 && (
         <ProvisionalNote>
           <strong>
-            Remanufacturing is NOT saved to this order — {remanLines.length}{' '}
-            {remanLines.length === 1 ? 'line has' : 'lines have'} it.
+            Remanufacturing on {remanLines.length}{' '}
+            {remanLines.length === 1 ? 'line' : 'lines'}, and it reaches the order only if the
+            reman fields exist in this account.
           </strong>{' '}
-          The margin above already deducts the {fmtMoney(remanTotalCost)} it costs, but nothing
-          on the order tells the mill to do the work. Pass it on by hand:
+          {/* Not unconditional: the confirmed rate is per board foot, so a cart of
+              SQFT or UNIT lines carries reman with no estimated fee at all, and
+              "deducts the $0.00 it costs" would be a strange thing to read. */}
+          {remanTotalCost > 0 ? (
+            <>The margin above deducts the {fmtMoney(remanTotalCost)} it costs.</>
+          ) : (
+            <>
+              No fee is estimated: the confirmed rate is per board foot and{' '}
+              {remanLines.length === 1 ? 'this line is' : 'these lines are'} not measured in BF.
+            </>
+          )}{' '}
+          The confirmation after you save says whether the instructions were stored, and warns you
+          if they were not. Until you have seen it say they were, carry these across by hand:
           <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
             {remanLines.map(({ line, intent }) => (
               <li key={line.key} style={{ marginBottom: 2 }}>
