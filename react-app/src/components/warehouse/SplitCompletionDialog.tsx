@@ -289,9 +289,22 @@ export const SplitCompletionDialog = ({
               lineHeight: 1.5,
             }}
           >
-            Saving records the split and releases the hold. It does not write to NetSuite yet — correcting the sales
-            order line and posting the inventory adjustment that splits the lot are still to be agreed. The next screen
-            shows exactly what it would do.
+            {/*
+              🔴 THIS SAID "It does not write to NetSuite yet" AND IT WAS FALSE.
+              Proven 2026-08-20 by driving this screen: saving posted IA-CWP-467,
+              moved 645 BF from lot 315970-9 onto a new 315970-9-B, and set the
+              sales order line to Done.
+
+              Of every stale claim on this project that is the worst one, because
+              it tells somebody standing in a warehouse that a real inventory
+              adjustment was not made. Anyone who believed it would re-enter and
+              re-save. `alreadyDone` in archSplitExecute would refuse the second
+              attempt, so the stock is safe -- but the message was recruiting
+              users into testing that guard.
+            */}
+            <strong>Saving posts a real inventory adjustment.</strong> It moves the remainder onto a new
+            child bundle, releases the hold, and marks the sales order line Done. This cannot be undone
+            from here — deleting the adjustment afterwards would reverse it and re-merge the bundles.
           </div>
         </div>
 
@@ -368,6 +381,18 @@ export const SplitCompletionDialog = ({
             // a double-click would send a second round against a picture the
             // first is still changing.
             disabled={!anyTouched || invalidCount > 0 || !!busy}
+            /*
+             * 🔴 `busy` USED TO AFFECT ONLY `disabled`. The label and the styling
+             * ignored it, so during the write -- which takes ten seconds or more,
+             * because each bundle posts its own adjustment and the endpoint
+             * revalidates against live stock -- the button sat there fully green,
+             * reading "Save splits", doing nothing when pressed.
+             *
+             * Measured 2026-08-20: I read that state as "the save did nothing" and
+             * went to the database to find out, by which time it had written. A
+             * warehouse user would press it again instead. The click is refused,
+             * so stock was never at risk; the silence was the whole problem.
+             */
             style={{
               padding: '8px 20px',
               borderRadius: 9,
@@ -375,12 +400,16 @@ export const SplitCompletionDialog = ({
               fontSize: 12.5,
               fontWeight: 700,
               fontFamily: 'inherit',
-              cursor: !anyTouched || invalidCount > 0 ? 'not-allowed' : 'pointer',
-              background: !anyTouched || invalidCount > 0 ? '#E2E8F0' : 'linear-gradient(135deg,#1E6B47,#2A9060)',
+              cursor: busy ? 'progress' : !anyTouched || invalidCount > 0 ? 'not-allowed' : 'pointer',
+              background: busy
+                ? '#94A3B8'
+                : !anyTouched || invalidCount > 0
+                  ? '#E2E8F0'
+                  : 'linear-gradient(135deg,#1E6B47,#2A9060)',
               color: !anyTouched || invalidCount > 0 ? '#A6B4C2' : '#fff',
             }}
           >
-            {allComplete ? 'Save splits' : 'Save partial'}
+            {busy ? 'Posting to NetSuite…' : allComplete ? 'Save splits' : 'Save partial'}
           </button>
         </div>
       </DialogContent>

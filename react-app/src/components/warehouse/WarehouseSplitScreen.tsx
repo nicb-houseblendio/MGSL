@@ -12,9 +12,18 @@
  * trader, quantity, bundle count and ship week. An earlier version of this screen
  * used dark cards and was not recognisable as the same design.
  *
- * ⚠️ DEMO DATA. Jobs come from `getSplitJobs()`. Real ones come from a saved
- * search of SO lines flagged as splits, and that flag does not exist in NetSuite
- * yet.
+ * ⚠️ THIS SCREEN POSTS REAL INVENTORY ADJUSTMENTS. Jobs come from
+ * `useArchSplitQueue`, which reads SO lines carrying `custcol_mgsl_split` — a flag
+ * that does exist and that the trader wizard writes. Saving a split moves the
+ * remainder onto a new child bundle and marks the sales order line Done.
+ *
+ * The previous version of this comment said "DEMO DATA … that flag does not exist
+ * in NetSuite yet", which stopped being true when the split path shipped. Proven
+ * false 2026-08-20 by driving this screen end to end: it posted IA-CWP-467 and
+ * split lot 315970-9 into 500 BF plus a new 315970-9-B of 645 BF.
+ *
+ * It still falls back to fixtures when the Suitelet does not inject an endpoint
+ * URL, and `source` says which it is — that part was always true.
  */
 
 import * as React from 'react';
@@ -354,8 +363,24 @@ export const WarehouseSplitScreen = () => {
               color: isDone ? DONE.dark : TODO.dark,
             }}
           >
+            {/*
+              🔴 "Split done" USED TO APPEAR AS SOON AS THE FIGURES WERE TYPED.
+              `isDone` is `jobDone`, which is local ENTRY state -- filled in and
+              arithmetically possible -- and nothing to do with whether NetSuite
+              accepted anything. Observed 2026-08-20: this row read "✓ Split done"
+              and the header read "0 splits to do" while the dialog was still
+              open and before the adjustment was posted.
+
+              A queue that says done before it is done is the one thing a
+              warehouse queue must never do: the job leaves the "to do" group and
+              the next person assumes the wood was cut. "Ready to post" says what
+              is actually true -- the measurements are in, the write has not
+              happened. A real completion drops the job out of the queue entirely,
+              because the endpoint sets the line's split status to Done and the
+              query only returns Pending.
+            */}
             {isDone
-              ? '✓ Split done'
+              ? 'Ready to post'
               : started
                 ? `Continue (${remaining})`
                 : `Enter split (${job.bundles.length})`}
@@ -539,8 +564,16 @@ export const WarehouseSplitScreen = () => {
 
         <div style={{ textAlign: 'right', color: '#AFC2D6', fontSize: 10.5, lineHeight: 1.35 }}>
           <div>{today}</div>
+          {/*
+            Counts EVERY job in the queue, not just the ones without figures
+            typed. This read `pending.length`, which is entry state, so typing
+            numbers into the last job made the header announce "0 splits to do"
+            while nothing had been posted. A posted split leaves the queue on its
+            own -- the endpoint sets the line to Done and the query returns only
+            Pending -- so anything still visible here is still to do.
+          */}
           <div style={{ color: '#fff', fontWeight: 700 }}>
-            {pending.length} split{pending.length === 1 ? '' : 's'} to do
+            {visible.length} split{visible.length === 1 ? '' : 's'} to do
           </div>
         </div>
       </div>
@@ -638,7 +671,10 @@ export const WarehouseSplitScreen = () => {
               </tr>
             </thead>
             {renderGroup('todo', 'Splits to do', TODO, pending)}
-            {renderGroup('done', 'Splits completed', DONE, done)}
+            {/* NOT "completed" -- see the badge comment. A genuinely completed split
+                drops out of the queue, so this group only ever holds jobs whose
+                figures are in and whose adjustment has not been posted. */}
+            {renderGroup('done', 'Ready to post', DONE, done)}
             {pending.length === 0 && done.length === 0 && (
               <tbody>
                 <tr>
