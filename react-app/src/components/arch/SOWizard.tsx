@@ -636,6 +636,30 @@ export const SOWizard = ({
   );
   const totals = React.useMemo(() => sumEconomics(economics), [economics]);
 
+  /**
+   * Lines carrying remanufacturing intent, and what that intent costs.
+   *
+   * Feeds the Review warning. Kept as a derived list rather than a boolean so the
+   * note can NAME each line and its spec: the intent is not written to NetSuite,
+   * so the only way it survives is a person copying it somewhere, and a warning
+   * that does not say WHAT to copy is barely better than silence.
+   *
+   * Cost comes from `economics`, which is index-aligned with `lines`, so the
+   * figure quoted is exactly the one already deducted from the margin above.
+   */
+  const remanLines = React.useMemo(
+    () =>
+      lines
+        .map((line) => ({ line, intent: rm(line.key) }))
+        .filter(({ intent }) => intent.planing || intent.cutting),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lines, reman]
+  );
+  const remanTotalCost = React.useMemo(
+    () => economics.reduce((sum, e) => sum + e.planingCost + e.cuttingCost, 0),
+    [economics]
+  );
+
   /* ── Validation ───────────────────────────────────────────────────────────*/
 
   /**
@@ -1711,10 +1735,19 @@ export const SOWizard = ({
   const remanBody = (
     <div>
       <ProvisionalNote>
-        Where remanufacturing lives on the sales order is <strong>not decided yet</strong> — a line
-        description or dedicated fields. The <strong>rates and the dressed-thickness options below are
-        placeholders</strong>. Unlike Industriel reman, this creates no new SKU and no inventory adjustment:
-        it is a service with a fee.
+        {/*
+          "not decided yet" is TRUE BUT IT IS NOT THE POINT, and a trader reads it
+          as "somebody will sort out where this goes". What they need to know while
+          they are typing is that it goes NOWHERE: the endpoint has no reman field,
+          so this step's input never leaves the browser. Said here, on the step
+          where the work is done, as well as on Review.
+        */}
+        <strong>Nothing on this step is saved to the sales order.</strong> There is nowhere for it to
+        go yet — a line description or dedicated fields, still undecided — so the endpoint has no
+        reman field at all and this input never leaves the screen. Record it somewhere the mill will
+        see; Review lists what to carry across. The <strong>rates and the dressed-thickness options
+        below are placeholders</strong> too. Unlike Industriel reman, this creates no new SKU and no
+        inventory adjustment: it is a service with a fee.
       </ProvisionalNote>
       {lines.length > 1 && (
         <div
@@ -2440,6 +2473,45 @@ export const SOWizard = ({
           Lines already on the order are shown for context and are left exactly as they are — a
           price changed on one of them is not saved, and dropping one does not remove it in
           NetSuite.
+        </ProvisionalNote>
+      )}
+      {/*
+        🔴 THE TRADER'S OWN INPUT IS DISCARDED, AND THE MARGIN IS CHARGED FOR IT.
+        Traced 2026-08-20: the Remanufacturing step writes into `reman`, buildDraft
+        carries it, `toRequest` drops it, and archOrderCreate.js does not contain the
+        string "reman" at all. So nothing about planing or cutting reaches NetSuite.
+
+        Meanwhile `lineEconomics` puts planingCost and cuttingCost into
+        processingCost, and `profit = revenue - lotCost - processingCost - opsIns`.
+        So the margin on screen is already charged for dressing this wood while the
+        order records no instruction to dress it — the mill is never told.
+
+        Every other honesty note here corrects the system describing ITSELF wrongly.
+        This one is worse: it is the trader's own work evaporating. Until reman has
+        somewhere to live on the SO (service line, line field, or description — a
+        decision that needs the client, since the three candidate custbody reman
+        fields are header-level and populated on 0 of 4,216 sales orders), the least
+        we owe them is to say so on the step where they would otherwise assume it
+        was saved, and to name what to carry across by hand.
+      */}
+      {remanLines.length > 0 && (
+        <ProvisionalNote>
+          <strong>
+            Remanufacturing is NOT saved to this order — {remanLines.length}{' '}
+            {remanLines.length === 1 ? 'line has' : 'lines have'} it.
+          </strong>{' '}
+          The margin above already deducts the {fmtMoney(remanTotalCost)} it costs, but nothing
+          on the order tells the mill to do the work. Pass it on by hand:
+          <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
+            {remanLines.map(({ line, intent }) => (
+              <li key={line.key} style={{ marginBottom: 2 }}>
+                <strong>{line.lotNo || line.itemCode}</strong>
+                {intent.planing &&
+                  ` — plane to ${intent.planingSpec === 'other' ? intent.planingOther : intent.planingSpec}`}
+                {intent.cutting && ` — cut to ${intent.cutLength}`}
+              </li>
+            ))}
+          </ul>
         </ProvisionalNote>
       )}
     </div>
