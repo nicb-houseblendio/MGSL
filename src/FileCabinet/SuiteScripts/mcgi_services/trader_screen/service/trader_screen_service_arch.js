@@ -532,6 +532,424 @@ define([
         }
     };
 
+    /**
+     * Hardwood segment on the item. Third copy of this constant — the builder and
+     * archOrderCreate each hold one — kept local because it is a single number and
+     * a shared module for it would add an import to a scheduled cache builder for
+     * no behavioural gain. `customrecord_cseg_subsidiary_loc`: 1=Hardwood,
+     * 2=Softwood.
+     */
+    const HARDWOOD_SEGMENT = 1;
+
+    /**
+     * Open ARCH sales orders — for the second tab, and for the wizard's
+     * "add to existing order" picker.
+     *
+     * 🔴 WHY THIS EXISTS, beyond making a tab real: the wizard's append path
+     * COULD NOT SUCCEED without it. `getOpenOrders()` was a fixture generator, so
+     * the only thing the wizard could offer as an append target was an invented
+     * SO NUMBER ("SO-40123") — and the write endpoint takes an internal ID, parsed
+     * strictly (`/^\d+$/` in `int()`). Every append was therefore refused with
+     * "Adding to an existing order needs the internal id of that order", AFTER the
+     * trader had filled in the whole wizard. Same shape as the Customer PO bug:
+     * invisible to the type checker, obvious the moment somebody clicks the screen.
+     *
+     * So `internalId` on every order below is the load-bearing field. `soNo` is
+     * for humans and must never be what gets sent back to the write endpoint.
+     *
+     * ── What counts as open ────────────────────────────────────────────────────
+     * SalesOrd status letters that occur in this account: B, D, E, F, G, H.
+     *   B Pending Fulfillment          D Partially Fulfilled
+     *   E Pending Billing/Part Fulfil  F Pending Billing
+     *   G Billed                       H Closed
+     * G and H are finished, so open is B/D/E/F. 'A' (Pending Approval) does not
+     * occur today and is included anyway, so switching approvals on later does not
+     * silently empty this tab.
+     *
+     * ── The status is a PROJECTION, not a reading ─────────────────────────────
+     * ARCH's vocabulary is Reserved / Ready to Build / In Transit, and none of the
+     * three exists on the transaction. **Ready to Build has no field at all** —
+     * every candidate was probed on 2026-08-18 and none resolved — so this never
+     * returns it. A trader will not be shown a status the data cannot support.
+     * `nsStatus` carries the real letter so the projection can be revised later
+     * without repeating the archaeology.
+     *
+     * ── Units. Fourth time on this screen, so spelled out ─────────────────────
+     * `transactionline.quantity` and `.rate` are BOTH read in BASE units, and
+     * sales lines are NEGATIVE. A 500 BF line stores -0.5 at rate 8314.44.
+     * Display is therefore:
+     *
+     *     quantity:  abs(qty)  / conversionrate     (÷ 0.001 = ×1000)
+     *     price:     rate      * conversionrate     (× 0.001 = ÷1000)
+     *
+     * Opposite directions, exactly as on the builder's row cost. Their PRODUCT is
+     * unchanged, which is what makes an error here invisible in the revenue column
+     * and visible only in the quantity one. Two of the three ARCH unit types are
+     * rate 1, so only Lumber ever exposes it.
+     *
+     * `unitName` is returned RAW rather than normalised. The front end already
+     * owns `normalizeUnit`, and the builder's copy carries a note that a fourth
+     * copy should be promoted to shared/ — which would mean redeploying a
+     * scheduled cache builder to gain nothing here.
+     *
+     * ── Cost is the ROW average, and says so ──────────────────────────────────
+     * Taken from the cached (item, location) `avgCostPerUnit`, the same figure the
+     * grid shows — not from the lot on the line. Per-lot cost is not in the cache,
+     * and a lot that has been sold may no longer be on hand to cost at all.
+     * `costSource` is returned per line so the front end can decline to show a
+     * margin rather than reporting revenue as pure profit.
+     */
+    /**
+     * Finished: Billed, Closed, Cancelled. Everything else is open.
+     *
+     * Both spellings of each, because the column's format depends on WHERE it is
+     * read from — see the note on the WHERE clause below. `statusLetter` does the
+     * same normalisation on the way out.
+     */
+    const CLOSED_STATUSES = [
+        'G', 'H', 'C',
+        'SalesOrd:G', 'SalesOrd:H', 'SalesOrd:C',
+    ];
+
+    /** "SalesOrd:B" or "B" → "B". Empty string when there is nothing to read. */
+    const statusLetter = (v) => {
+        const s = String(v || '').trim();
+        const i = s.lastIndexOf(':');
+        return (i === -1 ? s : s.slice(i + 1)).toUpperCase();
+    };
+
+    /** NetSuite's letter → the label a person recognises. Display only. */
+    const NS_STATUS_LABEL = {
+        A: 'Pending Approval',
+        B: 'Pending Fulfillment',
+        D: 'Partially Fulfilled',
+        E: 'Pending Billing/Partially Fulfilled',
+        F: 'Pending Billing',
+    };
+
+    /**
+     * NetSuite status → one of the three ARCH pills.
+     *
+     * Nothing maps to 'Ready to Build' and nothing should: it is a manual header
+     * tick that does not exist yet. A and B mean the goods are committed and still
+     * here; D, E and F all mean something has physically shipped.
+     */
+    const archStatusFor = (raw) => {
+        switch (statusLetter(raw)) {
+            case 'D':
+            case 'E':
+            case 'F':
+                return 'In Transit';
+            default:
+                return 'Reserved';
+        }
+    };
+
+    const OPEN_ORDERS_SQL =
+        'SELECT ' +
+        '  t.id                            AS tranid, ' +
+        '  t.tranid                        AS sono, ' +
+        '  t.trandate                      AS trandate, ' +
+        '  t.status                        AS status, ' +
+        '  t.entity                        AS customerid, ' +
+        '  BUILTIN.DF(t.entity)            AS customer, ' +
+        '  t.employee                      AS repid, ' +
+        '  BUILTIN.DF(t.employee)          AS rep, ' +
+        // The ISO CODE. BUILTIN.DF gives "US Dollar", which is a label and throws
+        // RangeError if it ever reaches a currency formatter — see
+        // handleGetCustomers, where that took the whole React app down.
+        '  cur.symbol                      AS currencycode, ' +
+        '  t.otherrefnum                   AS customerpo, ' +
+        '  BUILTIN.DF(t.custbody_incoterms) AS incoterms, ' +
+        // `shipdate` is the NATIVE field and it is populated. Verified 2026-08-20:
+        // custbody_mgsl_expectedshipdate reads null on every row tried.
+        '  t.shipdate                      AS shipdate, ' +
+        // ⚠️ `shipaddresslist` is NOT_EXPOSED to SEARCH — selecting it is a hard
+        // 400 ("Field not found ... NOT_EXPOSED"), not a null. `shippingaddress`
+        // is the searchable one, and BUILTIN.DF gives the full address block.
+        '  BUILTIN.DF(t.shippingaddress)   AS shipto, ' +
+        '  tl.id                           AS lineid, ' +
+        '  tl.item                         AS itemid, ' +
+        '  i.itemid                        AS itemcode, ' +
+        '  i.displayname                   AS description, ' +
+        '  BUILTIN.DF(i.csegseg_thickness) AS thickness, ' +
+        '  u.unitname                      AS unitname, ' +
+        '  u.conversionrate                AS convrate, ' +
+        '  tl.location                     AS locationid, ' +
+        '  BUILTIN.DF(tl.location)         AS locationname, ' +
+        '  tl.quantity                     AS lineqty, ' +
+        '  tl.rate                         AS linerate, ' +
+        '  tl.quantityshiprecv             AS shiprecv, ' +
+        '  ia.inventorynumber              AS lotid, ' +
+        '  inv.inventorynumber             AS lotno, ' +
+        '  ia.quantity                     AS assignedqty ' +
+        'FROM transactionline tl ' +
+        'JOIN transaction t        ON t.id = tl.transaction ' +
+        'JOIN item i               ON i.id = tl.item ' +
+        'LEFT JOIN currency cur    ON cur.id = t.currency ' +
+        'LEFT JOIN unitstypeuom u  ON u.internalid = i.stockunit ' +
+        // 🔴 ia.transactionline references tl.id, NOT linesequencenumber. Measured
+        // across every transaction 2026-08-01..19: joining on the sequence leaves
+        // 8 assignments orphaned, joining on tl.id leaves 0. The two columns are
+        // equal on single-line orders, which is why this hid for weeks.
+        'LEFT JOIN inventoryassignment ia ' +
+        '       ON ia.transaction = t.id AND ia.transactionline = tl.id ' +
+        'LEFT JOIN inventorynumber inv ON inv.id = ia.inventorynumber ' +
+        // Doing double duty, same as the builder: scopes to hardwood AND drops the
+        // CA-E / TAXQC lines a user event adds to every order, which carry no
+        // segment and would otherwise be counted as sold stock.
+        'WHERE i.cseg_subsidiary_loc = ? ' +
+        "  AND tl.mainline = 'F' " +
+        "  AND tl.isclosed = 'F' " +
+        "  AND t.type = 'SalesOrd' " +
+        // 🔴 EXCLUDE the finished statuses rather than listing the open ones, and
+        // accept BOTH spellings of every letter. `transaction.status` comes back
+        // as a bare letter ("B") through the REST query endpoint but as
+        // "SalesOrd:B" inside SuiteScript's N/query — the same column, two
+        // formats. Listing the open ones therefore matched nothing here and this
+        // tab returned an empty array while SuiteQL saw the order perfectly well.
+        //
+        // Excluding is also the safer direction: a status nobody anticipated shows
+        // up on the tab instead of being silently hidden from it.
+        '  AND t.status NOT IN (' + CLOSED_STATUSES.map((v) => "'" + v + "'").join(',') + ') ' +
+        'ORDER BY t.trandate DESC, t.id DESC, tl.id';
+
+    /** Counts hardwood-tagged items, so an empty tab can explain itself. */
+    const HARDWOOD_ITEM_COUNT_SQL =
+        'SELECT COUNT(*) AS n FROM item i WHERE i.cseg_subsidiary_loc = ?';
+
+    /**
+     * yyyy-mm-dd from whatever SuiteQL hands back, or '' — never a guess.
+     * This tenant returns M/D/YYYY through the REST query endpoint.
+     */
+    const isoDate = (v) => {
+        if (!v) return '';
+        const s = String(v).trim();
+        const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+        if (mdy) {
+            return mdy[3] + '-' + ('0' + mdy[1]).slice(-2) + '-' + ('0' + mdy[2]).slice(-2);
+        }
+        const ymd = s.match(/^(\d{4}-\d{2}-\d{2})/);
+        return ymd ? ymd[1] : '';
+    };
+
+    /** First line of a NetSuite address block — the name, which is what fits a cell. */
+    const addressLabel = (v) => String(v || '').split('\n')[0].trim();
+
+    /**
+     * Trims binary-float tails so a cell reads 8.31444 rather than
+     * 8.314440000000001.
+     *
+     * Both conversions here are a multiply or divide by 0.001, which is not
+     * representable, so the noise is guaranteed rather than incidental. Six places
+     * is chosen to be wider than the data: an MBF rate carries two decimals, and
+     * dividing it by a thousand needs five.
+     */
+    const tidy = (n, places) => {
+        if (!isFinite(n)) return 0;
+        const f = Math.pow(10, places);
+        return Math.round(n * f) / f;
+    };
+
+    const handleGetOpenOrders = () => {
+        let rows;
+        try {
+            rows = query.runSuiteQL({
+                query: OPEN_ORDERS_SQL,
+                params: [HARDWOOD_SEGMENT],
+            }).asMappedResults();
+        } catch (e) {
+            log.error('ARCH service — open orders failed',
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return {
+                success: false,
+                error: 'Open sales orders could not be loaded: ' + (e.message || String(e)),
+            };
+        }
+
+        /* Row cost by item+location, from the cache the grid already serves, so the
+         * two tabs cannot disagree about what a board foot cost. A pair with no
+         * cached cost stays null, which the front end renders as unknown rather
+         * than as zero. A cache miss here is survivable — the margin column
+         * declines to show a number — whereas a thrown request is not. */
+        const costByPair = {};
+        try {
+            const summary = readSummary(getMyCache());
+            if (summary.present && summary.rows) {
+                summary.rows.forEach((r) => {
+                    const c = parseFloat(r.avgCostPerUnit);
+                    costByPair[String(r.internalId) + '__' + String(r.locationId)] =
+                        isFinite(c) ? c : null;
+                });
+            }
+        } catch (e) {
+            log.audit('ARCH open orders — cost lookup unavailable',
+                (e.name || '') + ': ' + (e.message || String(e)));
+        }
+
+        const byOrder = {};
+        const ordered = [];
+        const lineSeen = {};
+        const lineOrder = [];
+
+        rows.forEach((r) => {
+            const tranId = String(r.tranid);
+            if (!byOrder[tranId]) {
+                const letter = statusLetter(r.status);
+                byOrder[tranId] = {
+                    // 🔴 The append target. See the header.
+                    internalId: tranId,
+                    soNo:       String(r.sono || ('SO ' + tranId)),
+                    customer:   String(r.customer || ''),
+                    customerId: r.customerid ? String(r.customerid) : null,
+                    // The trader IS the sales rep on the transaction. Grouping the
+                    // tab by anything else would invent an owner.
+                    trader:     String(r.rep || 'Unassigned'),
+                    traderId:   r.repid ? String(r.repid) : null,
+                    shipTo:     addressLabel(r.shipto),
+                    shipToFull: String(r.shipto || ''),
+                    currency:   String(r.currencycode || ''),
+                    customerPO: String(r.customerpo || ''),
+                    incoterms:  String(r.incoterms || ''),
+                    created:    isoDate(r.trandate),
+                    shipDate:   isoDate(r.shipdate),
+                    // NetSuite's Sales Team sublist is deliberately NOT read. The
+                    // wizard already falls back when this is blank, and returning
+                    // the rep's name under a "team" label would be a guess dressed
+                    // up as data.
+                    salesTeam:  '',
+                    status:     archStatusFor(letter),
+                    nsStatus:   letter,
+                    nsStatusLabel: NS_STATUS_LABEL[letter] || letter,
+                    lines:      [],
+                };
+                ordered.push(byOrder[tranId]);
+            }
+
+            const o = byOrder[tranId];
+            const lineKey = tranId + '|' + String(r.lineid);
+
+            /* ⚠️ THIS QUERY FANS OUT. A line with three lot assignments returns
+             * three rows carrying the SAME line quantity and rate. Line-level
+             * values are therefore taken ONCE per (transaction, line), and the
+             * assignment rows only attribute that quantity to lots. Summing across
+             * the raw rows triples the figure — the same cartesian trap the builder
+             * and archSplitQueue both document. */
+            if (!lineSeen[lineKey]) {
+                const rate = parseFloat(r.convrate);
+                const conv = isFinite(rate) && rate > 0 ? rate : 1;
+                const shipped = Math.abs(parseFloat(r.shiprecv) || 0);
+                const pairKey = String(r.itemid) + '__' + String(r.locationid);
+                const cost = Object.prototype.hasOwnProperty.call(costByPair, pairKey)
+                    ? costByPair[pairKey]
+                    : null;
+
+                lineSeen[lineKey] = {
+                    conv:         conv,
+                    qtyBase:      Math.abs(parseFloat(r.lineqty) || 0),
+                    assignedBase: 0,
+                    lineId:       String(r.lineid),
+                    tranId:       tranId,
+                    shell: {
+                        internalId:   String(r.itemid),
+                        itemCode:     String(r.itemcode || ''),
+                        description:  String(r.description || r.itemcode || ''),
+                        thickness:    String(r.thickness || ''),
+                        locationName: String(r.locationname || ''),
+                        locationId:   String(r.locationid || ''),
+                        // RAW NetSuite unit name. The front end normalises it.
+                        unitName:     String(r.unitname || ''),
+                        costPerBF:    cost,
+                        costSource:   cost === null ? 'unknown' : 'rowAverage',
+                        pricePerBF:   tidy((parseFloat(r.linerate) || 0) * conv, 6),
+                        // A partly-shipped line belongs in outbound, not reserve.
+                        bucket:       shipped > 0 ? 'outbound' : 'reserve',
+                        existing:     true,
+                        lineStatus:   archStatusFor(String(r.status || '')),
+                    },
+                };
+                lineOrder.push(lineKey);
+            }
+
+            const seen = lineSeen[lineKey];
+            const lotId = r.lotid ? String(r.lotid) : '';
+            if (!lotId) return;   // no assignment on this row; residual handled below
+
+            const assignedBase = Math.abs(parseFloat(r.assignedqty) || 0);
+            seen.assignedBase += assignedBase;
+            o.lines.push(Object.assign({}, seen.shell, {
+                // Namespaced by SO and line so an existing order line can never
+                // collide with the same lot picked off the grid — that collision
+                // showed as duplicate rows and visibly doubled board feet.
+                key:         'so:' + o.soNo + '|' + seen.lineId + '|' + lotId,
+                lotNo:       String(r.lotno || ''),
+                lotId:       lotId,
+                containerNo: '',
+                bf:          tidy(assignedBase / seen.conv, 4),
+            }));
+        });
+
+        /* ── The unattributed remainder ──────────────────────────────────────────
+         *
+         * A line's assignments may cover only part of it, or none of it. The one
+         * open hardwood SO in the sandbox today, SO-CWP-001329, carries NO
+         * inventory detail on any of its three lines. Emitting only the assigned
+         * portion would under-report every total on the tab while looking complete.
+         *
+         * So the residual is emitted as a lot-less line, which is the same
+         * accounting the builder's `unattributed` does for the grid. A blank lot
+         * number is the honest signal that the quantity is real but cannot be
+         * traced to a bundle. Iterated in `lineOrder` rather than over the object
+         * so line order is stable rather than whatever key order the engine gives.
+         */
+        lineOrder.forEach((lineKey) => {
+            const seen = lineSeen[lineKey];
+            const o = byOrder[seen.tranId];
+            if (!o) return;
+            const residualBase = seen.qtyBase - seen.assignedBase;
+            // A ten-thousandth of a base unit is a rounding tail, not a remainder.
+            if (residualBase <= 0.0001) return;
+            o.lines.push(Object.assign({}, seen.shell, {
+                key:          'so:' + o.soNo + '|' + seen.lineId + '|unattributed',
+                lotNo:        '',
+                lotId:        '',
+                containerNo:  '',
+                bf:           tidy(residualBase / seen.conv, 4),
+                unattributed: true,
+            }));
+        });
+
+        /* ── Why this tab can look empty, and it is not a bug ────────────────────
+         *
+         * Measured 2026-08-20: only SIX items in the whole account carry
+         * cseg_subsidiary_loc = Hardwood, and every other CWP sales order runs on
+         * untagged SS* items. So exactly ONE sales order in the account has ever
+         * touched a hardwood-tagged item. Until the remaining SKUs are tagged
+         * (todo 0.1, Lucas), real orders will not appear here — and the cause is
+         * the tag, not this query. Returning the count lets the front end say that
+         * instead of showing a blank table.
+         */
+        let taggedItemCount = null;
+        try {
+            const c = query.runSuiteQL({
+                query: HARDWOOD_ITEM_COUNT_SQL,
+                params: [HARDWOOD_SEGMENT],
+            }).asMappedResults();
+            const n = c && c.length ? parseInt(c[0].n, 10) : NaN;
+            taggedItemCount = isFinite(n) ? n : null;
+        } catch (e) {
+            log.audit('ARCH open orders — tagged item count unavailable',
+                (e.name || '') + ': ' + (e.message || String(e)));
+        }
+
+        return {
+            success: true,
+            source: 'netsuite',
+            orders: ordered,
+            taggedItemCount: taggedItemCount,
+        };
+    };
+
     const getHandler = (dataIn) => {
         const action = (dataIn && dataIn.action) || 'get';
         const handlers = {
@@ -542,6 +960,7 @@ define([
             customers:  handleGetCustomers,
             customerAddresses: handleGetCustomerAddresses,
             salesReps:  handleGetSalesReps,
+            openOrders: handleGetOpenOrders,
         };
         const handler = handlers[action];
         if (!handler) return { success: false, error: 'Unknown action: ' + action };

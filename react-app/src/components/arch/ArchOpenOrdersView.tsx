@@ -30,7 +30,9 @@ import * as React from 'react';
 import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import { traderInitials, traderColorMap } from '@/lib/archTraders';
-import { getOpenOrders, TRADERS } from '@/lib/archOrderFixtures';
+import { TRADERS } from '@/lib/archOrderFixtures';
+import { useArchOpenOrders } from '@/hooks/useArchOpenOrders';
+import type { ArchLiveOpenOrder } from '@/hooks/useArchOpenOrders';
 import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archOrder';
 
 /* ── Derived figures ────────────────────────────────────────────────────────*/
@@ -44,6 +46,22 @@ const lineMargin = (l: ArchCartLine) => {
   const r = lineRevenue(l);
   return r > 0 ? lineProfit(l) / r : 0;
 };
+
+/**
+ * 🔴 A line with no cost is not a line with zero cost.
+ *
+ * `?? 0` above is arithmetic-only, and with live data it is reachable: a lot that
+ * has been sold may no longer be on hand to cost, and the endpoint returns
+ * `costPerBF: null` when the cache has no figure for that item and location.
+ * Treating that as zero reports the whole of revenue as profit at a 100% margin,
+ * which is the most flattering possible lie and looks entirely plausible.
+ *
+ * With fixtures every line carried a cost, so this never showed. Live data is
+ * what makes it reachable, which is why the guard arrives with it.
+ */
+const costKnown = (l: ArchCartLine) => l.costPerBF !== null && l.costPerBF !== undefined;
+const allCostsKnown = (rows: ArchCartLine[]) => rows.every(costKnown);
+const UNKNOWN = '—';
 
 /** Quantities of an order grouped by unit — an order may mix Lumber and Veneer. */
 const orderQtys = (o: ArchOpenOrder) => o.lines.map((l) => ({ unit: l.unit, qty: l.bf }));
@@ -140,14 +158,43 @@ const td: React.CSSProperties = {
 
 const num: React.CSSProperties = { ...td, textAlign: 'right', whiteSpace: 'nowrap' };
 
+/** Shared shell for the source banner, so its three states cannot drift apart. */
+const notice: React.CSSProperties = {
+  display: 'flex',
+  gap: 9,
+  alignItems: 'flex-start',
+  margin: '0 0 2px',
+  padding: '9px 14px',
+  borderRadius: '10px 10px 0 0',
+  fontSize: 11.5,
+  lineHeight: 1.5,
+};
+
 interface ArchOpenOrdersViewProps {
   /** Open the sales-order builder on this order. */
   onEditOrder?: (soNo: string) => void;
 }
 
 export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => {
-  const orders = React.useMemo(() => getOpenOrders(), []);
-  const traderColors = React.useMemo(() => traderColorMap(TRADERS), []);
+  const { orders, source, error, taggedItemCount } = useArchOpenOrders();
+  const isDemo = source !== 'netsuite';
+
+  /**
+   * Traders that actually appear in the data, not the fixture roster.
+   *
+   * The filter used to be populated from `TRADERS`, so with live orders it would
+   * offer names nobody sold anything under and omit whoever did. TRADERS is still
+   * imported for the COLOUR map, where a stable palette across the fixture and
+   * live sets is what keeps a trader the same colour between the two.
+   */
+  const tradersPresent = React.useMemo(
+    () => [...new Set(orders.map((o) => o.trader).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [orders]
+  );
+  const traderColors = React.useMemo(
+    () => traderColorMap([...new Set([...TRADERS, ...tradersPresent])]),
+    [tradersPresent]
+  );
 
   const [traderFilter, setTraderFilter] = React.useState('');
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
@@ -158,7 +205,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
   );
 
   const groups = React.useMemo(() => {
-    const byTrader = new Map<string, ArchOpenOrder[]>();
+    const byTrader = new Map<string, ArchLiveOpenOrder[]>();
     visible.forEach((o) => {
       if (!byTrader.has(o.trader)) byTrader.set(o.trader, []);
       byTrader.get(o.trader)!.push(o);
@@ -178,6 +225,13 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
   const totalQtys = visible.flatMap(orderQtys);
   const totalSales = visible.reduce((s, o) => s + orderRevenue(o), 0);
   const totalProfit = visible.reduce((s, o) => s + orderProfit(o), 0);
+  /**
+   * One uncosted line anywhere in view makes the TOTAL profit unknown, not
+   * slightly optimistic. Summing the costed lines and printing the result as
+   * "Est. profit" would report a number that is right for a subset and labelled as
+   * though it covered everything.
+   */
+  const totalProfitKnown = visible.every((o) => allCostsKnown(o.lines));
 
   /**
    * Currencies actually present in what is on screen.
@@ -218,37 +272,41 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
     // dark mode, and this view's dark text vanished.
     <div style={{ margin: '0 4px 4px', borderRadius: 10, background: '#EEF1F6', color: ARCH_SURFACE.text }}>
       {/*
-        🔴 SAYS THESE ORDERS ARE NOT REAL, because nothing else did.
-        `getOpenOrders()` is entirely fixtures — invented customers, SO numbers and
-        quantities — and it sat next to a Hardwood tab showing genuine live
-        inventory with a "Live" badge. Anyone opening this tab would reasonably
-        read the orders as real, and MGSL are working in this sandbox.
-        Every other surface here declares its source (the grid's Live badge, the
-        split queue's `source`); this one did so only in code comments.
-        Remove this banner when the view is fed by real sales orders, not before.
+        DECLARES ITS SOURCE, in whichever of three states this tab is in.
+        Every other ARCH surface does (the grid's Live badge, the split queue's
+        `source`); this one used to say so only in code comments, while sitting one
+        tab away from genuine live inventory. MGSL are working in this sandbox, so
+        invented orders reading as real is a live hazard, not a cosmetic one.
+
+        The third state is the interesting one. Live and EMPTY is the normal case
+        today and it is not a quiet day: only a handful of items carry the Hardwood
+        segment, and every other CWP order runs on untagged SKUs, so the orders
+        exist and this query cannot see them. A blank table would read as "no open
+        orders", which is the wrong conclusion to hand somebody.
       */}
-      <div
-        style={{
-          display: 'flex',
-          gap: 9,
-          alignItems: 'flex-start',
-          margin: '0 0 2px',
-          padding: '9px 14px',
-          borderRadius: '10px 10px 0 0',
-          background: '#FFF8E1',
-          borderBottom: '1px solid #E6B800',
-          fontSize: 11.5,
-          color: '#7A4100',
-          lineHeight: 1.5,
-        }}
-      >
-        <span style={{ fontSize: 13, lineHeight: 1 }}>⚠️</span>
-        <span>
-          <strong>Demo data.</strong> These orders are placeholders, not real sales orders —
-          the customers, SO numbers and quantities are invented. The Hardwood tab is live;
-          this one is not yet.
-        </span>
-      </div>
+      {isDemo ? (
+        <div style={{ ...notice, background: '#FFF8E1', borderBottom: '1px solid #E6B800', color: '#7A4100' }}>
+          <span style={{ fontSize: 13, lineHeight: 1 }}>⚠️</span>
+          <span>
+            <strong>Demo data.</strong> These orders are placeholders, not real sales orders —
+            the customers, SO numbers and quantities are invented, and none of them can be
+            added to. {error || 'The Hardwood tab is live; this one is not connected.'}
+          </span>
+        </div>
+      ) : orders.length === 0 ? (
+        <div style={{ ...notice, background: '#EFF6FF', borderBottom: '1px solid #93C5FD', color: '#1E40AF' }}>
+          <span style={{ fontSize: 13, lineHeight: 1 }}>ℹ️</span>
+          <span>
+            <strong>Live, and nothing to show.</strong> No open sales order carries a
+            hardwood-tagged item.
+            {taggedItemCount !== null && (
+              <> Only {taggedItemCount} item{taggedItemCount === 1 ? '' : 's'} in the account
+                carry the Hardwood segment, so orders on untagged SKUs cannot appear here.</>
+            )}{' '}
+            Tagging the remaining hardwood items will populate this tab.
+          </span>
+        </div>
+      ) : null}
       {/*
         FULL WIDTH, no content cap. This view was capped at 1680 to keep the
         saccade from SO # to Est. profit short on a 2560px monitor, but Marc-Antoine
@@ -282,7 +340,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
           style={{ ...control, minWidth: 168 }}
         >
           <option value="">All traders</option>
-          {TRADERS.map((t) => (
+          {tradersPresent.map((t) => (
             <option key={t} value={t}>
               {t}
             </option>
@@ -313,7 +371,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
             },
             {
               label: mixedCurrency ? 'Est. profit · mixed' : `Est. profit · ${soleCurrency}`,
-              value: money(totalProfit),
+              value: totalProfitKnown ? money(totalProfit) : UNKNOWN,
               mono: true,
             },
           ].map((s, i) => (
@@ -412,6 +470,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                 const subItems = list.reduce((s, o) => s + o.lines.length, 0);
                 const subSales = list.reduce((s, o) => s + orderRevenue(o), 0);
                 const subProfit = list.reduce((s, o) => s + orderProfit(o), 0);
+                const subProfitKnown = list.every((o) => allCostsKnown(o.lines));
 
                 return (
                   <tbody key={trader}>
@@ -554,10 +613,26 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                               <Money n={orderRevenue(o)} currency={o.currency} />
                             </td>
                             <td
-                              style={{ ...num, fontWeight: 700, paddingRight: 14, color: profitColor(orderMargin(o)) }}
+                              style={{
+                                ...num,
+                                fontWeight: 700,
+                                paddingRight: 14,
+                                color: allCostsKnown(o.lines)
+                                  ? profitColor(orderMargin(o))
+                                  : ARCH_SURFACE.textLight,
+                              }}
                               className="font-mono"
+                              title={
+                                allCostsKnown(o.lines)
+                                  ? undefined
+                                  : 'At least one line has no lot cost, so this order has no profit figure.'
+                              }
                             >
-                              <Money n={orderProfit(o)} currency={o.currency} />
+                              {allCostsKnown(o.lines) ? (
+                                <Money n={orderProfit(o)} currency={o.currency} />
+                              ) : (
+                                UNKNOWN
+                              )}
                             </td>
                           </tr>
 
@@ -621,11 +696,18 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                                     ...num,
                                     padding: '6px 12px 6px 12px',
                                     paddingRight: 14,
-                                    color: profitColor(lineMargin(l)),
+                                    color: costKnown(l)
+                                      ? profitColor(lineMargin(l))
+                                      : ARCH_SURFACE.textLight,
                                   }}
                                   className="font-mono"
+                                  title={costKnown(l) ? undefined : 'No lot cost for this line.'}
                                 >
-                                  <Money n={lineProfit(l)} currency={o.currency} />
+                                  {costKnown(l) ? (
+                                    <Money n={lineProfit(l)} currency={o.currency} />
+                                  ) : (
+                                    UNKNOWN
+                                  )}
                                 </td>
                                 {li === o.lines.length - 1 && null}
                               </tr>
@@ -679,8 +761,15 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                                 <span style={{ color: ARCH_SURFACE.textMid }} title={`Orders in ${cur.join(' and ')} — not summed`}>
                                   Mixed
                                 </span>
-                              ) : (
+                              ) : subProfitKnown ? (
                                 <Money n={subProfit} currency={cur[0] || 'USD'} />
+                              ) : (
+                                <span
+                                  style={{ color: ARCH_SURFACE.textLight }}
+                                  title="At least one line in this group has no lot cost."
+                                >
+                                  {UNKNOWN}
+                                </span>
                               )}
                             </td>
                           </>

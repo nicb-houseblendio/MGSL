@@ -396,10 +396,16 @@ function TraderScreenContent() {
             variant="ghost"
             size="icon"
             onClick={() => void doRefresh()}
-            // No cache behind ARCH — refreshing would fire a summary request with
-            // no subsidiary id.
+            // Still disabled for ARCH, but NOT for the reason this used to give.
+            // ARCH has had a real cache since Phase 1 landed and its grid is live;
+            // what is missing is the wiring. `doRefresh` drives the IND/MTL
+            // `fetchSummary`, whereas ARCH loads through `useArchSummaryData`, so
+            // pressing this would fire the wrong request rather than rebuild
+            // anything. The old title said ARCH was running on demo data, which is
+            // no longer true and is exactly the kind of stale reassurance that
+            // makes somebody distrust the rest of the screen.
             disabled={isARCH || refreshState === 'checking' || refreshState === 'fetching'}
-            title={isARCH ? 'Not applicable — CWP ARCH is running on demo data' : 'Refresh'}
+            title={isARCH ? 'Not wired to the ARCH cache yet — it rebuilds hourly' : 'Refresh'}
             className="h-8 w-8 text-white hover:bg-white/10 disabled:opacity-40"
           >
             <RefreshCw className={`h-4 w-4 ${(refreshState === 'checking' || refreshState === 'fetching') ? 'animate-spin' : ''}`} />

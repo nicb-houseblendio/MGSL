@@ -33,8 +33,8 @@ import {
   currenciesFor,
   paymentTermsFor,
   salesTeamFor,
-  getOpenOrders,
 } from '@/lib/archOrderFixtures';
+import { useArchOpenOrders } from '@/hooks/useArchOpenOrders';
 import type {
   ArchCartLine,
   ArchOrderDraft,
@@ -364,8 +364,24 @@ export const SOWizard = ({
   const [addingAddress, setAddingAddress] = React.useState(false);
   const [newAddress, setNewAddress] = React.useState({ name: '', street: '', city: '' });
 
-  const openOrders = React.useMemo(() => getOpenOrders(), []);
+  /**
+   * 🔴 LIVE open orders, because the append path could not work without them.
+   *
+   * This list used to come from `getOpenOrders()`, a fixture generator, so the
+   * only append target the wizard could offer was an invented SO NUMBER. The write
+   * endpoint takes an internal ID and parses it strictly, so every append was
+   * refused with "Adding to an existing order needs the internal id of that
+   * order" — at the final step, after the trader had filled in the whole wizard.
+   *
+   * `existingSO` still holds the SO NUMBER, because that is what the trader reads
+   * and what every label below prints. The id is looked up from the chosen order
+   * and only appears in the draft. Keeping them separate is deliberate: the two
+   * are not interchangeable and conflating them is the bug that was here.
+   */
+  const { orders: openOrders, source: openOrdersSource } = useArchOpenOrders();
   const chosenOrder = openOrders.find((o) => o.soNo === existingSO) || null;
+  /** Null for a demo order, which therefore cannot be submitted. */
+  const chosenOrderId = chosenOrder ? chosenOrder.internalId : null;
 
   /**
    * Lines already on the chosen SO first, then the lots picked off the grid —
@@ -474,10 +490,23 @@ export const SOWizard = ({
     setExistingSO(soNo);
     if (!o) return;
     setCustomer(o.customer);
+    // 🔴 The ID, not just the name. Without it the ship-to list stays empty and a
+    // REQUIRED field can never be filled, which blocked this whole path. It also
+    // means the draft carries a customer the server can resolve.
+    setCustomerId(o.customerId || '');
     setShipTo(o.shipTo);
+    // Keeps the address the order already has when it has one, rather than moving
+    // it to the customer's default behind the trader's back.
+    loadAddressesFor(o.customerId || '', o.shipTo || undefined);
     setCurrency(o.currency);
     setIncoterms(o.incoterms);
-    setSalesTeam(o.salesTeam || salesTeamFor(o.customer));
+    // The rep already on the order, by ID, because that is what the live dropdown
+    // is keyed on and what the write path needs. Falling straight through to
+    // `salesTeamFor()` put a fixture TEAM NAME in here, which matched no option in
+    // the live list: the field looked empty while validation thought it was filled.
+    const orderRepId = o.traderId || '';
+    setSalesRepId(orderRepId);
+    setSalesTeam(orderRepId || o.salesTeam || salesTeamFor(o.customer));
     setShipDate(o.shipDate || '');
     // Carry the agreed price across so Pricing is already satisfied for lines
     // that are already sold. The trader only has to price what they just added.
@@ -517,21 +546,38 @@ export const SOWizard = ({
     // the default shipping address (falling back to billing, then the only one)
     // matches what the server would resolve anyway, so the trader sees the same
     // answer rather than an empty required field.
+    loadAddressesFor(hit && hit.id ? hit.id : '');
+  };
+
+  /**
+   * Loads a customer's ship-to addresses and preselects the sensible one.
+   *
+   * 🔴 EXTRACTED because "add to existing order" never called it, and that made
+   * the append path unusable for a second reason. `applyExistingOrder` set the
+   * customer NAME and not the id, so no address fetch ever ran, the Ship-to list
+   * held nothing but "Add new address" — and Ship-to is REQUIRED, so the trader
+   * could not get past the header step of an order whose customer NetSuite knows
+   * perfectly well.
+   *
+   * `preferLabel` lets an existing order keep the address it already carries
+   * rather than being silently moved to the customer's default.
+   */
+  const loadAddressesFor = (id: string, preferLabel?: string) => {
     setLiveAddresses([]);
     setShipAddressId('');
-    if (hit && hit.id) {
-      fetchCustomerAddresses(hit.id).then((addrs) => {
-        setLiveAddresses(addrs);
-        const preferred =
-          addrs.find((a) => a.isDefaultShipping) ||
-          addrs.find((a) => a.isDefaultBilling) ||
-          addrs[0];
-        if (preferred) {
-          setShipAddressId(preferred.id);
-          setShipTo(preferred.label);
-        }
-      });
-    }
+    if (!id) return;
+    fetchCustomerAddresses(id).then((addrs) => {
+      setLiveAddresses(addrs);
+      const preferred =
+        (preferLabel && addrs.find((a) => a.label === preferLabel)) ||
+        addrs.find((a) => a.isDefaultShipping) ||
+        addrs.find((a) => a.isDefaultBilling) ||
+        addrs[0];
+      if (preferred) {
+        setShipAddressId(preferred.id);
+        setShipTo(preferred.label);
+      }
+    });
   };
 
   /** Fixture path: no id, so the order cannot be submitted. */
@@ -558,17 +604,49 @@ export const SOWizard = ({
    * Preload when opened from Edit. Runs on the value rather than on mount so a
    * second Edit, on a different order, re-primes the wizard even if React has
    * kept the instance alive.
+   *
+   * 🔴 SPLIT IN TWO because the order list became ASYNCHRONOUS. This was one
+   * effect that entered edit mode and populated the header together, which was
+   * correct only while `getOpenOrders()` was a synchronous fixture call. Against
+   * the live endpoint `openOrders` is still empty on this first pass, so
+   * `applyExistingOrder` hit its own `if (!o) return` and the trader who clicked
+   * Edit on a real order got the right SO number above a completely blank header.
+   *
+   * Nothing in the types or the build could see that: the list is the same shape
+   * either way, it is only late.
    */
   React.useEffect(() => {
     if (!initialExistingSO) return;
     setMode('existing');
-    applyExistingOrder(initialExistingSO);
+    setExistingSO(initialExistingSO);
     setStepIndex(1);
-    // applyExistingOrder is recreated every render; depending on it would loop.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialExistingSO]);
 
-  const startOk = mode === 'new' || !!existingSO;
+  /**
+   * Populates the header once the chosen order has actually arrived.
+   *
+   * Guarded by a ref rather than by state so it runs EXACTLY ONCE per order: the
+   * effect re-fires when `openOrders` resolves, and without the guard a second run
+   * would overwrite anything the trader had already typed.
+   */
+  const preloadedSO = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!initialExistingSO) return;
+    if (preloadedSO.current === initialExistingSO) return;
+    if (!openOrders.some((o) => o.soNo === initialExistingSO)) return;
+    preloadedSO.current = initialExistingSO;
+    applyExistingOrder(initialExistingSO);
+    // applyExistingOrder is recreated every render; depending on it would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialExistingSO, openOrders]);
+
+  /**
+   * A chosen order is not enough — it has to be one that can actually be written
+   * to. A demo order carries no internal id, and letting the trader continue on
+   * one only moves the refusal to the last step, which is precisely the failure
+   * this change exists to remove.
+   */
+  const startOk = mode === 'new' || !!chosenOrderId;
   const itemsOk = lines.length > 0;
   /**
    * Customer PO is REQUIRED, and that is NetSuite's rule rather than a preference.
@@ -580,9 +658,25 @@ export const SOWizard = ({
    * means the trader is told on the step that owns the field instead of after
    * pricing every line.
    */
+  /**
+   * 🔴 When the rep list is LIVE, the ID is what has to be set — not the display
+   * string. `salesTeam` holds the select's value, and on the live path that value
+   * is a rep id while on the fixture path it is a team name. Checking only
+   * `salesTeam` let a fixture team name left over from `salesTeamFor()` satisfy a
+   * required field whose dropdown was visibly showing "Select sales rep": the
+   * value matched no option, so nothing appeared chosen, yet Continue enabled and
+   * the draft went on carrying no rep id at all. Found by opening an existing
+   * order and looking at the step.
+   */
   const headerOk = !!(
-    customer && customerPO.trim() && shipTo && currency && shipDate && incoterms && salesTeam
+    customer && customerPO.trim() && shipTo && currency && shipDate && incoterms && salesTeam &&
+    (liveReps.length === 0 || !!salesRepId)
   );
+  /** The chosen rep's NAME, for anywhere a person reads it rather than the server. */
+  const salesRepName = React.useMemo(() => {
+    const hit = liveReps.find((r) => r.id === salesRepId);
+    return hit ? hit.name : '';
+  }, [liveReps, salesRepId]);
   const splitOk = lines.every((l) => {
     const s = sp(l.key);
     if (!s.on) return true;
@@ -615,7 +709,9 @@ export const SOWizard = ({
 
   const buildDraft = (): ArchOrderDraft => ({
     mode,
-    existingSO: mode === 'existing' ? existingSO : null,
+    // 🔴 The INTERNAL ID, never the SO number. `int()` on the server rejects
+    // "SO-CWP-001329" outright, which is how every append came to be refused.
+    existingSO: mode === 'existing' ? chosenOrderId : null,
     header: {
       customer,
       customerId: customerId || undefined,
@@ -730,6 +826,24 @@ export const SOWizard = ({
             onChange={(e) => setSoSearch(e.target.value)}
             style={{ ...field(false), marginBottom: 10 }}
           />
+          {openOrdersSource === 'fixtures' && (
+            <div
+              style={{
+                padding: '9px 12px',
+                marginBottom: 10,
+                borderRadius: 9,
+                background: '#FFF8E1',
+                border: '1px solid #E6B800',
+                fontSize: 11.5,
+                color: '#7A4100',
+                lineHeight: 1.5,
+              }}
+            >
+              <strong>Demo orders.</strong> The live order list could not be loaded, so these
+              are placeholders and none of them can be added to. Creating a new order still
+              works.
+            </div>
+          )}
           {(() => {
             const q = soSearch.trim().toLowerCase();
             const matches = openOrders.filter(
@@ -756,14 +870,25 @@ export const SOWizard = ({
                 {matches.map((o) => {
                   const sel = o.soNo === existingSO;
                   // Ready to Build means the warehouse has started — no more edits.
-                  const locked = o.status === 'Ready to Build';
+                  const readyToBuild = o.status === 'Ready to Build';
+                  // A demo order has no internal id, so nothing can be written to
+                  // it. Disabling it here is what keeps the refusal off the last
+                  // step of the wizard.
+                  const demo = !o.internalId;
+                  const locked = readyToBuild || demo;
                   return (
                     <button
                       key={o.soNo}
                       type="button"
                       disabled={locked}
                       onClick={() => applyExistingOrder(o.soNo)}
-                      title={locked ? 'Ready to Build — the warehouse is preparing this order, it can no longer be edited' : undefined}
+                      title={
+                        readyToBuild
+                          ? 'Ready to Build — the warehouse is preparing this order, it can no longer be edited'
+                          : demo
+                            ? 'Demo order — not a real sales order, so nothing can be added to it'
+                            : undefined
+                      }
                       style={{
                         textAlign: 'left',
                         display: 'flex',
@@ -2008,7 +2133,11 @@ export const SOWizard = ({
           ['Incoterms', incoterms || '—'],
           ['Currency', currency || '—'],
           ['Payment terms', paymentTermsFor(customer) || '—'],
-          ['Sales team', salesTeam || '—'],
+          // `salesTeam` holds the SELECT's value, which on the live path is a rep
+          // internal id — so printing it raw showed the trader "120" where a name
+          // belongs. Resolve it back to the name, and fall through to the value
+          // itself on the fixture path, where it already IS a team name.
+          ['Sales team', salesRepName || salesTeam || '—'],
         ].map(([k, v]) => (
           <div key={k}>
             <div
@@ -2195,10 +2324,17 @@ export const SOWizard = ({
         </div>
       )}
 
+      {/*
+        This note used to say "Create does not write to NetSuite yet", which stopped
+        being true when the write path shipped on 2026-08-20 — the wizard has been
+        creating real sales orders since SO-CWP-001343. Telling a trader their order
+        was not saved when it was is worse than telling them nothing, so what is
+        left is only the part that is still genuinely provisional.
+      */}
       <ProvisionalNote>
-        <strong>Create does not write to NetSuite yet.</strong> It assembles the order and hands it back for
-        inspection. Persistence is blocked on the split marker, the reman fields, the real rates and the SO
-        header field IDs.
+        <strong>This writes a real sales order.</strong> Lots are attached, so the bundles leave
+        availability on save. Still provisional: how a split line is marked, where reman is
+        recorded, and the split and reman rates themselves — none of those reach NetSuite yet.
       </ProvisionalNote>
     </div>
   );
