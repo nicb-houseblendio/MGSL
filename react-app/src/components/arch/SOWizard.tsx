@@ -363,6 +363,8 @@ export const SOWizard = ({
   const [extraAddresses, setExtraAddresses] = React.useState<Record<string, string[]>>({});
   const [addingAddress, setAddingAddress] = React.useState(false);
   const [newAddress, setNewAddress] = React.useState({ name: '', street: '', city: '' });
+  /** The customer whose addresses were asked for LAST. See loadAddressesFor. */
+  const addressRequest = React.useRef<string>('');
 
   /**
    * 🔴 LIVE open orders, because the append path could not work without them.
@@ -589,7 +591,20 @@ export const SOWizard = ({
     setLiveAddresses([]);
     setShipAddressId('');
     if (!id) return;
+    // 🔴 LAST REQUEST WINS, not last RESPONSE. Typing into a native select fires
+    // onChange on EVERY KEYSTROKE, so "County Line" walks the list: "C" lands on
+    // Cofer Bros Inc. (2624) and starts a fetch, and the final letters land on
+    // County Line Materials LLC (2853) and start another. Both are in flight, and
+    // without this guard whichever came back LAST populated the list.
+    //
+    // Observed exactly that: the wizard showing County Line Materials LLC with
+    // Cofer Bros Inc.'s Tucker GA address in its ship-to list. With the id now
+    // travelling alongside the label, selecting it would send ANOTHER CUSTOMER'S
+    // address on the order. A trader using the keyboard in that dropdown does this
+    // every time.
+    addressRequest.current = id;
     fetchCustomerAddresses(id).then((addrs) => {
+      if (addressRequest.current !== id) return;   // a newer pick superseded this
       setLiveAddresses(addrs);
       const preferred =
         (preferLabel && addrs.find((a) => a.label === preferLabel)) ||
