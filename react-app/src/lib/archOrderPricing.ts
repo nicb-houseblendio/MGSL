@@ -31,10 +31,13 @@ import type {
 /**
  * Flat handling fee per lot that has to be physically split.
  *
- * 🔴 CONFIGURATION, DEFAULT OFF. The $200 comes from the client prototype and has
- * never been confirmed — Nic's design carries it as an open question and is
- * explicit that it must not be hard-coded: "built as config, default OFF, until
- * confirmed".
+ * 🔴 CONFIGURATION, DEFAULT OFF, and the two halves of that are separate facts.
+ *
+ * The AMOUNT is the client's own: $200/split, on Marc-Antoine's checklist in his
+ * words. What has never been confirmed is whether we should APPLY it, and Nic's
+ * design is explicit that it must not be hard-coded: "built as config, default
+ * OFF, until confirmed". So the rate is known and the instruction to charge it
+ * is not, which is exactly why this is a switch rather than a constant.
  *
  * So the amount lives on the trader-screen Suitelet as a script parameter and
  * arrives through MCGI_CONFIG. With nothing configured the fee is simply not
@@ -57,8 +60,17 @@ export const splitFee = (): number => {
 };
 
 /**
- * The prototype's figure, kept ONLY so the UI can say what the unconfirmed rate
- * would be when explaining itself. Never used to bill: `splitFee()` is.
+ * ⚠️ MISNAMED, and the name caused a real error. This is NOT a placeholder we
+ * invented: $200/split is the CLIENT'S stated rate, in his own words on his own
+ * checklist ("Presentment 200$/split et 0.20$/mbf pour chaque reman"). I twice
+ * described it as a prototype figure MGSL had never confirmed, wrote that into
+ * the UI, and it nearly went into a client meeting as the question "is there a
+ * split fee?" -- a question he had already answered in writing.
+ *
+ * Kept under the old name only because renaming an exported constant is not
+ * worth a churn commit. What it means: the rate he quoted, which we do NOT
+ * charge yet. `splitFee()` is what bills, and it returns 0 until MGSL switch it
+ * on, because applying a charge nobody has asked us to apply is the worse error.
  */
 export const SPLIT_FEE_PLACEHOLDER = 200;
 /* ── Reman rates — CONFIRMED BY THE CLIENT 2026-08-21, no longer placeholders ──

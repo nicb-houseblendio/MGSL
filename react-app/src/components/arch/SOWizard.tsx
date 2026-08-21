@@ -1639,7 +1639,7 @@ export const SOWizard = ({
         representation.{' '}
         {splitFeeEnabled()
           ? <strong>The ${splitFee()} split fee comes from configuration.</strong>
-          : <strong>No split fee is charged — the ${SPLIT_FEE_PLACEHOLDER} in the prototype was never confirmed, so it stays off.</strong>}
+          : <strong>No split fee is charged yet. MGSL quote ${SPLIT_FEE_PLACEHOLDER} per split, but it stays off until they ask for it to be applied.</strong>}
       </ProvisionalNote>
       <div style={{ fontSize: 12.5, color: ARCH_SURFACE.textMid, lineHeight: 1.5, marginBottom: 14 }}>
         The quantity you enter is a <strong>placeholder</strong>. The warehouse measures each plank and
@@ -2010,9 +2010,9 @@ export const SOWizard = ({
         Profit is computed against the <strong>lot cost</strong>, which is real, and the{' '}
         {(opsInsuranceRate() * 100).toFixed(2)}% operations &amp; insurance charge, which is the rate
         NetSuite already carries on the SO. The reman rates are confirmed at $0.20/BF
-        per service. The only figure still missing is the <strong>split fee</strong>: the
-        ${SPLIT_FEE_PLACEHOLDER} comes from the prototype, not from the client, so it stays off and a
-        split line currently costs nothing. <strong>Do not quote a customer from these margins.</strong>
+        per service. The one rate not applied here is the <strong>split fee</strong>:
+        MGSL quote ${SPLIT_FEE_PLACEHOLDER} per split, but it stays switched off until they ask for
+        it, so a split line currently costs nothing in this margin. <strong>Do not quote a customer from these margins.</strong>
       </ProvisionalNote>
       {lowPricedLines.length > 0 && (
         <div
