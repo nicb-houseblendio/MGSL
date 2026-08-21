@@ -14,9 +14,9 @@
  * which stopped being true when the write path shipped.
  *
  * The reman rates and their placement were answered on 2026-08-21: $0.20/BF per
- * service, stacking, recorded on line-level fields. What is still open is the
- * SPLIT FEE, and it is not waiting on the client either -- the $200 came from the
- * prototype and has never been put to them.
+ * service, stacking, recorded on line-level fields. The SPLIT FEE amount is
+ * settled too and always was: $200/split, on the client's own checklist. What is
+ * open is only whether to APPLY it, so `splitFee()` returns 0 until MGSL say so.
  *
  * The draft is still shaped as INTENT ("this line is a split, target 300 BF")
  * rather than as a NetSuite payload, which is what let the persistence layer land
