@@ -121,16 +121,38 @@ define(['N/query', 'N/log'], (query, log) => {
             'FROM transactionline tl ' +
             'JOIN transaction t   ON t.id = tl.transaction ' +
             'JOIN item i          ON i.id = tl.item ' +
-            // ia.transactionline is the line NUMBER, not transactionline.id. Joining
-            // on tl.id produces a cartesian product.
+            // 🔴 tl.id, NOT tl.linesequencenumber. This file carried the reverse,
+            // with a comment asserting that joining on tl.id "produces a cartesian
+            // product". It does not, and that belief has now been measured false
+            // twice: across every transaction 2026-08-01..19, joining on the
+            // sequence leaves 8 assignments orphaned and joining on tl.id leaves 0,
+            // and 2,073 of 6,003 lines (35%) have id <> seq.
+            //
+            // WHY IT SURVIVED: the columns are EQUAL on a single-line order, which
+            // is every order the P6 suite seeded. Shown 2026-08-20 on SO-CWP-001344,
+            // second line id 6 / seq 2:
+            //     join on tl.id -> lot 49840 (316027-2)  correct
+            //     join on seq   -> NULL                  no bundle at all
+            //
+            // WHY IT MATTERS MOST HERE: this query NAMES the bundle for the
+            // warehouse, and archSplitExecute splits whatever lotId it is handed.
+            // A wrong lot is a real adjustment against the wrong wood; a null one
+            // silently drops the job. The cache builder and archOrderCreate were
+            // both corrected; this file was missed.
             'LEFT JOIN inventoryassignment ia ' +
-            '       ON ia.transaction = t.id AND ia.transactionline = tl.linesequencenumber ' +
+            '       ON ia.transaction = t.id AND ia.transactionline = tl.id ' +
             'LEFT JOIN inventorynumber inv ON inv.id = ia.inventorynumber ' +
             'LEFT JOIN inventorynumberlocation inl ' +
             '       ON inl.inventorynumber = inv.id AND inl.location = tl.location ' +
             "WHERE t.type = 'SalesOrd' " +
             "  AND tl.custcol_mgsl_split = 'T' " +
             '  AND tl.mainline = \'F\' ' +
+            // A cancelled line is not warehouse work. Nothing filtered this, so a
+            // split flagged on a line later closed stayed in the queue and could
+            // still be executed against live stock. Every other consumer of open SO
+            // lines here filters it: the cache builder's buckets, the order
+            // endpoint's commitment guards, the open-orders service.
+            "  AND tl.isclosed = 'F' " +
             'ORDER BY t.tranid, tl.linesequencenumber',
     }).asMappedResults();
 
