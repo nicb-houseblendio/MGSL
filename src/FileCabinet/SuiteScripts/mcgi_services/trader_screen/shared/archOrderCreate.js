@@ -62,8 +62,11 @@
  * checked against the hardwood segment, so this endpoint cannot be used to write
  * IND or MTL orders even by someone crafting their own payload.
  */
-define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExecute'],
-(record, query, search, runtime, log, splitLib) => {
+define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/email',
+        './archSplitExecute'],
+// AMD BINDS POSITIONALLY. N/render and N/email were appended to the array and
+// their parameters inserted at the SAME positions, before splitLib, in one edit.
+(record, query, search, runtime, log, render, email, splitLib) => {
 
     /**
      * `cseg_subsidiary_loc` = 1 is Hardwood. Named `_loc` because Lucas and Julie
@@ -1401,6 +1404,98 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
      * @param {Object} input.header
      * @param {Array}  input.lines
      */
+    /* ── The order confirmation PDF ──────────────────────────────────────────
+     *
+     * 🔴 OFF BY DEFAULT, AND DELIBERATELY SO. This sends real email, and in this
+     * sandbox that is not hypothetical: employee 3293 "Trader Hardwood" — the ARCH
+     * trader test account — carries `ma.poirier+arc@mcgillstlaurent.com`, which is
+     * Marc-Antoine's own address. He is actively testing in here. A feature that
+     * silently mails him from a sandbox he did not know had one is exactly the kind
+     * of surprise that costs trust.
+     *
+     * `custscript_arch_pdf_email_to` therefore has three states:
+     *
+     *   empty            no email at all. The default.
+     *   an address       send there, whoever created the order. Use this in the
+     *                    sandbox so nothing reaches MGSL until they have asked for it.
+     *   the word CREATOR send to the person who created the order, which is the
+     *                    actual feature. Prod only, once MGSL want it.
+     *
+     * Same shape as the split fee: config, default off, until confirmed.
+     *
+     * ── Why failure here is swallowed ───────────────────────────────────────
+     * The order is already saved and verified by the time this runs. If rendering
+     * or mailing fails, the order is still correct and the trader must not be told
+     * it failed — the same reasoning that makes `assignLots` non-fatal. Logged at
+     * AUDIT for a config problem, ERROR only when it actually broke.
+     */
+    const PDF_EMAIL_PARAM = 'custscript_arch_pdf_email_to';
+
+    const sendOrderPdf = (soId, tranId, creatorId) => {
+        /* 🔴 READ DEFENSIVELY. `param()` calls getParameter with no try/catch, and
+         * a parameter that is not on the DEPLOYED script is not guaranteed to come
+         * back null — it can throw. Without this, uploading the JS before the
+         * script object would break order creation outright, which is a far worse
+         * outcome than an unsent email. This way the file is deployable on its own
+         * and the object can follow whenever the feature is actually wanted. */
+        let target = '';
+        try {
+            target = String(param(PDF_EMAIL_PARAM) || '').trim();
+        } catch (e) {
+            log.audit('ARCH Order PDF',
+                'Parameter ' + PDF_EMAIL_PARAM + ' is not on this deployment yet, so no ' +
+                'confirmation was sent. The order is unaffected.');
+            return { sent: false, reason: 'parameter not deployed' };
+        }
+        if (!target) return { sent: false, reason: 'not configured' };
+
+        try {
+            // The PDF comes from the transaction's own form, so it is whatever
+            // NetSuite would print — no layout invented here. render.transaction
+            // does not take a form id: the record already knows its form, which is
+            // the one thing about `customform` that works in our favour.
+            const pdf = render.transaction({
+                entityId: soId,
+                printMode: render.PrintMode.PDF,
+            });
+            pdf.name = tranId + '.pdf';
+
+            // CREATOR is resolved to the real person, not the runasrole. See the
+            // note on resolveSalesRep: getCurrentUser survives the role switch.
+            const toCreator = target.toUpperCase() === 'CREATOR';
+            if (toCreator && !creatorId) {
+                log.audit('ARCH Order PDF',
+                    'Configured to mail the creator but no creator id was resolved, so ' +
+                    'SO ' + tranId + ' was not mailed. The order is unaffected.');
+                return { sent: false, reason: 'no creator' };
+            }
+
+            email.send({
+                // Author must be an employee with an email address. The creating
+                // user is one by definition — they just saved a transaction.
+                author: creatorId,
+                recipients: toCreator ? creatorId : target,
+                subject: 'Sales order ' + tranId,
+                body:
+                    'Sales order ' + tranId + ' has been created from the CWP ARCH trader screen.\n\n' +
+                    'The PDF is attached. Quantities and bundles on it are what NetSuite holds.\n\n' +
+                    'Reman instructions, if any were entered on the trader screen, are NOT on this ' +
+                    'order and are not in the PDF — see the note on the Review step.',
+                attachments: [pdf],
+            });
+
+            log.audit('ARCH Order PDF',
+                'Mailed ' + tranId + ' to ' + (toCreator ? 'its creator (' + creatorId + ')' : target));
+            return { sent: true, to: toCreator ? 'creator' : target };
+        } catch (e) {
+            // Never fatal. The order exists and is correct.
+            log.error('ARCH Order PDF — NOT SENT for ' + tranId,
+                (e.name || '') + ': ' + (e.message || String(e)) +
+                ' | The order itself is unaffected.');
+            return { sent: false, reason: e.message || String(e) };
+        }
+    };
+
     const createOrder = (input) => {
         // ORDER first, LINES second. See `resolveOrderContext`.
         const ctx = resolveOrderContext(input);
@@ -1758,10 +1853,30 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
             resolved.lines.length + ' line(s), ' + check.assignmentRows + ' assignment row(s)' +
             (check.mismatches.length ? ' — WITH MISMATCHES' : ''));
 
+        /* Confirmation PDF. LAST, and after the audit line, so the order's own
+         * record in the log is written before anything that talks to the outside
+         * world. Non-fatal by construction — see sendOrderPdf. */
+        const tranId = (function () {
+            try {
+                const r = query.runSuiteQL({
+                    query: 'SELECT tranid FROM transaction WHERE id = ?',
+                    params: [soId],
+                }).asMappedResults();
+                return r.length ? String(r[0].tranid) : 'SO ' + soId;
+            } catch (e) {
+                return 'SO ' + soId;
+            }
+        }());
+        const pdfMail = sendOrderPdf(soId, tranId, int(runtime.getCurrentUser().id));
+
         return {
             ok: true,
             salesOrderId: soId,
+            tranId: tranId,
             appended: appending,
+            // Reported so the screen can say "emailed to you" rather than implying
+            // it. Off by default, so `sent: false` is the normal answer.
+            pdfEmail: pdfMail,
             lines: resolved.lines.map((l) => ({
                 itemCode: l.itemCode,
                 lotName:  l.lotName,

@@ -99,6 +99,33 @@
       <setting></setting>
       <storevalue>T</storevalue>
     </scriptcustomfield>
+    <scriptcustomfield scriptid="custscript_arch_pdf_email_to">
+      <accesslevel>2</accesslevel>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>Where the order confirmation PDF is emailed. EMPTY MEANS NO EMAIL IS SENT, and that is the default on purpose: this sends real mail, and in the sandbox employee 3293 "Trader Hardwood" carries ma.poirier+arc@mcgillstlaurent.com, which is Marc-Antoine's own address. He is actively testing in this account, so a feature that silently mails him from a sandbox he did not know had one is not acceptable. Set it to a specific address to route every confirmation there while testing. Set it to the literal word CREATOR to send to the person who created the order, which is the actual feature - production only, and only once MGSL have asked for it. Failure to render or send is never fatal: the order is already saved and verified before this runs, and the trader must not be told the order failed because an email did.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>TEXT</fieldtype>
+      <help>Empty = off. An email address = send there. The word CREATOR = send to the creating user.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>Order PDF Email To</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
   </scriptcustomfields>
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploy_mcgi_sl_arch_order_create">
