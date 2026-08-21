@@ -1,0 +1,16 @@
+<transactioncolumncustomfield scriptid="custcol_mgsl_reman_plane">
+  <accesslevel>2</accesslevel>
+  <applyformatting>T</applyformatting>
+  <colsale>T</colsale>
+  <defaultchecked>F</defaultchecked>
+  <description>Ticked when this line is sold surfaced (planed) rather than rough. ARCH remanufacturing is a SERVICE with a fee, not the Industriel kind: no new SKU and no inventory adjustment. The fee is not charged to the customer - the trader folds it into the selling price, and MGSL post a journal entry at invoicing so it lands on the profitability report (Marc-Antoine Poirier, 2026-08-21).</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>CHECKBOX</fieldtype>
+  <help>Tick this when the customer is taking this line planed. Enter the target dressed thickness alongside. Costed at $0.20 per board foot, and cutting is charged separately at the same rate, so a line that is both planed and cut costs $0.40/BF.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>Reman: Planing</label>
+  <searchlevel>2</searchlevel>
+  <storevalue>T</storevalue>
+</transactioncolumncustomfield>

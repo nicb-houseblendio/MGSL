@@ -104,6 +104,39 @@ const OutcomeNotice = ({
     );
   }
 
+  /*
+   * Reman: whatever the SERVER says happened, not what this file believes.
+   *
+   * The reman line fields may not be deployed, so the same build can store the
+   * instructions or lose them depending on the account it is pointed at. That
+   * makes a hardcoded sentence here guaranteed to be wrong somewhere -- which
+   * is the single most repeated defect in this app: six notices told traders a
+   * path did not write to NetSuite long after it did.
+   *
+   * Requested-but-not-stored is the case worth interrupting for. The order is
+   * correct and the wood is locked, but the instructions the trader typed exist
+   * nowhere except the screen they are about to close.
+   */
+  const remanLost = !!result.remanRequested && !result.remanStored;
+  const remanNotice = remanLost ? (
+    <div
+      style={{
+        ...notice,
+        background: '#FEFCE8',
+        border: '1px solid #FDE047',
+        color: '#713F12',
+        marginTop: 8,
+      }}
+    >
+      <div>
+        <strong>The reman instructions were not saved.</strong> The order and its quantities are
+        right, and the fee is in the margin, but planing and cutting have nowhere to live on the
+        sales order yet, so nothing on this order tells the mill what to do. Pass them on by hand
+        before you close this.
+      </div>
+    </div>
+  ) : null;
+
   const unlocked = (result.lotsNotAttributed || []).length > 0;
   if (unlocked || result.formWarning) {
     return (
@@ -119,6 +152,7 @@ const OutcomeNotice = ({
               ))}
             </ul>
           )}
+          {remanNotice}
         </div>
       </div>
     );
@@ -130,9 +164,11 @@ const OutcomeNotice = ({
         Created and the bundles are locked.
         {result.splitLinesQueued
           ? ` ${result.splitLinesQueued} line${result.splitLinesQueued === 1 ? '' : 's'} queued for the warehouse to split.`
-          : ''}{' '}
+          : ''}
+        {result.remanStored ? ' Planing and cutting are recorded on the lines.' : ''}{' '}
         The trader screen catches up at the next cache refresh.
       </span>
+      {remanNotice}
     </div>
   );
 };

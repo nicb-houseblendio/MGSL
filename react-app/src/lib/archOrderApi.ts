@@ -42,6 +42,18 @@ export interface ArchOrderResult {
   formWarning?: string | null;
   /** Per-line problems from a refusal, so the wizard can show all of them. */
   problems?: string[];
+  /** True when any line asked for planing or cutting. */
+  remanRequested?: boolean;
+  /**
+   * True when those instructions were actually written to the SO lines.
+   *
+   * The server decides this, not the screen. The reman line fields may not be
+   * deployed -- objects cannot be pushed from this project -- so the endpoint
+   * probes the record and reports what it managed to do. `remanRequested &&
+   * !remanStored` is the case that matters: the trader typed instructions that
+   * did NOT reach NetSuite and has to pass them on by hand.
+   */
+  remanStored?: boolean;
 }
 
 /**
@@ -91,6 +103,25 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
     splitTargetQty: l.isSplit ? l.orderedQty : undefined,
     isSplit: l.isSplit,
     pricePerUnit: l.pricePerBF,
+    /*
+     * Reman intent, sent per line because that is where Marc-Antoine put it:
+     * "Sur la ligne du SO ca devrait peut etre un sublist field" (2026-08-21).
+     *
+     * Sent only when a service is actually ticked. An untouched reman step
+     * would otherwise post four empty strings on every line of every order,
+     * which reads in the logs as though somebody asked for reman and it failed.
+     * The server drops a spec whose checkbox is clear, so the two agree.
+     */
+    reman:
+      l.reman && (l.reman.planing || l.reman.cutting)
+        ? {
+            planing: l.reman.planing,
+            planingSpec:
+              l.reman.planingSpec === 'other' ? l.reman.planingOther : l.reman.planingSpec,
+            cutting: l.reman.cutting,
+            cutLength: l.reman.cutLength,
+          }
+        : undefined,
   })),
 });
 

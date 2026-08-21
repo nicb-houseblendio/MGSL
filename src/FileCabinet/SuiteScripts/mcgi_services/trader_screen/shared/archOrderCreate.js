@@ -88,6 +88,30 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
     const F_SPLIT        = 'custcol_mgsl_split';
     const F_SPLIT_BF     = 'custcol_mgsl_split_bf';
     const F_SPLIT_STATUS = 'custcol_mgsl_split_status';
+
+    /* ── Reman line fields ───────────────────────────────────────────────────
+     * Marc-Antoine, 2026-08-21, asked where reman should live on the SO:
+     * "Sur la ligne du SO ca devrait peut etre un sublist field ou qq chose du
+     * genre." So: line-level custom fields, the same shape as the split ones.
+     *
+     * These are NOT the same thing as `custcol_remanufacturing_order`, which
+     * already exists in the account. That one is `colsale = F` / `coljournal =
+     * T` -- a SELECT pointing at a transaction, used on JOURNAL lines for
+     * remanufacturing traceability. It cannot be written on a sales order line
+     * at all, so it is not a candidate however much its name suggests it is.
+     *
+     * ⚠️ THEY MAY NOT BE DEPLOYED. Objects cannot be pushed from here -- only
+     * `file:upload` works in this project, and the full deploy.xml is off
+     * limits because it resets deployment records. So `remanFieldsPresent`
+     * probes the record and the write is skipped when they are absent. The
+     * order still saves; the result reports `remanStored: false`; and the day
+     * somebody deploys the four objects this starts working with no code
+     * change and no redeploy of this file.
+     */
+    const F_REMAN_PLANE     = 'custcol_mgsl_reman_plane';
+    const F_REMAN_PLANE_TGT = 'custcol_mgsl_reman_plane_tgt';
+    const F_REMAN_CUT       = 'custcol_mgsl_reman_cut';
+    const F_REMAN_CUT_LEN   = 'custcol_mgsl_reman_cut_len';
     const STATUS_PENDING = 'Pending';
 
     /**
@@ -883,6 +907,21 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 Math.max(0, st.storedQty - alreadyCommitted - unclaimed), rate);
             const isSplit = bool(raw.isSplit);
 
+            // Reman intent. The checkbox is what makes a spec meaningful: a
+            // target thickness with planing UNTICKED is not a quiet instruction
+            // to plane, it is leftover text from a trader who changed their
+            // mind, so the spec is dropped with the flag rather than stored on
+            // its own where the mill might act on it.
+            const remanRaw = raw.reman && typeof raw.reman === 'object' ? raw.reman : {};
+            const planing  = bool(remanRaw.planing);
+            const cutting  = bool(remanRaw.cutting);
+            const reman = (planing || cutting) ? {
+                planing:   planing,
+                planeTgt:  planing ? String(remanRaw.planingSpec || '').slice(0, 40) : '',
+                cutting:   cutting,
+                cutLen:    cutting ? String(remanRaw.cutLength || '').slice(0, 40) : '',
+            } : null;
+
             // A split target on a line not being treated as a split means the two
             // fields disagree about intent. Refusing beats picking one: guessing
             // `qty` would sell the whole bundle, which is exactly what the loose
@@ -954,6 +993,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 storedQty:    splitLib.toStored(wanted, rate),
                 pricePerUnit: price,
                 isSplit:      isSplit,
+                // null when the trader asked for no reman on this line.
+                reman:        reman,
                 bundleDisplayQty: onHandDisplay,
             });
         });
@@ -993,7 +1034,39 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * standard mode, where client scripts do not run. Relevant if an ARCH form is
      * ever made preferred.
      */
-    const addLine = (so, line, index) => {
+    /**
+     * Are the reman line fields actually deployed?
+     *
+     * Asking the RECORD beats keeping a flag in a script parameter: the record
+     * is the thing that will accept or reject the write, and a parameter would
+     * be one more thing to remember to flip. Deliberately NOT memoised across
+     * executions -- a module-level cache would answer "no" for as long as the
+     * script stayed compiled after somebody deployed the fields, which is the
+     * kind of staleness that gets diagnosed as "the feature does not work".
+     * One call per order, not per line.
+     */
+    const remanFieldsPresent = (so) => {
+        let present;
+        try {
+            const fields = so.getSublistFields({ sublistId: 'item' }) || [];
+            present = fields.indexOf(F_REMAN_PLANE) !== -1
+                   && fields.indexOf(F_REMAN_CUT)   !== -1;
+        } catch (e) {
+            // If the probe itself fails, do not write. An order that saves
+            // without its reman note is recoverable; one that fails to save
+            // because of a note is not.
+            present = false;
+        }
+        if (!present) {
+            log.audit('ARCH Order reman',
+                'The reman line fields are not on the sales order record, so reman was ' +
+                'NOT written. Deploy custcol_mgsl_reman_plane, _plane_tgt, _cut and ' +
+                '_cut_len to turn this on. The order itself is unaffected.');
+        }
+        return present;
+    };
+
+    const addLine = (so, line, index, remanOk) => {
         const set = (fieldId, value) =>
             so.setSublistValue({ sublistId: 'item', fieldId: fieldId, line: index, value: value });
 
@@ -1001,6 +1074,13 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         set('location', line.locationId);
         set('quantity', line.displayQty);
         set('rate',     line.pricePerUnit);
+
+        if (line.reman && remanOk) {
+            set(F_REMAN_PLANE, line.reman.planing);
+            set(F_REMAN_CUT,   line.reman.cutting);
+            if (line.reman.planeTgt) set(F_REMAN_PLANE_TGT, line.reman.planeTgt);
+            if (line.reman.cutLen)   set(F_REMAN_CUT_LEN,   line.reman.cutLen);
+        }
 
         if (line.isSplit) {
             set(F_SPLIT,    true);
@@ -1800,7 +1880,9 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         // Standard mode addresses lines by index, so new lines start after
         // whatever the order already has.
         const firstNewLine = appending ? so.getLineCount({ sublistId: 'item' }) : 0;
-        resolved.lines.forEach((line, i) => addLine(so, line, firstNewLine + i));
+        const wantsReman = resolved.lines.some((l) => !!l.reman);
+        const remanOk = wantsReman ? remanFieldsPresent(so) : false;
+        resolved.lines.forEach((line, i) => addLine(so, line, firstNewLine + i, remanOk));
 
         let soId;
         try {
@@ -1884,6 +1966,19 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 isSplit:  l.isSplit,
             })),
             splitLinesQueued: resolved.lines.filter((l) => l.isSplit).length,
+            /* Whether the reman instructions actually reached the order.
+             *
+             * Reported rather than assumed, and this is the whole point: the
+             * fields may or may not be deployed, and the SCREEN must not be the
+             * thing that decides which. Six separate notices in this app told
+             * traders a path did not write to NetSuite long after it did, all
+             * because the claim was hardcoded in the copy. Here the server says
+             * what happened and the copy repeats it.
+             *
+             * `false` with `remanRequested: true` means the trader typed
+             * instructions that were NOT saved and must be passed on by hand. */
+            remanRequested: wantsReman,
+            remanStored: wantsReman && remanOk,
             assignmentRows: check.assignmentRows,
             assignmentMismatches: check.mismatches,
             // Reported, not asserted — this is how the sign convention for a

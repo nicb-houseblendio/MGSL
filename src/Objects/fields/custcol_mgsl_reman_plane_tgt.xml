@@ -1,0 +1,17 @@
+<transactioncolumncustomfield scriptid="custcol_mgsl_reman_plane_tgt">
+  <accesslevel>2</accesslevel>
+  <applyformatting>T</applyformatting>
+  <colsale>T</colsale>
+  <defaultchecked>F</defaultchecked>
+  <description>Target dressed thickness for a planed line, e.g. 15/16. Free text rather than a list: the trader screen offers the common thicknesses but also an "other" box, because the dressed thicknesses in the prototype are ours and have never been confirmed by the client.</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>TEXT</fieldtype>
+  <help>The thickness the mill should plane to, e.g. 15/16 from a 4/4 board. Only meaningful when Reman: Planing is ticked.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>Planing Target Thickness</label>
+  <maxlength>40</maxlength>
+  <searchlevel>2</searchlevel>
+  <storevalue>T</storevalue>
+</transactioncolumncustomfield>

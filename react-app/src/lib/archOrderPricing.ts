@@ -61,10 +61,30 @@ export const splitFee = (): number => {
  * would be when explaining itself. Never used to bill: `splitFee()` is.
  */
 export const SPLIT_FEE_PLACEHOLDER = 200;
-/** Surfacing, $ per board foot. */
+/* ── Reman rates — CONFIRMED BY THE CLIENT 2026-08-21, no longer placeholders ──
+ *
+ * Marc-Antoine, in writing: "0.20$/BF … C'est 0.20$ pour chacun des services. Ex
+ * j'ai de la coupe + du planage sur une ligne de SO ce serait donc 0.40/bf."
+ *
+ * Two things settled at once:
+ *   - the UNIT is the board foot, not the MBF. The question was worth asking: the
+ *     two readings were 1000x apart, $80 against $0.08 on a 400 BF line.
+ *   - **EACH service is $0.20.** Cutting was 0.15 here, carried over from the
+ *     prototype and never confirmed, and it was simply WRONG — it under-reported
+ *     the cost of every cut line by 25%. Both are 0.20 now, and a line carrying
+ *     both services costs 0.40/BF, which is exactly his worked example.
+ *
+ * He also settled how the money flows, which changes nothing in the code and is
+ * worth writing down because it confirms the model rather than altering it: the
+ * TRADER includes the fee in the selling price, and MGSL post a journal entry at
+ * invoicing that lands the cost in the profitability report. So revenue already
+ * covers it and the cost is genuinely MGSL's — which is why deducting it from
+ * profit here is right, and why there is no separate charge line to create.
+ */
+/** Surfacing, $ per board foot. Client-confirmed 2026-08-21. */
 export const PLANING_RATE = 0.2;
-/** Cutting to length, $ per board foot. */
-export const CUT_RATE = 0.15;
+/** Cutting to length, $ per board foot. Client-confirmed 2026-08-21 — was 0.15. */
+export const CUT_RATE = 0.2;
 /**
  * Operations + insurance, as a fraction of the line's MATERIAL COST.
  *

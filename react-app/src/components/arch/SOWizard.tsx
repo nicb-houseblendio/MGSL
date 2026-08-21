@@ -49,15 +49,18 @@ import type {
  * Seven steps, mirroring the prototype: Start, Items, Customer & terms, Bundle
  * split, Remanufacturing, Pricing, Review.
  *
- * ⚠️ IT DOES NOT WRITE TO NETSUITE. Create produces an `ArchOrderDraft` and hands
- * it to the caller. Four things have to be decided before persistence can be
- * built, and every one of them changes the payload:
- *   - how a split line is marked (custom record vs checkbox)
- *   - where reman and cutting live on the SO (description vs dedicated fields)
- *   - the real fee rates (everything here is a placeholder)
- *   - the SO header field IDs
- * The steps that depend on those are labelled provisional in the UI so nobody
- * mistakes a placeholder for a decision.
+ * ⚠️ WRITES REAL SALES ORDERS. Create posts an `ArchOrderDraft` to Suitelet 6505;
+ * lots are attached, so the bundles leave availability on save, and a
+ * split-flagged line reaches the warehouse split queue.
+ *
+ * Three of the four things that used to block persistence are settled: the SO
+ * header field ids are live, a split line is marked with `custcol_mgsl_split*`,
+ * and the reman rates are client-confirmed at $0.20/BF per service. What is left
+ * is whether the reman line fields exist in the account. Marc-Antoine asked for
+ * a line-level sublist field, so that is what is sent; the endpoint probes the
+ * record and reports `remanStored` rather than assuming, because objects cannot
+ * be deployed from this project and the same build therefore stores reman in one
+ * account and drops it in another.
  */
 
 type StepKey = 'start' | 'items' | 'customer' | 'split' | 'reman' | 'price' | 'review';
@@ -1742,12 +1745,14 @@ export const SOWizard = ({
           so this step's input never leaves the browser. Said here, on the step
           where the work is done, as well as on Review.
         */}
-        <strong>Nothing on this step is saved to the sales order.</strong> There is nowhere for it to
-        go yet — a line description or dedicated fields, still undecided — so the endpoint has no
-        reman field at all and this input never leaves the screen. Record it somewhere the mill will
-        see; Review lists what to carry across. The <strong>rates and the dressed-thickness options
-        below are placeholders</strong> too. Unlike Industriel reman, this creates no new SKU and no
-        inventory adjustment: it is a service with a fee.
+        <strong>Whether this reaches the sales order depends on the account.</strong> It is sent as
+        line-level fields, the shape Marc-Antoine asked for, but those fields have to exist before
+        anything can be written to them — so the confirmation after you save says which
+        happened, and warns you if the instructions were dropped. Until you have seen it say they
+        were saved, record them somewhere the mill will see. The <strong>rates below
+        are confirmed</strong> — $0.20/BF per service, both services on one line is $0.40/BF —
+        but the <strong>dressed-thickness options are still ours, not his</strong>. Unlike Industriel
+        reman, this creates no new SKU and no inventory adjustment: it is a service with a fee.
       </ProvisionalNote>
       {lines.length > 1 && (
         <div
@@ -1973,7 +1978,8 @@ export const SOWizard = ({
         </tbody>
       </table>
       <div style={{ marginTop: 10, fontSize: 11, color: ARCH_SURFACE.textLight }}>
-        Planing {fmtMoney(PLANING_RATE)}/BF · Cutting {fmtMoney(CUT_RATE)}/BF — both provisional.
+        Planing {fmtMoney(PLANING_RATE)}/BF · Cutting {fmtMoney(CUT_RATE)}/BF · client-confirmed. Both
+        services on one line is $0.40/BF.
       </div>
     </div>
   );
@@ -1983,8 +1989,10 @@ export const SOWizard = ({
       <ProvisionalNote>
         Profit is computed against the <strong>lot cost</strong>, which is real, and the{' '}
         {(opsInsuranceRate() * 100).toFixed(2)}% operations &amp; insurance charge, which is the rate
-        NetSuite already carries on the SO. Still provisional: the split fee and the planing and
-        cutting rates. <strong>Do not quote a customer from these margins.</strong>
+        NetSuite already carries on the SO. The reman rates are confirmed at $0.20/BF
+        per service. The only figure still missing is the <strong>split fee</strong>: the
+        ${SPLIT_FEE_PLACEHOLDER} comes from the prototype, not from the client, so it stays off and a
+        split line currently costs nothing. <strong>Do not quote a customer from these margins.</strong>
       </ProvisionalNote>
       {lowPricedLines.length > 0 && (
         <div
@@ -2194,8 +2202,10 @@ export const SOWizard = ({
       </table>
 
       {/* The prototype spells the arithmetic out here. Worth keeping: the margin
-          is the number the trader is judged on, and three of its four inputs are
-          placeholder rates, so it has to be auditable rather than a black box. */}
+          is the number the trader is judged on. Its inputs are no longer
+          guesses -- lot cost is real, ops & insurance is the rate on the SO, and the reman
+          rates are client-confirmed -- so it has to stay auditable rather than become a
+          black box that nobody can check. */}
       <div
         style={{
           marginTop: 14,
@@ -2454,8 +2464,10 @@ export const SOWizard = ({
       */}
       <ProvisionalNote>
         <strong>This writes a real sales order.</strong> Lots are attached, so the bundles leave
-        availability on save. Still provisional: how a split line is marked, where reman is
-        recorded, and the split and reman rates themselves — none of those reach NetSuite yet.
+        availability on save, and a split-flagged line is marked on the SO and
+        queued for the warehouse. Reman is sent as line-level fields and the rates behind
+        its cost are confirmed, but the fields have to be deployed before anything lands in them:
+        the confirmation will tell you, and say so plainly if the instructions were dropped.
       </ProvisionalNote>
       {/*
         Says which lines are actually written. Only the ADDED lots go to NetSuite:

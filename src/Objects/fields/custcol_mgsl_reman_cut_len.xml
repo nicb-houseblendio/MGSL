@@ -1,0 +1,17 @@
+<transactioncolumncustomfield scriptid="custcol_mgsl_reman_cut_len">
+  <accesslevel>2</accesslevel>
+  <applyformatting>T</applyformatting>
+  <colsale>T</colsale>
+  <defaultchecked>F</defaultchecked>
+  <description>Target length for a cut line, e.g. 8'. Free text, and deliberately not a number: traders write lengths in feet and inches and the unit belongs with the value.</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>TEXT</fieldtype>
+  <help>The length the mill should cut to. Only meaningful when Reman: Cutting is ticked.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>Cutting Target Length</label>
+  <maxlength>40</maxlength>
+  <searchlevel>2</searchlevel>
+  <storevalue>T</storevalue>
+</transactioncolumncustomfield>

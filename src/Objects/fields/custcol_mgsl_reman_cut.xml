@@ -1,0 +1,16 @@
+<transactioncolumncustomfield scriptid="custcol_mgsl_reman_cut">
+  <accesslevel>2</accesslevel>
+  <applyformatting>T</applyformatting>
+  <colsale>T</colsale>
+  <defaultchecked>F</defaultchecked>
+  <description>Ticked when this line is cut to a length before shipping. Priced as its own service: $0.20 per board foot, charged in ADDITION to planing when both apply on one line (Marc-Antoine Poirier, 2026-08-21 - "0.20$ pour chacun des services ... coupe + planage ... 0.40/bf"). Like planing, it creates no new SKU and no inventory adjustment.</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>CHECKBOX</fieldtype>
+  <help>Tick this when the line is cut to length. Enter the target length alongside. Costed at $0.20 per board foot, on top of planing if the line is also planed.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>Reman: Cutting</label>
+  <searchlevel>2</searchlevel>
+  <storevalue>T</storevalue>
+</transactioncolumncustomfield>
