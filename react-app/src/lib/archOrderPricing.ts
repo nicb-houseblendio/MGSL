@@ -119,7 +119,15 @@ export const opsInsuranceRate = (): number => {
   return isFinite(n) && n >= 0 ? n : OPS_INSURANCE_RATE_DEFAULT;
 };
 
-export const RATES_ARE_PROVISIONAL = true;
+/*
+ * `RATES_ARE_PROVISIONAL = true` used to live here. Deleted 2026-08-21: nothing
+ * imported it, and it had become false. ops+insurance is the real 0.003 read off
+ * the SO, and the reman rates are client-confirmed; the only unconfirmed figure
+ * left is the split fee, which `splitFeeEnabled()` already gates to zero. An
+ * exported flag nobody reads cannot be trusted to be true, and tsc will never
+ * say so -- unused EXPORTS are not errors, which is exactly how it survived
+ * being wrong.
+ */
 
 /* ── Per-line maths ─────────────────────────────────────────────────────────*/
 
