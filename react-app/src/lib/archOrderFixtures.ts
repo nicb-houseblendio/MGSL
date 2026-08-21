@@ -152,7 +152,7 @@ export const getOpenOrders = (): ArchOpenOrder[] => {
         lotNo: lot.lotNo,
         lotId: lot.lotId,
         containerNo: lot.containerNo,
-        bf: Math.max(50, Math.round((lot.onHand || row.onHand || 500) / 50) * 50),
+        preSplitQty: Math.max(50, Math.round((lot.onHand || row.onHand || 500) / 50) * 50),
         unit: row.unit,
         costPerBF: row.avgCostPerUnit,
         bucket: 'onHand',

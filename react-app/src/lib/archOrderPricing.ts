@@ -109,11 +109,11 @@ export const orderedBF = (line: ArchCartLine, split: ArchSplitIntent | undefined
     const v = parseFloat(split.targetBF);
     return Number.isFinite(v) && v > 0 ? v : 0;
   }
-  return line.bf;
+  return line.preSplitQty;
 };
 
 export interface ArchLineEconomics {
-  bf: number;
+  orderedQty: number;
   revenue: number;
   lotCost: number;
   splitCost: number;
@@ -149,7 +149,7 @@ export const lineEconomics = (
   const profit = revenue - lotCost - processingCost - opsInsuranceCost;
 
   return {
-    bf,
+    orderedQty: bf,
     revenue,
     lotCost,
     splitCost,
@@ -166,14 +166,14 @@ export const lineEconomics = (
 export const sumEconomics = (rows: ArchLineEconomics[]): ArchOrderTotals => {
   const t = rows.reduce(
     (acc, r) => ({
-      bf: acc.bf + r.bf,
+      orderedQty: acc.orderedQty + r.orderedQty,
       revenue: acc.revenue + r.revenue,
       lotCost: acc.lotCost + r.lotCost,
       processingCost: acc.processingCost + r.processingCost,
       opsInsuranceCost: acc.opsInsuranceCost + r.opsInsuranceCost,
       profit: acc.profit + r.profit,
     }),
-    { bf: 0, revenue: 0, lotCost: 0, processingCost: 0, opsInsuranceCost: 0, profit: 0 }
+    { orderedQty: 0, revenue: 0, lotCost: 0, processingCost: 0, opsInsuranceCost: 0, profit: 0 }
   );
   return { ...t, marginPct: t.revenue > 0 ? (t.profit / t.revenue) * 100 : 0 };
 };

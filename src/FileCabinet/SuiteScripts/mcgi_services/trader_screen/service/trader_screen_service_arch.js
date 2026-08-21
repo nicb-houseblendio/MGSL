@@ -890,6 +890,7 @@ define([
 
                 lineSeen[lineKey] = {
                     conv:         conv,
+                    amountTxn:    amountTxn,
                     qtyBase:      qtyBase,
                     assignedBase: 0,
                     lineId:       String(r.lineid),
@@ -932,6 +933,13 @@ define([
                 lotId:       lotId,
                 containerNo: '',
                 bf:          tidy(assignedBase / seen.conv, 4),
+                /* NetSuite's OWN amount for this line, not a figure rebuilt from a
+                 * rounded price times a rounded quantity. Exact whenever the line
+                 * carries a single lot, which is every order the wizard writes; on a
+                 * hand-built multi-lot line there is no authoritative per-BUNDLE
+                 * amount to be had, so the line amount is apportioned by quantity
+                 * share and the front end's per-row figure is a share by nature. */
+                amount:      tidy(seen.amountTxn * (seen.qtyBase > 0 ? assignedBase / seen.qtyBase : 0), 2),
             }));
         });
 
@@ -961,6 +969,7 @@ define([
                 lotId:        '',
                 containerNo:  '',
                 bf:           tidy(residualBase / seen.conv, 4),
+                amount:       tidy(seen.amountTxn * (seen.qtyBase > 0 ? residualBase / seen.qtyBase : 0), 2),
                 unattributed: true,
             }));
         });

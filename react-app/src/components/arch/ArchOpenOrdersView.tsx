@@ -22,8 +22,13 @@
  *    build, but not the full order". We render the prototype so he has something
  *    concrete to react to; the contradiction is open with him.
  *
- * ⚠️ DEMO DATA, read-only. Real orders come from a saved search that does not
- * exist yet, and Edit does nothing.
+ * ⚠️ LIVE, read-only. Orders come from the `openOrders` service action, which reads
+ * open hardwood SO lines straight from NetSuite — no saved search involved. Edit
+ * opens the wizard in append mode against the real order, which does write.
+ *
+ * The previous version said "DEMO DATA … a saved search that does not exist yet,
+ * and Edit does nothing". All three clauses were false by the time it was read.
+ * It still falls back to fixtures with no endpoint, and the banner says which.
  */
 
 import * as React from 'react';
@@ -37,11 +42,24 @@ import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archO
 
 /* ── Derived figures ────────────────────────────────────────────────────────*/
 
-const lineRevenue = (l: ArchCartLine) => l.bf * (l.pricePerBF ?? 0);
+/**
+ * Revenue: NetSuite's own amount when we have it, derived only when we do not.
+ *
+ * 🔴 This used to always compute `preSplitQty * pricePerBF`, rebuilding a figure
+ * the endpoint had already been given by NetSuite out of two ROUNDED inputs — a
+ * price at 6dp and a quantity at 4dp. The drift is fractions of a cent per line
+ * and it accumulates into the Sales total, so a tab reporting a customer's order
+ * value disagreed with NetSuite for no reason at all.
+ *
+ * `amount` is absent on a lot picked off the grid, which is not on an order yet
+ * and genuinely has no amount — that is the case the fallback is for.
+ */
+const lineRevenue = (l: ArchCartLine) =>
+  l.amount !== undefined ? l.amount : l.preSplitQty * (l.pricePerBF ?? 0);
 // `?? 0` on cost is arithmetic-only. A line with unknown cost reports as pure
 // profit here, which is why the cost CELL renders an em dash rather than $0.00 —
 // the number must never look measured. See ArchOrderTotals.
-const lineProfit = (l: ArchCartLine) => l.bf * ((l.pricePerBF ?? 0) - (l.costPerBF ?? 0));
+const lineProfit = (l: ArchCartLine) => lineRevenue(l) - l.preSplitQty * (l.costPerBF ?? 0);
 const lineMargin = (l: ArchCartLine) => {
   const r = lineRevenue(l);
   return r > 0 ? lineProfit(l) / r : 0;
@@ -64,7 +82,7 @@ const allCostsKnown = (rows: ArchCartLine[]) => rows.every(costKnown);
 const UNKNOWN = '—';
 
 /** Quantities of an order grouped by unit — an order may mix Lumber and Veneer. */
-const orderQtys = (o: ArchOpenOrder) => o.lines.map((l) => ({ unit: l.unit, qty: l.bf }));
+const orderQtys = (o: ArchOpenOrder) => o.lines.map((l) => ({ unit: l.unit, qty: l.preSplitQty }));
 const orderRevenue = (o: ArchOpenOrder) => o.lines.reduce((s, l) => s + lineRevenue(l), 0);
 const orderProfit = (o: ArchOpenOrder) => o.lines.reduce((s, l) => s + lineProfit(l), 0);
 const orderMargin = (o: ArchOpenOrder) => {
@@ -685,7 +703,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                                   ${(l.pricePerBF ?? 0).toFixed(2)}/{unitLabel(l.unit)}
                                 </td>
                                 <td style={{ ...num, padding: '6px 12px' }} className="font-mono">
-                                  {formatQty(l.bf, l.unit)}
+                                  {formatQty(l.preSplitQty, l.unit)}
                                 </td>
                                 <td style={{ ...num, padding: '6px 12px' }} />
                                 <td style={{ ...num, padding: '6px 12px' }} className="font-mono">

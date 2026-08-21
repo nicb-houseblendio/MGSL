@@ -87,8 +87,8 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
     // On a split line the ORDER carries the target, and the server reads
     // splitTargetQty for it. Sending both would make the two fields disagree
     // about intent, which the server refuses outright rather than guessing.
-    qty: l.isSplit ? undefined : l.bf,
-    splitTargetQty: l.isSplit ? l.bf : undefined,
+    qty: l.isSplit ? undefined : l.orderedQty,
+    splitTargetQty: l.isSplit ? l.orderedQty : undefined,
     isSplit: l.isSplit,
     pricePerUnit: l.pricePerBF,
   })),

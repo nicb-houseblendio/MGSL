@@ -727,7 +727,7 @@ export const SOWizard = ({
     if (!s.on) return true;
     const v = parseFloat(s.targetBF);
     // Must be a real quantity and cannot exceed what the bundle holds.
-    return v > 0 && v <= l.bf + 1e-9;
+    return v > 0 && v <= l.preSplitQty + 1e-9;
   });
   const remanOk = lines.every((l) => {
     const r = rm(l.key);
@@ -786,8 +786,8 @@ export const SOWizard = ({
       description: l.description,
       locationName: l.locationName,
       containerNo: l.containerNo,
-      bf: orderedBF(l, sp(l.key)),
-      lotBF: l.bf,
+      orderedQty: orderedBF(l, sp(l.key)),
+      lotBF: l.preSplitQty,
       unit: l.unit,
       costPerBF: l.costPerBF,
       pricePerBF: parseFloat(pr(l.key)) || 0,
@@ -1072,7 +1072,7 @@ export const SOWizard = ({
                 </td>
                 <LotCell line={l} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                  {formatQty(l.bf, l.unit)}
+                  {formatQty(l.preSplitQty, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }} className="font-mono">
                   {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF)}
@@ -1136,7 +1136,7 @@ export const SOWizard = ({
                 }}
                 className="font-mono"
               >
-                {formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: l.bf })))}
+                {formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: l.preSplitQty })))}
               </td>
               <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
               <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
@@ -1635,7 +1635,7 @@ export const SOWizard = ({
           {lines.map((l) => {
             const s = sp(l.key);
             const v = parseFloat(s.targetBF);
-            const bad = s.on && (!(v > 0) || v > l.bf + 1e-9);
+            const bad = s.on && (!(v > 0) || v > l.preSplitQty + 1e-9);
             return (
               <tr key={l.key}>
                 <td style={{ ...td, fontSize: 11.5, color: ARCH_SURFACE.textMid, whiteSpace: 'nowrap' }}>
@@ -1643,7 +1643,7 @@ export const SOWizard = ({
                 </td>
                 <LotCell line={l} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                  {formatQty(l.bf, l.unit)}
+                  {formatQty(l.preSplitQty, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'center' }}>
                   <input
@@ -1672,8 +1672,8 @@ export const SOWizard = ({
                     */
                     min={0}
                     step="any"
-                    max={l.bf}
-                    placeholder={formatQty(l.bf, l.unit)}
+                    max={l.preSplitQty}
+                    placeholder={formatQty(l.preSplitQty, l.unit)}
                     onChange={(e) => setSp(l.key, { targetBF: e.target.value })}
                     className="font-mono"
                     style={{
@@ -1692,7 +1692,7 @@ export const SOWizard = ({
                     <span style={{ color: ARCH_SURFACE.textLight }}>Full bundle</span>
                   ) : bad ? (
                     <span style={{ color: '#B22222', fontWeight: 600 }}>
-                      {!(v > 0) ? 'Enter a quantity' : `Exceeds the ${formatQty(l.bf, l.unit)} ${unitLabel(l.unit)} bundle`}
+                      {!(v > 0) ? 'Enter a quantity' : `Exceeds the ${formatQty(l.preSplitQty, l.unit)} ${unitLabel(l.unit)} bundle`}
                     </span>
                   ) : (
                     <span style={{ color: AMBER_TEXT, fontWeight: 600 }}>
@@ -2022,7 +2022,7 @@ export const SOWizard = ({
                 </td>
                 <LotCell line={l} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                  {formatQty(e.bf, l.unit)}
+                  {formatQty(e.orderedQty, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'right', color: ARCH_SURFACE.textMid }} className="font-mono">
                   {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF)}
@@ -2084,7 +2084,7 @@ export const SOWizard = ({
               className="font-mono"
             >
               {/*
-                🔴 orderedBF, NOT l.bf. This totalled the BUNDLE size while every
+                🔴 orderedBF, NOT preSplitQty. This totalled the BUNDLE size while every
                 other figure on the row -- revenue, profit, margin -- was computed
                 on the SPLIT TARGET. On a 500-of-1,145 split the footer read
                 "1,145 BF" beside "$9,500", implying $8.30/BF against the $19.00
@@ -2311,7 +2311,7 @@ export const SOWizard = ({
                 <LotCell line={l} />
                 <td style={td}>{badges.length ? badges : <span style={{ color: ARCH_SURFACE.textLight }}>—</span>}</td>
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                  {formatQty(e.bf, l.unit)}
+                  {formatQty(e.orderedQty, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }} className="font-mono">
                   {fmtMoney(parseFloat(pr(l.key)) || 0)}
@@ -2343,7 +2343,7 @@ export const SOWizard = ({
         }}
       >
         {[
-          // orderedBF, NOT l.bf. Same defect as the pricing footer below-left:
+          // orderedBF, NOT preSplitQty. Same defect as the pricing footer below-left:
           // this stat sits directly beside REVENUE, so quoting the BUNDLE size
           // made the two describe different quantities.
           ['Quantity', formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: orderedBF(l, sp(l.key)) }))), '#fff'],

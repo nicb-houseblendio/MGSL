@@ -6,13 +6,17 @@
  * autres trader screens, c'est qu'on a la fonctionnalité de créer des SO à partir
  * du trader screen", 2026-08-11 call).
  *
- * ⚠️ NOTHING HERE WRITES TO NETSUITE YET. The wizard produces an `ArchOrderDraft`
- * and stops. Several of the decisions it would need are still open on the client
- * side — how a split line is marked, where reman/cutting live on the SO, the real
- * fee rates, and the SO header field IDs. The draft is deliberately shaped as
- * INTENT ("this line is a split, target 300 BF") rather than as a NetSuite
- * payload, so the persistence layer can be written once those land without
- * reshaping the UI.
+ * ⚠️ THIS WRITES REAL SALES ORDERS. The wizard produces an `ArchOrderDraft` and
+ * posts it; lots are attached, so the bundles leave availability on save, and a
+ * split-flagged line reaches the warehouse queue. Verified end to end 2026-08-20.
+ *
+ * The previous version of this note said "NOTHING HERE WRITES TO NETSUITE YET",
+ * which stopped being true when the write path shipped.
+ *
+ * Still genuinely open on the client side: the split and reman RATES, and where
+ * reman is recorded on the SO. The draft is still shaped as INTENT ("this line is
+ * a split, target 300 BF") rather than as a NetSuite payload, which is what let the
+ * persistence layer land without reshaping the UI.
  */
 
 import type { ArchDetailKey } from '@/types/arch';
@@ -52,8 +56,23 @@ export interface ArchCartLine {
    * as "quantity", "cost per unit" and "price per unit".
    */
   unit: ArchUnit;
-  /** Quantity this lot contributes, in `unit`, from the bucket it was selected from. */
-  bf: number;
+  /**
+   * Quantity this line represents BEFORE any split intent, in `unit`.
+   *
+   * 🔴 NAMED FOR THE DISTINCTION THAT CAUSED A REAL BUG. It was `bf`, and two
+   * summary bars totalled it while every money figure beside them was computed on
+   * the SPLIT TARGET -- so a 500-of-1,145 split reported 1,145 BF next to $9,500,
+   * implying $8.30/BF against the $19.00 on the line.
+   *
+   * What it holds depends on where the line came from, which is why it cannot be
+   * called `bundleQty`:
+   *   - picked off the grid: the whole bundle, because a split holds all of it
+   *   - carried from an existing order: that line's order quantity
+   *
+   * In both cases it is the quantity BEFORE this wizard's split intent applies.
+   * For what is actually being sold, always `orderedBF(line, split)`.
+   */
+  preSplitQty: number;
   /**
    * Lot cost per one `unit` — drives the margin estimate.
    *
@@ -77,6 +96,15 @@ export interface ArchCartLine {
    * raise with him.
    */
   lineStatus?: ArchOrderStatus;
+  /**
+   * NetSuite's OWN amount for this line, in the order's currency.
+   *
+   * Present only on lines read back from an existing order — a lot picked off the
+   * grid is not on an order yet and has no amount. When it IS present it is the
+   * authoritative figure and must be preferred over `preSplitQty * pricePerBF`:
+   * that product rebuilds a number we were already given, from two rounded inputs.
+   */
+  amount?: number;
   /**
    * Price already agreed on an existing SO line, $/BF.
    * Seeds the Pricing step — without it "add to existing order" dead-ends,
@@ -174,7 +202,7 @@ export interface ArchOrderDraftLine {
   /** The item's stock unit — see the note on `ArchOrderLine.unit`. */
   unit: ArchUnit;
   /** Quantity actually going on the order, in `unit` — the split target when split. */
-  bf: number;
+  orderedQty: number;
   /** Null when the source row carries no costing — see `ArchOrderLine.costPerBF`. */
   costPerBF: number | null;
   pricePerBF: number;
@@ -195,12 +223,15 @@ export interface ArchOrderDraftLine {
  */
 export interface ArchOrderTotals {
   /**
-   * ⚠️ Sum of every line's quantity REGARDLESS OF UNIT, so it is only a real
-   * figure on a single-unit order. Money totals below are always valid — dollars
-   * add up whatever the lines are counted in. For a quantity a human will read,
-   * use `formatUnitTotals` over the lines instead of printing this.
+   * ⚠️ Sum of every line's ORDERED quantity REGARDLESS OF UNIT, so it is only a
+   * real figure on a single-unit order. Money totals below are always valid —
+   * dollars add up whatever the lines are counted in. For a quantity a human will
+   * read, use `formatUnitTotals` over the lines instead of printing this.
+   *
+   * Ordered, not pre-split: it sums `ArchLineEconomics.orderedQty`, which comes
+   * from `orderedBF`. Nothing reads it today, and the warning above is why.
    */
-  bf: number;
+  orderedQty: number;
   revenue: number;
   lotCost: number;
   processingCost: number;

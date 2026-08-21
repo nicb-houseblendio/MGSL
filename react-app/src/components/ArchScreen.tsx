@@ -147,7 +147,7 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange }: ArchScree
             // Board feet this bundle can contribute FROM THE BUCKET it was picked
             // in — on the Available view that is the uncommitted remainder, not
             // the full on-hand figure.
-            bf: lotQuantity(lot, bucket),
+            preSplitQty: lotQuantity(lot, bucket),
             unit: row.unit,
             costPerBF: row.avgCostPerUnit,
             bucket,

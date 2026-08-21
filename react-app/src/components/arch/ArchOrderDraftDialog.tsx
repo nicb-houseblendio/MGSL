@@ -273,7 +273,7 @@ export const ArchOrderDraftDialog = ({
                   </td>
                   <td style={cell}>{l.description}</td>
                   <td style={{ ...cell, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                    {formatQty(l.bf, l.unit)}
+                    {formatQty(l.orderedQty, l.unit)}
                     {l.isSplit && (
                       <span style={{ color: ARCH_SURFACE.textLight, fontWeight: 400 }}> / {formatQty(l.lotBF, l.unit)}</span>
                     )}
@@ -284,7 +284,7 @@ export const ArchOrderDraftDialog = ({
                   <td style={{ ...cell, fontSize: 11 }}>
                     {l.isSplit && (
                       <div style={{ color: '#B36B16', fontWeight: 600 }}>
-                        SPLIT — pick {formatQty(l.bf, l.unit)} of {formatQty(l.lotBF, l.unit)} {unitLabel(l.unit)}; hold the whole bundle
+                        SPLIT — pick {formatQty(l.orderedQty, l.unit)} of {formatQty(l.lotBF, l.unit)} {unitLabel(l.unit)}; hold the whole bundle
                       </div>
                     )}
                     {l.reman.planing && (
@@ -316,7 +316,7 @@ export const ArchOrderDraftDialog = ({
           >
             {(
               [
-                ['Quantity', formatUnitTotals(draft.lines.map((l) => ({ unit: l.unit, qty: l.bf }))), ARCH_SURFACE.text],
+                ['Quantity', formatUnitTotals(draft.lines.map((l) => ({ unit: l.unit, qty: l.orderedQty }))), ARCH_SURFACE.text],
                 ['Revenue', fmtMoney(draft.totals.revenue, cur, 0), ARCH_SURFACE.text],
                 ['Estimated profit', fmtMoney(draft.totals.profit, cur, 0), marginColor(draft.totals.marginPct)],
                 ['Margin', fmtPct(draft.totals.marginPct), marginColor(draft.totals.marginPct)],

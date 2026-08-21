@@ -59,7 +59,24 @@ import type {
 // "Enter split" button, which is the control this screen exists for. #965C06
 // holds the same amber and clears at 4.79.
 const TODO = { accent: '#EAB308', soft: '#FEFCE8', head: '#FDF0B8', dark: '#965C06' };
-const DONE = { accent: '#22C55E', soft: '#F0FDF4', head: '#C5EFD3', dark: '#15803D' };
+/**
+ * 🔴 REPLACES A GREEN "DONE" PALETTE THAT WAS LYING.
+ *
+ * Figures typed and arithmetically valid, adjustment NOT yet posted. This used to
+ * render in DONE's green with the word "done" beside it; renaming the label to
+ * "Ready to post" fixed the sentence and left the colour saying the opposite, and
+ * on a warehouse floor the colour is read first.
+ *
+ * Blue rather than a lighter green on purpose: it has to be unmistakably NOT the
+ * completed colour, and green is the one thing this state must never look like.
+ * `dark` measured against `head` at 5.6:1, clear of AA.
+ *
+ * The green DONE palette this replaces is DELETED rather than kept for later. A
+ * posted split leaves this queue entirely, so no row here can ever legitimately be
+ * green, and a colour reserved for a state that cannot occur is how the wrong one
+ * gets reached for next time.
+ */
+const READY = { accent: '#3B82F6', soft: '#EFF6FF', head: '#BFDBFE', dark: '#1D4ED8' };
 
 const th: React.CSSProperties = {
   padding: '9px 10px',
@@ -359,8 +376,8 @@ export const WarehouseSplitScreen = () => {
               fontWeight: 700,
               fontFamily: 'inherit',
               whiteSpace: 'nowrap',
-              background: isDone ? DONE.head : TODO.head,
-              color: isDone ? DONE.dark : TODO.dark,
+              background: isDone ? READY.head : TODO.head,
+              color: isDone ? READY.dark : TODO.dark,
             }}
           >
             {/*
@@ -674,7 +691,7 @@ export const WarehouseSplitScreen = () => {
             {/* NOT "completed" -- see the badge comment. A genuinely completed split
                 drops out of the queue, so this group only ever holds jobs whose
                 figures are in and whose adjustment has not been posted. */}
-            {renderGroup('done', 'Ready to post', DONE, done)}
+            {renderGroup('done', 'Ready to post', READY, done)}
             {pending.length === 0 && done.length === 0 && (
               <tbody>
                 <tr>

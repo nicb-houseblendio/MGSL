@@ -23,7 +23,7 @@ export const SOCartBar = ({ cart, onOpenWizard, onClear }: SOCartBarProps) => {
   const itemCount = new Set(cart.map((l) => l.internalId)).size;
   // Not one number: a cart can mix a Lumber line in BF with a Veneer line in
   // SQFT, and their sum would be meaningless.
-  const totalLabel = formatUnitTotals(cart.map((l) => ({ unit: l.unit, qty: l.bf })));
+  const totalLabel = formatUnitTotals(cart.map((l) => ({ unit: l.unit, qty: l.preSplitQty })));
 
   return (
     <div

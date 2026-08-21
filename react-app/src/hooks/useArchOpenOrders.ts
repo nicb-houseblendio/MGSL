@@ -57,6 +57,8 @@ interface RawLine {
   /** RAW NetSuite unit name, e.g. "Square Feet". Normalised here, not on the server. */
   unitName?: string;
   bf: number;
+  /** NetSuite's own line amount, in the order's currency. */
+  amount?: number;
   costPerBF: number | null;
   costSource?: 'rowAverage' | 'unknown';
   pricePerBF?: number;
@@ -108,7 +110,10 @@ const toCartLine = (l: RawLine): ArchCartLine & { unattributed?: boolean; costSo
   lotId: l.lotId,
   containerNo: l.containerNo,
   unit: normalizeUnit(l.unitName),
-  bf: Number(l.bf) || 0,
+  // The wire field is still `bf` so the deployed service needs no coordinated
+  // redeploy; the TS name says which of the two quantities it is.
+  preSplitQty: Number(l.bf) || 0,
+  amount: l.amount === undefined ? undefined : Number(l.amount),
   costPerBF: l.costPerBF === null || l.costPerBF === undefined ? null : Number(l.costPerBF),
   bucket: l.bucket,
   existing: true,
