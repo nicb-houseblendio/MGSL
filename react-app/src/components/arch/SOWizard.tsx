@@ -1267,7 +1267,23 @@ export const SOWizard = ({
               if (e.target.value === '__new__') {
                 setAddingAddress(true);
                 setShipTo('');
-              } else setShipTo(e.target.value);
+                setShipAddressId('');
+                return;
+              }
+              setShipTo(e.target.value);
+              /* 🔴 THE ID HAS TO MOVE WITH THE LABEL.
+               *
+               * This used to set `shipTo` only. `shipAddressId` kept whatever
+               * `loadAddressesFor` had preselected, and the id is what the write
+               * path actually sends — so changing the ship-to changed what the
+               * TRADER SAW and not where the goods went. On a customer with more
+               * than one address that is a wrong delivery, and the screen would
+               * have agreed with the trader the whole way to Review.
+               *
+               * Cleared when the label matches no live address, so a fixture or a
+               * stale entry cannot inherit a real address's id. */
+              const hit = liveAddresses.find((a) => a.label === e.target.value);
+              setShipAddressId(hit ? hit.id : '');
             }}
             style={{ ...field(!!shipTo), cursor: customer ? 'pointer' : 'not-allowed', opacity: customer ? 1 : 0.6 }}
           >
@@ -1277,8 +1293,16 @@ export const SOWizard = ({
               when it did not. Keyed by LABEL for the value because the rest of the
               wizard renders `shipTo` as text; the id travels separately in
               `shipAddressId`, which is what the write path needs.
+
+              🔴 A LIVE CUSTOMER NEVER FALLS BACK TO FIXTURES. It used to fall back
+              whenever `liveAddresses` was empty — which includes the window before
+              the fetch resolves — so a real customer briefly offered invented
+              addresses, and one could be selected. Observed on County Line
+              Materials LLC, whose only real address is in Rockingham VA, showing
+              "Cofer Bros Inc., Tucker GA". An address that cannot be sent must not
+              be offered; an empty list says so instead.
             */}
-            {(liveAddresses.length ? liveAddresses.map((a) => a.label) : allAddresses).map((a) => (
+            {(customersAreLive ? liveAddresses.map((a) => a.label) : allAddresses).map((a) => (
               <option key={a} value={a}>
                 {a}
               </option>
