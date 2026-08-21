@@ -420,6 +420,29 @@ export const SOWizard = ({
     return [...keptExisting, ...cart.filter((l) => !onOrder.has(bundleId(l)))];
   }, [mode, chosenOrder, cart, keptExisting]);
 
+  /**
+   * The lines this submission actually WRITES.
+   *
+   * 🔴 IN APPEND MODE THIS MUST EXCLUDE THE LINES THE ORDER ALREADY HAS. `lines`
+   * is the merged view — existing lines first, then the new lots — because that is
+   * what the trader needs to SEE. It is not what may be SENT: the endpoint appends
+   * every line it is given, at `getLineCount() + i`, with no idea which ones are
+   * already there. Sending the merged list would have added a second copy of every
+   * existing line, doubling the order's quantity and committing the same bundles
+   * twice.
+   *
+   * On SO-CWP-001329 that meant 500 BF becoming 1,000, 20 SQFT becoming 40 and 6
+   * units becoming 12, on a real record.
+   *
+   * ⚠️ A consequence worth knowing: a price edited on an EXISTING line is not
+   * written. There is no update path for a line already on the order, and sending
+   * it as a new line would be worse than not applying it. The Review step says so.
+   */
+  const writableLines = React.useMemo(
+    () => (mode === 'existing' ? lines.filter((l) => !l.existing) : lines),
+    [mode, lines]
+  );
+
   /** Dropping is per-order, so switching orders must not carry the set over. */
   React.useEffect(() => {
     setDroppedExisting(new Set());
@@ -647,7 +670,14 @@ export const SOWizard = ({
    * this change exists to remove.
    */
   const startOk = mode === 'new' || !!chosenOrderId;
-  const itemsOk = lines.length > 0;
+  /**
+   * At least one line that will actually be WRITTEN.
+   *
+   * In append mode the merged list is never empty — the order's own lines are in
+   * it — so checking `lines` would have let a trader walk the whole wizard with
+   * nothing added and be refused by the server with "The order has no lines."
+   */
+  const itemsOk = writableLines.length > 0;
   /**
    * Customer PO is REQUIRED, and that is NetSuite's rule rather than a preference.
    *
@@ -725,7 +755,12 @@ export const SOWizard = ({
       salesTeam,
       paymentTerms: paymentTermsFor(customer),
     },
-    lines: lines.map((l) => ({
+    // Totals for what is BEING WRITTEN, so the confirm dialog does not quote the
+    // whole order's revenue for an append that adds one bundle to it.
+    totals: sumEconomics(
+      writableLines.map((l) => lineEconomics(l, sp(l.key), rm(l.key), parseFloat(pr(l.key)) || 0))
+    ),
+    lines: writableLines.map((l) => ({
       lotNo: l.lotNo,
       // Internal ids, threaded through from the cart so the write path is given
       // ids rather than names. See ArchCartLine.
@@ -744,7 +779,6 @@ export const SOWizard = ({
       isSplit: sp(l.key).on,
       reman: rm(l.key),
     })),
-    totals,
   });
 
   /* ── Step bodies ──────────────────────────────────────────────────────────*/
@@ -2336,6 +2370,24 @@ export const SOWizard = ({
         availability on save. Still provisional: how a split line is marked, where reman is
         recorded, and the split and reman rates themselves — none of those reach NetSuite yet.
       </ProvisionalNote>
+      {/*
+        Says which lines are actually written. Only the ADDED lots go to NetSuite:
+        the endpoint appends whatever it is given, so sending the lines the order
+        already has would put a second copy of each on it. That means a price
+        retyped on an existing line does not take effect, and a trader who was not
+        told would reasonably assume it had.
+      */}
+      {mode === 'existing' && (
+        <ProvisionalNote>
+          <strong>
+            Only the {writableLines.length} added {writableLines.length === 1 ? 'lot' : 'lots'}{' '}
+            {writableLines.length === 1 ? 'is' : 'are'} written to {existingSO}.
+          </strong>{' '}
+          Lines already on the order are shown for context and are left exactly as they are — a
+          price changed on one of them is not saved, and dropping one does not remove it in
+          NetSuite.
+        </ProvisionalNote>
+      )}
     </div>
   );
 

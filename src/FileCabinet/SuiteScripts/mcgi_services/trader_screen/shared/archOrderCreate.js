@@ -424,6 +424,26 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
     };
 
     /**
+     * Sets Incoterms, which is a SELECT and mandatory on the sales-order form.
+     *
+     * The wizard may send either an internal id or the label a trader picked, so
+     * both are handled rather than assuming one. Shared by the create and append
+     * paths deliberately: append was missing this entirely, and NetSuite refuses
+     * the save of an EXISTING record that has no incoterms just as readily as a
+     * new one.
+     */
+    const applyIncoterms = (rec, h) => {
+        const id = int(h && h.incoterms);
+        if (id) {
+            rec.setValue({ fieldId: H_INCOTERMS, value: id });
+        } else if (h && h.incoterms) {
+            rec.setText({ fieldId: H_INCOTERMS, text: String(h.incoterms) });
+        } else {
+            rec.setValue({ fieldId: H_INCOTERMS, value: incotermsDefault() });
+        }
+    };
+
+    /**
      * The customer address to ship to.
      *
      * 🔴 MANDATORY ON THE ARCH FORM, and not on Industriel — form 386 refuses with
@@ -1525,16 +1545,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
                 // both real lines carry isprimary=F, so asserting it is wrong too.
             }
 
-            // Incoterms is a SELECT. The wizard may send either an internal id or
-            // the label a trader picked, so both are handled rather than assuming.
-            const incotermsId = int(h.incoterms);
-            if (incotermsId) {
-                so.setValue({ fieldId: H_INCOTERMS, value: incotermsId });
-            } else if (h.incoterms) {
-                so.setText({ fieldId: H_INCOTERMS, text: String(h.incoterms) });
-            } else {
-                so.setValue({ fieldId: H_INCOTERMS, value: incotermsDefault() });
-            }
+            applyIncoterms(so, h);
 
             if (h.shipDate) {
                 // setValue with a real Date, NOT setText. setText parses against
@@ -1574,7 +1585,97 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', './archSplitExe
             if (idempotencyKey) {
                 so.setValue({ fieldId: 'externalid', value: 'ARCH-ORDER-' + idempotencyKey });
             }
-        } else if (idempotencyKey) {
+        } else {
+            /* ── Header fields on an APPEND ───────────────────────────────────
+             *
+             * 🔴 THIS BLOCK EXISTS BECAUSE APPEND COULD NOT SAVE AT ALL. Every
+             * header assignment lived under `if (!appending)`, so appending set
+             * none of them — and NetSuite re-runs the form's mandatory-field
+             * validation on the SAVE of an existing record, not just on create.
+             * Appending to SO-CWP-001329 was refused with "Please enter value(s)
+             * for: Incoterms, Department", because that order (written by the
+             * temporary seed Suitelet, which bypassed mandatory fields) has
+             * neither. The comment in the create branch predicted exactly this:
+             * absence on an existing record is not evidence a field is optional.
+             *
+             * A second, quieter defect the same gap caused: the wizard collects
+             * Customer PO, ship-to, incoterms and ship date in append mode, and
+             * NONE of them were written. The trader filled in four fields that
+             * did nothing.
+             *
+             * ── The rule this block follows ──────────────────────────────────
+             *
+             *   Apply what the trader could SEE and CHANGE.
+             *   Fill what is MISSING and mandatory.
+             *   Never rewrite what the trader was never shown.
+             *
+             * So `entity`, `currency` and `terms` are untouched: an append must
+             * not be able to move an order to another customer or re-denominate
+             * it. `department`, `location` and the insurance rate are filled ONLY
+             * when empty — they are configuration and derived values that the
+             * wizard never displays, and silently restating an existing order's
+             * ops rate would change its economics behind the trader's back.
+             */
+            const h = input.header || {};
+            const entityId = int(so.getValue({ fieldId: 'entity' }));
+
+            // Shown on the wizard's header step, so applied. Sending the value
+            // back unchanged is a no-op; where the trader edited it, the edit is
+            // the point.
+            if (h.customerPO) setIfPresent(so, H_CUSTOMER_PO, String(h.customerPO), 'the customer PO');
+            applyIncoterms(so, h);
+
+            if (h.shipDate) {
+                const d = parseIsoDate(h.shipDate);
+                if (d) {
+                    setIfPresent(so, H_SHIP_DATE, d, 'the expected ship date');
+                } else {
+                    log.audit('ARCH Order Create',
+                        'Ship date "' + h.shipDate + '" is not YYYY-MM-DD and was not set.');
+                }
+            }
+
+            // Mandatory on form 386. Applied when the request names one, and
+            // otherwise only filled when the order has none — an order that
+            // already ships somewhere must not be redirected by an append that
+            // was silent about it.
+            const requestedAddr = int(h.shipAddressId);
+            if (requestedAddr || !so.getValue({ fieldId: 'shipaddresslist' })) {
+                const shipAddr = resolveShipAddress(entityId, h.shipAddressId);
+                if (shipAddr) {
+                    so.setValue({ fieldId: 'shipaddresslist', value: shipAddr });
+                } else if (!so.getValue({ fieldId: 'shipaddresslist' })) {
+                    throw refusal('That customer has no address on file, so this order has ' +
+                                  'nowhere to ship to. Add an address to the customer first.');
+                }
+            }
+
+            // ── Mandatory, and NOT on the wizard: fill the gap, never overwrite ──
+            if (!int(so.getValue({ fieldId: 'department' }))) {
+                so.setValue({ fieldId: 'department', value: departmentId() });
+            }
+
+            // "Reload (Ship From)". Derived from the lines being added, and only
+            // when the order has none — see the create branch for why the label
+            // and the field id differ.
+            if (!int(so.getValue({ fieldId: 'location' }))) {
+                const headerLocation = int(h.locationId) || soleLocation(resolved.lines);
+                if (!headerLocation) {
+                    throw refusal('This order has no ship-from location and the lines being added ' +
+                                  'span more than one, so there is nothing to derive it from. ' +
+                                  'Add lines from a single location, or send header.locationId.');
+                }
+                so.setValue({ fieldId: 'location', value: headerLocation });
+            }
+
+            // Configuration, so filled rather than restated. Overwriting it would
+            // silently re-cost every line already on the order.
+            if (!num(so.getValue({ fieldId: H_INSURANCE }))) {
+                setIfPresent(so, H_INSURANCE, insuranceRate(), 'the ops and insurance rate');
+            }
+        }
+
+        if (appending && idempotencyKey) {
             // Append cannot use a unique externalid, because the order already has
             // one (or none) and overwriting it would break whatever else keys off
             // it. So the marker is APPENDED to the existing value, and

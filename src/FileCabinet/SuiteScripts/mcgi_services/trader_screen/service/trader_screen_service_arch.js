@@ -668,6 +668,9 @@ define([
         // 400 ("Field not found ... NOT_EXPOSED"), not a null. `shippingaddress`
         // is the searchable one, and BUILTIN.DF gives the full address block.
         '  BUILTIN.DF(t.shippingaddress)   AS shipto, ' +
+        // Base-to-transaction rate, needed to bring the CACHED COST (which is
+        // GL, i.e. base currency) into the same currency as the revenue.
+        '  t.exchangerate                  AS exchangerate, ' +
         '  tl.id                           AS lineid, ' +
         '  tl.item                         AS itemid, ' +
         '  i.itemid                        AS itemcode, ' +
@@ -679,6 +682,10 @@ define([
         '  BUILTIN.DF(tl.location)         AS locationname, ' +
         '  tl.quantity                     AS lineqty, ' +
         '  tl.rate                         AS linerate, ' +
+        // 🔴 THE LINE AMOUNT IN THE ORDER'S OWN CURRENCY. `tl.rate` is in the
+        // SUBSIDIARY'S BASE currency (CAD here), so deriving a price from it
+        // reported a USD order 38.6% high. See the note on pricePerBF below.
+        '  tl.foreignamount                AS foreignamount, ' +
         '  tl.quantityshiprecv             AS shiprecv, ' +
         '  ia.inventorynumber              AS lotid, ' +
         '  inv.inventorynumber             AS lotno, ' +
@@ -840,13 +847,50 @@ define([
                 const conv = isFinite(rate) && rate > 0 ? rate : 1;
                 const shipped = Math.abs(parseFloat(r.shiprecv) || 0);
                 const pairKey = String(r.itemid) + '__' + String(r.locationid);
-                const cost = Object.prototype.hasOwnProperty.call(costByPair, pairKey)
+                const rawCost = Object.prototype.hasOwnProperty.call(costByPair, pairKey)
                     ? costByPair[pairKey]
                     : null;
 
+                /* ── Money is reported in the ORDER'S OWN CURRENCY ────────────
+                 *
+                 * 🔴 THE FIFTH SCALE TRAP ON THIS SCREEN, and the only one that
+                 * shows up as money rather than quantity.
+                 *
+                 * `transactionline.rate` is denominated in the SUBSIDIARY'S BASE
+                 * currency, which is CAD for both CWP MTL (5) and ARC (9), while
+                 * `foreignamount` and `netamount` are in the TRANSACTION's
+                 * currency. Deriving a unit price from `rate` therefore reported a
+                 * USD order at the CAD figure and labelled it USD:
+                 *
+                 *     SO-CWP-001329, measured 2026-08-20
+                 *       tl.rate        8314.44   (CAD per MBF)
+                 *       netamount/qty  6000.00   (USD per MBF)  <- the real price
+                 *       8314.44 = 6000 x 1.38574 exchange rate
+                 *
+                 * The tab showed $4,373 for an order worth $3,156 USD. Nothing
+                 * looked wrong: every figure was self-consistent, just 38.6% high.
+                 *
+                 * So the price comes from the AMOUNT, not the rate. A zero-quantity
+                 * line has no meaningful unit price and reports none rather than
+                 * dividing by zero.
+                 *
+                 * And the cost has to move the other way. The cached cost is
+                 * derived from the GL, so it is BASE currency; dividing by the
+                 * order's exchange rate brings it alongside the revenue. Leaving
+                 * it in CAD kept the MARGIN accidentally correct — both sides were
+                 * CAD — while the revenue label was wrong, which is a worse place
+                 * to be than either consistent answer.
+                 */
+                const qtyBase = Math.abs(parseFloat(r.lineqty) || 0);
+                const amountTxn = Math.abs(parseFloat(r.foreignamount) || 0);
+                const fx = parseFloat(r.exchangerate);
+                const fxRate = isFinite(fx) && fx > 0 ? fx : 1;
+                const pricePerUnit = qtyBase > 0 ? (amountTxn / qtyBase) * conv : 0;
+                const cost = rawCost === null ? null : rawCost / fxRate;
+
                 lineSeen[lineKey] = {
                     conv:         conv,
-                    qtyBase:      Math.abs(parseFloat(r.lineqty) || 0),
+                    qtyBase:      qtyBase,
                     assignedBase: 0,
                     lineId:       String(r.lineid),
                     tranId:       tranId,
@@ -859,9 +903,11 @@ define([
                         locationId:   String(r.locationid || ''),
                         // RAW NetSuite unit name. The front end normalises it.
                         unitName:     String(r.unitname || ''),
-                        costPerBF:    cost,
+                        costPerBF:    cost === null ? null : tidy(cost, 4),
                         costSource:   cost === null ? 'unknown' : 'rowAverage',
-                        pricePerBF:   tidy((parseFloat(r.linerate) || 0) * conv, 6),
+                        // The order's own currency, for anything that needs to say so.
+                        exchangeRate: tidy(fxRate, 6),
+                        pricePerBF:   tidy(pricePerUnit, 6),
                         // A partly-shipped line belongs in outbound, not reserve.
                         bucket:       shipped > 0 ? 'outbound' : 'reserve',
                         existing:     true,
