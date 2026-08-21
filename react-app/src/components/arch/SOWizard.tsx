@@ -1929,6 +1929,10 @@ export const SOWizard = ({
                           type="text"
                           value={r.planingOther}
                           placeholder='e.g. 1-7/16"'
+                          /* The only free-text reman input; the other three are
+                             selects. Capped at what the SO line field holds, so
+                             the server never has to truncate silently. */
+                          maxLength={40}
                           onChange={(e2) => setRm(l.key, { planingOther: e2.target.value })}
                           style={{ ...field(!!r.planingOther.trim()), width: 120, padding: '6px 8px', fontSize: 12 }}
                         />
