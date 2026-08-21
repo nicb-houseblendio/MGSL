@@ -2083,7 +2083,19 @@ export const SOWizard = ({
               style={{ ...td, textAlign: 'right', fontWeight: 800, color: ARCH_SURFACE.navy, borderTop: '2px solid #CBD5E1' }}
               className="font-mono"
             >
-              {formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: l.bf })))}
+              {/*
+                🔴 orderedBF, NOT l.bf. This totalled the BUNDLE size while every
+                other figure on the row -- revenue, profit, margin -- was computed
+                on the SPLIT TARGET. On a 500-of-1,145 split the footer read
+                "1,145 BF" beside "$9,500", implying $8.30/BF against the $19.00
+                the trader had typed one column over.
+
+                The Items step above is deliberately left alone: there, the bundle
+                quantity IS the answer -- it reports which lots were picked, before
+                any split is declared. The held quantity also stays visible on the
+                Bundle split step and in the confirm dialog's "500 / 1,145".
+              */}
+              {formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: orderedBF(l, sp(l.key)) })))}
             </td>
             <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
             <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
@@ -2331,7 +2343,10 @@ export const SOWizard = ({
         }}
       >
         {[
-          ['Quantity', formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: l.bf }))), '#fff'],
+          // orderedBF, NOT l.bf. Same defect as the pricing footer below-left:
+          // this stat sits directly beside REVENUE, so quoting the BUNDLE size
+          // made the two describe different quantities.
+          ['Quantity', formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: orderedBF(l, sp(l.key)) }))), '#fff'],
           ['Revenue', fmtMoney(totals.revenue, currency || 'USD', 0), '#fff'],
           ['Lot cost', fmtMoney(totals.lotCost, currency || 'USD', 0), 'rgba(255,255,255,0.75)'],
           ['Services + ops', fmtMoney(totals.processingCost + totals.opsInsuranceCost, currency || 'USD', 0), 'rgba(255,255,255,0.75)'],
