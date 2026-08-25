@@ -2471,6 +2471,52 @@ export const SOWizard = ({
       </div>
 
       {/*
+        UNKNOWN cost is not the same as a bad deal, so it gets its own banner in a
+        neutral palette rather than the amber one below. Amber says "you are about
+        to lose money"; this says "we cannot tell you whether you are".
+
+        Deliberately separate from the dashes in the tables. A dash answers "what
+        is the profit on this line", and the honest answer to "should I submit
+        this" is that the total cannot be computed at all — one unknown line makes
+        it unknown. Without saying so, a trader reads the dash as a rounding
+        artefact and the em dash in the summary as zero.
+
+        Not reachable today: 13 of 13 cache rows carry a cost. It becomes
+        reachable for a lot with no posting history, which is exactly how the Open
+        SO tab met it.
+      */}
+      {economics.some((e) => !e.costKnown) && (
+        <div
+          style={{
+            padding: '11px 14px',
+            borderRadius: 9,
+            border: `1px solid ${ARCH_SURFACE.border}`,
+            background: ARCH_SURFACE.rowEven,
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 10,
+          }}
+        >
+          <span style={{ fontSize: 16, lineHeight: 1 }}>ℹ</span>
+          <div style={{ flex: 1, fontSize: 12.5, color: ARCH_SURFACE.textMid, lineHeight: 1.5 }}>
+            <strong>
+              {economics.filter((e) => !e.costKnown).length} of {economics.length} line
+              {economics.length === 1 ? '' : 's'}{' '}
+              {economics.filter((e) => !e.costKnown).length === 1 ? 'has' : 'have'} no lot cost
+            </strong>{' '}
+            so profit and margin cannot be calculated for{' '}
+            {economics.filter((e) => !e.costKnown).length === 1 ? 'it' : 'them'}, and the order
+            total is shown as unknown rather than estimated.{' '}
+            {lines
+              .filter((_l, i) => !economics[i].costKnown)
+              .map((l) => l.lotNo)
+              .join(', ')}
+            . The order can still be created; only the margin figures are affected.
+          </div>
+        </div>
+      )}
+
+      {/*
         A losing line can hide behind a healthy total. On the case that prompted
         this — one line at $2.50/BF against $3.00 cost, losing $826 — the strip
         above still read $1,744 and 21.8% in green, and the strip is what the eye
@@ -2478,7 +2524,15 @@ export const SOWizard = ({
         already flags these; Review is where it actually costs money to miss one.
         Warns only, and names the lines so the trader can go back to them.
       */}
-      {(lowPricedLines.length > 0 || economics.some((e) => e.profit < 0)) && (
+      {/*
+        `costKnown &&` on every profit test here. An uncosted line's profit is
+        revenue minus zero, so it normally reads positive and stays out of this
+        banner by luck. But a line with no price entered and a reman service
+        ticked has processing cost against zero revenue, which goes NEGATIVE and
+        would announce that a line loses money when we do not know its cost. That
+        is the same dishonesty as the pure-profit bug, pointing the other way.
+      */}
+      {(lowPricedLines.length > 0 || economics.some((e) => e.costKnown && e.profit < 0)) && (
         <div
           style={{
             padding: '11px 14px',
@@ -2493,15 +2547,17 @@ export const SOWizard = ({
           <span style={{ fontSize: 16, lineHeight: 1 }}>⚠</span>
           <div style={{ flex: 1, fontSize: 12.5, color: '#713F12', lineHeight: 1.5 }}>
             <strong>
-              {economics.filter((e) => e.profit < 0).length > 0
-                ? `${economics.filter((e) => e.profit < 0).length} ${
-                    economics.filter((e) => e.profit < 0).length === 1 ? 'line loses' : 'lines lose'
+              {economics.filter((e) => e.costKnown && e.profit < 0).length > 0
+                ? `${economics.filter((e) => e.costKnown && e.profit < 0).length} ${
+                    economics.filter((e) => e.costKnown && e.profit < 0).length === 1
+                      ? 'line loses'
+                      : 'lines lose'
                   } money on this order`
                 : `${lowPricedLines.length} line${lowPricedLines.length === 1 ? '' : 's'} priced under the trigger`}
             </strong>{' '}
             — the order total above can still look healthy while an individual line does not.{' '}
             {lines
-              .filter((l, i) => economics[i].profit < 0 || isLowPriced(l))
+              .filter((l, i) => (economics[i].costKnown && economics[i].profit < 0) || isLowPriced(l))
               .map((l) => l.lotNo)
               .join(', ')}
             . Go <strong>Back</strong> to Pricing to change it, or create the order as it stands.
