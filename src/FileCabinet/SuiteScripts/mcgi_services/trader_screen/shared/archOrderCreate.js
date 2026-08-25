@@ -417,6 +417,56 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
     };
 
     /**
+     * The sales reps this endpoint can actually credit.
+     *
+     * 🔴 Served from HERE rather than from the RESTlet, and that is the whole
+     * point. A RESTlet ignores `runasrole` and runs as the CALLER, and the ARCH
+     * trader role cannot read the employee table at all ("Record 'employee' was
+     * not found"). So the wizard's dropdown came back empty for the only role
+     * that needs it, while the control itself was built and working. This
+     * Suitelet runs as `customrole2184`, which can read employees: proven by
+     * `resolveSalesRep` resolving employee 2085 on SO-CWP-001344 and 001345.
+     *
+     * Living in the same module as `resolveSalesRep` is deliberate. The list and
+     * the validator now run the same predicate under the same role, so the screen
+     * cannot offer a rep the write path will then refuse. That was a real defect:
+     * an ARC rep in a subsidiary this role cannot see was offered by the dropdown
+     * and then rejected with "No sales rep could be determined", naming somebody
+     * the screen had suggested one step earlier.
+     *
+     * ⚠️ Do NOT add a subsidiary filter. The equivalent list on the RESTlet says
+     * why: scoping to the requested subsidiary returned an empty list and blocked
+     * the wizard outright. The role's own scope is already the correct filter,
+     * and it is applied by NetSuite rather than by us.
+     */
+    const listSalesReps = () => {
+        try {
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT e.id AS id, e.entityid AS name, ' +
+                    '       BUILTIN.DF(e.subsidiary) AS subsidiaryname ' +
+                    'FROM employee e ' +
+                    "WHERE e.issalesrep = 'T' AND e.isinactive = 'F' " +
+                    'ORDER BY e.entityid',
+            }).asMappedResults();
+
+            return {
+                salesReps: rows.map((r) => ({
+                    id: String(r.id),
+                    name: String(r.name || ('Employee ' + r.id)),
+                    subsidiaryName: r.subsidiaryname ? String(r.subsidiaryname) : null,
+                })),
+            };
+        } catch (e) {
+            // Never throws. An empty list is exactly today's behaviour, so a
+            // failure here cannot be worse than not having made this change.
+            log.error('ARCH Order Create — sales rep list failed',
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return { salesReps: [], error: (e.name || '') + ': ' + (e.message || String(e)) };
+        }
+    };
+
+    /**
      * Sets an OPTIONAL field only if the record actually has it.
      *
      * 🔴 A `setValue` on a field the record does not carry throws
@@ -1715,10 +1765,18 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             // API accepts. NetSuite fills both in for a single-line team.
             //
             // Attributed to the REQUESTING USER where possible. This deployment
-            // runs as Administrator, but `getCurrentUser` still returns the person
-            // who actually called it, so the order records the trader who built
-            // it. See `resolveSalesRep` for the fallbacks and why a rep that is
-            // not a real sales rep breaks the save outright.
+            // runs as `customrole2184` (see the runasrole note on the deployment
+            // object), but `getCurrentUser` still returns the person who actually
+            // called it, so the order records the trader who built it. The role
+            // switch changes the ROLE, not the user.
+            //
+            // ⚠️ `resolveSalesRep`'s validation query runs under that role, so it
+            // can only see employees within the role's subsidiary scope. A rep the
+            // role cannot see is indistinguishable here from one who is not a
+            // sales rep, and both produce the same refusal below.
+            //
+            // See `resolveSalesRep` for the fallbacks and why a rep that is not a
+            // real sales rep breaks the save outright.
             const repId = resolveSalesRep(
                 int(h.salesRepId), int(runtime.getCurrentUser().id), customerId);
             if (!repId) {
@@ -2104,6 +2162,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         createOrder: createOrder,
         validateOrder: validateOrder,
         fieldReadiness: fieldReadiness,
+        listSalesReps: listSalesReps,
         // Exported for the test runner.
         resolveLines: resolveLines,
         verifyAssignments: verifyAssignments,

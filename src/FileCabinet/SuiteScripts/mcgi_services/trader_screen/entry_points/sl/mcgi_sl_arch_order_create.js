@@ -108,6 +108,48 @@ define(['N/runtime', 'N/log', './../../shared/archOrderCreate'],
         }
 
         if (context.request.method === 'GET') {
+            /*
+             * `action=salesReps` serves the wizard's sales-rep dropdown.
+             *
+             * It lives on this Suitelet rather than on the trader-screen RESTlet
+             * because a RESTlet ignores `runasrole` and runs as the caller, and
+             * the ARCH trader role cannot read the employee table. The dropdown
+             * was therefore empty for the only role that needs it. Here the read
+             * happens under `customrole2184`, the same role that validates the
+             * rep on write, so the list cannot offer somebody the write path
+             * then refuses. See `listSalesReps`.
+             *
+             * Anything else, including no action at all, keeps the original
+             * health-check response untouched, because `suitelet.mjs script=6505
+             * deploy=1` is the cheap way to prove the AMD graph resolves and to
+             * read line-field readiness. Do not fold the two together.
+             */
+            const action = String(context.request.parameters.action || '');
+
+            if (action === 'salesReps') {
+                const reps = orderLib.listSalesReps();
+                return respond(context, 200, {
+                    ok: !reps.error,
+                    service: 'arch-order-create',
+                    action: 'salesReps',
+                    /*
+                     * The CALLER's role, which is NOT the role the list was read
+                     * under. Measured 2026-08-25: a TBA GET as Administrator
+                     * (role 3) reports callerRole 3 and still returns only the 15
+                     * subsidiary-5 reps, with the single subsidiary-9 rep absent.
+                     *
+                     * So `runasrole` governs the data read while
+                     * `getCurrentUser().role` keeps reporting the caller. Do not
+                     * use this field to reason about what the read could see, and
+                     * do not rename it back to something that implies it.
+                     */
+                    callerRole: user.role,
+                    count: reps.salesReps.length,
+                    salesReps: reps.salesReps,
+                    error: reps.error || undefined,
+                });
+            }
+
             return respond(context, 200, {
                 ok: true,
                 service: 'arch-order-create',

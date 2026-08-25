@@ -21,6 +21,7 @@
 
 import * as React from 'react';
 import { apiGet } from '@/lib/api';
+import { fetchSalesRepsFromEndpoint } from '@/lib/archOrderApi';
 import { CUSTOMERS as FIXTURE_CUSTOMERS } from '@/lib/archOrderFixtures';
 
 export interface ArchCustomer {
@@ -112,6 +113,26 @@ export interface ArchSalesRep {
  * is not decoration: with an empty list the wizard cannot complete.
  */
 export const fetchSalesReps = async (): Promise<ArchSalesRep[]> => {
+  /*
+   * The ORDER ENDPOINT first, and the RESTlet only as a fallback.
+   *
+   * 🔴 The RESTlet cannot serve this to the role that needs it. It ignores
+   * `runasrole` and runs as the caller, and the ARCH trader role cannot read the
+   * employee table ("Record 'employee' was not found"), so this returned an empty
+   * list for every real trader while working fine for an administrator. The
+   * dropdown was never broken; its source was.
+   *
+   * The order Suitelet runs as `customrole2184` and is also the role that
+   * validates the rep on write, so asking it means the list and the validator
+   * agree by construction.
+   *
+   * The fallback stays for two reasons: an administrator on a build deployed
+   * before the Suitelet action exists still gets a list, and nothing here has to
+   * know which of the two is deployed.
+   */
+  const viaEndpoint = await fetchSalesRepsFromEndpoint();
+  if (viaEndpoint && viaEndpoint.length) return viaEndpoint;
+
   try {
     const res = await apiGet<{ success?: boolean; salesReps?: ArchSalesRep[] }>(
       'salesReps',

@@ -141,6 +141,50 @@ export const createArchOrder = async (
   idempotencyKey: string
 ): Promise<ArchOrderResult> => submit(toRequest(draft, idempotencyKey));
 
+export interface ArchSalesRepDTO {
+  id: string;
+  name: string;
+  subsidiaryName?: string | null;
+}
+
+/**
+ * The sales-rep list, read from the ORDER endpoint rather than the trader-screen
+ * RESTlet.
+ *
+ * 🔴 Why it moved. A RESTlet ignores `runasrole` and runs as the CALLER, and the
+ * ARCH trader role cannot read the employee table at all. So the wizard's rep
+ * dropdown — which was built, rendered and working — came back empty for the
+ * only role that actually needs it, and the order was then refused for having no
+ * rep to credit. This Suitelet runs as `customrole2184`, which can read
+ * employees, and is the same role that validates the rep on write. One role for
+ * both halves means the list can no longer offer a rep the write path refuses.
+ *
+ * Returns null rather than [] on any failure, so the caller can fall back to the
+ * RESTlet. That keeps the deploy order forgiving: a new bundle against an old
+ * Suitelet degrades to exactly today's behaviour instead of breaking.
+ */
+export const fetchSalesRepsFromEndpoint = async (): Promise<ArchSalesRepDTO[] | null> => {
+  const url = endpointUrl();
+  if (!url) return null;
+  try {
+    // `url.resolveScript` already returns a query string, so the separator has
+    // to be conditional. Hardcoding '?' produced a URL NetSuite answers with the
+    // Suitelet's own HTML rather than JSON.
+    const sep = url.indexOf('?') === -1 ? '?' : '&';
+    const r = await fetch(url + sep + 'action=salesReps', {
+      method: 'GET',
+      credentials: 'include',
+    });
+    // Same rule as `submit`: a Suitelet answers 200 to everything, so branch on
+    // the payload and never on r.status.
+    const body = (await r.json()) as { ok?: boolean; salesReps?: ArchSalesRepDTO[] };
+    if (!body || body.ok !== true || !Array.isArray(body.salesReps)) return null;
+    return body.salesReps;
+  } catch {
+    return null;
+  }
+};
+
 const submit = async (payload: unknown): Promise<ArchOrderResult> => {
   const url = endpointUrl();
   if (!url) {
