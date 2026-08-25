@@ -686,7 +686,28 @@ define([
                     params: EXCLUDED_UNITS_TYPES.concat([HARDWOOD_SEGMENT]),
                 }).asMappedResults();
                 if (untagged.length) {
-                    log.error('ARCH cache — POSSIBLE UNTAGGED HARDWOOD, invisible to this screen',
+                    /*
+                     * ⚠️ AUDIT, not ERROR, and the level is chosen by CAUSE rather
+                     * than by importance.
+                     *
+                     * This was `log.error` and it fired on EVERY hourly run,
+                     * because the condition it reports is a standing state of the
+                     * account, not an event: MGSL have 2,294 untagged items and
+                     * that will not change until Julie's tagging process exists
+                     * (0.1). Measured 2026-08-25: it logged at ERROR on all 95
+                     * non-debug notes since 2026-08-20, one per run, every run.
+                     *
+                     * That is the exact rule this project already learned the hard
+                     * way: a per-run condition at error level is hundreds of lines
+                     * a day and possibly emails, and it trains everyone to ignore
+                     * the error channel, which is where a real failed rebuild
+                     * appears. The information is worth keeping; the severity was
+                     * a lie about frequency.
+                     *
+                     * If this should ever shout again, gate it on the count
+                     * CHANGING between runs, not on the count being non-zero.
+                     */
+                    log.audit('ARCH cache — POSSIBLE UNTAGGED HARDWOOD, invisible to this screen',
                         untagged.length + ' item(s) carry an ARCH-shaped units type but no Hardwood ' +
                         'segment, so their stock does NOT appear: ' +
                         untagged.map((r) => r.itemid).join(', ') +
