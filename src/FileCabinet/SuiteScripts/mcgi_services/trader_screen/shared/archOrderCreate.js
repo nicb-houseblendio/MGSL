@@ -375,21 +375,73 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * rep would misattribute commission on a real sales document, and that is not
      * a guess worth making silently.
      */
+    const salesRepCandidates = (requestedId, userId) => dedupe(
+        [requestedId, userId, int(param('custscript_arch_default_sales_rep'))].filter(Boolean));
+
+    /**
+     * WHY no rep could be resolved. Called only on the refusal path, so it costs
+     * nothing on the happy path.
+     *
+     * 🔴 This exists because one message covered two unrelated causes, and that
+     * ambiguity cost a full day. "No sales rep could be determined" was read as
+     * "this person is not flagged as a sales rep", which sent us to the client
+     * asking them to tick a checkbox on an employee record. The real cause was
+     * that the ROLE COULD NOT SEE the employee, because `runasrole` scopes every
+     * read in this module to that role's subsidiaries. Same message, opposite
+     * fix, and the wrong one was an ask we nearly made of MGSL.
+     *
+     * The discriminator is the SAME query without the `issalesrep` predicate. If
+     * the row comes back, the role can see the person and the flag is the
+     * problem. If it does not, the role cannot see them at all and no employee
+     * record needs changing.
+     */
+    const diagnoseSalesRep = (requestedId, userId) => {
+        const candidates = salesRepCandidates(requestedId, userId);
+        if (!candidates.length) return 'NONE_OFFERED';
+        try {
+            const seen = query.runSuiteQL({
+                query:
+                    'SELECT id, issalesrep, isinactive FROM employee ' +
+                    'WHERE id IN (' + candidates.join(',') + ')',
+            }).asMappedResults();
+
+            if (!seen.length) return 'NOT_VISIBLE_TO_ROLE';
+            if (seen.some((r) => String(r.issalesrep) !== 'T')) return 'NOT_A_SALES_REP';
+            if (seen.some((r) => String(r.isinactive) === 'T')) return 'INACTIVE';
+            return 'UNKNOWN';
+        } catch (e) {
+            // Diagnosis must never be the thing that fails the request. The
+            // caller already has a refusal to report either way.
+            log.error('ARCH Order Create — sales rep diagnosis failed',
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return 'UNKNOWN';
+        }
+    };
+
     const resolveSalesRep = (requestedId, userId, customerId) => {
         // A configured rep is the LAST resort, and deliberately has no built-in
-        // default. Verified 2026-08-20 by logging in as the ARCH trader role: it
-        // cannot read the employee table at all ("Record 'employee' was not
-        // found"), so the wizard's dropdown is empty; employee 3293 "Trader
-        // Hardwood" has issalesrep=F, so the caller fallback misses too; and the
-        // test customer has no assigned rep. All three legs fail, so a real trader
-        // cannot currently create an order.
+        // default.
         //
         // ⚠️ This parameter is EMPTY by default ON PURPOSE. Filling it in with
         // some plausible rep would attribute commission on real sales documents
         // to a person nobody chose. Leaving it empty keeps the refusal, which is
-        // recoverable; a wrong default is not. The better fix is upstream: flag
-        // ARCH traders as sales reps on their employee records.
-        const candidates = dedupe([requestedId, userId, int(param('custscript_arch_default_sales_rep'))].filter(Boolean));
+        // recoverable; a wrong default is not.
+        //
+        // ⚠️ **The sentence that used to end this comment was wrong**, and it was
+        // the load-bearing wrong claim in a chain that reached the client: "the
+        // better fix is upstream: flag ARCH traders as sales reps on their
+        // employee records." It is NOT upstream. The 2026-08-20 observation behind
+        // it was real — the trader role cannot read the employee table, so the
+        // dropdown was empty and all three legs missed — but the conclusion
+        // inverted cause and effect. The dropdown was empty because its list came
+        // from the RESTlet, which ignores `runasrole` and runs as the caller. With
+        // the list served by this Suitelet instead (see `listSalesReps`) a trader
+        // picks any of the 15 reps this role can write for, and no employee record
+        // needs touching. Fixed 2026-08-25.
+        //
+        // Whether an ARCH trader should ALSO be a rep in their own right is a real
+        // business question, but it is not what makes this function work.
+        const candidates = salesRepCandidates(requestedId, userId);
 
         if (candidates.length) {
             const valid = query.runSuiteQL({
@@ -1780,13 +1832,40 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             const repId = resolveSalesRep(
                 int(h.salesRepId), int(runtime.getCurrentUser().id), customerId);
             if (!repId) {
-                // Names every way out, because whoever hits this is a trader who
-                // cannot read the employee table and has no way to guess.
-                throw refusal('No sales rep could be determined, so there is nobody to credit and ' +
-                              'NetSuite would reject the order. Any one of these fixes it: tick ' +
-                              '"Sales Rep" on the trader’s employee record, assign a sales rep ' +
-                              'to this customer, or set the default rep on this deployment ' +
-                              '(custscript_arch_default_sales_rep).');
+                /*
+                 * Names the CAUSE, not just the symptom. The single generic
+                 * message this replaced was read as "not flagged as a sales rep"
+                 * when the real cause was "this role cannot see that employee",
+                 * and acting on the wrong reading turned our bug into a client
+                 * ask. See `diagnoseSalesRep`.
+                 */
+                const why = diagnoseSalesRep(int(h.salesRepId), int(runtime.getCurrentUser().id));
+                const detail = {
+                    NONE_OFFERED:
+                        'No sales rep was selected, and this customer has none assigned. ' +
+                        'Pick one from the Sales rep list on the order.',
+                    NOT_VISIBLE_TO_ROLE:
+                        'The selected sales rep exists but is outside the subsidiaries this ' +
+                        'endpoint can write for, so it cannot be credited. Pick a rep from ' +
+                        'the list on the order rather than one entered by hand — that list ' +
+                        'only ever contains reps this endpoint accepts. Nothing needs ' +
+                        'changing on the employee record.',
+                    NOT_A_SALES_REP:
+                        'The selected person is not flagged as a Sales Rep on their employee ' +
+                        'record, and NetSuite will not accept them on the Sales Team. Either ' +
+                        'pick somebody from the Sales rep list, or have Sales Rep ticked on ' +
+                        'their employee record.',
+                    INACTIVE:
+                        'The selected sales rep is inactive. Pick an active one from the ' +
+                        'Sales rep list.',
+                    UNKNOWN:
+                        'No sales rep could be determined, so there is nobody to credit and ' +
+                        'NetSuite would reject the order. Pick a rep from the list on the ' +
+                        'order, or assign one to this customer.',
+                }[why] || 'No sales rep could be determined.';
+
+                log.error('ARCH Order Create — sales rep unresolved', 'cause=' + why);
+                throw refusal(detail);
             }
             {
                 so.setSublistValue({ sublistId: 'salesteam', fieldId: 'employee', line: 0, value: repId });
