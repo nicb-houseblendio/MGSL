@@ -395,20 +395,61 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * problem. If it does not, the role cannot see them at all and no employee
      * record needs changing.
      */
-    const diagnoseSalesRep = (requestedId, userId) => {
-        const candidates = salesRepCandidates(requestedId, userId);
-        if (!candidates.length) return 'NONE_OFFERED';
-        try {
-            const seen = query.runSuiteQL({
-                query:
-                    'SELECT id, issalesrep, isinactive FROM employee ' +
-                    'WHERE id IN (' + candidates.join(',') + ')',
+    const diagnoseSalesRep = (requestedId, userId, customerId) => {
+        /*
+         * ⚠️ The first version of this probed the candidate list as a SET and
+         * reported whatever it found, which produced two wrong answers:
+         *
+         *   - It never looked at the customer's rep, yet the refusal only fires
+         *     when the candidates AND that rep have both failed. So it could say
+         *     "this customer has none assigned" about a customer who has one.
+         *   - With a requested rep the role cannot see plus a caller who is
+         *     visible but not a rep, the probe saw only the caller and answered
+         *     NOT_A_SALES_REP — telling somebody to tick a box on the WRONG
+         *     employee while the actual problem was the rep they had picked.
+         *
+         * So it now diagnoses the EXPLICIT CHOICE first and reports on that
+         * specific id, then the caller, then the customer. Same order the
+         * resolver tries them in, which is the only order whose answer is
+         * actionable.
+         */
+        const probe = (id) => {
+            if (!id) return null;
+            const rows = query.runSuiteQL({
+                query: 'SELECT id, issalesrep, isinactive FROM employee WHERE id = ' + id,
             }).asMappedResults();
+            if (!rows.length) return 'NOT_VISIBLE';          // invisible OR nonexistent
+            if (String(rows[0].issalesrep) !== 'T') return 'NOT_A_REP';
+            if (String(rows[0].isinactive) === 'T') return 'INACTIVE';
+            return 'USABLE';
+        };
 
-            if (!seen.length) return 'NOT_VISIBLE_TO_ROLE';
-            if (seen.some((r) => String(r.issalesrep) !== 'T')) return 'NOT_A_SALES_REP';
-            if (seen.some((r) => String(r.isinactive) === 'T')) return 'INACTIVE';
-            return 'UNKNOWN';
+        try {
+            // The trader's explicit pick. Its verdict wins, because it is the one
+            // thing they can act on directly.
+            if (requestedId) {
+                const v = probe(requestedId);
+                if (v === 'NOT_VISIBLE') return 'REQUESTED_NOT_VISIBLE';
+                if (v === 'NOT_A_REP') return 'REQUESTED_NOT_A_REP';
+                if (v === 'INACTIVE') return 'REQUESTED_INACTIVE';
+                // 'USABLE' should be unreachable: the resolver would have taken
+                // it. Fall through rather than assert, so a race cannot turn a
+                // refusal into an exception.
+            }
+
+            const configured = int(param('custscript_arch_default_sales_rep'));
+            if (!requestedId && !configured && probe(userId) === 'NOT_A_REP') {
+                return 'CALLER_NOT_A_REP';
+            }
+
+            // The customer leg, which the old version ignored entirely.
+            const cust = query.runSuiteQL({
+                query: 'SELECT salesrep FROM customer WHERE id = ?',
+                params: [customerId],
+            }).asMappedResults();
+            const custRep = cust.length ? int(cust[0].salesrep) : 0;
+            if (!custRep) return 'NO_CUSTOMER_REP';
+            return 'CUSTOMER_REP_UNUSABLE';
         } catch (e) {
             // Diagnosis must never be the thing that fails the request. The
             // caller already has a refusal to report either way.
@@ -1839,25 +1880,35 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                  * and acting on the wrong reading turned our bug into a client
                  * ask. See `diagnoseSalesRep`.
                  */
-                const why = diagnoseSalesRep(int(h.salesRepId), int(runtime.getCurrentUser().id));
+                const why = diagnoseSalesRep(
+                    int(h.salesRepId), int(runtime.getCurrentUser().id), customerId);
                 const detail = {
-                    NONE_OFFERED:
-                        'No sales rep was selected, and this customer has none assigned. ' +
-                        'Pick one from the Sales rep list on the order.',
-                    NOT_VISIBLE_TO_ROLE:
-                        'The selected sales rep exists but is outside the subsidiaries this ' +
-                        'endpoint can write for, so it cannot be credited. Pick a rep from ' +
-                        'the list on the order rather than one entered by hand — that list ' +
-                        'only ever contains reps this endpoint accepts. Nothing needs ' +
-                        'changing on the employee record.',
-                    NOT_A_SALES_REP:
-                        'The selected person is not flagged as a Sales Rep on their employee ' +
-                        'record, and NetSuite will not accept them on the Sales Team. Either ' +
-                        'pick somebody from the Sales rep list, or have Sales Rep ticked on ' +
+                    REQUESTED_NOT_VISIBLE:
+                        'The sales rep you selected is outside the subsidiaries this endpoint ' +
+                        'can write for, so it cannot be credited. Pick one from the Sales rep ' +
+                        'list on the order — that list only contains reps this endpoint ' +
+                        'accepts. Nothing needs changing on anybody’s employee record.',
+                    REQUESTED_NOT_A_REP:
+                        'The person you selected is not flagged as a Sales Rep on their ' +
+                        'employee record, and NetSuite will not accept them on the Sales Team. ' +
+                        'Pick somebody from the Sales rep list, or have Sales Rep ticked on ' +
                         'their employee record.',
-                    INACTIVE:
-                        'The selected sales rep is inactive. Pick an active one from the ' +
+                    REQUESTED_INACTIVE:
+                        'The sales rep you selected is inactive. Pick an active one from the ' +
                         'Sales rep list.',
+                    CALLER_NOT_A_REP:
+                        'No sales rep was selected, and you are not flagged as a Sales Rep on ' +
+                        'your own employee record, so the order cannot be credited to you. ' +
+                        'Pick a rep from the Sales rep list on the order.',
+                    NO_CUSTOMER_REP:
+                        'No sales rep was selected and this customer has none assigned, so ' +
+                        'there is nobody to credit. Pick one from the Sales rep list on the ' +
+                        'order.',
+                    CUSTOMER_REP_UNUSABLE:
+                        'No sales rep was selected. This customer has one assigned, but it is ' +
+                        'either inactive or outside the subsidiaries this endpoint can write ' +
+                        'for, so it cannot be credited. Pick one from the Sales rep list on ' +
+                        'the order.',
                     UNKNOWN:
                         'No sales rep could be determined, so there is nobody to credit and ' +
                         'NetSuite would reject the order. Pick a rep from the list on the ' +

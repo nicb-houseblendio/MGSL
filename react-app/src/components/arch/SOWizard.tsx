@@ -2490,8 +2490,19 @@ export const SOWizard = ({
           style={{
             padding: '11px 14px',
             borderRadius: 9,
-            border: `1px solid ${ARCH_SURFACE.border}`,
-            background: ARCH_SURFACE.rowEven,
+            /*
+             * ⚠️ Was `ARCH_SURFACE.rowEven`, which is '#FFFFFF'. A white fill on a
+             * white surface with a hairline border, sitting directly beside a
+             * FILLED amber banner, so it read as absent. Same defect as the green
+             * "Ready to post": words correct, styling saying nothing.
+             *
+             * These are literals rather than tokens because ARCH_SURFACE has no
+             * neutral FILL — its surfaces are white, and rowOdd is a table
+             * stripe, not a callout. Do not "fix" this back to a token without
+             * checking the value.
+             */
+            border: '1px solid #CBD5E1',
+            background: '#F1F5F9',
             display: 'flex',
             alignItems: 'flex-start',
             gap: 10,

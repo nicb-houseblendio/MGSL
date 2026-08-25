@@ -130,9 +130,33 @@ export const fetchSalesReps = async (): Promise<ArchSalesRep[]> => {
    * before the Suitelet action exists still gets a list, and nothing here has to
    * know which of the two is deployed.
    */
+  /*
+   * 🔴 `null` means the endpoint could not answer. `[]` means it answered and
+   * there are genuinely no reps. Those must NOT be treated alike, and the first
+   * version of this function did exactly that (`if (viaEndpoint && length)`).
+   *
+   * The consequence was real: an empty-but-successful answer fell through to the
+   * RESTlet, which runs as the caller and for an administrator returns all 27
+   * reps across every subsidiary, INCLUDING ones the writer cannot use. So the
+   * one guarantee this change was made for — the list cannot offer a rep the
+   * write path refuses — silently did not hold on that path.
+   *
+   * An empty list from the endpoint is the correct, honest answer: this role can
+   * credit nobody. Returning it lets the wizard say so instead of offering names
+   * that will be refused at submit.
+   */
   const viaEndpoint = await fetchSalesRepsFromEndpoint();
-  if (viaEndpoint && viaEndpoint.length) return viaEndpoint;
+  if (viaEndpoint !== null) return viaEndpoint;
 
+  /*
+   * Only reached when the endpoint could not be asked at all: not configured, a
+   * 403 because the caller's role is not on the allowlist, or a transport
+   * failure. ⚠️ This leg is the OLD behaviour and carries the OLD bug — it can
+   * offer reps outside the writer's subsidiaries. It survives only so an
+   * administrator on a build deployed against an older Suitelet still gets a
+   * list, and it should be DELETED once the trader role is on the endpoint's
+   * allowlist and audience. See todo 3.6.
+   */
   try {
     const res = await apiGet<{ success?: boolean; salesReps?: ArchSalesRep[] }>(
       'salesReps',
