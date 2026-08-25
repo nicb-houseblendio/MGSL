@@ -2103,17 +2103,32 @@ export const SOWizard = ({
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
                   {entered ? fmtMoney(e.revenue, currency || 'USD', 0) : '—'}
                 </td>
+                {/*
+                  * A dash when the lot has no known cost, NOT a profit figure.
+                  * Without the `e.costKnown` guard an uncosted line reports its
+                  * whole revenue as profit, so the margin reads best exactly
+                  * when the cost is unknown. Colour is neutralised too, or a
+                  * green number would still say "good deal".
+                  */}
                 <td
-                  style={{ ...td, textAlign: 'right', fontWeight: 700, color: marginColor(e.marginPct) }}
+                  style={{
+                    ...td, textAlign: 'right', fontWeight: 700,
+                    color: e.costKnown ? marginColor(e.marginPct) : ARCH_SURFACE.textLight,
+                  }}
                   className="font-mono"
+                  title={e.costKnown ? undefined : 'No lot cost for this line, so profit cannot be calculated.'}
                 >
-                  {entered ? fmtMoney(e.profit, currency || 'USD', 0) : '—'}
+                  {entered ? (e.costKnown ? fmtMoney(e.profit, currency || 'USD', 0) : '—') : '—'}
                 </td>
                 <td
-                  style={{ ...td, textAlign: 'right', fontWeight: 700, color: marginColor(e.marginPct) }}
+                  style={{
+                    ...td, textAlign: 'right', fontWeight: 700,
+                    color: e.costKnown ? marginColor(e.marginPct) : ARCH_SURFACE.textLight,
+                  }}
                   className="font-mono"
+                  title={e.costKnown ? undefined : 'No lot cost for this line, so margin cannot be calculated.'}
                 >
-                  {entered ? fmtPct(e.marginPct) : '—'}
+                  {entered ? (e.costKnown ? fmtPct(e.marginPct) : '—') : '—'}
                 </td>
               </tr>
             );
@@ -2177,29 +2192,37 @@ export const SOWizard = ({
                 >
                   {fmtMoney(totals.revenue, currency || 'USD', 0)}
                 </td>
+                {/*
+                  * ONE uncosted line makes the TOTAL unknown. A total that
+                  * quietly leaves out a line's cost is optimistic and looks
+                  * authoritative, which is the worst combination on the number a
+                  * trader prices against.
+                  */}
                 <td
                   style={{
                     ...td,
                     textAlign: 'right',
                     fontWeight: 800,
-                    color: marginColor(totals.marginPct),
+                    color: totals.allCostsKnown ? marginColor(totals.marginPct) : ARCH_SURFACE.textLight,
                     borderTop: '2px solid #CBD5E1',
                   }}
                   className="font-mono"
+                  title={totals.allCostsKnown ? undefined : 'At least one line has no lot cost, so the total profit is unknown.'}
                 >
-                  {fmtMoney(totals.profit, currency || 'USD', 0)}
+                  {totals.allCostsKnown ? fmtMoney(totals.profit, currency || 'USD', 0) : '—'}
                 </td>
                 <td
                   style={{
                     ...td,
                     textAlign: 'right',
                     fontWeight: 800,
-                    color: marginColor(totals.marginPct),
+                    color: totals.allCostsKnown ? marginColor(totals.marginPct) : ARCH_SURFACE.textLight,
                     borderTop: '2px solid #CBD5E1',
                   }}
                   className="font-mono"
+                  title={totals.allCostsKnown ? undefined : 'At least one line has no lot cost, so the total margin is unknown.'}
                 >
-                  {fmtPct(totals.marginPct)}
+                  {totals.allCostsKnown ? fmtPct(totals.marginPct) : '—'}
                 </td>
               </>
             ) : (
@@ -2383,10 +2406,14 @@ export const SOWizard = ({
                   {fmtMoney(e.revenue, currency || 'USD', 0)}
                 </td>
                 <td
-                  style={{ ...td, textAlign: 'right', fontWeight: 700, color: marginColor(e.marginPct) }}
+                  style={{
+                    ...td, textAlign: 'right', fontWeight: 700,
+                    color: e.costKnown ? marginColor(e.marginPct) : ARCH_SURFACE.textLight,
+                  }}
                   className="font-mono"
+                  title={e.costKnown ? undefined : 'No lot cost for this line, so profit cannot be calculated.'}
                 >
-                  {fmtMoney(e.profit, currency || 'USD', 0)}
+                  {e.costKnown ? fmtMoney(e.profit, currency || 'USD', 0) : '—'}
                 </td>
               </tr>
             );
@@ -2413,8 +2440,15 @@ export const SOWizard = ({
           ['Revenue', fmtMoney(totals.revenue, currency || 'USD', 0), '#fff'],
           ['Lot cost', fmtMoney(totals.lotCost, currency || 'USD', 0), 'rgba(255,255,255,0.75)'],
           ['Services + ops', fmtMoney(totals.processingCost + totals.opsInsuranceCost, currency || 'USD', 0), 'rgba(255,255,255,0.75)'],
-          ['Estimated profit', fmtMoney(totals.profit, currency || 'USD', 0), totals.profit < 0 ? '#FCA5A5' : '#A5D6A7'],
-          ['Margin', fmtPct(totals.marginPct), totals.marginPct < 0 ? '#FCA5A5' : '#A5D6A7'],
+          // Unknown reads as a dash in the neutral colour. A green "Estimated
+          // profit" on the final review screen, computed without a lot cost, is
+          // the last thing a trader sees before submitting.
+          ['Estimated profit',
+            totals.allCostsKnown ? fmtMoney(totals.profit, currency || 'USD', 0) : '— unknown',
+            totals.allCostsKnown ? (totals.profit < 0 ? '#FCA5A5' : '#A5D6A7') : '#CBD5E1'],
+          ['Margin',
+            totals.allCostsKnown ? fmtPct(totals.marginPct) : '— unknown',
+            totals.allCostsKnown ? (totals.marginPct < 0 ? '#FCA5A5' : '#A5D6A7') : '#CBD5E1'],
         ].map(([k, v, col]) => (
           <div key={k}>
             <div

@@ -250,6 +250,17 @@ export interface ArchOrderTotals {
   opsInsuranceCost: number;
   profit: number;
   marginPct: number;
+  /**
+   * False when ANY line in the total has no known lot cost. `profit` and
+   * `marginPct` are then understated as costs and overstated as margin, so the
+   * UI must show a dash instead of a figure.
+   *
+   * One unknown line is enough to make the whole total unknown: a total that
+   * silently omits a cost is optimistic AND looks authoritative, which is worse
+   * than showing nothing. True for an empty cart, since a total of zero holds no
+   * unknowns.
+   */
+  allCostsKnown: boolean;
 }
 
 /** Where an order sits in the flow. Drives the pill colour and Edit gating. */

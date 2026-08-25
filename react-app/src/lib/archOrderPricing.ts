@@ -156,6 +156,21 @@ export interface ArchLineEconomics {
   orderedQty: number;
   revenue: number;
   lotCost: number;
+  /**
+   * False when the lot has NO known cost, which is not the same as a cost of
+   * zero. `lotCost`, `opsInsuranceCost`, `profit` and `marginPct` are all
+   * meaningless on such a line and the UI must show a dash rather than a figure.
+   *
+   * 🔴 Without this the line reports its FULL REVENUE AS PROFIT, so the margin
+   * looks perfect exactly when we do not know what the wood cost. On a pricing
+   * screen that pushes a trader to accept a price they would otherwise refuse.
+   *
+   * Same predicate and same treatment as the Open SO tab, which hit this first
+   * (`96cbadf`): a lot that has already been sold may no longer be on hand to
+   * cost. All 13 cache rows carry a real cost today, so this is not reachable
+   * yet, but it is the identical bug in the identical feature.
+   */
+  costKnown: boolean;
   splitCost: number;
   planingCost: number;
   cuttingCost: number;
@@ -173,6 +188,16 @@ export const lineEconomics = (
 ): ArchLineEconomics => {
   const bf = orderedBF(line, split);
   const revenue = bf * (pricePerBF || 0);
+  /*
+   * `|| 0` is kept ON PURPOSE, and `costKnown` is what makes it safe.
+   *
+   * Every consumer of `lotCost` and `profit` expects a number, so returning NaN
+   * or null here would spread the unknown through sums, colour thresholds and the
+   * negative-margin warning, and each of those would have to defend itself. The
+   * arithmetic stays total; the HONESTY lives in the flag, and the UI refuses to
+   * print a figure when it is false. Same split the Open SO tab uses.
+   */
+  const costKnown = line.costPerBF !== null && line.costPerBF !== undefined;
   const lotCost = bf * (line.costPerBF || 0);
 
   const splitCost = split?.on ? splitFee() : 0;
@@ -209,6 +234,7 @@ export const lineEconomics = (
     orderedQty: bf,
     revenue,
     lotCost,
+    costKnown,
     splitCost,
     planingCost,
     cuttingCost,
@@ -232,7 +258,15 @@ export const sumEconomics = (rows: ArchLineEconomics[]): ArchOrderTotals => {
     }),
     { orderedQty: 0, revenue: 0, lotCost: 0, processingCost: 0, opsInsuranceCost: 0, profit: 0 }
   );
-  return { ...t, marginPct: t.revenue > 0 ? (t.profit / t.revenue) * 100 : 0 };
+  /*
+   * ONE uncosted line makes the whole total unknown, deliberately. A total that
+   * silently omits one line's cost is worse than no total, because it is
+   * optimistic and looks authoritative. The Open SO tab made the same call.
+   *
+   * An empty cart is `true`: there is nothing unknown about a total of zero.
+   */
+  const allCostsKnown = rows.every((r) => r.costKnown);
+  return { ...t, allCostsKnown, marginPct: t.revenue > 0 ? (t.profit / t.revenue) * 100 : 0 };
 };
 
 /* ── Formatting ─────────────────────────────────────────────────────────────*/
