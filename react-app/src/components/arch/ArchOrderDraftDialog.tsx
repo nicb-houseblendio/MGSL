@@ -86,11 +86,36 @@ const OutcomeNotice = ({
   if (!result) return null;
 
   if (!result.ok) {
+    /*
+     * ⚠️ "Nothing was written" is a CLAIM ABOUT NETSUITE, and we cannot always make it.
+     *
+     * It used to be printed unconditionally on every ok:false. That is safe for a
+     * refusal, where the server declined before writing, but it is a FALSE STATEMENT
+     * on a transport failure: if the fetch drops after the order was saved, the SO
+     * exists and the trader has just been told it does not. On a trading document that
+     * is the worst thing this dialog can say, and it invites a retry that the
+     * idempotency key then refuses, which looks like a second failure.
+     *
+     * `refused` means the server answered and declined, so the claim is safe.
+     * Otherwise we do not know, and saying so is better than guessing.
+     */
+    const refused = !!result.error && !result.transportFailure;
     return (
       <div style={{ ...notice, background: '#FEF2F2', border: '1px solid #FCA5A5', color: '#7F1D1D' }}>
         <div>
-          <strong>Nothing was written.</strong> Your selection is intact, so you can fix the
-          problem and try again.
+          {refused ? (
+            <>
+              <strong>Nothing was written.</strong> Your selection is intact, so you can fix the
+              problem and try again.
+            </>
+          ) : (
+            <>
+              <strong>The order may or may not have been created.</strong> The request did not
+              come back, so we cannot tell you whether NetSuite saved it.{' '}
+              <strong>Check the sales order list before trying again</strong> — retrying a
+              duplicate will be refused, which looks like a second failure.
+            </>
+          )}
           <div style={{ marginTop: 6 }}>{result.error}</div>
           {result.problems && result.problems.length > 1 && (
             <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
@@ -190,12 +215,29 @@ export const ArchOrderDraftDialog = ({
   const remanCount = draft.lines.filter((l) => l.reman.planing || l.reman.cutting).length;
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
+    /*
+     * ⚠️ THE `submitting` GUARDS ARE NOT COSMETIC. Without them this dialog tells the
+     * trader "Do not close this window or press Create again" (see OutcomeNotice) and
+     * then lets Escape or an outside click do exactly that.
+     *
+     * The consequence is not just a closed window. `onClose` nulls `createdDraft` in
+     * ArchScreen, so the in-flight request loses the only surface that would have
+     * reported its outcome: the trader never learns whether the order was created,
+     * and the confirmation, the SO number and any lot-attribution warning all land
+     * nowhere. The request itself continues, because closing a dialog does not abort
+     * a fetch.
+     *
+     * So while submitting: no onOpenChange dismissal, no Escape, no outside click.
+     */
+    <Dialog open onOpenChange={(o) => { if (!o && !submitting) onClose(); }}>
       <DialogContent
         className="max-w-[900px] w-[94vw] p-0 gap-0 overflow-hidden"
         style={{ maxHeight: '86vh', display: 'flex', flexDirection: 'column' }}
         aria-describedby={undefined}
         aria-label="Assembled sales order"
+        onEscapeKeyDown={(e) => { if (submitting) e.preventDefault(); }}
+        onPointerDownOutside={(e) => { if (submitting) e.preventDefault(); }}
+        onInteractOutside={(e) => { if (submitting) e.preventDefault(); }}
       >
         <div
           style={{
@@ -210,8 +252,22 @@ export const ArchOrderDraftDialog = ({
               : !result
                 ? 'Order assembled — not sent, this screen is not connected to NetSuite'
                 : result.ok
-                  ? `Sales order created${result.salesOrderId ? ` — internal id ${result.salesOrderId}` : ''}`
-                  : 'NetSuite refused this order — nothing was written'}
+                  ? // Prefer tranId: "SO-CWP-001346" is the number a trader can actually
+                    // search for. The server has always sent it; the UI type dropped it,
+                    // so this said "internal id 126654", which is findable by nobody.
+                    // salesOrderId stays as the fallback rather than showing nothing.
+                    `Sales order created${
+                      result.tranId
+                        ? ` — ${result.tranId}`
+                        : result.salesOrderId
+                          ? ` — internal id ${result.salesOrderId}`
+                          : ''
+                    }`
+                  : result.transportFailure
+                    ? // Same rule as the notice below: on a dropped request we do not
+                      // know, so do not assert "nothing was written".
+                      'NetSuite did not answer — the order may or may not exist'
+                    : 'NetSuite refused this order — nothing was written'}
           </div>
           <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: 11.5, marginTop: 2 }}>
             {draft.mode === 'existing'

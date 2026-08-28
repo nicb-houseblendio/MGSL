@@ -37,11 +37,35 @@ interface ArchScreenProps {
   tab?: 'inventory' | 'orders';
   /** Reports whether the grid is showing NetSuite data or fixtures. */
   onSourceChange?: (source: ArchDataSource, meta: ArchCacheMeta | null, sourceError: string | null) => void;
+  /**
+   * Hands the grid's refetch up to App, which owns the toolbar refresh button.
+   *
+   * Same upward pattern as onSourceChange and for the same reason: the data is
+   * fetched here but the control lives there, and calling the hook twice would give
+   * two copies that can disagree.
+   */
+  onReloadReady?: (reload: () => void) => void;
 }
 
-export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange }: ArchScreenProps) => {
-  const { allRows, loading, error, getFilteredRows, getTotals, getFilterOptions, source, meta, sourceError } =
+export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadReady }: ArchScreenProps) => {
+  const { allRows, loading, error, reload, getFilteredRows, getTotals, getFilterOptions, source, meta, sourceError } =
     useArchSummaryData(true);
+
+  /*
+   * Philippe, 2026-08-27: after creating an SO the stock "disparait du TS".
+   *
+   * It does not disappear, and it is NOT the hourly cache: the builder rebuilt 53
+   * seconds after his order. The grid simply NEVER REFETCHES. `startLive` sits behind
+   * a module-level flag, there is no interval, no visibilitychange and no focus
+   * refetch, and App's refresh button was hard-disabled for ARCH. So the numbers were
+   * frozen from page load until a tab reload, unbounded, and his cart clearing looked
+   * like the stock vanishing.
+   *
+   * The hook has always exposed `reload`; nobody wired it. This hands it up.
+   */
+  React.useEffect(() => {
+    onReloadReady?.(reload);
+  }, [reload, onReloadReady]);
 
   // The header badge lives in App but the data is fetched here, so the source has
   // to travel upward. Passing it up beats calling the hook twice — two copies

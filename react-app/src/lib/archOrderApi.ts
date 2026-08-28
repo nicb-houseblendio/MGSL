@@ -33,6 +33,21 @@ export interface ArchOrderResult {
   ok: boolean;
   error?: string;
   salesOrderId?: number;
+  /**
+   * The human sales order number, e.g. "SO-CWP-001346". The server has always sent
+   * this; the type dropped it, so the confirmation said "internal id 126654" and a
+   * trader had no way to find their own order. Added 2026-08-28.
+   */
+  tranId?: string;
+  /**
+   * True when the request never came back, so we do NOT know whether NetSuite saved
+   * the order. Distinct from a refusal, where the server answered and declined.
+   *
+   * This exists because the dialog was printing "Nothing was written" on every
+   * failure, which is a false statement on a dropped fetch: the SO may exist. The
+   * catch below has always known the difference and simply never reported it.
+   */
+  transportFailure?: boolean;
   appended?: boolean;
   splitLinesQueued?: number;
   /** Non-empty means the order EXISTS but its bundles are not locked. */
@@ -218,6 +233,9 @@ const submit = async (payload: unknown): Promise<ArchOrderResult> => {
     // exists for: retrying with the same key is refused rather than duplicated.
     return {
       ok: false,
+      // The comment above is the whole reason this flag exists: we genuinely do not
+      // know the outcome here, so the dialog must not claim nothing was written.
+      transportFailure: true,
       error:
         e instanceof Error
           ? `${e.message}. If you retry, use the same order — a duplicate will be refused rather than created twice.`

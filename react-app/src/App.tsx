@@ -215,6 +215,19 @@ function TraderScreenContent() {
       setArchSource(s); setArchMeta(m); setArchSourceError(err);
     }, []);
 
+  /*
+   * ARCH's refetch, handed up by ArchScreen so the toolbar button can drive it.
+   *
+   * A ref rather than state, deliberately: storing the function in state would
+   * re-render App every time ArchScreen re-registered it, and the identity of a
+   * useCallback from a child is not something App should depend on. Nothing reads
+   * this during render, only the click handler.
+   */
+  const archReloadRef = React.useRef<(() => void) | null>(null);
+  const handleArchReloadReady = React.useCallback((fn: () => void) => {
+    archReloadRef.current = fn;
+  }, []);
+
   const handleCellFilter = React.useCallback((filterKey: string, value: string) => {
     setFilters(prev => {
       const current = (prev[filterKey as keyof FilterState] as string[]) || [];
@@ -395,17 +408,23 @@ function TraderScreenContent() {
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => void doRefresh()}
-            // Still disabled for ARCH, but NOT for the reason this used to give.
-            // ARCH has had a real cache since Phase 1 landed and its grid is live;
-            // what is missing is the wiring. `doRefresh` drives the IND/MTL
-            // `fetchSummary`, whereas ARCH loads through `useArchSummaryData`, so
-            // pressing this would fire the wrong request rather than rebuild
-            // anything. The old title said ARCH was running on demo data, which is
-            // no longer true and is exactly the kind of stale reassurance that
-            // makes somebody distrust the rest of the screen.
-            disabled={isARCH || refreshState === 'checking' || refreshState === 'fetching'}
-            title={isARCH ? 'Not wired to the ARCH cache yet — it rebuilds hourly' : 'Refresh'}
+            // ✅ WIRED FOR ARCH, 2026-08-28. The comment here used to explain why this
+            // was disabled: doRefresh drives the IND/MTL fetchSummary while ARCH loads
+            // through useArchSummaryData, so pressing it would have fired the wrong
+            // request. True, and the fix was to route the press rather than block it.
+            //
+            // This was the actual cause of Philippe's "le stock disparait du TS": the
+            // ARCH grid never refetched at all, so it was frozen from page load until a
+            // tab reload and an SO appeared to make stock vanish. ArchScreen now hands
+            // its `reload` up through onReloadReady.
+            onClick={() => {
+              if (isARCH) archReloadRef.current?.();
+              else void doRefresh();
+            }}
+            disabled={isARCH
+              ? false
+              : (refreshState === 'checking' || refreshState === 'fetching')}
+            title={isARCH ? 'Refresh the ARCH grid from the cache' : 'Refresh'}
             className="h-8 w-8 text-white hover:bg-white/10 disabled:opacity-40"
           >
             <RefreshCw className={`h-4 w-4 ${(refreshState === 'checking' || refreshState === 'fetching') ? 'animate-spin' : ''}`} />
@@ -477,7 +496,7 @@ function TraderScreenContent() {
           components/ArchScreen.tsx. Keeping it behind one branch leaves the
           IND/MTL render path below completely untouched. */}
       {isARCH ? (
-        <ArchScreen uom={uom} tab={archTab} onSourceChange={handleArchSource} />
+        <ArchScreen uom={uom} tab={archTab} onSourceChange={handleArchSource} onReloadReady={handleArchReloadReady} />
       ) : (
       <>
       {/* Filters */}
