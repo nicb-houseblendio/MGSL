@@ -179,10 +179,34 @@ export const formatQtyWithUnit = (
  * An em dash for null — an ABSENT cost must never render as "$0.00", which a
  * trader would read as free stock rather than as missing data.
  */
-export const formatCostPerUnit = (cost: number | null | undefined, unit: ArchUnit = DEFAULT_ARCH_UNIT): string =>
+export const formatCostPerUnit = (
+  cost: number | null | undefined,
+  unit: ArchUnit = DEFAULT_ARCH_UNIT,
+  /**
+   * Currency of the COST, which is not the sales order's currency.
+   *
+   * Defaults to CAD, and that default is the correction: this used to hardcode a
+   * bare '$', so the AVG COST column rendered a Canadian figure with what reads as
+   * a US dollar sign. Lot cost comes from accounting book 1 (Primary) and both
+   * candidate subsidiaries, CWP MTL (5) and ARC (9), are base CAD — measured
+   * 2026-08-28. Philippe raised the column on 2026-08-27 as mixing units; the units
+   * were already labelled per row, the CURRENCY was the actual defect.
+   *
+   * ⚠️ Do not "simplify" this to the SO currency. That is the customer's currency,
+   * usually USD, and the margin genuinely compares a CAD cost against USD revenue.
+   * The FX rule is an open client question; this makes the mismatch visible rather
+   * than hiding it behind one symbol.
+   */
+  currency: string = 'CAD',
+): string =>
   (cost === null || cost === undefined)
     ? '—'
-    : `$${cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/${unitLabel(unit)}`;
+    : `${cost.toLocaleString(undefined, {
+        style: 'currency',
+        currency,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}/${unitLabel(unit)}`;
 
 /** Bare money, no unit suffix — for columns that already carry one in the header. */
 export const formatCost = (cost: number): string =>
