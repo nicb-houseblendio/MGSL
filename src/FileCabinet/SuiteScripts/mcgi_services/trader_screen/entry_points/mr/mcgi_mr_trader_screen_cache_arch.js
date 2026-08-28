@@ -20,10 +20,18 @@
  * page load for every user until the bundle is uploaded.
  *
  * The reverse order is always safe, because the current front end ignores extra
- * fields on an older cached payload. So: bundle.js, then this file, then let the
- * hourly schedule rebuild. `deploy.xml` is banned here (it clobbers ungit'd
- * sandbox work), which means every ARCH deploy is hand-scoped — exactly the
- * situation where an ordering rule gets missed.
+ * fields on an older cached payload. So: bundle.js, then this file, then wait one
+ * pacing interval for the chain to rebuild. `deploy.xml` is banned here (it
+ * clobbers ungit'd sandbox work), which means every ARCH deploy is hand-scoped —
+ * exactly the situation where an ordering rule gets missed.
+ *
+ * ⚠️ Uploading THIS file does not restart the builder. The chain carries the
+ * running code, so a new upload is picked up by the next cycle, but if the chain
+ * is already dead the upload changes nothing and the screen stays on fixtures.
+ * Confirm with `node cachecheck.mjs` after any deploy, and if it reports stale or
+ * missing, restart with one Save & Execute on deployment 1. If it reports FRESH,
+ * the chain is alive and you must NOT press that button: it would fork the chain
+ * permanently. See THE CHAIN below.
  *
  * ⚠️ Nothing in the code enforces this yet. `cacheVersion` in META is the
  * obvious place to make it self-detecting, but it is currently decorative: this
@@ -101,11 +109,15 @@ define([
     // 2026-08-19. N/runtime IS used and must stay, for two script parameters:
     // the cost book and the force-full override.
     //
+    // N/task added 2026-08-26 for the self-reschedule at the end of summarize.
+    // It is what keeps this builder running at all now that the deployment is
+    // NOTSCHEDULED, so it is not optional and not decorative.
+    //
     // AMD binds these POSITIONALLY. Never delete a module id without deleting
     // its parameter below in the same edit. (Module ids are written unquoted in
     // this comment on purpose: a quoted one here is picked up by naive scripts
     // that count the array's entries, which cost me a false misalignment report.)
-    'N/query', 'N/search', 'N/log', 'N/runtime',
+    'N/query', 'N/search', 'N/log', 'N/runtime', 'N/task',
     '../../shared/cacheKeys_arch',
     '../../shared/cacheClient',
     // Shared FIFO lot-cost engine, validated to the cent against production GL
@@ -114,7 +126,7 @@ define([
     // environment, so treat its output as data to be checked, not as a given.
     // Every call here is wrapped: costing must never take down the cache build.
     '/SuiteScripts/MCGI_LIB_LotCost',
-], (query, search, log, runtime, CacheKeys, CacheClient, LotCostLib) => {
+], (query, search, log, runtime, task, CacheKeys, CacheClient, LotCostLib) => {
 
     /**
      * ⚠️ ARCH STOCK IS **NOT** SCOPED BY SUBSIDIARY OR LOCATION. Do not "fix"
@@ -214,6 +226,366 @@ define([
      * custscript_ts_arch_force_full_rebuild checked.
      */
     const SHRINK_GUARD_MAX_RATIO = 0.5;
+
+    /* ══ THE CHAIN: how this builder gets run at all ═════════════════════════════
+     *
+     * Added 2026-08-26, replacing the hourly scheduled deployment. Read this
+     * before changing anything in this block, and before "simplifying" any of it.
+     *
+     * ── What happened, twice ────────────────────────────────────────────────────
+     * The deployment was SCHEDULED hourly. NetSuite silently stopped firing the
+     * recurrence. Measured: dead 2026-08-21 11:45 to 2026-08-25 13:32, so the
+     * screen served fixtures for three and a half days while the client was being
+     * asked to test it. A manual Save & Execute restored the data and the
+     * recurrence STILL did not resume: the next run never came, and 23 hours later
+     * the cache was CACHE_MISS again. Both times the deployment record cheerfully
+     * read `status=SCHEDULED` throughout. Cause never established, and it cannot
+     * be established remotely, because `startdate`, `enddate`, `starttime` and
+     * `recurrence` are all NOT_EXPOSED to SuiteQL.
+     *
+     * The important part is not the fault, it is that NOTHING INSIDE NETSUITE CAN
+     * REPORT IT. The deployment's notify-on-error only fires when the script RUNS
+     * and errors, and a script that is not running cannot report its own absence.
+     *
+     * ── Why this shape, and not a schedule ──────────────────────────────────────
+     * IND and MTL are both NOTSCHEDULED and have never had this outage, because
+     * they do not depend on NetSuite's scheduler: each one's summarize resubmits
+     * itself to its own deployment, so the script IS the scheduler. Once started,
+     * the chain is self-perpetuating. ARCH had none of that machinery, so the
+     * recurrence was its only heartbeat, and a single silent NetSuite fault took
+     * the screen down completely.
+     *
+     * So ARCH now runs the same way: NOTSCHEDULED, one deployment, summarize
+     * resubmits itself. The IND trap warning ("never enable the trader-cache MR's
+     * scheduled deployment") is about adding a SECOND DEPLOYMENT, which forks an
+     * unstoppable chain. It is not about self-rescheduling, and the three
+     * mechanisms behind it were already verified absent here on 2026-08-18.
+     *
+     * ── Why a pacing gate is mandatory, not a tuning knob ───────────────────────
+     * `task.submit` cannot be delayed. There is no interval, no "run in one hour".
+     * A chain therefore cycles as fast as NetSuite will queue it, roughly every
+     * 20 to 60 seconds. Without a gate this builder would run a full SuiteQL
+     * rebuild plus the lot-cost engine thousands of times a day instead of 24.
+     *
+     * The gate makes the overwhelming majority of cycles cost one cache read: if
+     * the last real run started less than REBUILD_INTERVAL_MS ago, getInputData
+     * returns nothing and the cycle is a no-op that only reschedules.
+     *
+     * ── MEASURED CYCLE RATE, 2026-08-27, and it decides the logging ─────────────
+     * 394 cycles in 1,068 seconds on the first live run of the chain. That is ONE
+     * CYCLE EVERY 2.7 SECONDS, roughly 1,330 an hour and 32,000 a day. The first
+     * version of this comment guessed 20 to 60 seconds and was wrong by more than
+     * an order of magnitude, so do not re-derive this from intuition.
+     *
+     * At that rate a single log line on the paced path costs ~32,000 lines a day.
+     * The first deploy carried three of them and produced ~96,000 a day, which is
+     * IND's known no-op spin problem in a new place. So THE PACED PATH IS NOW
+     * ENTIRELY SILENT: no line in getInputData, none in summarize, none on the
+     * reschedule.
+     *
+     * That is not just tidiness. `scriptnote` is measurably unreliable at volume:
+     * GROUP BY, aggregates and LIKE with a date range all silently return empty
+     * rather than erroring. A chatty paced path therefore degrades the exact tool
+     * used to diagnose this screen, and it did so during the verification of this
+     * very change.
+     *
+     * What is left is sufficient for every failure mode. Real rebuilds emit four
+     * AUDIT lines, roughly 24 times a day, so a dead chain looks like silence in
+     * the channel people read. A gate stuck open floods AUDIT instead, which is
+     * equally visible. A failed reschedule is an ERROR. And chain death is caught
+     * from outside by cachecheck.mjs, which is the only place it can be caught.
+     *
+     * ⚠️ Do not add a heartbeat line here to "make the chain visible". It is 32,000
+     * lines a day to learn something the cache's own age already tells you.
+     *
+     * ── WHAT THE CHAIN COSTS THE OTHER TWO SCREENS, MEASURED ────────────────────
+     * ~1,330 Map/Reduce submissions an hour is real contention, and it is NOT free.
+     * Measured against IND's own note volume in matched 45-minute windows on
+     * 2026-08-27, the day this went live at 05:54 PT:
+     *
+     *     pre-chain    2,374  2,407  2,450  2,380      mean 2,403
+     *     chain live   2,237  2,266  2,268  2,262  2,206  2,314   mean 2,259
+     *
+     * A sustained 6.0% drop, and every post-chain window sits below every
+     * pre-chain window, so it is not noise. IND's refresh goes from roughly 75s to
+     * 80s, which is operationally invisible, but it is a permanent tax on two
+     * screens that are live in production.
+     *
+     * Stated so nobody has to rediscover it, and so the trade-off is explicit: the
+     * lever is REBUILD_INTERVAL_MS, but raising it does NOT help. The no-op cycles
+     * are the cost, not the rebuilds, and they continue at the same rate whatever
+     * the interval. The only real reductions are fewer chain members or no chain.
+     * ⚠️ Re-measure before ARCH ever goes to production, where it would contend
+     * with IND and MTL serving actual traders rather than a sandbox.
+     *
+     * ── Two things that are load-bearing and look optional ──────────────────────
+     * 1. The pacing stamp is written at the TOP of getInputData, before any query,
+     *    NOT derived from META at the end. If it came from META, every failure
+     *    path would become a hot loop: run fails, META keeps its old timestamp,
+     *    gate says stale, identical rebuild 20 seconds later, fails again, with
+     *    notifyemails attached. See the long note in cacheKeys_arch.js.
+     * 2. The reschedule is in a `finally`. It must fire on every path out of
+     *    summarize including the early returns and the catch, because a path that
+     *    misses it does not degrade the chain, it ENDS the chain.
+     *
+     * ── Operating it ────────────────────────────────────────────────────────────
+     * 🔴 NEVER PRESS SAVE & EXECUTE ON A CHAIN THAT IS ALREADY RUNNING. Check
+     * first, every time, with one command:
+     *
+     *     node cachecheck.mjs
+     *
+     *   FRESH   -> the chain is alive. DO NOTHING. Pressing the button here is the
+     *              single easiest way to damage this design.
+     *   STALE
+     *   MISSING -> the chain is dead. Press it once.
+     *
+     * WHY, because it is not obvious and it is not recoverable. Every run resubmits
+     * itself exactly once, so ONE trigger sustains exactly ONE circulating member.
+     * A Save & Execute on a live chain adds a SECOND member that also resubmits
+     * forever. Nothing merges them and nothing times them out. Press it three times
+     * over a month and four members circulate permanently, each multiplying the job
+     * churn this builder costs the account.
+     *
+     * And it is invisible. Rebuild frequency stays hourly no matter how many
+     * members there are, because they share one pacing key and whichever member
+     * crosses the interval first stamps it. The paced path logs nothing. There is no
+     * queryable table of Map/Reduce job instances either: `scheduledscriptinstance`
+     * accepts COUNT(*) but exposes zero columns to REST SuiteQL, so this cannot be
+     * checked from a script. The ONLY way to see the member count is the Map/Reduce
+     * status page in the UI, counting concurrent or queued instances of this script.
+     * Prevention is therefore the whole defence, which is why the check above is
+     * stated as a hard precondition rather than advice.
+     *
+     * START IT: the deployment is NOTSCHEDULED, so in any environment where the
+     * chain is not already circulating it has to be started by hand exactly once,
+     * subject to the same check. Uploading this file is NOT starting it: a new
+     * upload is picked up by the next cycle, but if there is no next cycle the
+     * upload changes nothing.
+     *
+     * READING THE LOG: real rebuilds are the AUDIT lines, four per rebuild and
+     * roughly 24 rebuilds a day. Paced cycles log NOTHING, so the log shows one
+     * cluster an hour and nothing in between. A dead chain looks like silence, and
+     * a chain spinning without pacing looks like an AUDIT flood. Both are obvious
+     * at a glance, which was the point of taking the DEBUG lines out.
+     *
+     * VERIFYING THE CHAIN IS ALIVE: `node cachecheck.mjs`, not the log. The cache's
+     * age is the liveness signal, and it is the only one that works from outside.
+     *
+     * THERE IS NO "REBUILD RIGHT NOW". Nothing bypasses the pacing gate, including
+     * the force checkbox, and that is deliberate; see paceShouldSkip. The most you
+     * can do is wait for the gate, which is at most one interval away. To force a
+     * rebuild that is ALLOWED TO SHRINK the cache, tick
+     * custscript_ts_arch_force_full_rebuild, wait for the next gate opening, untick
+     * it. Ticking it does not make the rebuild happen sooner.
+     *
+     * ── Its one interaction with paused work ────────────────────────────────────
+     * Cache-miss auto-recovery (on standby since 2026-05-05) would want the gate to
+     * open early when SUMMARY is missing, so an evicted summary recovers in one
+     * cycle instead of within the interval. That is deliberately NOT built here.
+     * Anyone unpausing it should know the hazard: a bypass keyed on "SUMMARY is
+     * missing" becomes a hot loop the moment SUMMARY is persistently unwritable,
+     * so it needs its own shorter floor rather than a plain bypass.
+     *
+     * ── The residual risk, stated plainly ───────────────────────────────────────
+     * A chain has exactly one failure mode and it is total: if the resubmit never
+     * happens, nothing inside NetSuite restarts it. That is strictly better than
+     * the schedule only because a chain that dies leaves a loud ERROR line, where
+     * a recurrence that dies leaves nothing at all. It is not self-healing.
+     *
+     * The watchdog is therefore EXTERNAL and must stay external: `cachecheck.mjs`
+     * beside `sql.mjs`, which checks the AGE of the cache rather than its absence,
+     * because at a 12h TTL absence is the late symptom. Recovery from chain death
+     * is one Save & Execute on deployment 1, ONLY after that check reports STALE or
+     * MISSING; see the precondition under Operating it, because pressing it on a
+     * live chain is the other failure mode and it is permanent. Do not "fix" this by
+     * adding a schedule back as a net either; that multiplies the chain instead of
+     * protecting it, and cacheKeys_arch.js explains why.
+     *
+     * Note the asymmetry that makes prevention the whole defence: chain DEATH is
+     * loud, external, and recoverable in one action, while chain MULTIPLICATION is
+     * silent, invisible to every automated check available here, and cannot be
+     * undone except by stopping the script and starting one member again.
+     */
+    const REBUILD_INTERVAL_MS = 60 * 60 * 1000;   // 1h, matching the old schedule
+
+    /**
+     * TTL for the pacing key, DERIVED from the interval and not configured
+     * anywhere. The derivation is the safety mechanism, not a style choice.
+     *
+     * The gate only works while the key OUTLIVES the interval. If the key expires
+     * first, the gate reads an absent key, fails open exactly as designed, and
+     * every single cycle becomes a full rebuild: ~1,330 an hour, four AUDIT lines
+     * each, the cache rewritten continuously.
+     *
+     * This used to be `TTL_PACE = 7200` in cacheKeys_arch.js, with a comment
+     * saying "2h against a 1h rebuild interval". That put the two halves of one
+     * invariant in two different files with nothing connecting them, so raising
+     * REBUILD_INTERVAL_MS above 2h here would have silently triggered the failure
+     * above from a one-line edit that looked local and safe. Deriving it means the
+     * interval cannot outrun its own TTL.
+     *
+     * 2x is the margin. Expiry remains the safe direction regardless, costing one
+     * extra rebuild rather than a skipped one, so the multiplier is not delicate.
+     */
+    const PACE_TTL_SECONDS = Math.ceil((REBUILD_INTERVAL_MS / 1000) * 2);
+
+    /**
+     * The force-full checkbox on the deployment, read tolerantly.
+     *
+     * SHRINK GUARD ONLY. It does not affect the pacing gate; see the long note in
+     * paceShouldSkip for why that bypass was removed rather than kept.
+     *
+     * Lives at module scope rather than as the inline IIFE it started as, because
+     * the gate briefly needed the same answer. It stays here now that the gate does
+     * not: one tolerant parameter read is easier to reason about than one, and a
+     * second copy appearing later is how they drift apart.
+     *
+     * Tolerant on purpose. A CHECKBOX parameter should come back as a boolean, but
+     * this is the ONLY escape from a guard that otherwise blocks a legitimate
+     * shrink forever. If NetSuite ever hands back 'T' or 'true', a strict === true
+     * would fail silently and leave the cache wedged with no way out.
+     */
+    const forceFullRequested = () => {
+        try {
+            const v = runtime.getCurrentScript()
+                .getParameter({ name: 'custscript_ts_arch_force_full_rebuild' });
+            return v === true || v === 'T' || v === 'true';
+        } catch (e) { return false; }
+    };
+
+    /**
+     * Has a real rebuild started recently enough that this cycle should be a
+     * no-op?
+     *
+     * Fails OPEN on every uncertainty: an unreadable key, an absent key, a
+     * non-numeric value, or a stamp in the future all return false. Wrong in
+     * this direction costs one extra rebuild. Wrong in the other direction would
+     * be a cache that stops refreshing because of a cache error, and a stamp in
+     * the future could suppress every rebuild until the key expires.
+     *
+     * Returns a bare boolean. It used to return the age alongside it, for a log
+     * line on the paced path that has since been deleted; see the measured cycle
+     * rate under THE CHAIN. Nothing reads an age any more, so nothing carries one.
+     */
+    const paceShouldSkip = () => {
+        /*
+         * ⚠️ THE FORCE BOX DELIBERATELY DOES **NOT** BYPASS THIS GATE, and the
+         * first version of this function got that wrong. Do not re-add it.
+         *
+         * The argument for bypassing was that Save & Execute used to guarantee a
+         * real rebuild and would no longer: press it a minute after a rebuild and
+         * the run correctly does nothing, which looks like a broken script. That
+         * argument does not survive contact with the numbers.
+         *
+         *   - The box exists to escape a wedged shrink guard, and that works
+         *     without a bypass. Tick it, the next gate opening within the interval
+         *     runs forced, untick. The escape is delayed, never blocked.
+         *   - A cycle is 2.7 seconds, measured. With the bypass, a box left ticked
+         *     is roughly 32,000 forced rebuilds a day with the shrink guard
+         *     disarmed throughout, against 24 a day under the old schedule. That is
+         *     a ~1,300x amplification of a footgun this file already warns about
+         *     twice.
+         *   - The confusion the bypass was meant to prevent only occurs when the
+         *     cache is already fresh, which is exactly when nobody needed to press
+         *     the button. If the chain has genuinely been dead longer than the
+         *     interval, the gate is open and Save & Execute rebuilds normally.
+         *
+         * So the bypass removed a nonexistent problem and multiplied a real one.
+         * If Save & Execute appears to do nothing, that is the correct answer;
+         * confirm with `node cachecheck.mjs`, which reports the cache's real age.
+         */
+        try {
+            const raw = CacheClient.getCache().get({ key: CacheKeys.PACE_LAST_START });
+            if (!raw) return false;
+            const last = Number(raw);
+            if (!isFinite(last) || last <= 0) return false;
+            const ageMs = Date.now() - last;
+            if (ageMs < 0) return false;
+            return ageMs < REBUILD_INTERVAL_MS;
+        } catch (e) {
+            // Rare path, and it stays DEBUG rather than going quiet like the paced
+            // path did. If the cache were persistently unreadable this would fire
+            // every cycle, but that is not the noise that would matter: the gate
+            // fails open, so every cycle would also run a full rebuild and emit
+            // four AUDIT lines. The AUDIT flood is the alarm; this is the reason.
+            log.debug('ARCH cache pacing',
+                'Pacing key unreadable, running the rebuild: ' + e.message);
+            return false;
+        }
+    };
+
+    /**
+     * Claim this cycle as a real run. Called once, at the top of getInputData,
+     * immediately after the gate lets the work through and BEFORE any query.
+     *
+     * The position is the point. A failed query, a payload over the ceiling or an
+     * exception in summarize all leave the next cycle paced anyway, so nothing
+     * downstream can turn a persistent failure into a hot loop.
+     */
+    const stampPaceStart = () => {
+        try {
+            CacheClient.getCache().put({
+                key:   CacheKeys.PACE_LAST_START,
+                value: String(Date.now()),
+                // Derived from REBUILD_INTERVAL_MS. Never take this from the key
+                // module; see PACE_TTL_SECONDS for what that cost.
+                ttl:   PACE_TTL_SECONDS,
+            });
+        } catch (e) {
+            // ERROR is right by the level-by-cause rule: this is rare and
+            // abnormal, and its consequence is a gate that never closes, i.e. a
+            // full rebuild every 2.7 seconds (measured) against a deployment that
+            // emails on error. If this line ever appears, the spin is the emergency.
+            log.error('ARCH cache pacing — COULD NOT STAMP, REBUILDS ARE NO LONGER PACED',
+                e.name + ': ' + e.message);
+        }
+    };
+
+    /**
+     * Resubmit this deployment. The only thing keeping the builder alive.
+     *
+     * NO `params` are passed, deliberately, and this differs from IND, which
+     * passes three. Omitted params fall back to the deployment record, which keeps
+     * `custscript_ts_arch_force_full_rebuild` working as a live escape hatch: tick
+     * it and the next cycle picks it up within the interval. Passing an explicit
+     * `false` the way IND does would make the checkbox permanently inert while the
+     * chain runs, and it is the only way out of a wedged shrink guard.
+     *
+     * ⚠️ The flip side, and it is worse than it was under the schedule: leaving
+     * that box ticked disarms the guard AND the pacing gate on every cycle, and a
+     * cycle is 2.7 seconds, not an hour. It is a one-run switch. Tick, wait one
+     * cycle, untick.
+     */
+    const rescheduleSelf = () => {
+        try {
+            const mrTask = task.create({
+                taskType:     task.TaskType.MAP_REDUCE,
+                scriptId:     runtime.getCurrentScript().id,
+                deploymentId: runtime.getCurrentScript().deploymentId,
+            });
+            // NOT LOGGED, at any level. This fires on every cycle, so even at DEBUG
+            // it measured ~32,000 lines a day on its own. A successful reschedule is
+            // also the least interesting thing that can happen here: it is the
+            // default, and its absence is what matters, which the catch below and
+            // cachecheck.mjs both cover.
+            //
+            // The return value is discarded rather than logged. taskId=null was
+            // always expected anyway and never meant failure: it means the task is
+            // deferred until the current execution finishes, which is exactly what a
+            // self-resubmit is supposed to do.
+            mrTask.submit();
+        } catch (e) {
+            // The one place ERROR is unarguable. This fires at most once, because
+            // after it there are no more cycles to fire it: the builder has
+            // stopped and only an external check or a human will notice.
+            log.error('ARCH cache chain — SELF-RESCHEDULE FAILED, THE BUILDER HAS STOPPED',
+                e.name + ': ' + e.message + '. Nothing inside NetSuite will restart it. ' +
+                'Run cachecheck.mjs FIRST: this line proves THIS member stopped, not that ' +
+                'the chain is empty, and if another member is still circulating then a ' +
+                'Save & Execute forks it permanently. Only if the check reports STALE or ' +
+                'MISSING, Save & Execute once on deployment 1.');
+        }
+    };
 
     /**
      * Fallback display names for the locations holding ARCH stock, verified
@@ -408,7 +780,20 @@ define([
         'SELECT ' +
         '  i.id                    AS itemid, ' +
         '  i.itemid                AS itemcode, ' +
-        '  i.displayname           AS description, ' +
+        // `description`, NOT `displayname`. Philippe reported the grid showing SKUs
+        // (PUR44KD) instead of names on 2026-08-27, and the cause was reading the
+        // wrong column: displayname is NULL on all six ARCH items, so the merge below
+        // fell through to itemcode. `i.description` holds exactly what he asked for,
+        // measured the same day:
+        //
+        //   PUR44KD        "Purpleheart 4/4 KD\r\n"   <- his literal example
+        //   SAP54FCKD      "Sapele 5/4 FC KD\r\n"
+        //   WAL44OVLOUTKD  "Walnut 4/4 Ovals OUT KD\r\n"
+        //   WALVENFCAA     "Walnut Veneer FC AA"
+        //
+        // ⚠️ Three of the six end in a real CRLF, so the merge point MUST .trim().
+        // Oracle's TRIM does not strip it and it renders as a blank second line.
+        '  i.description           AS description, ' +
         '  BUILTIN.DF(i.cseg1)     AS species, ' +
         '  BUILTIN.DF(i.csegitem_category) AS category, ' +
         '  BUILTIN.DF(i.csegseg_thickness) AS thickness, ' +
@@ -672,8 +1057,27 @@ define([
 
     // ── getInputData ────────────────────────────────────────────────────────
     // Returns one entry per item × location, each carrying its lots. FULL only.
+    //
+    // Also the gate for the chain. Because the builder now reschedules itself, most
+    // invocations of this function are supposed to do nothing at all, and returning
+    // {} here is what makes a cycle cheap. See THE CHAIN above.
     const getInputData = () => {
         try {
+            // ── The pacing gate ─────────────────────────────────────────────
+            // FIRST statement in the function, before the queries, before the
+            // holds and buckets loads, before anything that costs governance. A
+            // gate placed after any of that work would still pay for the cycle it
+            // is meant to skip.
+            //
+            // ⚠️ SILENT ON PURPOSE, and this is measured, not a preference. See the
+            // log-volume paragraph under THE CHAIN: at the real cycle rate a single
+            // line here costs about 32,000 log lines a day.
+            if (paceShouldSkip()) return {};
+
+            // Claim the cycle BEFORE the work, not after it. Everything downstream
+            // may now fail freely without costing us the interval.
+            stampPaceStart();
+
             const rows = query.runSuiteQL({
                 query: LOT_SQL,
                 params: [HARDWOOD_SEGMENT],
@@ -746,7 +1150,11 @@ define([
                     byPair[key] = {
                         itemId:       String(r.itemid),
                         itemCode:     r.itemcode || '',
-                        description:  r.description || r.itemcode || '',
+                        // .trim() is load-bearing, not tidiness: three of the six ARCH
+                        // descriptions end in a real CRLF. Trim BEFORE the fallback so a
+                        // description that is only whitespace still falls through to the
+                        // SKU rather than rendering as a blank cell.
+                        description:  String(r.description || '').trim() || r.itemcode || '',
                         species:      r.species || '',
                         category:     r.category || '',
                         // Blank on veneer, and correctly so — veneer has no
@@ -809,9 +1217,60 @@ define([
                     'excluded rather than counted at rate 1: ' + rateless.join(', ') +
                     (alreadyReported ? ' (STILL SKIPPING — first occurrence already logged at error level.)' : ''));
             }
+
+            /*
+             * A REAL run that found nothing has to say so HERE, not in summarize.
+             *
+             * Since the chain started, summarize sees zero output in two completely
+             * different situations: a paced cycle that deliberately did no work, and
+             * a real cycle that did the work and genuinely found no hardwood stock.
+             * By the time summarize runs, those are indistinguishable, because both
+             * arrive as an empty output iterator. This function is the only place
+             * that knows which one happened, so this is the only place the second
+             * one can be reported.
+             *
+             * Without this line the second case would be silent, and silence is
+             * exactly what made the four-day outage a four-day outage.
+             *
+             * AUDIT, not ERROR, by the same rule that moved the untagged-hardwood
+             * notice off ERROR in 00db2fb: the causes are all persistent states of
+             * the account (the segment tag removed, stock genuinely at zero), not
+             * events, so at error level this becomes an hourly email forever. The
+             * cache is left alone either way, `lastUpdated` keeps reporting the real
+             * age of what is being served, and cachecheck.mjs catches the resulting
+             * staleness from outside.
+             */
+            if (!Object.keys(out).length) {
+                log.audit('ARCH cache getInputData — REAL RUN FOUND NO HARDWOOD STOCK',
+                    'The queries ran and produced zero item x location pairs, so there is ' +
+                    'nothing to cache. The existing cached summary is being KEPT rather than ' +
+                    'blanked, so the screen will serve older rows and label them stale. ' +
+                    'Check that the Hardwood segment is still set on the items before ' +
+                    'assuming the stock is really gone.');
+            }
             return out;
         } catch (e) {
             log.error('ARCH cache getInputData failed', e.message);
+            /*
+             * The rethrow is what populates `context.inputSummary.error`, which is
+             * how summarize tells a broken cycle from a paced one. Keep it.
+             *
+             * ⚠️ THE ONE UNVERIFIED ASSUMPTION IN THE CHAIN. NetSuite documents
+             * that summarize still runs when getInputData throws, and summarize is
+             * where the reschedule lives, so chain survival depends on that being
+             * true. It has never been observed here: zero getInputData failures in
+             * the log since the script went live on 2026-08-18, so there is no
+             * evidence either way from this account.
+             *
+             * If it turns out to be false, the symptom is precise and recognisable:
+             * an "ARCH cache getInputData failed" line with no summarize line after
+             * it in the same run, and then no further runs at all. Recovery is one
+             * Save & Execute. Do not "fix" it by calling rescheduleSelf() here as
+             * well; if summarize also runs, that doubles the chain permanently, and
+             * a growing chain is worse than a stopped one.
+             *
+             * `cachecheck.mjs` is the net either way, which is why it is external.
+             */
             throw e;
         }
     };
@@ -961,16 +1420,29 @@ define([
                 //        every one matching the digits in its own item code.
                 //        WALVENFCAA is blank, which is correct: veneer has no
                 //        thickness.
-                //   cseggrade            → does NOT exist on `item` at all. It is
-                //        a column on TRANSACTIONLINE, i.e. grade is recorded per
-                //        SO line, not per item. So an inventory grid cannot
-                //        source it from the item however long we wait — that is a
-                //        product question, not missing data.
+                //   cseggrade            → ⚠️ CORRECTED 2026-08-28. This comment
+                //        used to say cseggrade "does NOT exist on `item` at all,
+                //        it is a column on TRANSACTIONLINE". THAT WAS WRONG and it
+                //        did real damage: it was quoted to the client as the reason
+                //        Grade could never be sourced, and it was copied into two
+                //        front-end files on 2026-08-27 before anyone checked it.
+                //
+                //        Measured: `SELECT COUNT(*) FROM item WHERE cseggrade IS
+                //        NOT NULL` returns 539. It exists on the item and MGSL
+                //        already populate it on 539 items. It is simply NULL on
+                //        the six ARCH SKUs.
+                //
+                //        So this is MISSING DATA, not an impossible field, and
+                //        Marc-Antoine's « on va le mettre sur l'item » (2026-08-19)
+                //        is achievable with the field that already exists. The
+                //        moment ARCH items carry a grade, select it here and the
+                //        column he asked to keep becomes real.
                 //   grain                → no column anywhere on the item. The
                 //        item table DOES expose custitem_* fields (12 of them),
                 //        so this is absence, not invisibility.
                 thickness:    pair.thickness || '',
-                grade:        '',   // see below — cseggrade is NOT an item field
+                grade:        '',   // not sourced YET. cseggrade exists on item (539
+                                    // populated) but is null on the ARCH SKUs. See above.
                 grain:        '',   // no such segment — needs a source decision
                 // Row-level `containerNo`/`containers` were REMOVED 2026-08-19.
                 // They existed to feed a Container column and filter on the main
@@ -1041,6 +1513,63 @@ define([
         }
     };
 
+    /**
+     * Split rows into chunks that each FIT, verified in bytes.
+     *
+     * 🔴 Deliberately NOT a port of MTL's version, which carries two defects:
+     *
+     *   1. It compares `fullJson.length` — UTF-16 code units — against a ceiling
+     *      expressed in BYTES. Every accented character in a French location or
+     *      item name counts as one there and two on the wire, so it under-counts
+     *      exactly where MGSL's data has accents. ARCH already has `utf8Bytes`
+     *      and uses it everywhere else; this is one of the few places ARCH is
+     *      ahead of MTL and it should stay that way.
+     *   2. It derives `rowsPerChunk` from an AVERAGE
+     *      (`rows.length / ceil(json.length / chunkSize)`) and never measures a
+     *      chunk it actually built. Rows are not uniform — a lot-heavy pair
+     *      carries far more than a single-lot one — so one fat row can push a
+     *      chunk over the ceiling and `put` then fails or truncates. That is the
+     *      shape of the chunking bug this file's own comments warn about.
+     *
+     * So: measure each row once, accumulate greedily against the real budget
+     * including JSON framing, then VERIFY each finished chunk with a genuine
+     * `utf8Bytes` before it is written.
+     *
+     * Returns null when a SINGLE row cannot fit on its own, because that is
+     * genuinely unchunkable and the caller must refuse loudly rather than write
+     * something that will throw.
+     */
+    const chunkRowsByBytes = (allRows, maxBytes) => {
+        // `[` + `]`, plus one `,` per row after the first.
+        const FRAME = 2;
+        const sizes = allRows.map((r) => utf8Bytes(JSON.stringify(r)));
+
+        const chunks = [];
+        let cur = [];
+        let curBytes = FRAME;
+
+        for (let i = 0; i < allRows.length; i++) {
+            const add = sizes[i] + (cur.length ? 1 : 0);
+            if (cur.length && curBytes + add > maxBytes) {
+                chunks.push(cur);
+                cur = [];
+                curBytes = FRAME;
+            }
+            // A row that cannot fit even alone is unchunkable. Bail rather than
+            // emit a chunk we know is oversized.
+            if (FRAME + sizes[i] > maxBytes) return null;
+            cur.push(allRows[i]);
+            curBytes += add;
+        }
+        if (cur.length) chunks.push(cur);
+
+        // Verify what was actually built, not what the arithmetic predicted.
+        for (let c = 0; c < chunks.length; c++) {
+            if (utf8Bytes(JSON.stringify(chunks[c])) > maxBytes) return null;
+        }
+        return chunks;
+    };
+
     // ── summarize ───────────────────────────────────────────────────────────
     const summarize = (context) => {
         try {
@@ -1053,6 +1582,80 @@ define([
                 return true;
             });
 
+            /*
+             * Stage errors, counted for one reason: to tell a run that produced
+             * nothing ON PURPOSE from a run that produced nothing BECAUSE IT BROKE.
+             * The action is the same for both (leave the cache alone) but the log
+             * level must not be, or a broken rebuild reads like a quiet one.
+             *
+             * Wrapped, because these summaries are the one part of the context that
+             * may be incomplete when getInputData itself threw, and a summarize that
+             * dies here would skip the reschedule and end the chain.
+             */
+            let mapErrorCount = 0, reduceErrorCount = 0;
+            try {
+                context.mapSummary.errors.iterator().each((key, err) => {
+                    mapErrorCount++;
+                    log.error('ARCH cache map error, key ' + key, err);
+                    return true;
+                });
+                context.reduceSummary.errors.iterator().each((key, err) => {
+                    reduceErrorCount++;
+                    log.error('ARCH cache reduce error, key ' + key, err);
+                    return true;
+                });
+            } catch (e) {
+                log.error('ARCH cache summarize',
+                    'Could not read the stage error summaries: ' + e.message);
+            }
+            const runFailed = !!(context.inputSummary && context.inputSummary.error) ||
+                mapErrorCount > 0 || reduceErrorCount > 0;
+
+            /*
+             * ══ ZERO OUTPUT: NEVER WRITE AN EMPTY PAYLOAD OVER A LIVE CACHE ══════
+             *
+             * This has to sit ABOVE the shrink guard, and the ordering is not
+             * cosmetic. The guard would happily catch zero rows (existingCount 13 is
+             * over the floor of 5, and 0 is under half of 13) and would preserve the
+             * cache correctly. What it would ALSO do is stamp `shrinkGuard: true`
+             * into META. On the next real truncation, `alreadyKnown` would then be
+             * true, and the guard would log that truncation at AUDIT instead of
+             * ERROR, because it would look like a repeat of a condition already
+             * reported. Routing paced no-ops through the guard would therefore
+             * disable the guard's alerting within one cycle of going live, while
+             * leaving the guard itself apparently intact. The screen would also
+             * permanently report the cache as refusing to update.
+             *
+             * Zero output now has three causes and all three want the same action:
+             *   1. a paced cycle, which is the common case and is not news;
+             *   2. a real run that found no stock, already reported loudly in
+             *      getInputData, which is the only place that can tell;
+             *   3. a run that errored to nothing, which is news every time.
+             *
+             * Nothing is written, not even a TTL refresh, because at a 1h interval
+             * against a 12h TTL there is no expiry pressure to relieve. The shrink
+             * guard's own path does rewrite SUMMARY to keep TTLs in step, but it
+             * runs at most once an hour on a persistent fault, where this path runs
+             * on most cycles.
+             */
+            if (rows.length === 0) {
+                if (runFailed) {
+                    log.error('ARCH cache summarize — ZERO OUTPUT AFTER ERRORS, cache PRESERVED',
+                        'inputError=' + !!(context.inputSummary && context.inputSummary.error) +
+                        ' mapErrors=' + mapErrorCount +
+                        ' reduceErrors=' + reduceErrorCount +
+                        '. The cached summary was NOT replaced with an empty one. ' +
+                        (context.inputSummary && context.inputSummary.error
+                            ? 'inputSummary.error: ' + context.inputSummary.error
+                            : ''));
+                }
+                // No `else`, deliberately. Zero output with no stage errors is the
+                // paced path, which is the overwhelming majority of cycles, so a
+                // line here costs ~32,000 a day on its own. Silence is the correct
+                // report for a no-op.
+                return;
+            }
+
             // Stable order so the grid does not reshuffle between rebuilds.
             rows.sort((a, b) => (a.itemCode + a.locationName).localeCompare(b.itemCode + b.locationName));
 
@@ -1064,15 +1667,32 @@ define([
             const payload = JSON.stringify(rows);
             const payloadBytes = utf8Bytes(payload);
 
-            // The 500 KB ceiling is per VALUE, not per cache. 6 SKUs cannot
-            // approach it today, but the check is here rather than added later
-            // under pressure — that is how IND acquired its chunking bug.
-            if (payloadBytes > CacheKeys.MAX_CACHE_VALUE_BYTES) {
+            /*
+             * The 500 KB ceiling is per VALUE, not per cache.
+             *
+             * ✅ Chunking implemented 2026-08-25. This used to LOG AND RETURN,
+             * which meant an oversized payload wrote nothing at all: the cache
+             * would expire at TTL and the screen would fall to fixtures. In other
+             * words the failure mode of arriving at real volume was the same
+             * four-day silent outage we had just spent an afternoon on, triggered
+             * by the very upload we are waiting for.
+             *
+             * `chunkPlan` is null only when a SINGLE row exceeds the ceiling on
+             * its own, which no amount of chunking fixes.
+             */
+            const overCeiling = payloadBytes > CacheKeys.MAX_CACHE_VALUE_BYTES;
+            const chunkPlan = overCeiling
+                ? chunkRowsByBytes(rows, CacheKeys.MAX_CACHE_VALUE_BYTES)
+                : null;
+
+            if (overCeiling && !chunkPlan) {
                 log.error('ARCH cache summarize',
                     'Summary payload is ' + payloadBytes + ' bytes, over the ' +
-                    CacheKeys.MAX_CACHE_VALUE_BYTES + ' byte ceiling. Chunking is NOT implemented ' +
-                    'for ARCH yet — port it from cacheKeys_mtl/buildSummaryDataKey before this ships ' +
-                    'at real volume.');
+                    CacheKeys.MAX_CACHE_VALUE_BYTES + ' byte ceiling, and at least one SINGLE row ' +
+                    'exceeds the ceiling by itself, so chunking cannot help. The cached summary is ' +
+                    'kept rather than replaced with nothing. This means one item+location pair ' +
+                    'carries an implausible amount of data — check its lot count before assuming ' +
+                    'the ceiling is the problem.');
                 return;
             }
 
@@ -1101,18 +1721,13 @@ define([
             // partial set is still real data worth keeping; every ARCH payload is
             // complete by construction, so the cached one is strictly better than
             // a truncated new one. Stale-but-complete beats silently-truncated.
-            // Tolerant on purpose. A CHECKBOX parameter should come back as a
-            // boolean, but this is the ONLY escape from a guard that otherwise
-            // blocks a legitimate shrink forever, and it has never been exercised.
-            // If NetSuite ever hands back 'T' or 'true', a strict === true would
-            // fail silently and leave the cache wedged with no way out.
-            const forceFull = (function () {
-                try {
-                    const v = runtime.getCurrentScript()
-                        .getParameter({ name: 'custscript_ts_arch_force_full_rebuild' });
-                    return v === true || v === 'T' || v === 'true';
-                } catch (e) { return false; }
-            })();
+            //
+            // The tolerant parameter read moved out to forceFullRequested() at
+            // module scope on 2026-08-26, because the pacing gate needs the same
+            // answer and two copies of a tolerant read is how they drift apart.
+            // Note the widened meaning: the box now bypasses the pacing gate too,
+            // so it forces a rebuild to HAPPEN as well as allowing it to shrink.
+            const forceFull = forceFullRequested();
 
             let existingCount = 0;
             let existingRaw   = null;
@@ -1156,7 +1771,8 @@ define([
 
             if (shrinkGuardTripped) {
                 // ── Level by CAUSE, not by importance ────────────────────
-                // The deployment has notifyowner=T, and this now runs EVERY HOUR.
+                // The deployment carries notifyemails, and this runs on every real
+                // cycle, which the pacing gate holds to roughly hourly.
                 // A persistent cause — a broken query, a permanently smaller data
                 // set — would otherwise fire an error and an email every hour,
                 // forever. That is the documented failure mode in this codebase:
@@ -1228,7 +1844,42 @@ define([
                 return;
             }
 
-            myCache.put({ key: CacheKeys.SUMMARY, value: payload, ttl: CacheKeys.TTL_SUMMARY });
+            /*
+             * CHUNKS FIRST, POINTER LAST, and the order is load-bearing.
+             *
+             * The reader treats a missing chunk as a MISS rather than a smaller
+             * result (`trader_screen_service_arch.js`), so a pointer written
+             * before its chunks would describe data that is not there yet and any
+             * request landing in that window would read a miss. Written in this
+             * order, SUMMARY keeps pointing at the previous payload until every
+             * chunk is in place.
+             *
+             * ⚠️ Chunks from a PREVIOUS, larger run are deliberately not deleted.
+             * They expire on their own TTL and nothing reads past `chunkCount`, so
+             * removing them buys nothing and a failed delete midway would be worse
+             * than leaving them.
+             */
+            if (chunkPlan) {
+                for (let ci = 0; ci < chunkPlan.length; ci++) {
+                    myCache.put({
+                        key:   CacheKeys.buildSummaryDataKey(ci),
+                        value: JSON.stringify(chunkPlan[ci]),
+                        ttl:   CacheKeys.TTL_SUMMARY,
+                    });
+                }
+                myCache.put({
+                    key:   CacheKeys.SUMMARY,
+                    value: JSON.stringify({ chunked: true, chunkCount: chunkPlan.length }),
+                    ttl:   CacheKeys.TTL_SUMMARY,
+                });
+                log.audit('ARCH cache summarize — CHUNKED',
+                    rows.length + ' row(s), ' + payloadBytes + ' bytes, written as ' +
+                    chunkPlan.length + ' chunk(s) against a ' + CacheKeys.MAX_CACHE_VALUE_BYTES +
+                    ' byte ceiling. Rows per chunk: ' +
+                    chunkPlan.map((c) => c.length).join(', ') + '.');
+            } else {
+                myCache.put({ key: CacheKeys.SUMMARY, value: payload, ttl: CacheKeys.TTL_SUMMARY });
+            }
             myCache.put({
                 key: CacheKeys.META,
                 value: JSON.stringify({
@@ -1266,6 +1917,24 @@ define([
                 (forceFull ? ' FORCED — shrink guard bypassed.' : ''));
         } catch (e) {
             log.error('ARCH cache summarize failed', e.message);
+        } finally {
+            /*
+             * ⚠️ `finally`, AND IT MUST STAY `finally`.
+             *
+             * This one call is the entire reason the builder keeps running, now that
+             * the deployment is NOTSCHEDULED. summarize has five ways out: the
+             * over-ceiling return, the zero-output return, the shrink-guard return,
+             * the normal end, and the catch above. A reschedule sitting on the happy
+             * path alone would mean any of the other four silently ENDS the chain,
+             * and the symptom would be identical to the NetSuite scheduler fault
+             * this replaced: a cache that quietly stops updating while every record
+             * still looks healthy.
+             *
+             * Moving this out of `finally` for tidiness, or guarding it with "only
+             * reschedule if the run succeeded", reintroduces the original outage.
+             * The failure paths are precisely the ones that most need another cycle.
+             */
+            rescheduleSelf();
         }
     };
 

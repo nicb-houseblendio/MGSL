@@ -26,7 +26,7 @@
       <defaultchecked>F</defaultchecked>
       <defaultselection></defaultselection>
       <defaultvalue></defaultvalue>
-      <description>Bypasses the shrink guard for ONE run. Check this only when the summary is legitimately much smaller than what is cached — for example after test data is deleted. Leave unchecked: with it on, a broken run can silently truncate the cache, which is exactly what the guard prevents.</description>
+      <description>Bypasses the shrink guard, and ONLY the shrink guard. It does not make a rebuild happen sooner: the pacing gate is deliberately not bypassable, so the forced rebuild lands at the next gate opening, within one interval. Check this only when the summary is legitimately much smaller than what is cached, for example after test data is deleted. Then wait one gate opening and UNCHECK it. Leave it checked and every rebuild runs with the guard disarmed, so a broken run can silently truncate the cache.</description>
       <displayheight></displayheight>
       <displaytype>NORMAL</displaytype>
       <displaywidth></displaywidth>
@@ -87,61 +87,122 @@
       <loglevel>DEBUG</loglevel>
       <queueallstagesatonce>T</queueallstagesatonce>
       <runasrole>ADMINISTRATOR</runasrole>
-      <!-- SCHEDULED hourly, deliberately, 2026-08-18.
+      <!-- NOTSCHEDULED, deliberately, 2026-08-26. The builder reschedules ITSELF.
            ═══════════════════════════════════════════════════════════════════
-           This looks like it contradicts the standing rule "never enable the
-           trader-cache MR's scheduled deployment". It does not. That rule is
-           about the IND builder, and it exists for three specific mechanisms,
-           ALL THREE OF WHICH ARE ABSENT HERE — verified against both files on
-           2026-08-18:
+           ⚠️ DO NOT SET THIS BACK TO SCHEDULED. Read this whole comment first;
+           it was SCHEDULED hourly from 2026-08-18 and that is what failed.
+
+           ── What the schedule actually did ─────────────────────────────────
+           NetSuite silently stopped firing the recurrence, twice, while this
+           record continued to read status=SCHEDULED throughout:
+
+             2026-08-21 11:45 → 2026-08-25 13:32   dead, 3.5 days, screen on
+                                                   fixtures while the client was
+                                                   being asked to test it
+             2026-08-25 13:32                      manual Save & Execute restored
+                                                   the data; the recurrence did
+                                                   NOT resume, no run ever
+                                                   followed, and 23h later the
+                                                   cache was CACHE_MISS again
+
+           Cause never established, and it cannot be established remotely:
+           startdate, enddate, starttime and recurrence are all NOT_EXPOSED to
+           SuiteQL. UI only. Worse, nothing inside NetSuite can report the
+           fault, because notify-on-error needs the script to RUN and error, and
+           a script that is not running cannot report its own absence.
+
+           ── Why self-rescheduling instead ─────────────────────────────────
+           IND and MTL are both NOTSCHEDULED and neither has ever had this
+           outage, because neither depends on the scheduler: each one's
+           summarize resubmits itself to its own deployment, so the script is
+           its own scheduler. ARCH now does the same, via N/task in summarize's
+           `finally` block. The pacing gate in getInputData holds real rebuilds
+           to roughly hourly, so the cadence is unchanged; only the trigger is.
+
+           ⚠️ NEVER ADD A SCHEDULE BACK AS A SAFETY NET. It is not one. Every
+           run resubmits exactly once, so a scheduled fire lands as an EXTRA
+           chain member on top of the circulating one, and that member then
+           resubmits forever too. Hourly would mean ~25 concurrent members after
+           a day. concurrencylimit 1 queues them rather than preventing it. The
+           safety net is external: cachecheck.mjs beside sql.mjs.
+
+           🔴 SAVE & EXECUTE IS A PRECONDITIONED ACTION, NOT A FREE RETRY. Run
+           `node cachecheck.mjs` first, every time. FRESH means the chain is alive
+           and you must not press it; STALE or MISSING means it is dead and you
+           press it exactly once.
+
+           Pressing it on a live chain adds a SECOND circulating member, because
+           every run resubmits itself exactly once and nothing merges or expires
+           the extras. It is also undetectable: rebuild frequency stays hourly
+           whatever the member count, since they share one pacing key, and the
+           paced path logs nothing. `scheduledscriptinstance` accepts COUNT(*) but
+           exposes no columns to SuiteQL, so no script can count them either. The
+           only view is the Map/Reduce status page in the UI.
+
+           So chain DEATH is loud, external and one action to fix, while chain
+           MULTIPLICATION is silent and permanent. Prevention is the defence.
+
+           ── The IND trap, and why it still does not apply ──────────────────
+           The standing rule is "never enable the trader-cache MR's scheduled
+           deployment". It is about the IND builder and it exists for three
+           specific mechanisms. On 2026-08-18 all three were verified ABSENT
+           here. TWO OF THEM ARE NO LONGER ABSENT as of 2026-08-26, so the
+           reasoning is restated honestly rather than left to rot:
 
              1. IND throttles on TS_LAST_RUN_TIMESTAMP with a non-atomic
                 read-then-write, so two runners both decide "not throttled" and
-                both start a FULL rebuild. This builder has NO throttle state at
-                all (IND: 13 references to LAST_RUN, ARCH: 0).
+                both start a FULL rebuild.
+                ⚠️ CHANGED: ARCH now HAS throttle state, TS_ARCH_PACE_LAST_START,
+                read and written the same non-atomic way. The race needs TWO
+                concurrent runners, and this deployment has one trigger, one
+                chain member and concurrencylimit 1. Even if two ever did race,
+                the cost here is a duplicate rebuild writing identical bytes,
+                because of mechanism 2 below. For IND the same race corrupts a
+                merge. Same shape, different consequence.
              2. IND's summarize READS TS_SUMMARY, merges, and writes back, so
                 interleaved runs mean last-writer-wins on a partial merge and
                 one run's delta silently vanishes. This summarize never reads
                 SUMMARY back — it writes a complete payload built from the
                 output iterator, so a concurrent run can only write the same
-                bytes.
+                bytes. STILL ABSENT, and it is what makes mechanism 1 benign.
              3. IND's summarize self-reschedules onto
                 runtime.getCurrentScript().deploymentId, so enabling a second
-                deployment forks an immortal chain. This builder contains no
-                N/task, no task.submit and no deploymentId reference (IND: 1 and
-                3 respectively).
+                deployment forks an immortal chain.
+                ⚠️ CHANGED: ARCH now does exactly this, on purpose. Note what
+                actually forks a chain: not self-rescheduling, but a SECOND
+                TRIGGER. Each run resubmits exactly once, so one trigger yields
+                one circulating member forever. A second deployment, or a
+                recurrence re-enabled alongside this, adds a member per fire and
+                the count only ever grows.
 
-           So ARCH is a stateless, idempotent FULL rebuild on a SINGLE
-           deployment with concurrencylimit 1. It was scheduled because the
-           opposite failure was real and observed: TTL was 4h and nothing
-           refreshed the cache, so the summary endpoint returned CACHE_MISS
-           overnight and the screen had no data until someone pressed a button.
+           So ARCH is an idempotent FULL rebuild on a SINGLE deployment with
+           concurrencylimit 1 and exactly one trigger, and that is the invariant
+           the whole design rests on.
 
-           TWO RULES IF YOU CHANGE THIS:
-             - Never add a second deployment to this script. One chain, one
-               deployment. That is what keeps mechanism 3 inapplicable.
-             - Keep TTL_SUMMARY/TTL_DETAIL above the refresh interval with
-               margin. Raised to 12h on 2026-08-19: this schedule does NOT give
-               24h coverage — measured, it repeats hourly from the 11:00Z start
-               for ~16h then stops until the next day, leaving a ~8h gap. At 4h
-               the cache died about four hours every night. 12h outlives the gap
-               with margin. Lowering the TTL to "match" the hourly interval is
-               the exact mistake that caused the IND blackout.
+           THREE RULES IF YOU CHANGE THIS:
+             - Never add a second deployment to this script.
+             - Never re-enable a recurrence on this one. Both of these break the
+               one-trigger invariant, which is now what keeps mechanism 3
+               inapplicable. Where status used to be the safety control, the
+               trigger COUNT is.
+             - Keep TTL_SUMMARY/TTL_DETAIL well above the rebuild interval.
+               They are 12h against a 1h interval, which is far more margin than
+               the old rule required, and deliberately so: the failure mode is no
+               longer a nightly gap but chain death, and the TTL is now the only
+               thing between that and an empty screen. Full reasoning is in
+               cacheKeys_arch.js. Do not trim it toward the interval.
 
-           `repeat` is an ISO 8601 duration — PT1H. Not a word enum. Taken from
-           what SDF actually wrote after the change was made in the UI; do not
-           guess this value. `starttime` is UTC: 11:00Z is 07:00 PT. -->
-      <status>SCHEDULED</status>
+           HISTORICAL, kept because it was expensive to learn and would be
+           needed again if anyone ever re-adds a recurrence: `repeat` is an ISO
+           8601 duration, PT1H, not a word enum, and that value came from what
+           SDF actually wrote after the change was made in the UI rather than
+           from a guess. `starttime` is UTC, so 11:00Z was 07:00 PT. Measured
+           behaviour of that schedule while it did work: it repeated hourly from
+           the 11:00Z start for ~16h then stopped until the next day, leaving a
+           ~8h nightly gap. It was never continuous. -->
+      <status>NOTSCHEDULED</status>
       <title>MCGI MR Trader Screen Cache ARCH</title>
       <yieldaftermins>60</yieldaftermins>
-      <recurrence>
-        <daily>
-          <everyxdays>1</everyxdays>
-          <repeat>PT1H</repeat>
-          <startdate>2026-08-18</startdate>
-          <starttime>11:00:00Z</starttime>
-        </daily>
-      </recurrence>
     </scriptdeployment>
   </scriptdeployments>
 </mapreducescript>

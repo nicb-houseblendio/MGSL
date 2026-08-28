@@ -57,6 +57,22 @@
  * mechanism 3 of the IND trap and forks a chain that cannot be stopped. One
  * script, one deployment.
  *
+ * ⚠️ AND DO NOT ADD A SCHEDULE BACK ALONGSIDE THE CHAIN, 2026-08-26. There is no
+ * scheduled deployment on ARCH any more, and the obvious idea once you know the
+ * chain can die is to re-enable the hourly recurrence as a safety net. It is not
+ * one, it is a slow fork. Every run resubmits itself exactly once, so a scheduled
+ * fire lands as an EXTRA chain member on top of the one already circulating, and
+ * that member then resubmits forever too. The chain grows by one per scheduled
+ * fire: hourly means about 25 concurrent members after a day. `concurrencylimit`
+ * 1 hides it by queueing them rather than preventing it. The right safety net is
+ * external, which is what `cachecheck.mjs` is for.
+ *
+ * ⚠️ THE SAME ARITHMETIC APPLIES TO THE SAVE & EXECUTE BUTTON, which is the far
+ * likelier way it happens, because pressing it is the natural human response to a
+ * screen that looks stale. One press on a LIVE chain is one extra permanent
+ * member. Always run `node cachecheck.mjs` first: FRESH means do not press.
+ * The builder's own header carries the full procedure.
+ *
  * ── What ARCH adds that IND and MTL do not have ─────────────────────────────
  * Two extra buckets, `reserve` and `readyToBuild`, and lot-level payloads with
  * per-lot tallies, PO numbers and costs. That is the main reason ARCH gets its
@@ -71,11 +87,43 @@ define([], () => {
 
     // 12h, NOT 4h. Sized to outlive the schedule's ~8h nightly gap with margin —
     // read the note above before changing either of these.
+    //
+    // ⚠️ THE NIGHTLY GAP IS GONE as of 2026-08-26: the hourly schedule was
+    // replaced by a self-rescheduling chain in the builder, so the ~8h window
+    // these numbers were sized against no longer exists. The reason for 12h has
+    // changed; the number has not, and it must not be "corrected" downward.
+    //
+    // The refresh backstop is now roughly one hour, which by the rule above would
+    // permit a far shorter TTL. Keep 12h anyway, because the failure mode changed
+    // too. A dead SCHEDULE used to be recoverable by the next day's start. A dead
+    // CHAIN has nothing to restart it from inside NetSuite, so the TTL is now the
+    // only thing standing between chain death and an empty screen. 12h is most of
+    // a working day in which someone can notice and press one button. Matching the
+    // TTL to the refresh interval would convert a dead chain into a dead screen
+    // within the hour, which is the same mistake in a new costume.
     const TTL_SUMMARY           = 43200;       // 12h
     const TTL_DETAIL            = 43200;       // 12h
     const MAX_CACHE_VALUE_BYTES = 500 * 1024;  // 500 KB, N/cache's hard per-value ceiling
-    // No TTL_LAST_RUN: it existed only for the LAST_RUN key, which is gone. See
-    // the note on the return block below.
+
+    /* ── ⚠️ THERE IS NO TTL_PACE HERE, AND THERE MUST NOT BE ────────────────────
+     *
+     * The pacing key's TTL is DERIVED in the builder, from REBUILD_INTERVAL_MS, as
+     * `PACE_TTL_SECONDS`. It was briefly a constant here (7200, "2h against a 1h
+     * interval") and that was a latent bug, not merely redundant.
+     *
+     * The gate only works while the key outlives the interval. Those are two halves
+     * of ONE invariant, and putting them in two files meant someone raising the
+     * interval above 2h in the builder would satisfy every local check, pass
+     * review, and silently arm the worst failure available: the key expires before
+     * the gate opens, the gate fails open by design, and every cycle becomes a full
+     * rebuild at ~1,330 an hour.
+     *
+     * A TTL belongs beside the interval it protects. Do not "tidy" it back into
+     * this module for symmetry with TTL_SUMMARY and TTL_DETAIL; those two are not
+     * coupled to anything in the builder, and this one is.
+     */
+    // No TTL_LAST_RUN either: it existed only for the LAST_RUN key, which is gone.
+    // See the note on the return block below.
 
     const detailKey = (itemId, locationId) =>
         TS_ARCH_DETAIL_PREFIX + itemId + '__' + locationId;
@@ -118,9 +166,46 @@ define([], () => {
      * written non-atomically beside the payload, i.e. free drift. If more
      * run-state is ever needed, add a field to META rather than a key here.
      */
+
+    /* ── ➕ PACE_LAST_START, added 2026-08-26, and it is NOT the LAST_RUN mistake
+     *
+     * Read this before deleting it, because it looks exactly like the key the
+     * warning above says not to re-add. The warning stands; it does not apply,
+     * and the difference is the whole reason this key exists.
+     *
+     * That warning forbids a SECOND SOURCE OF TRUTH FOR THE SAME FACT. META's
+     * `lastAttempt` answers "when did summarize last conclude". This key answers
+     * "when did getInputData last begin real work". Those are different facts, and
+     * on every failure path they hold different values.
+     *
+     * Why the difference is load-bearing. The builder now paces itself: it runs as
+     * a continuous self-rescheduling chain and this key is what makes most cycles
+     * cheap no-ops. So the pacing signal has to be written at the DECISION POINT,
+     * at the top of getInputData, before any query runs. META is written at the
+     * very END of the pipeline, and there are four paths that reach the end
+     * without writing it: the over-ceiling early return, the zero-output guard, an
+     * exception in summarize, and an exception in getInputData.
+     *
+     * Pace off META and every one of those four becomes a HOT LOOP. The run fails,
+     * META keeps its old timestamp, the gate reads "stale", the next cycle does the
+     * same full rebuild about twenty seconds later, and it fails again. The
+     * deployment carries notifyemails, so a persistent failure would become
+     * thousands of identical error lines and thousands of emails in a day. That is
+     * a strictly worse outage than the one this whole change is fixing.
+     *
+     * Stamped at the top of getInputData, the interval holds no matter what
+     * happens downstream, including a total failure. That crash-safety is the
+     * property being bought, and META structurally cannot provide it.
+     *
+     * It is also write-only from the builder's side: no consumer reads it, the
+     * service does not surface it, and it must never be used to tell the screen
+     * anything. `lastUpdated` and `lastAttempt` remain the only reportable run
+     * state, so the drift the warning above is about cannot start here.
+     */
     return {
         SUMMARY:               'TS_ARCH_SUMMARY',
         META:                  'TS_ARCH_META',
+        PACE_LAST_START:       'TS_ARCH_PACE_LAST_START',
         TTL_SUMMARY:           TTL_SUMMARY,
         TTL_DETAIL:            TTL_DETAIL,
         MAX_CACHE_VALUE_BYTES: MAX_CACHE_VALUE_BYTES,
