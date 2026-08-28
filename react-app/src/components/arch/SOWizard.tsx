@@ -1102,7 +1102,20 @@ export const SOWizard = ({
                   {formatQty(l.preSplitQty, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }} className="font-mono">
-                  {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF)}
+                  {/*
+                    'CAD' explicitly, and NOT `currency`. fmtMoney defaults to USD, so
+                    this cell has been showing a US dollar sign on a Canadian figure.
+                    Lot cost comes from accounting book 1 (Primary) and both candidate
+                    subsidiaries, CWP MTL (5) and ARC (9), are base CAD, measured
+                    2026-08-28. Passing the SO's `currency` would be a different wrong
+                    answer: that is the CUSTOMER's currency, usually USD.
+
+                    ⚠️ This makes a real problem VISIBLE rather than fixing it: the
+                    margin below compares a CAD cost against USD revenue. The FX rule
+                    is still an open question with the client, so do not "tidy" these
+                    into one currency until they answer.
+                  */}
+                  {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF, 'CAD')}
                 </td>
                 <td style={{ ...td, textAlign: 'center' }}>
                   {(
@@ -1216,12 +1229,37 @@ export const SOWizard = ({
   );
 
   const customerBody = (
+    /*
+     * ⚠️ NO ProvisionalNote ON THIS STEP, and that is deliberate as of 2026-08-27.
+     * Do not reinstate one without checking the table below first.
+     *
+     * It used to carry: "The NetSuite field IDs behind these inputs have not been
+     * supplied yet, and not all of the fields exist on the SO record." That was
+     * true when the wizard was built against the prototype. It stopped being true
+     * on 2026-08-13, when the field IDs were pulled from live NetSuite, and it was
+     * still on screen when Philippe read it out as a defect on 2026-08-27. A
+     * warning that outlives its cause is worse than no warning: he reasonably
+     * concluded the whole Create SO flow was a mock-up.
+     *
+     * Every input on this step maps to a real field that the server writes.
+     * Verified against archOrderCreate.js, not assumed:
+     *
+     *   Customer          entity
+     *   Customer PO       otherrefnum                      (H_CUSTOMER_PO)
+     *   Ship-to address   shipaddresslist
+     *   Currency          currency
+     *   Ship date         custbody_mgsl_expectedshipdate   (H_SHIP_DATE)
+     *   Payment terms     terms
+     *   Incoterms         custbody_incoterms               (H_INCOTERMS)
+     *   Sales team        custbody_sales_rep + employee    (H_SALES_REP)
+     *
+     * Customer PO is `otherrefnum`, NOT `custbody_customer_po_num`; that one is
+     * dead, populated on 0 of 1,728 SOs. The other six ProvisionalNotes in this
+     * file were re-checked at the same time and ALL of them are still accurate:
+     * the split marker really is undecided, and the reman line fields really are
+     * undeployed. This was the only stale one.
+     */
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <ProvisionalNote>
-        The NetSuite field IDs behind these inputs have not been supplied yet, and not all of the fields
-        exist on the SO record. Treat the set below as the shape we expect, not as final.
-      </ProvisionalNote>
-
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ flex: '2 1 320px' }}>
           <label style={label}>Customer *</label>
@@ -2086,7 +2124,9 @@ export const SOWizard = ({
                   {formatQty(e.orderedQty, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'right', color: ARCH_SURFACE.textMid }} className="font-mono">
-                  {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF)}
+                  {/* 'CAD', not `currency` — see the note on the same cell in the
+                      split step. Book 1 is CAD; the SO currency is the customer's. */}
+                  {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF, 'CAD')}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }}>
                   <input

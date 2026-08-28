@@ -674,7 +674,10 @@ define([
         '  tl.id                           AS lineid, ' +
         '  tl.item                         AS itemid, ' +
         '  i.itemid                        AS itemcode, ' +
-        '  i.displayname                   AS description, ' +
+        // `description`, NOT `displayname` — displayname is NULL on every ARCH item, so
+        // this used to fall through to the SKU. See the note in the cache builder's
+        // LOT_SQL. Keep these two SELECTs in step; they feed the same column.
+        '  i.description                   AS description, ' +
         '  BUILTIN.DF(i.csegseg_thickness) AS thickness, ' +
         '  u.unitname                      AS unitname, ' +
         '  u.conversionrate                AS convrate, ' +
@@ -898,7 +901,9 @@ define([
                     shell: {
                         internalId:   String(r.itemid),
                         itemCode:     String(r.itemcode || ''),
-                        description:  String(r.description || r.itemcode || ''),
+                        // .trim() before the fallback: three of six ARCH descriptions end
+                        // in a real CRLF that Oracle TRIM does not strip.
+                        description:  String(r.description || '').trim() || String(r.itemcode || ''),
                         thickness:    String(r.thickness || ''),
                         locationName: String(r.locationname || ''),
                         locationId:   String(r.locationid || ''),

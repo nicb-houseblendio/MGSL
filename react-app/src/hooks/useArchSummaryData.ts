@@ -47,14 +47,29 @@ const applyArchFilters = (rows: ArchSummaryRow[], filters: FilterState): ArchSum
     const set = new Set(filters.category);
     out = out.filter((r) => !!r.category && set.has(r.category));
   }
-  if (filters.grade?.length) {
-    const set = new Set(filters.grade);
-    out = out.filter((r) => !!r.grade && set.has(r.grade));
-  }
-  // No containerNo branch, removed 2026-08-19 with the filter itself. `FilterState`
-  // still declares the key because it is shared with IND/MTL, so a stale saved
-  // filter could still carry one — ignoring it is correct, since ARCH no longer
-  // offers the filter and every lot's containerNo is empty anyway.
+  // No grade branch either, removed 2026-08-27 with the filter, and removing the
+  // BRANCH matters more than removing the control.
+  //
+  // The builder hard-codes `grade: ''` on every ARCH row, so this branch's
+  // `!!r.grade` was false for every row, and any non-empty grade selection removed
+  // the ENTIRE grid rather than narrowing it.
+  //
+  // ⚠️ CORRECTED 2026-08-28: this used to say "because cseggrade lives on
+  // TRANSACTIONLINE and not on the item". False, copied from a stale builder
+  // comment. cseggrade IS on item, 539 items populated, just null on the ARCH
+  // SKUs. The branch removal stands; the stated reason did not.
+  //
+  // That is a live hazard and not a hypothetical, because saved views persist
+  // filters to localStorage. A view saved before today can still carry
+  // `grade: [...]`. Had only the FilterPanel control been taken away, restoring
+  // such a view would blank every row with no visible filter to explain it and no
+  // control left to clear it. Ignoring the key is what makes the removal safe.
+  //
+  // No containerNo branch, removed 2026-08-19 with the filter itself, for the same
+  // reason. `FilterState` still declares both keys because it is shared with
+  // IND/MTL, so a stale saved filter could still carry either one — ignoring them
+  // is correct, since ARCH no longer offers the filters and every lot's containerNo
+  // is empty anyway.
   return out;
 };
 
@@ -319,8 +334,10 @@ export const useArchSummaryData = (enabled: boolean) => {
           { value: r.thickness, label: r.thickness },
         ]),
         category: optionsFor(allRows, filters, 'category', (r) => [{ value: r.category, label: r.category }]),
-        grade: optionsFor(allRows, filters, 'grade', (r) => [{ value: r.grade, label: r.grade }]),
-        // No containerNo options — the filter was removed 2026-08-19. See applyArchFilters.
+        // No grade options — the filter was removed 2026-08-27, and this only ever
+        // produced an empty list anyway since every row's grade is ''.
+        // No containerNo options — the filter was removed 2026-08-19.
+        // Both: see applyArchFilters.
       };
       Object.values(out).forEach((list) => list.sort((a, b) => compareLabels(a.label, b.label)));
       return out;

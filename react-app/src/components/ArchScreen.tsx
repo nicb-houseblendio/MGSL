@@ -210,7 +210,9 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange }: ArchScree
       species: filters.species || [],
       thickness: filters.thickness || [],
       category: filters.category || [],
-      grade: filters.grade || [],
+      // No grade: the filter was removed 2026-08-27. This drives cell highlighting,
+      // so listing a key ARCH cannot filter on would highlight nothing.
+      // See applyArchFilters in useArchSummaryData for why the value is always ''.
     }),
     [filters]
   );
