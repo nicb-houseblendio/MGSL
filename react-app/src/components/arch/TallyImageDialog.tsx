@@ -1,5 +1,7 @@
 import * as React from 'react';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
+import { toRenderShape, densityLabel } from '@/lib/archTally';
+import type { TallyBundle } from '@/lib/archTally';
 
 /**
  * The tally sheet viewer.
@@ -23,7 +25,120 @@ interface TallyImageDialogProps {
   onClose: () => void;
   /** Called with a local object URL when the user picks a file. */
   onUpload?: (lotNo: string, dataUrl: string) => void;
+  /**
+   * The PARSED tally for this lot, when one exists.
+   *
+   * Takes precedence over the image, per SDD TY1: "the Trader Screen shows the lot's
+   * own matrix in the existing Tally View; lots without parsed data fall back to the
+   * linked PDF". Undefined means nothing has been parsed and the image path stands.
+   */
+  bundle?: TallyBundle | null;
 }
+
+/**
+ * The parsed tally, rendered.
+ *
+ * ⚠️ READ archTally.ts BEFORE CHANGING THIS. It is deliberately NOT grid-first. Of
+ * the six hand-verified real documents, four carry bundle totals only, one is
+ * by-length with a random width, one is a single dimension per bundle, and NONE is
+ * a width x length grid. The dense grid in the UI mock comes from a random fixture
+ * generator, not from paperwork.
+ *
+ * So the empty and scalar states are the common cases and get real design attention;
+ * the grid is handled but rare.
+ */
+const TallyMatrixPanel = ({ bundle, imageUrl }: { bundle: TallyBundle; imageUrl?: string | null }) => {
+  const shape = toRenderShape(bundle);
+  const num = (n: number | null | undefined, dp = 0) =>
+    n === null || n === undefined ? '·' : n.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
+
+  const cell: React.CSSProperties = {
+    padding: '5px 10px', fontSize: 11.5, borderBottom: '1px solid #E2E8F0', textAlign: 'right', whiteSpace: 'nowrap',
+  };
+  const head: React.CSSProperties = {
+    ...cell, textAlign: 'right', fontWeight: 700, color: ARCH_SURFACE.textMid,
+    background: '#F1F5F9', borderBottom: '1.5px solid #CBD5E1', position: 'sticky', top: 0,
+  };
+
+  return (
+    <div style={{ width: '100%', alignSelf: 'flex-start' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: ARCH_SURFACE.textMid }}>
+          Bundle <span className="font-mono">{bundle.bundleNo}</span>
+        </span>
+        <span style={{ fontSize: 11, color: ARCH_SURFACE.textLight }}>
+          {[bundle.species, bundle.thickness?.raw, densityLabel(shape.density)].filter(Boolean).join(' · ')}
+        </span>
+      </div>
+
+      {shape.density === 'none' ? (
+        <div style={{
+          background: '#fff', border: '1px solid #E2E8F0', borderRadius: 8, padding: '18px 16px',
+          fontSize: 12, color: ARCH_SURFACE.textMid, lineHeight: 1.55,
+        }}>
+          {shape.emptyReason}
+          <div style={{ marginTop: 10, display: 'flex', gap: 18, fontSize: 11.5 }}>
+            <span>Pieces <b className="font-mono">{num(shape.totals.pieces)}</b></span>
+            <span>m³ <b className="font-mono">{num(shape.totals.volumeM3, 3)}</b></span>
+            <span>BF <b className="font-mono">{num(shape.totals.boardFeet)}</b></span>
+          </div>
+          {imageUrl && (
+            <div style={{ marginTop: 12 }}>
+              <img src={imageUrl} alt={`Tally sheet for bundle ${bundle.bundleNo}`}
+                style={{ maxWidth: '100%', maxHeight: '46vh', borderRadius: 6 }} />
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ background: '#fff', border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'auto', maxHeight: '54vh' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={{ ...head, textAlign: 'left', position: 'sticky', left: 0, zIndex: 2 }}>Length</th>
+                {shape.widths.length
+                  ? shape.widths.map((w) => <th key={w} style={head}>{w}</th>)
+                  : <th style={head}>Pieces</th>}
+                {shape.widths.length ? <th style={head}>Pcs</th> : null}
+                <th style={head}>BF</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shape.rows.map((r, i) => (
+                <tr key={i}>
+                  <td style={{ ...cell, textAlign: 'left', fontWeight: 600, position: 'sticky', left: 0, background: '#fff' }}
+                      className="font-mono">{r.label}</td>
+                  {r.counts.map((c, j) => (
+                    <td key={j} style={cell} className="font-mono">{c === null ? '·' : num(c)}</td>
+                  ))}
+                  {shape.widths.length ? <td style={{ ...cell, fontWeight: 700 }} className="font-mono">{num(r.pieces)}</td> : null}
+                  <td style={cell} className="font-mono">{num(r.boardFeet)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td style={{ ...cell, textAlign: 'left', fontWeight: 700, background: '#F8FAFC' }}>Total</td>
+                <td colSpan={Math.max(1, shape.widths.length) + (shape.widths.length ? 0 : 0)}
+                    style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
+                  {num(shape.totals.pieces)}
+                </td>
+                <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
+                  {num(shape.totals.boardFeet)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
+      <div style={{ marginTop: 8, fontSize: 10.5, color: ARCH_SURFACE.textLight, lineHeight: 1.5 }}>
+        {shape.density === 'byLength' && !shape.widths.length
+          ? 'This supplier prints random width (RW), so no width breakdown exists. Any width figure here would be invented.'
+          : 'Parsed from the supplier document. System quantities in the tables behind this dialog remain authoritative.'}
+      </div>
+    </div>
+  );
+};
 
 const ImageIcon = ({ size = 16, stroke = '#fff' }: { size?: number; stroke?: string }) => (
   <svg
@@ -48,6 +163,7 @@ export const TallyImageDialog = ({
   imageUrl,
   onClose,
   onUpload,
+  bundle,
 }: TallyImageDialogProps) => {
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -174,7 +290,9 @@ export const TallyImageDialog = ({
             padding: 16,
           }}
         >
-          {imageUrl ? (
+          {bundle ? (
+            <TallyMatrixPanel bundle={bundle} imageUrl={imageUrl} />
+          ) : imageUrl ? (
             <img
               src={imageUrl}
               alt={`Tally sheet for lot ${lotNo}`}
