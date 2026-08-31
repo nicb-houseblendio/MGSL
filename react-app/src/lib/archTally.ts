@@ -8,7 +8,7 @@
  *   payload-template.json  `mgsl.tally.v1`  { widthsIn[], rows[{lengthFt, pieces{}}] }
  *   MSL_LIB_PLSchema.js    buildLotMatrix() { axis, widths[], rows[{len,counts{},pcs,bf}] }
  *
- * DECISION (2026-08-31): `mgsl.tally.v1` is what we STORE and what the parsing skill
+ * DECISION (2026-08-30): `mgsl.tally.v1` is what we STORE and what the parsing skill
  * hands over. It is named canonical by record-format.md, it is the hand-off contract
  * between the skill and NetSuite, and it is the only one of the two that can express
  * a length RANGE row. `buildLotMatrix`'s shape is a rendering convenience and is NOT
@@ -38,12 +38,17 @@
  * ⚠️ So a per-bundle matrix view is the WRONG GRAIN. A bundle is one cell. The
  * distribution a trader wants - "which lengths do I hold, and how many" - lives
  * ACROSS bundles of the same item, which is what toLengthDistribution() builds.
- * The per-bundle shape below is kept because the schema permits richer bundles
- * and a future supplier may send one, but it is not the primary view.
+ * The richer per-bundle shapes are still handled below (multi-row bundles, length
+ * ranges) because the schema permits them and a future supplier may send one, but
+ * no document we hold today uses either.
  *
  * CHECHEN prints "Anchos: RW" (random width), so a width-less bundle is a first
  * class case and not an error. Its header also says "Largos: RL", but the ground
  * truth records a 2026-07-16 correction: every package row DOES print its length.
+ *
+ * ⚠️ ABSENCE IS NOT A POLICY. A null width means "we have no width", which covers
+ * genuine random-width stock AND a document nobody has parsed yet. Never print
+ * "RW" from a null - read `widthPolicy`, which the parser must set explicitly.
  */
 
 /** A row of a bundle matrix. Either one length, or a declared range. */
@@ -64,10 +69,20 @@ export interface TallyMatrix {
   rows: TallyRow[];
 }
 
+/**
+ * What the DOCUMENT says about width, as distinct from what we happen to hold.
+ *
+ * `randomWidth` is a claim about the supplier and may only be set when the paperwork
+ * actually says so (CHECHEN prints "Anchos: RW"). `unknown` is the safe default.
+ */
+export type WidthPolicy = 'printed' | 'randomWidth' | 'unknown';
+
 export interface TallyBundle {
   bundleNo: string;
-  /** Printed width, when the supplier prints one. Null for random-width (RW) stock. */
+  /** Printed width, when the supplier prints one. Null otherwise - see widthPolicy. */
   width?: { raw: string | null; inches: number | null } | null;
+  /** Why width is absent. NEVER infer this from `width` being null. */
+  widthPolicy?: WidthPolicy;
   /** The bundle's single length, when it has one. Every real bundle so far does. */
   lengthFt?: number | null;
   /** NetSuite lot, when the document could be tied to one. Null before matching. */
@@ -92,176 +107,179 @@ export interface TallyPayload {
   };
 }
 
-/**
- * How much dimensional detail a bundle actually has.
- *
- * Ordered by how much the trader can see, and every one of these occurs in the real
- * documents except `grid`, which occurs in none of them.
- */
-export type TallyDensity =
-  /** widths x lengths, more than one of each. Zero real examples so far. */
-  | 'grid'
-  /** several lengths, one width (or width unknown). CHECHEN. */
-  | 'byLength'
-  /** several widths, one length. */
-  | 'byWidth'
-  /** exactly one width and one length. 314307. */
-  | 'scalar'
-  /** pieces and volume only, no breakdown. The four totals-only documents. */
-  | 'none';
-
-export interface TallyRenderRow {
-  /** "8'" or "12-14'" */
-  label: string;
-  /** aligned to widths[]; null where the document gives no width breakdown */
-  counts: (number | null)[];
-  pieces: number;
-  boardFeet: number | null;
-}
-
-export interface TallyRenderShape {
-  density: TallyDensity;
-  /** Column headers as display strings. Empty for byLength with unknown width. */
-  widths: string[];
-  rows: TallyRenderRow[];
-  totals: { pieces: number | null; boardFeet: number | null; volumeM3: number | null };
-  /** Why there is no matrix, when density is 'none'. Shown instead of an empty grid. */
-  emptyReason?: string;
-}
-
 const rowPieces = (r: TallyRow): number =>
   Object.values(r.pieces || {}).reduce((a, b) => a + (Number(b) || 0), 0);
 
+/** "8'", or "12-14'" for a declared range. Also the grouping key. */
 const rowLabel = (r: TallyRow): string => {
   if (r.lengthFtMin != null && r.lengthFtMax != null) return `${r.lengthFtMin}-${r.lengthFtMax}'`;
   if (r.lengthFt != null) return `${r.lengthFt}'`;
   return '—';
 };
 
-/**
- * Board feet for one row.
- *
- * Uses the DECLARED value when the document states one. A range row cannot be
- * derived (you do not know how many pieces are at 12' versus 14'), which is exactly
- * why `declaredBF` exists in the schema, so a derived figure there would be invented.
- */
-const rowBoardFeet = (r: TallyRow, thicknessIn: number | null): number | null => {
-  if (r.declaredBF != null) return r.declaredBF;
-  if (r.lengthFt == null || thicknessIn == null) return null;
-  let bf = 0;
-  for (const [w, n] of Object.entries(r.pieces || {})) {
-    const width = Number(w);
-    const count = Number(n) || 0;
-    if (!isFinite(width) || width <= 0) return null;
-    bf += (thicknessIn * width * (r.lengthFt * 12) * count) / 144;
-  }
-  return Math.round(bf * 100) / 100;
+/** Sorts a range by its start. Unknown lengths sink to the bottom. */
+const rowSortKey = (r: TallyRow): number => {
+  if (r.lengthFtMin != null) return r.lengthFtMin;
+  if (r.lengthFt != null) return r.lengthFt;
+  return Number.POSITIVE_INFINITY;
 };
 
-/**
- * Convert a stored bundle into something a table can render, and say plainly how
- * much detail it has. Never throws: an unparseable bundle degrades to `none` with a
- * reason, because the dialog still has a PDF to fall back to.
- */
-export const toRenderShape = (bundle: TallyBundle): TallyRenderShape => {
-  const totals = bundle?.totals || { pieces: null, boardFeet: null, volumeM3: null };
-  const m = bundle?.matrix;
-
-  if (!m || !Array.isArray(m.rows) || m.rows.length === 0) {
-    return {
-      density: 'none',
-      widths: [],
-      rows: [],
-      totals,
-      emptyReason: 'This document lists bundle totals only, with no length or width breakdown.',
-    };
-  }
-
-  const widths = Array.isArray(m.widthsIn) ? m.widthsIn.filter((w) => Number.isFinite(w)) : [];
-  const thicknessIn = bundle.thickness?.inches ?? null;
-  const distinctLengths = new Set(m.rows.map(rowLabel)).size;
-
-  const density: TallyDensity =
-    widths.length > 1 && distinctLengths > 1 ? 'grid'
-      : distinctLengths > 1 ? 'byLength'
-        : widths.length > 1 ? 'byWidth'
-          : 'scalar';
-
-  const rows: TallyRenderRow[] = m.rows.map((r) => ({
-    label: rowLabel(r),
-    counts: widths.length
-      ? widths.map((w) => {
-          const v = r.pieces?.[String(w)];
-          return v == null ? null : Number(v);
-        })
-      : [rowPieces(r)],
-    pieces: rowPieces(r),
-    boardFeet: rowBoardFeet(r, thicknessIn),
-  }));
-
-  return {
-    density,
-    // A single unnamed column is not a width, so do not print a fake header for it.
-    widths: widths.length ? widths.map((w) => `${w}"`) : [],
-    rows,
-    totals,
-  };
-};
-
-/** Human label for the density, used in the dialog so the trader knows what they are looking at. */
-export const densityLabel = (d: TallyDensity): string => ({
-  grid: 'widths × lengths',
-  byLength: 'by length',
-  byWidth: 'by width',
-  scalar: 'single dimension',
-  none: 'totals only',
-}[d]);
-
-/** One length across a set of bundles: the view that actually matters. */
+/** One length (or length range) across a set of bundles: the view that matters. */
 export interface TallyDistRow {
-  lengthFt: number | null;
   label: string;
+  /** Sort position. Infinity for rows whose length the document did not state. */
+  sortKey: number;
+  /** How many bundles contribute to this length. */
   bundles: number;
-  /** Bundle numbers at this length, so the trader can go find them. */
-  bundleNos: string[];
+  /** INDICES into the array passed in, so the caller can mark rows by identity. */
+  bundleIdx: number[];
   pieces: number;
   volumeM3: number | null;
   boardFeet: number | null;
+  /**
+   * True when SOME but not all contributors printed the figure, so the number shown
+   * covers only part of the row. Render these as incomplete - a partial sum shown as
+   * a total is the one error a trader cannot see.
+   */
+  volumePartial: boolean;
+  boardFeetPartial: boolean;
 }
+
+export interface TallyDistribution {
+  rows: TallyDistRow[];
+  totals: {
+    /** DISTINCT bundles. A bundle spanning two lengths is counted once here. */
+    bundles: number;
+    pieces: number;
+    volumeM3: number | null;
+    boardFeet: number | null;
+    volumePartial: boolean;
+    boardFeetPartial: boolean;
+  };
+}
+
+/**
+ * The rows a bundle contributes, one per length it holds.
+ *
+ * A bundle with no matrix still contributes one row, built from its own totals, so a
+ * counted-but-unparsed bundle appears rather than vanishing.
+ *
+ * Volume and board feet are per-BUNDLE figures. When a bundle spans several lengths
+ * they cannot be split across them - you do not know how much volume sits at 12' as
+ * against 14' - so they are attributed only when the bundle has a single row.
+ * `declaredBF` is the exception: the document stated it for that row.
+ */
+const bundleRows = (b: TallyBundle): Array<{
+  label: string; sortKey: number; pieces: number; volumeM3: number | null; boardFeet: number | null;
+}> => {
+  const rows = Array.isArray(b?.matrix?.rows) ? (b.matrix as TallyMatrix).rows : [];
+
+  if (rows.length === 0) {
+    return [{
+      label: b?.lengthFt != null ? `${b.lengthFt}'` : '—',
+      sortKey: b?.lengthFt != null ? b.lengthFt : Number.POSITIVE_INFINITY,
+      pieces: Number(b?.totals?.pieces) || 0,
+      volumeM3: b?.totals?.volumeM3 ?? null,
+      boardFeet: b?.totals?.boardFeet ?? null,
+    }];
+  }
+
+  const single = rows.length === 1;
+  return rows.map((r) => ({
+    label: rowLabel(r),
+    sortKey: rowSortKey(r),
+    pieces: rowPieces(r),
+    volumeM3: single ? (b?.totals?.volumeM3 ?? null) : null,
+    boardFeet: r.declaredBF != null ? r.declaredBF : (single ? (b?.totals?.boardFeet ?? null) : null),
+  }));
+};
 
 /**
  * Group bundles by length.
  *
- * THIS IS THE PRIMARY TALLY VIEW. Every hand-verified bundle is a single length,
- * so the distribution a trader reads ("do I have enough 12-footers?") only exists
- * once bundles are grouped. Pass the bundles that share an item and a thickness.
+ * THIS IS THE PRIMARY TALLY VIEW. Every hand-verified bundle is a single length, so
+ * the distribution a trader reads ("do I have enough 12-footers?") only exists once
+ * bundles are grouped. Pass the bundles that share an item and a thickness.
  *
- * Sums are plain addition of what the document printed. Nothing is derived, so a
- * column stays null when no bundle printed it rather than showing a partial total
- * that looks complete.
+ * Sums are plain addition of what the document printed - nothing is derived. Where
+ * only some contributors printed a figure the sum is flagged partial rather than
+ * shown as though it were the whole.
  */
-export const toLengthDistribution = (bundles: TallyBundle[]): TallyDistRow[] => {
-  const byLen = new Map<string, TallyDistRow & { _m3seen: boolean; _bfseen: boolean }>();
-  for (const b of bundles || []) {
-    const len = b?.lengthFt ?? b?.matrix?.rows?.[0]?.lengthFt ?? null;
-    const key = len == null ? '—' : String(len);
-    let row = byLen.get(key);
-    if (!row) {
-      row = { lengthFt: len, label: len == null ? '—' : `${len}'`, bundles: 0, bundleNos: [],
-        pieces: 0, volumeM3: null, boardFeet: null, _m3seen: false, _bfseen: false };
-      byLen.set(key, row);
+export const toLengthDistribution = (bundles: TallyBundle[]): TallyDistribution => {
+  const list = Array.isArray(bundles) ? bundles : [];
+
+  interface Acc extends TallyDistRow { volumeSeen: number; boardFeetSeen: number; contributions: number }
+  const byLabel = new Map<string, Acc>();
+
+  list.forEach((b, idx) => {
+    for (const r of bundleRows(b)) {
+      let row = byLabel.get(r.label);
+      if (!row) {
+        row = {
+          label: r.label, sortKey: r.sortKey, bundles: 0, bundleIdx: [], pieces: 0,
+          volumeM3: null, boardFeet: null, volumePartial: false, boardFeetPartial: false,
+          volumeSeen: 0, boardFeetSeen: 0, contributions: 0,
+        };
+        byLabel.set(r.label, row);
+      }
+      // A bundle listing the same length twice still counts once for this row.
+      if (!row.bundleIdx.includes(idx)) { row.bundleIdx.push(idx); row.bundles += 1; }
+      row.contributions += 1;
+      row.pieces += r.pieces;
+      if (r.volumeM3 != null) { row.volumeM3 = (row.volumeM3 || 0) + r.volumeM3; row.volumeSeen += 1; }
+      if (r.boardFeet != null) { row.boardFeet = (row.boardFeet || 0) + r.boardFeet; row.boardFeetSeen += 1; }
     }
-    row.bundles += 1;
-    if (b.bundleNo) row.bundleNos.push(b.bundleNo);
-    row.pieces += Number(b.totals?.pieces) || 0;
-    if (b.totals?.volumeM3 != null) { row.volumeM3 = (row.volumeM3 || 0) + b.totals.volumeM3; row._m3seen = true; }
-    if (b.totals?.boardFeet != null) { row.boardFeet = (row.boardFeet || 0) + b.totals.boardFeet; row._bfseen = true; }
-  }
-  return [...byLen.values()]
-    .sort((a, b) => (a.lengthFt ?? Infinity) - (b.lengthFt ?? Infinity))
-    .map(({ _m3seen, _bfseen, ...r }) => ({
+  });
+
+  const rows: TallyDistRow[] = [...byLabel.values()]
+    .sort((a, b) => (a.sortKey - b.sortKey) || a.label.localeCompare(b.label))
+    .map(({ volumeSeen, boardFeetSeen, contributions, ...r }) => ({
       ...r,
       volumeM3: r.volumeM3 == null ? null : Math.round(r.volumeM3 * 1000) / 1000,
       boardFeet: r.boardFeet == null ? null : Math.round(r.boardFeet),
+      volumePartial: volumeSeen > 0 && volumeSeen < contributions,
+      boardFeetPartial: boardFeetSeen > 0 && boardFeetSeen < contributions,
     }));
+
+  // Totals come from the bundles themselves, not from summing the rows, so a bundle
+  // spanning two lengths is counted once and its volume is not double-added.
+  let pieces = 0;
+  let volumeM3: number | null = null;
+  let boardFeet: number | null = null;
+  let volumeSeen = 0;
+  let boardFeetSeen = 0;
+  for (const b of list) {
+    pieces += Number(b?.totals?.pieces) || 0;
+    if (b?.totals?.volumeM3 != null) { volumeM3 = (volumeM3 || 0) + b.totals.volumeM3; volumeSeen += 1; }
+    if (b?.totals?.boardFeet != null) { boardFeet = (boardFeet || 0) + b.totals.boardFeet; boardFeetSeen += 1; }
+  }
+
+  return {
+    rows,
+    totals: {
+      bundles: list.length,
+      pieces,
+      volumeM3: volumeM3 == null ? null : Math.round(volumeM3 * 1000) / 1000,
+      boardFeet: boardFeet == null ? null : Math.round(boardFeet),
+      volumePartial: volumeSeen > 0 && volumeSeen < list.length,
+      boardFeetPartial: boardFeetSeen > 0 && boardFeetSeen < list.length,
+    },
+  };
+};
+
+/** How to describe a bundle's width, without inventing a supplier practice. */
+export const widthLabel = (b: TallyBundle): string => {
+  if (b?.width?.inches != null) return `${b.width.inches}"`;
+  return b?.widthPolicy === 'randomWidth' ? 'RW' : '—';
+};
+
+/** The sentence under the table. Says what is missing and why, or says it does not know. */
+export const widthNote = (b: TallyBundle): string => {
+  if (b?.width?.inches != null) {
+    return 'Parsed from the supplier document. System quantities in the tables behind this dialog remain authoritative.';
+  }
+  if (b?.widthPolicy === 'randomWidth') {
+    return 'This supplier prints random width (RW), so there is no width breakdown. Any width figure here would be invented.';
+  }
+  return 'This document does not give a width for these bundles, so none is shown.';
 };

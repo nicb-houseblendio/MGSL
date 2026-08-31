@@ -1,19 +1,23 @@
 import * as React from 'react';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
-import { toLengthDistribution } from '@/lib/archTally';
+import { toLengthDistribution, widthLabel, widthNote } from '@/lib/archTally';
 import type { TallyBundle } from '@/lib/archTally';
 
 /**
  * The tally sheet viewer.
  *
- * A tally is the supplier's packing list — a photo or scan attached to the lot at
- * receiving, listing each bundle's boards. It is shown AS AN IMAGE, deliberately:
- * the board-by-board data is not keyed into NetSuite, and the trader's use for it
- * is visual ("which of these bundles has the best mix of the lengths my customer
- * wants?"). The system quantities in the tables behind this dialog stay
- * authoritative — the image is evidence, not a source of figures.
+ * A tally is the supplier's packing list - the document saying what is actually in
+ * each bundle. This dialog shows it two ways, in order of preference:
  *
- * Upload is local-only for now: there is no ARCH back end to persist to. The
+ *   1. PARSED, when a tally has been read into `mgsl.tally.v1`. Bundles are grouped
+ *      by length, because that is the question a trader asks of a shipment ("do I
+ *      have enough 12-footers?") and no single bundle can answer it.
+ *   2. AS AN IMAGE, when nothing has been parsed and only a scan or photo exists.
+ *
+ * The system quantities in the tables behind this dialog stay authoritative either
+ * way - the tally is the supplier's account of the shipment, not ours.
+ *
+ * Image upload is local-only for now: there is no ARCH back end to persist to. The
  * chosen file lives in component state and is gone on reload.
  */
 
@@ -35,23 +39,43 @@ interface TallyImageDialogProps {
   bundle?: TallyBundle | null;
   /** Bundles sharing this item and thickness. The distribution is built from these. */
   siblings?: TallyBundle[];
+  /**
+   * Set when the tally shown is a SAMPLE from another shipment rather than this lot's
+   * own document. Must be rendered - an unlabelled sample is a confident wrong answer
+   * attached to a real lot.
+   */
+  sample?: { sourceFile: string | null; po: string | null; species: string | null } | null;
 }
 
 /**
  * The parsed tally, rendered.
  *
- * ⚠️ READ archTally.ts BEFORE CHANGING THIS. It leads with the LENGTH DISTRIBUTION
+ * READ archTally.ts BEFORE CHANGING THIS. It leads with the LENGTH DISTRIBUTION
  * across bundles, not a per-bundle grid, because all 32 hand-verified bundles hold
  * exactly one thickness, one width and one length. A bundle is a single cell; the
  * distribution only exists once bundles are grouped. A grid-first view would demo
  * well and be empty on every real document.
+ *
+ * Two things are deliberately NOT inferred here: a missing width never prints "RW"
+ * (that is a claim about the supplier, so it comes from widthPolicy), and a figure
+ * only some bundles stated is marked partial rather than shown as a total.
  */
 const TallyMatrixPanel = ({
-  bundle, siblings, imageUrl,
-}: { bundle: TallyBundle; siblings: TallyBundle[]; imageUrl?: string | null }) => {
-  const dist = toLengthDistribution(siblings && siblings.length ? siblings : [bundle]);
+  bundle, siblings, imageUrl, sample,
+}: {
+  bundle: TallyBundle;
+  siblings: TallyBundle[];
+  imageUrl?: string | null;
+  sample?: { sourceFile: string | null; po: string | null; species: string | null } | null;
+}) => {
+  const list = siblings && siblings.length ? siblings : [bundle];
+  const { rows, totals } = toLengthDistribution(list);
+  // Mark by IDENTITY, not by bundleNo: CHECHEN really contains pack 92 twice, and
+  // marking by number would highlight both of its rows.
+  const selfIdx = list.indexOf(bundle);
+
   const num = (n: number | null | undefined, dp = 0) =>
-    n === null || n === undefined ? '·' : n.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
+    n === null || n === undefined ? '\u00B7' : n.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
 
   const cell: React.CSSProperties = {
     padding: '5px 10px', fontSize: 11.5, borderBottom: '1px solid #E2E8F0', textAlign: 'right', whiteSpace: 'nowrap',
@@ -63,24 +87,43 @@ const TallyMatrixPanel = ({
 
   const dims = [
     bundle.thickness?.inches != null ? `${bundle.thickness.inches}"` : null,
-    bundle.width?.inches != null ? `${bundle.width.inches}"` : 'RW',
-  ].filter(Boolean).join(' × ');
+    widthLabel(bundle),
+  ].filter((v) => v && v !== '\u2014').join(' \u00D7 ');
 
-  const tot = dist.reduce(
-    (a, r) => ({ b: a.b + r.bundles, p: a.p + r.pieces,
-      m3: r.volumeM3 == null ? a.m3 : (a.m3 || 0) + r.volumeM3,
-      bf: r.boardFeet == null ? a.bf : (a.bf || 0) + r.boardFeet }),
-    { b: 0, p: 0, m3: null as number | null, bf: null as number | null },
+  const anyPartial =
+    rows.some((r) => r.volumePartial || r.boardFeetPartial) || totals.volumePartial || totals.boardFeetPartial;
+
+  /** A partial sum carries a dagger so it never reads as the whole. */
+  const cellVal = (v: number | null, partial: boolean, dp = 0) => (
+    <>
+      {num(v, dp)}
+      {partial && v != null ? <span style={{ color: '#B45309' }}>&dagger;</span> : null}
+    </>
   );
+
+  const nBundles = totals.bundles;
 
   return (
     <div style={{ width: '100%', alignSelf: 'flex-start' }}>
+      {sample && (
+        <div style={{
+          background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 8,
+          padding: '8px 11px', marginBottom: 10, fontSize: 11, color: '#92400E', lineHeight: 1.5,
+        }}>
+          <b>Sample tally, not this lot&apos;s document.</b>{' '}
+          Taken from {sample.po ? <>PO <span className="font-mono">{sample.po}</span></> : 'another shipment'}
+          {sample.species ? ` (${sample.species})` : ''}
+          {sample.sourceFile ? <> &mdash; <span className="font-mono">{sample.sourceFile}</span></> : null}.
+          It is here to show the shape of the view; the figures belong to a different shipment.
+        </div>
+      )}
+
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
         <span style={{ fontSize: 12.5, fontWeight: 700, color: ARCH_SURFACE.textMid }}>
           {bundle.species || 'Tally'}
         </span>
         <span style={{ fontSize: 11, color: ARCH_SURFACE.textLight }}>
-          {[dims, `${dist.reduce((n, r) => n + r.bundles, 0)} bundles`].filter(Boolean).join(' · ')}
+          {[dims, `${nBundles} ${nBundles === 1 ? 'bundle' : 'bundles'}`].filter(Boolean).join(' \u00B7 ')}
         </span>
       </div>
       <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textLight, marginBottom: 8 }}>
@@ -95,22 +138,22 @@ const TallyMatrixPanel = ({
               <th style={{ ...head, textAlign: 'left' }}>Length</th>
               <th style={head}>Bundles</th>
               <th style={head}>Pieces</th>
-              <th style={head}>m³</th>
+              <th style={head}>m&sup3;</th>
               <th style={head}>BF</th>
             </tr>
           </thead>
           <tbody>
-            {dist.map((r) => {
-              const isThis = r.bundleNos.includes(bundle.bundleNo);
+            {rows.map((r) => {
+              const isThis = selfIdx >= 0 && r.bundleIdx.includes(selfIdx);
               return (
                 <tr key={r.label} style={isThis ? { background: '#EFF6FF' } : undefined}>
                   <td style={{ ...cell, textAlign: 'left', fontWeight: isThis ? 800 : 600 }} className="font-mono">
-                    {r.label}{isThis ? ' ◄' : ''}
+                    {r.label}{isThis ? ' \u25C4' : ''}
                   </td>
                   <td style={cell} className="font-mono">{num(r.bundles)}</td>
                   <td style={cell} className="font-mono">{num(r.pieces)}</td>
-                  <td style={cell} className="font-mono">{num(r.volumeM3, 3)}</td>
-                  <td style={cell} className="font-mono">{num(r.boardFeet)}</td>
+                  <td style={cell} className="font-mono">{cellVal(r.volumeM3, r.volumePartial, 3)}</td>
+                  <td style={cell} className="font-mono">{cellVal(r.boardFeet, r.boardFeetPartial)}</td>
                 </tr>
               );
             })}
@@ -118,19 +161,26 @@ const TallyMatrixPanel = ({
           <tfoot>
             <tr>
               <td style={{ ...cell, textAlign: 'left', fontWeight: 700, background: '#F8FAFC' }}>Total</td>
-              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(tot.b)}</td>
-              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(tot.p)}</td>
-              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(tot.m3, 3)}</td>
-              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(tot.bf)}</td>
+              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(totals.bundles)}</td>
+              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(totals.pieces)}</td>
+              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
+                {cellVal(totals.volumeM3, totals.volumePartial, 3)}
+              </td>
+              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
+                {cellVal(totals.boardFeet, totals.boardFeetPartial)}
+              </td>
             </tr>
           </tfoot>
         </table>
       </div>
 
       <div style={{ marginTop: 8, fontSize: 10.5, color: ARCH_SURFACE.textLight, lineHeight: 1.5 }}>
-        {bundle.width?.inches == null
-          ? 'This supplier prints random width (RW), so there is no width breakdown. Any width figure here would be invented.'
-          : 'Parsed from the supplier document. System quantities in the tables behind this dialog remain authoritative.'}
+        {anyPartial && (
+          <div style={{ color: '#B45309', marginBottom: 3 }}>
+            &dagger; Only some bundles at that length state the figure, so the sum covers part of the row.
+          </div>
+        )}
+        {widthNote(bundle)}
       </div>
 
       {imageUrl && (
@@ -168,6 +218,7 @@ export const TallyImageDialog = ({
   onUpload,
   bundle,
   siblings,
+  sample,
 }: TallyImageDialogProps) => {
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -295,7 +346,7 @@ export const TallyImageDialog = ({
           }}
         >
           {bundle ? (
-            <TallyMatrixPanel bundle={bundle} siblings={siblings || []} imageUrl={imageUrl} />
+            <TallyMatrixPanel bundle={bundle} siblings={siblings || []} imageUrl={imageUrl} sample={sample} />
           ) : imageUrl ? (
             <img
               src={imageUrl}
@@ -332,8 +383,9 @@ export const TallyImageDialog = ({
             flexShrink: 0,
           }}
         >
-          The tally sheet is the scan or photo attached to the lot record at receiving, shown as-is — board
-          footage in the tables remains the system figure.
+          {bundle
+            ? 'Parsed from the supplier packing list and grouped by length. The quantities in the tables behind this dialog remain the system figures.'
+            : 'The tally sheet is the scan or photo attached to the lot record at receiving, shown as-is — board footage in the tables remains the system figure.'}
         </div>
 
         {/* MUST live inside the stopPropagation panel. Mounted on the backdrop,
@@ -351,7 +403,7 @@ export const TallyButton = ({ hasImage, onClick }: { hasImage: boolean; onClick:
   <button
     type="button"
     onClick={onClick}
-    title={hasImage ? 'View the tally image for this lot' : 'View or upload the tally image for this lot'}
+    title={hasImage ? 'View the tally for this lot' : 'View the tally for this lot, or upload an image'}
     aria-label="Open tally image"
     style={{
       width: 26,

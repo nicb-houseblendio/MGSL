@@ -542,8 +542,11 @@ export const ArchLotTable = ({
           onUpload={handleUpload}
           /* Fixture-only until lots carry a real tally link. Lets the client review
              the four render states against their own documents. See archTallyFixtures. */
-          bundle={demoTallyForLot(tallyOpen)?.bundle}
-          siblings={demoTallyForLot(tallyOpen)?.siblings}
+          {...(() => {
+            // One call, not two: each builds a fresh siblings array.
+            const demo = demoTallyForLot(tallyOpen);
+            return { bundle: demo?.bundle, siblings: demo?.siblings, sample: demo?.sample };
+          })()}
         />
       )}
     </div>

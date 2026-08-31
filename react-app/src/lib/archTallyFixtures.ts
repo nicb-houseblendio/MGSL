@@ -1,7 +1,7 @@
 /**
  * Tally fixtures, generated from MSL_PL_GroundTruth.json. DO NOT HAND-EDIT.
  *
- * Regenerate: node scratchpad/genfix.mjs <path-to-MSL_PL_GroundTruth.json>
+ * Regenerate: node scratchpad/genfix.mjs <path-to-MSL_PL_GroundTruth.json> <out.ts>
  *
  * ── WHAT IS AND IS NOT IN HERE ───────────────────────────────────────────────
  * The ground truth hand-transcribes PER BUNDLE for exactly TWO of its six
@@ -20,7 +20,7 @@
  * The distribution a trader actually wants runs ACROSS bundles of the same item:
  *
  *   314307  14 bundles  0.75" x 5.5" IPE, lengths 8/10/12/14/16/18/20 ft
- *   CHECHEN 18 bundles  1.25" and 1.0", lengths 3-10 ft, width not printed (RW)
+ *   CHECHEN 18 bundles  1.25" and 1.0", lengths 3-10 ft, width printed "Anchos: RW"
  *
  * So the useful view is a LENGTH DISTRIBUTION built by grouping bundles, which is
  * what toLengthDistribution() in archTally.ts produces. See that file.
@@ -28,7 +28,7 @@
 
 import type { TallyPayload, TallyBundle } from '@/lib/archTally';
 
-/** Packing List  030_2025 - PO 314307.pdf — 14 bundles, hand-verified */
+/** Packing List  030_2025 - PO 314307.pdf — 14 bundles, hand-verified, width printed */
 export const TALLY_314307: TallyPayload = {
   "schema": "mgsl.tally.v1",
   "po": "314307",
@@ -45,6 +45,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 8,
       "matrix": {
         "widthsIn": [
@@ -81,6 +82,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 8,
       "matrix": {
         "widthsIn": [
@@ -117,6 +119,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 8,
       "matrix": {
         "widthsIn": [
@@ -153,6 +156,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 10,
       "matrix": {
         "widthsIn": [
@@ -189,6 +193,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 10,
       "matrix": {
         "widthsIn": [
@@ -225,6 +230,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 10,
       "matrix": {
         "widthsIn": [
@@ -261,6 +267,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 12,
       "matrix": {
         "widthsIn": [
@@ -297,6 +304,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 12,
       "matrix": {
         "widthsIn": [
@@ -333,6 +341,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 14,
       "matrix": {
         "widthsIn": [
@@ -369,6 +378,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 14,
       "matrix": {
         "widthsIn": [
@@ -405,6 +415,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 14,
       "matrix": {
         "widthsIn": [
@@ -441,6 +452,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 16,
       "matrix": {
         "widthsIn": [
@@ -477,6 +489,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 18,
       "matrix": {
         "widthsIn": [
@@ -513,6 +526,7 @@ export const TALLY_314307: TallyPayload = {
         "raw": "139.7mm",
         "inches": 5.5
       },
+      "widthPolicy": "printed",
       "lengthFt": 20,
       "matrix": {
         "widthsIn": [
@@ -546,7 +560,7 @@ export const TALLY_314307: TallyPayload = {
   }
 };
 
-/** PACKING CHECHEN S-8 04 JUN 2026.pdf — 18 bundles, hand-verified */
+/** PACKING CHECHEN S-8 04 JUN 2026.pdf — 18 bundles, hand-verified, width randomWidth */
 export const TALLY_CHECHEN: TallyPayload = {
   "schema": "mgsl.tally.v1",
   "po": null,
@@ -560,6 +574,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1.25
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 10,
       "matrix": {
         "widthsIn": [],
@@ -592,6 +607,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1.25
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 9,
       "matrix": {
         "widthsIn": [],
@@ -624,6 +640,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1.25
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 9,
       "matrix": {
         "widthsIn": [],
@@ -656,6 +673,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1.25
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 8,
       "matrix": {
         "widthsIn": [],
@@ -688,6 +706,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1.25
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 8,
       "matrix": {
         "widthsIn": [],
@@ -720,6 +739,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1.25
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 7,
       "matrix": {
         "widthsIn": [],
@@ -752,6 +772,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1.25
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 7,
       "matrix": {
         "widthsIn": [],
@@ -784,6 +805,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 8,
       "matrix": {
         "widthsIn": [],
@@ -816,6 +838,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 8,
       "matrix": {
         "widthsIn": [],
@@ -848,6 +871,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 7,
       "matrix": {
         "widthsIn": [],
@@ -880,6 +904,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 7,
       "matrix": {
         "widthsIn": [],
@@ -912,6 +937,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 6,
       "matrix": {
         "widthsIn": [],
@@ -944,6 +970,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 6,
       "matrix": {
         "widthsIn": [],
@@ -976,6 +1003,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 5,
       "matrix": {
         "widthsIn": [],
@@ -1008,6 +1036,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 4,
       "matrix": {
         "widthsIn": [],
@@ -1040,6 +1069,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 4,
       "matrix": {
         "widthsIn": [],
@@ -1072,6 +1102,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 3,
       "matrix": {
         "widthsIn": [],
@@ -1104,6 +1135,7 @@ export const TALLY_CHECHEN: TallyPayload = {
         "inches": 1
       },
       "width": null,
+      "widthPolicy": "randomWidth",
       "lengthFt": 3,
       "matrix": {
         "widthsIn": [],
@@ -1189,13 +1221,27 @@ export const ARCH_TALLY_FIXTURES: Record<string, TallyPayload> = {
 };
 
 /**
+ * What the dialog needs to render a SAMPLE tally, including the fact that it is one.
+ *
+ * `sample` is not decoration. The bundle handed back belongs to a different shipment
+ * from the lot the trader clicked, and without saying so on screen the dialog shows a
+ * confident, precise, wrong tally against a real lot.
+ */
+export interface DemoTally {
+  bundle: TallyBundle;
+  siblings: TallyBundle[];
+  sample: { sourceFile: string | null; po: string | null; species: string | null };
+}
+
+/**
  * Fixture-only: hand an ARCH lot a parsed tally so the real shapes can be seen
  * before any NetSuite record exists.
  *
  * ⚠️ A DEMO MAPPING, NOT A MATCH. Real ARCH lots are numbered "316027-1"; these
- * bundles come from unrelated shipments. Nothing claims a lot IS that bundle.
- * Deterministic by lot number so screenshots reproduce. Delete when lots carry a
- * real tally link.
+ * bundles come from unrelated shipments. Nothing claims a lot IS that bundle, and
+ * the dialog MUST show the `sample` provenance whenever it uses this.
+ * Deterministic by lot number so screenshots reproduce. Delete this whole export
+ * when lots carry a real tally link.
  */
 const DEMO_DOCS: TallyPayload[] = [TALLY_314307, TALLY_CHECHEN];
 
@@ -1205,7 +1251,7 @@ const hash = (s: string): number => {
   return h;
 };
 
-export const demoTallyForLot = (lotNo: string): { bundle: TallyBundle; siblings: TallyBundle[] } | null => {
+export const demoTallyForLot = (lotNo: string): DemoTally | null => {
   if (!lotNo) return null;
   const h = hash(lotNo);
   const doc = DEMO_DOCS[h % DEMO_DOCS.length];
@@ -1214,5 +1260,9 @@ export const demoTallyForLot = (lotNo: string): { bundle: TallyBundle; siblings:
   if (!bundle) return null;
   // Siblings share thickness, which is how a trader groups a shipment.
   const siblings = doc.bundles.filter((b) => b.thickness?.inches === bundle.thickness?.inches);
-  return { bundle, siblings };
+  return {
+    bundle,
+    siblings,
+    sample: { sourceFile: doc.provenance?.sourceFile ?? null, po: doc.po, species: bundle.species },
+  };
 };
