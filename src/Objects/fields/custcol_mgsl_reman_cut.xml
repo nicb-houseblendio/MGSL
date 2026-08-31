@@ -7,7 +7,7 @@
   <displaytype>NORMAL</displaytype>
   <encryptatrest>F</encryptatrest>
   <fieldtype>CHECKBOX</fieldtype>
-  <help>Tick this when the line is cut to length. Enter the target length alongside. Costed at $0.20 per board foot, on top of planing if the line is also planed.</help>
+  <help>Tick this when the line is cut to length. Enter the target length alongside. Costed per board foot, charged on top of planing if the line is also planed.</help>
   <isformula>F</isformula>
   <ismandatory>F</ismandatory>
   <label>Reman: Cutting</label>

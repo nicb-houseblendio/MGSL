@@ -7,7 +7,7 @@
   <displaytype>NORMAL</displaytype>
   <encryptatrest>F</encryptatrest>
   <fieldtype>CHECKBOX</fieldtype>
-  <help>Tick this when the customer is taking this line planed. Enter the target dressed thickness alongside. Costed at $0.20 per board foot, and cutting is charged separately at the same rate, so a line that is both planed and cut costs $0.40/BF.</help>
+  <help>Tick this when the customer is taking this line planed. Enter the target dressed thickness alongside. Costed per board foot, and cutting is charged separately at the same rate, so a line that is both planed and cut carries both fees.</help>
   <isformula>F</isformula>
   <ismandatory>F</ismandatory>
   <label>Reman: Planing</label>

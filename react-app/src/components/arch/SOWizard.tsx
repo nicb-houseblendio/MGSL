@@ -2649,23 +2649,30 @@ export const SOWizard = ({
         </ProvisionalNote>
       )}
       {/*
-        🔴 THE TRADER'S OWN INPUT IS DISCARDED, AND THE MARGIN IS CHARGED FOR IT.
-        Traced 2026-08-20: the Remanufacturing step writes into `reman`, buildDraft
-        carries it, `toRequest` drops it, and archOrderCreate.js does not contain the
-        string "reman" at all. So nothing about planing or cutting reaches NetSuite.
+        ✅ FIXED 2026-08-21, and this comment used to say the opposite. It read "the
+        trader's own input is discarded... archOrderCreate.js does not contain the
+        string reman at all", which was true when traced on 2026-08-20 and false from
+        the next commit. Left uncorrected it would have someone re-fix a working
+        feature, or tell MGSL that reman does not work.
 
-        Meanwhile `lineEconomics` puts planingCost and cuttingCost into
-        processingCost, and `profit = revenue - lotCost - processingCost - opsIns`.
-        So the margin on screen is already charged for dressing this wood while the
-        order records no instruction to dress it — the mill is never told.
+        THE PATH, as it actually runs: the Remanufacturing step writes into `reman`,
+        buildDraft carries it, `toRequest` sends it per line (only when a service is
+        ticked), and archOrderCreate.js normalizes it — `planingSpec` becomes
+        `planeTgt`, `cutLength` becomes `cutLen`, both sliced to 40 to match the field
+        maxlength — then writes the four `custcol_mgsl_reman_*` line fields.
 
-        Every other honesty note here corrects the system describing ITSELF wrongly.
-        This one is worse: it is the trader's own work evaporating. Until reman has
-        somewhere to live on the SO (service line, line field, or description — a
-        decision that needs the client, since the three candidate custbody reman
-        fields are header-level and populated on 0 of 4,216 sales orders), the least
-        we owe them is to say so on the step where they would otherwise assume it
-        was saved, and to name what to carry across by hand.
+        ⚠️ WHAT IS STILL CONDITIONAL, which is why this note stays. The four line
+        fields must EXIST in the account. Until they are deployed the server probes
+        `getSublistFields`, declines to write, logs an audit note, and reports
+        `remanStored: false` — the order saves either way, because an order that saves
+        without its reman note is recoverable by hand and one that fails to save
+        BECAUSE of a note is not.
+
+        So the margin on screen is charged for dressing the wood (`lineEconomics`
+        folds planingCost and cuttingCost into processingCost) and the instruction may
+        or may not have reached the mill. The confirmation dialog reads `remanStored`
+        and warns when it is false; this note tells the trader before they save, and
+        names what to carry across by hand if it turns out not to have stored.
       */}
       {remanLines.length > 0 && (
         <ProvisionalNote>
