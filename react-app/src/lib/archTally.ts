@@ -98,6 +98,16 @@ export interface TallyBundle {
 export interface TallyPayload {
   schema: 'mgsl.tally.v1';
   po: string | null;
+  /**
+   * The shipping container, when the document names one.
+   *
+   * This is Philippe's item 3. It is a DOCUMENT-level fact, not a lot-level one: a
+   * packing list covers one container and every bundle on it shares that container.
+   * It cannot be derived from a lot number - Marc-Antoine confirmed on 2026-08-19
+   * that a container can span several POs, so the lot prefix (which is the PO) can
+   * never yield it. The packing-list parser already extracts it; see archTallyCapture.
+   */
+  container?: string | null;
   bundles: TallyBundle[];
   provenance?: {
     sourceFile?: string | null;

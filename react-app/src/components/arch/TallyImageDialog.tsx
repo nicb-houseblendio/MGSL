@@ -44,7 +44,7 @@ interface TallyImageDialogProps {
    * own document. Must be rendered - an unlabelled sample is a confident wrong answer
    * attached to a real lot.
    */
-  sample?: { sourceFile: string | null; po: string | null; species: string | null } | null;
+  sample?: { sourceFile: string | null; po: string | null; species: string | null; container?: string | null } | null;
 }
 
 /**
@@ -66,7 +66,7 @@ const TallyMatrixPanel = ({
   bundle: TallyBundle;
   siblings: TallyBundle[];
   imageUrl?: string | null;
-  sample?: { sourceFile: string | null; po: string | null; species: string | null } | null;
+  sample?: { sourceFile: string | null; po: string | null; species: string | null; container?: string | null } | null;
 }) => {
   const list = siblings && siblings.length ? siblings : [bundle];
   const { rows, totals } = toLengthDistribution(list);
@@ -113,6 +113,7 @@ const TallyMatrixPanel = ({
           <b>Sample tally, not this lot&apos;s document.</b>{' '}
           Taken from {sample.po ? <>PO <span className="font-mono">{sample.po}</span></> : 'another shipment'}
           {sample.species ? ` (${sample.species})` : ''}
+          {sample.container ? <>, container <span className="font-mono">{sample.container}</span></> : null}
           {sample.sourceFile ? <> &mdash; <span className="font-mono">{sample.sourceFile}</span></> : null}.
           It is here to show the shape of the view; the figures belong to a different shipment.
         </div>

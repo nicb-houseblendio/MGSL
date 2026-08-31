@@ -32,6 +32,7 @@ import type { TallyPayload, TallyBundle } from '@/lib/archTally';
 export const TALLY_314307: TallyPayload = {
   "schema": "mgsl.tally.v1",
   "po": "314307",
+  "container": "MEDU7574050",
   "bundles": [
     {
       "bundleNo": "1535",
@@ -564,6 +565,7 @@ export const TALLY_314307: TallyPayload = {
 export const TALLY_CHECHEN: TallyPayload = {
   "schema": "mgsl.tally.v1",
   "po": null,
+  "container": null,
   "bundles": [
     {
       "bundleNo": "14",
@@ -1230,7 +1232,7 @@ export const ARCH_TALLY_FIXTURES: Record<string, TallyPayload> = {
 export interface DemoTally {
   bundle: TallyBundle;
   siblings: TallyBundle[];
-  sample: { sourceFile: string | null; po: string | null; species: string | null };
+  sample: { sourceFile: string | null; po: string | null; species: string | null; container: string | null };
 }
 
 /**
@@ -1263,6 +1265,6 @@ export const demoTallyForLot = (lotNo: string): DemoTally | null => {
   return {
     bundle,
     siblings,
-    sample: { sourceFile: doc.provenance?.sourceFile ?? null, po: doc.po, species: bundle.species },
+    sample: { sourceFile: doc.provenance?.sourceFile ?? null, po: doc.po, species: bundle.species, container: doc.container ?? null },
   };
 };
