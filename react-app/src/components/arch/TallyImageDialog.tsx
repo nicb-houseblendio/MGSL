@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
-import { toRenderShape, densityLabel } from '@/lib/archTally';
+import { toLengthDistribution } from '@/lib/archTally';
 import type { TallyBundle } from '@/lib/archTally';
 
 /**
@@ -33,22 +33,23 @@ interface TallyImageDialogProps {
    * linked PDF". Undefined means nothing has been parsed and the image path stands.
    */
   bundle?: TallyBundle | null;
+  /** Bundles sharing this item and thickness. The distribution is built from these. */
+  siblings?: TallyBundle[];
 }
 
 /**
  * The parsed tally, rendered.
  *
- * ⚠️ READ archTally.ts BEFORE CHANGING THIS. It is deliberately NOT grid-first. Of
- * the six hand-verified real documents, four carry bundle totals only, one is
- * by-length with a random width, one is a single dimension per bundle, and NONE is
- * a width x length grid. The dense grid in the UI mock comes from a random fixture
- * generator, not from paperwork.
- *
- * So the empty and scalar states are the common cases and get real design attention;
- * the grid is handled but rare.
+ * ⚠️ READ archTally.ts BEFORE CHANGING THIS. It leads with the LENGTH DISTRIBUTION
+ * across bundles, not a per-bundle grid, because all 32 hand-verified bundles hold
+ * exactly one thickness, one width and one length. A bundle is a single cell; the
+ * distribution only exists once bundles are grouped. A grid-first view would demo
+ * well and be empty on every real document.
  */
-const TallyMatrixPanel = ({ bundle, imageUrl }: { bundle: TallyBundle; imageUrl?: string | null }) => {
-  const shape = toRenderShape(bundle);
+const TallyMatrixPanel = ({
+  bundle, siblings, imageUrl,
+}: { bundle: TallyBundle; siblings: TallyBundle[]; imageUrl?: string | null }) => {
+  const dist = toLengthDistribution(siblings && siblings.length ? siblings : [bundle]);
   const num = (n: number | null | undefined, dp = 0) =>
     n === null || n === undefined ? '·' : n.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
 
@@ -56,86 +57,88 @@ const TallyMatrixPanel = ({ bundle, imageUrl }: { bundle: TallyBundle; imageUrl?
     padding: '5px 10px', fontSize: 11.5, borderBottom: '1px solid #E2E8F0', textAlign: 'right', whiteSpace: 'nowrap',
   };
   const head: React.CSSProperties = {
-    ...cell, textAlign: 'right', fontWeight: 700, color: ARCH_SURFACE.textMid,
+    ...cell, fontWeight: 700, color: ARCH_SURFACE.textMid,
     background: '#F1F5F9', borderBottom: '1.5px solid #CBD5E1', position: 'sticky', top: 0,
   };
 
+  const dims = [
+    bundle.thickness?.inches != null ? `${bundle.thickness.inches}"` : null,
+    bundle.width?.inches != null ? `${bundle.width.inches}"` : 'RW',
+  ].filter(Boolean).join(' × ');
+
+  const tot = dist.reduce(
+    (a, r) => ({ b: a.b + r.bundles, p: a.p + r.pieces,
+      m3: r.volumeM3 == null ? a.m3 : (a.m3 || 0) + r.volumeM3,
+      bf: r.boardFeet == null ? a.bf : (a.bf || 0) + r.boardFeet }),
+    { b: 0, p: 0, m3: null as number | null, bf: null as number | null },
+  );
+
   return (
     <div style={{ width: '100%', alignSelf: 'flex-start' }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
         <span style={{ fontSize: 12.5, fontWeight: 700, color: ARCH_SURFACE.textMid }}>
-          Bundle <span className="font-mono">{bundle.bundleNo}</span>
+          {bundle.species || 'Tally'}
         </span>
         <span style={{ fontSize: 11, color: ARCH_SURFACE.textLight }}>
-          {[bundle.species, bundle.thickness?.raw, densityLabel(shape.density)].filter(Boolean).join(' · ')}
+          {[dims, `${dist.reduce((n, r) => n + r.bundles, 0)} bundles`].filter(Boolean).join(' · ')}
         </span>
       </div>
+      <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textLight, marginBottom: 8 }}>
+        Lengths held at this thickness. This bundle is <span className="font-mono">{bundle.bundleNo}</span>
+        {bundle.lengthFt != null ? <> at <b>{bundle.lengthFt}&apos;</b></> : null}.
+      </div>
 
-      {shape.density === 'none' ? (
-        <div style={{
-          background: '#fff', border: '1px solid #E2E8F0', borderRadius: 8, padding: '18px 16px',
-          fontSize: 12, color: ARCH_SURFACE.textMid, lineHeight: 1.55,
-        }}>
-          {shape.emptyReason}
-          <div style={{ marginTop: 10, display: 'flex', gap: 18, fontSize: 11.5 }}>
-            <span>Pieces <b className="font-mono">{num(shape.totals.pieces)}</b></span>
-            <span>m³ <b className="font-mono">{num(shape.totals.volumeM3, 3)}</b></span>
-            <span>BF <b className="font-mono">{num(shape.totals.boardFeet)}</b></span>
-          </div>
-          {imageUrl && (
-            <div style={{ marginTop: 12 }}>
-              <img src={imageUrl} alt={`Tally sheet for bundle ${bundle.bundleNo}`}
-                style={{ maxWidth: '100%', maxHeight: '46vh', borderRadius: 6 }} />
-            </div>
-          )}
-        </div>
-      ) : (
-        <div style={{ background: '#fff', border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'auto', maxHeight: '54vh' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                <th style={{ ...head, textAlign: 'left', position: 'sticky', left: 0, zIndex: 2 }}>Length</th>
-                {shape.widths.length
-                  ? shape.widths.map((w) => <th key={w} style={head}>{w}</th>)
-                  : <th style={head}>Pieces</th>}
-                {shape.widths.length ? <th style={head}>Pcs</th> : null}
-                <th style={head}>BF</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shape.rows.map((r, i) => (
-                <tr key={i}>
-                  <td style={{ ...cell, textAlign: 'left', fontWeight: 600, position: 'sticky', left: 0, background: '#fff' }}
-                      className="font-mono">{r.label}</td>
-                  {r.counts.map((c, j) => (
-                    <td key={j} style={cell} className="font-mono">{c === null ? '·' : num(c)}</td>
-                  ))}
-                  {shape.widths.length ? <td style={{ ...cell, fontWeight: 700 }} className="font-mono">{num(r.pieces)}</td> : null}
+      <div style={{ background: '#fff', border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'auto', maxHeight: '52vh' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={{ ...head, textAlign: 'left' }}>Length</th>
+              <th style={head}>Bundles</th>
+              <th style={head}>Pieces</th>
+              <th style={head}>m³</th>
+              <th style={head}>BF</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dist.map((r) => {
+              const isThis = r.bundleNos.includes(bundle.bundleNo);
+              return (
+                <tr key={r.label} style={isThis ? { background: '#EFF6FF' } : undefined}>
+                  <td style={{ ...cell, textAlign: 'left', fontWeight: isThis ? 800 : 600 }} className="font-mono">
+                    {r.label}{isThis ? ' ◄' : ''}
+                  </td>
+                  <td style={cell} className="font-mono">{num(r.bundles)}</td>
+                  <td style={cell} className="font-mono">{num(r.pieces)}</td>
+                  <td style={cell} className="font-mono">{num(r.volumeM3, 3)}</td>
                   <td style={cell} className="font-mono">{num(r.boardFeet)}</td>
                 </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td style={{ ...cell, textAlign: 'left', fontWeight: 700, background: '#F8FAFC' }}>Total</td>
-                <td colSpan={Math.max(1, shape.widths.length) + (shape.widths.length ? 0 : 0)}
-                    style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
-                  {num(shape.totals.pieces)}
-                </td>
-                <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
-                  {num(shape.totals.boardFeet)}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      )}
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td style={{ ...cell, textAlign: 'left', fontWeight: 700, background: '#F8FAFC' }}>Total</td>
+              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(tot.b)}</td>
+              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(tot.p)}</td>
+              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(tot.m3, 3)}</td>
+              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(tot.bf)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
 
       <div style={{ marginTop: 8, fontSize: 10.5, color: ARCH_SURFACE.textLight, lineHeight: 1.5 }}>
-        {shape.density === 'byLength' && !shape.widths.length
-          ? 'This supplier prints random width (RW), so no width breakdown exists. Any width figure here would be invented.'
+        {bundle.width?.inches == null
+          ? 'This supplier prints random width (RW), so there is no width breakdown. Any width figure here would be invented.'
           : 'Parsed from the supplier document. System quantities in the tables behind this dialog remain authoritative.'}
       </div>
+
+      {imageUrl && (
+        <div style={{ marginTop: 12 }}>
+          <img src={imageUrl} alt={`Tally sheet for bundle ${bundle.bundleNo}`}
+            style={{ maxWidth: '100%', maxHeight: '40vh', borderRadius: 6 }} />
+        </div>
+      )}
     </div>
   );
 };
@@ -164,6 +167,7 @@ export const TallyImageDialog = ({
   onClose,
   onUpload,
   bundle,
+  siblings,
 }: TallyImageDialogProps) => {
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -291,7 +295,7 @@ export const TallyImageDialog = ({
           }}
         >
           {bundle ? (
-            <TallyMatrixPanel bundle={bundle} imageUrl={imageUrl} />
+            <TallyMatrixPanel bundle={bundle} siblings={siblings || []} imageUrl={imageUrl} />
           ) : imageUrl ? (
             <img
               src={imageUrl}

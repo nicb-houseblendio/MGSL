@@ -15,26 +15,35 @@
  * persisted. This file converts one to the other so only one of them is ever stored.
  *
  * ── WHAT THE REAL DOCUMENTS ACTUALLY LOOK LIKE ───────────────────────────────
- * Measured 2026-08-31 against all six hand-verified documents in
- * MSL_PL_GroundTruth.json. NOT ONE contains a two-dimensional width x length grid:
+ * Measured 2026-08-30 against MSL_PL_GroundTruth.json.
  *
- *   314307 IPE      14 lots  thickness + width + length + pieces   -> SCALAR per lot
- *   CHECHEN         18 lots  thickness + length, width "RW"        -> BY LENGTH only
- *   314776 xlsx     14 lots  totals only
- *   detail-pl xlsx  14 lots  totals only
- *   314888 pdf      23 lots  totals only
- *   Stuffing list   17 lots  totals only
+ * ⚠️ CORRECTION (2026-08-30). An earlier version of this note claimed four of the
+ * six documents were "totals only". That was WRONG and came from reading a
+ * transcription limit as a document property. The ground truth hand-transcribes
+ * per bundle for TWO documents; the other four carry `coverageOnly: true` or a
+ * `scoredClasses` list that stops at totals, which says the TRANSCRIBER stopped
+ * there, not that the paperwork has no breakdown. Their per-bundle shape is
+ * simply unknown.
  *
- * The `widthsIn: [6, 9]` example in payload-template.json is SYNTHETIC. The dense
- * grid in the UI mock is drawn by a fixture generator, not taken from paperwork.
+ * What the two transcribed documents do prove, across all 32 bundles:
  *
- * ⚠️ So the renderer must lead with SCALAR and BY-LENGTH and treat the grid as the
- * rare case, not the other way round. A UI built grid-first would look right in a
- * demo and be wrong on every real document the client owns.
+ *   314307 IPE  14 bundles  0.75" x 5.5", lengths 8/10/12/14/16/18/20 ft
+ *   CHECHEN     18 bundles  1.25" and 1.0", lengths 3-10 ft, width NOT printed
  *
- * CHECHEN also prints "Anchos: RW" / "Largos: RL" — random width and length. Any
- * numeric per-lot width there is a hallucination, which is why `none` is a first
- * class density and not an error state.
+ * EVERY ONE of those 32 bundles has exactly one thickness, one width (or none)
+ * and one length. NOT ONE contains a matrix. The `widthsIn: [6, 9]` example in
+ * payload-template.json is synthetic and the dense grid in the UI mock is drawn
+ * by a random fixture generator.
+ *
+ * ⚠️ So a per-bundle matrix view is the WRONG GRAIN. A bundle is one cell. The
+ * distribution a trader wants - "which lengths do I hold, and how many" - lives
+ * ACROSS bundles of the same item, which is what toLengthDistribution() builds.
+ * The per-bundle shape below is kept because the schema permits richer bundles
+ * and a future supplier may send one, but it is not the primary view.
+ *
+ * CHECHEN prints "Anchos: RW" (random width), so a width-less bundle is a first
+ * class case and not an error. Its header also says "Largos: RL", but the ground
+ * truth records a 2026-07-16 correction: every package row DOES print its length.
  */
 
 /** A row of a bundle matrix. Either one length, or a declared range. */
@@ -57,6 +66,10 @@ export interface TallyMatrix {
 
 export interface TallyBundle {
   bundleNo: string;
+  /** Printed width, when the supplier prints one. Null for random-width (RW) stock. */
+  width?: { raw: string | null; inches: number | null } | null;
+  /** The bundle's single length, when it has one. Every real bundle so far does. */
+  lengthFt?: number | null;
   /** NetSuite lot, when the document could be tied to one. Null before matching. */
   lot: string | null;
   species: string | null;
@@ -203,3 +216,52 @@ export const densityLabel = (d: TallyDensity): string => ({
   scalar: 'single dimension',
   none: 'totals only',
 }[d]);
+
+/** One length across a set of bundles: the view that actually matters. */
+export interface TallyDistRow {
+  lengthFt: number | null;
+  label: string;
+  bundles: number;
+  /** Bundle numbers at this length, so the trader can go find them. */
+  bundleNos: string[];
+  pieces: number;
+  volumeM3: number | null;
+  boardFeet: number | null;
+}
+
+/**
+ * Group bundles by length.
+ *
+ * THIS IS THE PRIMARY TALLY VIEW. Every hand-verified bundle is a single length,
+ * so the distribution a trader reads ("do I have enough 12-footers?") only exists
+ * once bundles are grouped. Pass the bundles that share an item and a thickness.
+ *
+ * Sums are plain addition of what the document printed. Nothing is derived, so a
+ * column stays null when no bundle printed it rather than showing a partial total
+ * that looks complete.
+ */
+export const toLengthDistribution = (bundles: TallyBundle[]): TallyDistRow[] => {
+  const byLen = new Map<string, TallyDistRow & { _m3seen: boolean; _bfseen: boolean }>();
+  for (const b of bundles || []) {
+    const len = b?.lengthFt ?? b?.matrix?.rows?.[0]?.lengthFt ?? null;
+    const key = len == null ? '—' : String(len);
+    let row = byLen.get(key);
+    if (!row) {
+      row = { lengthFt: len, label: len == null ? '—' : `${len}'`, bundles: 0, bundleNos: [],
+        pieces: 0, volumeM3: null, boardFeet: null, _m3seen: false, _bfseen: false };
+      byLen.set(key, row);
+    }
+    row.bundles += 1;
+    if (b.bundleNo) row.bundleNos.push(b.bundleNo);
+    row.pieces += Number(b.totals?.pieces) || 0;
+    if (b.totals?.volumeM3 != null) { row.volumeM3 = (row.volumeM3 || 0) + b.totals.volumeM3; row._m3seen = true; }
+    if (b.totals?.boardFeet != null) { row.boardFeet = (row.boardFeet || 0) + b.totals.boardFeet; row._bfseen = true; }
+  }
+  return [...byLen.values()]
+    .sort((a, b) => (a.lengthFt ?? Infinity) - (b.lengthFt ?? Infinity))
+    .map(({ _m3seen, _bfseen, ...r }) => ({
+      ...r,
+      volumeM3: r.volumeM3 == null ? null : Math.round(r.volumeM3 * 1000) / 1000,
+      boardFeet: r.boardFeet == null ? null : Math.round(r.boardFeet),
+    }));
+};

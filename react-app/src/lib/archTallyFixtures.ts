@@ -1,25 +1,34 @@
 /**
- * Tally fixtures, generated from the HAND-VERIFIED ground truth.
+ * Tally fixtures, generated from MSL_PL_GroundTruth.json. DO NOT HAND-EDIT.
  *
- * Source: houseblend-clients @ origin/master
- *   McGillStLaurent/Architectural/Packing List/Sandbox/MSL_PL_GroundTruth.json
+ * Regenerate: node scratchpad/genfix.mjs <path-to-MSL_PL_GroundTruth.json>
  *
- * NOT invented. Every figure here was read off a real supplier document and
- * cross-checked against that document's own printed totals. Generated 2026-08-31.
+ * ── WHAT IS AND IS NOT IN HERE ───────────────────────────────────────────────
+ * The ground truth hand-transcribes PER BUNDLE for exactly TWO of its six
+ * documents. The other four are scored at document level only - they carry
+ * `coverageOnly: true` or a `scoredClasses` list that stops at totals. That is a
+ * limit of the TRANSCRIPTION, not a statement that those documents lack a
+ * breakdown. We do not know their per-bundle shape and must not imply we do, so
+ * they appear below as UNTRANSCRIBED_DOCS with their real document totals and no
+ * invented bundles.
  *
- * ⚠️ WHAT THESE FIXTURES ARE FOR. The UI mock draws a dense width x length grid from
- * a random generator. No real document looks like that. These six do:
+ * ── THE MEASURED SHAPE, and it is not what the mock assumes ──────────────────
+ * Across all 32 hand-transcribed bundles, EVERY ONE has exactly one thickness,
+ * one width (or none printed) and one length. Not one bundle contains a matrix.
+ * The per-bundle grid in the UI mock has zero support in the paperwork.
  *
- *   314307    scalar per bundle   thickness + width + length all printed
- *   CHECHEN   by length only      width is "RW", random, so any number is invented
- *   the rest  totals only         no per-bundle breakdown at all
+ * The distribution a trader actually wants runs ACROSS bundles of the same item:
  *
- * Render against these before believing any screenshot. If the matrix panel only
- * looks right on the mock's data, it is wrong.
+ *   314307  14 bundles  0.75" x 5.5" IPE, lengths 8/10/12/14/16/18/20 ft
+ *   CHECHEN 18 bundles  1.25" and 1.0", lengths 3-10 ft, width not printed (RW)
+ *
+ * So the useful view is a LENGTH DISTRIBUTION built by grouping bundles, which is
+ * what toLengthDistribution() in archTally.ts produces. See that file.
  */
-import type { TallyPayload } from '@/lib/archTally';
 
-/** Packing List  030_2025 - PO 314307.pdf — 14 bundles */
+import type { TallyPayload, TallyBundle } from '@/lib/archTally';
+
+/** Packing List  030_2025 - PO 314307.pdf — 14 bundles, hand-verified */
 export const TALLY_314307: TallyPayload = {
   "schema": "mgsl.tally.v1",
   "po": "314307",
@@ -32,6 +41,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 8,
       "matrix": {
         "widthsIn": [
           5.5
@@ -63,6 +77,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 8,
       "matrix": {
         "widthsIn": [
           5.5
@@ -94,6 +113,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 8,
       "matrix": {
         "widthsIn": [
           5.5
@@ -125,6 +149,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 10,
       "matrix": {
         "widthsIn": [
           5.5
@@ -156,6 +185,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 10,
       "matrix": {
         "widthsIn": [
           5.5
@@ -187,6 +221,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 10,
       "matrix": {
         "widthsIn": [
           5.5
@@ -218,6 +257,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 12,
       "matrix": {
         "widthsIn": [
           5.5
@@ -249,6 +293,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 12,
       "matrix": {
         "widthsIn": [
           5.5
@@ -280,6 +329,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 14,
       "matrix": {
         "widthsIn": [
           5.5
@@ -311,6 +365,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 14,
       "matrix": {
         "widthsIn": [
           5.5
@@ -342,6 +401,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 14,
       "matrix": {
         "widthsIn": [
           5.5
@@ -373,6 +437,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 16,
       "matrix": {
         "widthsIn": [
           5.5
@@ -404,6 +473,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 18,
       "matrix": {
         "widthsIn": [
           5.5
@@ -435,6 +509,11 @@ export const TALLY_314307: TallyPayload = {
         "raw": "19.05mm",
         "inches": 0.75
       },
+      "width": {
+        "raw": "139.7mm",
+        "inches": 5.5
+      },
+      "lengthFt": 20,
       "matrix": {
         "widthsIn": [
           5.5
@@ -467,7 +546,7 @@ export const TALLY_314307: TallyPayload = {
   }
 };
 
-/** PACKING CHECHEN S-8 04 JUN 2026.pdf — 18 bundles */
+/** PACKING CHECHEN S-8 04 JUN 2026.pdf — 18 bundles, hand-verified */
 export const TALLY_CHECHEN: TallyPayload = {
   "schema": "mgsl.tally.v1",
   "po": null,
@@ -480,6 +559,8 @@ export const TALLY_CHECHEN: TallyPayload = {
         "raw": "31.75mm",
         "inches": 1.25
       },
+      "width": null,
+      "lengthFt": 10,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -510,6 +591,8 @@ export const TALLY_CHECHEN: TallyPayload = {
         "raw": "31.75mm",
         "inches": 1.25
       },
+      "width": null,
+      "lengthFt": 9,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -540,6 +623,8 @@ export const TALLY_CHECHEN: TallyPayload = {
         "raw": "31.75mm",
         "inches": 1.25
       },
+      "width": null,
+      "lengthFt": 9,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -570,6 +655,8 @@ export const TALLY_CHECHEN: TallyPayload = {
         "raw": "31.75mm",
         "inches": 1.25
       },
+      "width": null,
+      "lengthFt": 8,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -600,6 +687,8 @@ export const TALLY_CHECHEN: TallyPayload = {
         "raw": "31.75mm",
         "inches": 1.25
       },
+      "width": null,
+      "lengthFt": 8,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -630,6 +719,8 @@ export const TALLY_CHECHEN: TallyPayload = {
         "raw": "31.75mm",
         "inches": 1.25
       },
+      "width": null,
+      "lengthFt": 7,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -660,6 +751,8 @@ export const TALLY_CHECHEN: TallyPayload = {
         "raw": "31.75mm",
         "inches": 1.25
       },
+      "width": null,
+      "lengthFt": 7,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -688,8 +781,10 @@ export const TALLY_CHECHEN: TallyPayload = {
       "species": "CHECHEN / METOPIUM BROWNEI",
       "thickness": {
         "raw": "25.4mm",
-        "inches": 1.0
+        "inches": 1
       },
+      "width": null,
+      "lengthFt": 8,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -718,8 +813,10 @@ export const TALLY_CHECHEN: TallyPayload = {
       "species": "CHECHEN / METOPIUM BROWNEI",
       "thickness": {
         "raw": "25.4mm",
-        "inches": 1.0
+        "inches": 1
       },
+      "width": null,
+      "lengthFt": 8,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -748,8 +845,10 @@ export const TALLY_CHECHEN: TallyPayload = {
       "species": "CHECHEN / METOPIUM BROWNEI",
       "thickness": {
         "raw": "25.4mm",
-        "inches": 1.0
+        "inches": 1
       },
+      "width": null,
+      "lengthFt": 7,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -778,8 +877,10 @@ export const TALLY_CHECHEN: TallyPayload = {
       "species": "CHECHEN / METOPIUM BROWNEI",
       "thickness": {
         "raw": "25.4mm",
-        "inches": 1.0
+        "inches": 1
       },
+      "width": null,
+      "lengthFt": 7,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -808,8 +909,10 @@ export const TALLY_CHECHEN: TallyPayload = {
       "species": "CHECHEN / METOPIUM BROWNEI",
       "thickness": {
         "raw": "25.4mm",
-        "inches": 1.0
+        "inches": 1
       },
+      "width": null,
+      "lengthFt": 6,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -838,8 +941,10 @@ export const TALLY_CHECHEN: TallyPayload = {
       "species": "CHECHEN / METOPIUM BROWNEI",
       "thickness": {
         "raw": "25.4mm",
-        "inches": 1.0
+        "inches": 1
       },
+      "width": null,
+      "lengthFt": 6,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -868,8 +973,10 @@ export const TALLY_CHECHEN: TallyPayload = {
       "species": "CHECHEN / METOPIUM BROWNEI",
       "thickness": {
         "raw": "25.4mm",
-        "inches": 1.0
+        "inches": 1
       },
+      "width": null,
+      "lengthFt": 5,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -898,8 +1005,10 @@ export const TALLY_CHECHEN: TallyPayload = {
       "species": "CHECHEN / METOPIUM BROWNEI",
       "thickness": {
         "raw": "25.4mm",
-        "inches": 1.0
+        "inches": 1
       },
+      "width": null,
+      "lengthFt": 4,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -928,8 +1037,10 @@ export const TALLY_CHECHEN: TallyPayload = {
       "species": "CHECHEN / METOPIUM BROWNEI",
       "thickness": {
         "raw": "25.4mm",
-        "inches": 1.0
+        "inches": 1
       },
+      "width": null,
+      "lengthFt": 4,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -958,8 +1069,10 @@ export const TALLY_CHECHEN: TallyPayload = {
       "species": "CHECHEN / METOPIUM BROWNEI",
       "thickness": {
         "raw": "25.4mm",
-        "inches": 1.0
+        "inches": 1
       },
+      "width": null,
+      "lengthFt": 3,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -988,8 +1101,10 @@ export const TALLY_CHECHEN: TallyPayload = {
       "species": "CHECHEN / METOPIUM BROWNEI",
       "thickness": {
         "raw": "25.4mm",
-        "inches": 1.0
+        "inches": 1
       },
+      "width": null,
+      "lengthFt": 3,
       "matrix": {
         "widthsIn": [],
         "rows": [
@@ -1021,1184 +1136,83 @@ export const TALLY_CHECHEN: TallyPayload = {
   }
 };
 
-/** PL PO 314776_KD_CWP_FAT 131-2025_PO-BL.xlsx — 14 bundles */
-export const TALLY_314776: TallyPayload = {
-  "schema": "mgsl.tally.v1",
-  "po": "314776",
-  "bundles": [
-    {
-      "bundleNo": "314776-1",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-2",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-3",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-4",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-5",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-6",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-7",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-8",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-9",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-10",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-11",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-12",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-13",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314776-14",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    }
-  ],
-  "provenance": {
-    "sourceFile": "PL PO 314776_KD_CWP_FAT 131-2025_PO-BL.xlsx",
-    "parsedAt": null,
-    "skill": "ground-truth@hand-verified",
-    "reviewedBy": null
+/**
+ * Documents the ground truth scored at DOCUMENT level only. No per-bundle data
+ * exists for these, so none is fabricated. Kept so the counts stay auditable.
+ */
+export const UNTRANSCRIBED_DOCS = [
+  {
+    "key": "314776",
+    "file": "PL PO 314776_KD_CWP_FAT 131-2025_PO-BL.xlsx",
+    "lotCount": 14,
+    "pieces": 1680,
+    "volumeM3": 22.257,
+    "boardFeet": null,
+    "scored": "references+totals+spotLots",
+    "note": null
+  },
+  {
+    "key": "314888",
+    "file": "PL IPE PO 314888 (BMOU6888755).pdf",
+    "lotCount": 23,
+    "pieces": 1968,
+    "volumeM3": 22.142,
+    "boardFeet": null,
+    "scored": "coverageOnly",
+    "note": "3 content streams; text-layer extractor unproven on this file (spike returned 0 runs). References hand-checked 2026-07-16 (packing-list-capture build prompt)."
+  },
+  {
+    "key": "detail-pl",
+    "file": "detail pl inv 2026_00031.xlsx",
+    "lotCount": 14,
+    "pieces": 1901,
+    "volumeM3": 31.9613,
+    "boardFeet": null,
+    "scored": "references+totals",
+    "note": null
+  },
+  {
+    "key": "stuffing",
+    "file": "Stuffing list.pdf",
+    "lotCount": 17,
+    "pieces": null,
+    "volumeM3": 26.61,
+    "boardFeet": null,
+    "scored": "coverageOnly",
+    "note": "no piece counts printed in this doc. References hand-checked 2026-07-16 (packing-list-capture build prompt)."
   }
-};
+] as const;
 
-/** detail pl inv 2026_00031.xlsx — 14 bundles */
-export const TALLY_DETAIL_PL: TallyPayload = {
-  "schema": "mgsl.tally.v1",
-  "po": null,
-  "bundles": [
-    {
-      "bundleNo": "detail-pl-1",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-2",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-3",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-4",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-5",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-6",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-7",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-8",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-9",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-10",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-11",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-12",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-13",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "detail-pl-14",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    }
-  ],
-  "provenance": {
-    "sourceFile": "detail pl inv 2026_00031.xlsx",
-    "parsedAt": null,
-    "skill": "ground-truth@hand-verified",
-    "reviewedBy": null
-  }
-};
-
-/** PL IPE PO 314888 (BMOU6888755).pdf — 23 bundles */
-export const TALLY_314888: TallyPayload = {
-  "schema": "mgsl.tally.v1",
-  "po": "314888",
-  "bundles": [
-    {
-      "bundleNo": "314888-1",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-2",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-3",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-4",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-5",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-6",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-7",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-8",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-9",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-10",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-11",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-12",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-13",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-14",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-15",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-16",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-17",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-18",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-19",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-20",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-21",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-22",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "314888-23",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    }
-  ],
-  "provenance": {
-    "sourceFile": "PL IPE PO 314888 (BMOU6888755).pdf",
-    "parsedAt": null,
-    "skill": "ground-truth@hand-verified",
-    "reviewedBy": null
-  }
-};
-
-/** Stuffing list.pdf — 17 bundles */
-export const TALLY_STUFFING: TallyPayload = {
-  "schema": "mgsl.tally.v1",
-  "po": null,
-  "bundles": [
-    {
-      "bundleNo": "stuffing-1",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-2",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-3",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-4",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-5",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-6",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-7",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-8",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-9",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-10",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-11",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-12",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-13",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-14",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-15",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-16",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    },
-    {
-      "bundleNo": "stuffing-17",
-      "lot": null,
-      "species": null,
-      "thickness": null,
-      "matrix": null,
-      "totals": {
-        "pieces": null,
-        "boardFeet": null,
-        "volumeM3": null
-      },
-      "provenance": {
-        "page": null,
-        "confidence": null
-      }
-    }
-  ],
-  "provenance": {
-    "sourceFile": "Stuffing list.pdf",
-    "parsedAt": null,
-    "skill": "ground-truth@hand-verified",
-    "reviewedBy": null
-  }
-};
-
-/** Every fixture, keyed by the ground-truth document id. */
 export const ARCH_TALLY_FIXTURES: Record<string, TallyPayload> = {
-  "314307": TALLY_314307,
-  "CHECHEN": TALLY_CHECHEN,
-  "314776": TALLY_314776,
-  "detail-pl": TALLY_DETAIL_PL,
-  "314888": TALLY_314888,
-  "stuffing": TALLY_STUFFING,
+  '314307': TALLY_314307,
+  CHECHEN: TALLY_CHECHEN,
 };
 
 /**
- * Fixture-only: hand an ARCH lot a parsed tally so the matrix panel can be seen
+ * Fixture-only: hand an ARCH lot a parsed tally so the real shapes can be seen
  * before any NetSuite record exists.
  *
- * ⚠️ THIS IS A DEMO MAPPING, NOT A MATCH. Real ARCH lots are numbered "316027-1"
- * (the prefix is the PO); the ground-truth bundles are numbered "1535", "S8-0142"
- * and so on, from entirely different shipments. Nothing here claims a lot IS that
- * bundle. It exists so the client can review the SHAPE of the four states against
- * their own paperwork, which is the cheap thing to correct now.
- *
- * Deterministic by lot number so a screenshot is reproducible. Delete this function
- * the moment lots carry a real tally link.
+ * ⚠️ A DEMO MAPPING, NOT A MATCH. Real ARCH lots are numbered "316027-1"; these
+ * bundles come from unrelated shipments. Nothing claims a lot IS that bundle.
+ * Deterministic by lot number so screenshots reproduce. Delete when lots carry a
+ * real tally link.
  */
-const DEMO_POOL: TallyPayload[] = [
-  ARCH_TALLY_FIXTURES['314307'],   // scalar: thickness + width + length printed
-  ARCH_TALLY_FIXTURES['CHECHEN'],  // by length, width is RW so no width breakdown
-  ARCH_TALLY_FIXTURES['314888'],   // totals only
-];
+const DEMO_DOCS: TallyPayload[] = [TALLY_314307, TALLY_CHECHEN];
 
-export const demoTallyBundleForLot = (lotNo: string) => {
-  if (!lotNo) return null;
+const hash = (s: string): number => {
   let h = 0;
-  for (let i = 0; i < lotNo.length; i++) h = (h * 31 + lotNo.charCodeAt(i)) >>> 0;
-  const doc = DEMO_POOL[h % DEMO_POOL.length];
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+};
+
+export const demoTallyForLot = (lotNo: string): { bundle: TallyBundle; siblings: TallyBundle[] } | null => {
+  if (!lotNo) return null;
+  const h = hash(lotNo);
+  const doc = DEMO_DOCS[h % DEMO_DOCS.length];
   if (!doc || !doc.bundles.length) return null;
-  return doc.bundles[h % doc.bundles.length] || null;
+  const bundle = doc.bundles[h % doc.bundles.length];
+  if (!bundle) return null;
+  // Siblings share thickness, which is how a trader groups a shipment.
+  const siblings = doc.bundles.filter((b) => b.thickness?.inches === bundle.thickness?.inches);
+  return { bundle, siblings };
 };

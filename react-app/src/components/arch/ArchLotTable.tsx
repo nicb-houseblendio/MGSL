@@ -4,7 +4,7 @@ import { isLotLocked, lockReason, lotQuantity, commitmentOn } from '@/lib/archLo
 import { lotAllocation, lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
 import { ARCH_BUCKET_META, ARCH_RESERVE_INK, ARCH_SURFACE } from '@/components/arch/archColors';
 import { TallyButton, TallyImageDialog } from '@/components/arch/TallyImageDialog';
-import { demoTallyBundleForLot } from '@/lib/archTallyFixtures';
+import { demoTallyForLot } from '@/lib/archTallyFixtures';
 import { ArchReservedSection } from '@/components/arch/ArchReservedSection';
 import type { ArchSummaryRow, ArchDetailKey, ArchLot } from '@/types/arch';
 
@@ -542,7 +542,8 @@ export const ArchLotTable = ({
           onUpload={handleUpload}
           /* Fixture-only until lots carry a real tally link. Lets the client review
              the four render states against their own documents. See archTallyFixtures. */
-          bundle={demoTallyBundleForLot(tallyOpen)}
+          bundle={demoTallyForLot(tallyOpen)?.bundle}
+          siblings={demoTallyForLot(tallyOpen)?.siblings}
         />
       )}
     </div>
