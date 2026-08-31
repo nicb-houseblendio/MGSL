@@ -283,11 +283,15 @@ export const widthLabel = (b: TallyBundle): string => {
   return b?.widthPolicy === 'randomWidth' ? 'RW' : '—';
 };
 
-/** The sentence under the table. Says what is missing and why, or says it does not know. */
+/**
+ * The width CAVEAT under the table, or '' when there is nothing to caveat.
+ *
+ * Deliberately says nothing when the width is printed: the dialog footer already
+ * carries provenance, and returning a sentence here too put two near-identical
+ * lines under the table.
+ */
 export const widthNote = (b: TallyBundle): string => {
-  if (b?.width?.inches != null) {
-    return 'Parsed from the supplier document. System quantities in the tables behind this dialog remain authoritative.';
-  }
+  if (b?.width?.inches != null) return '';
   if (b?.widthPolicy === 'randomWidth') {
     return 'This supplier prints random width (RW), so there is no width breakdown. Any width figure here would be invented.';
   }

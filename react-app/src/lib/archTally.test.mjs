@@ -57,7 +57,8 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
 {
   ok('S6 unknown width does not say RW', widthLabel(B({ width: null })) === '—', widthLabel(B({ width: null })));
   ok('S6 randomWidth says RW', widthLabel(B({ width: null, widthPolicy: 'randomWidth' })) === 'RW', null);
-  ok('S6 unknown note does not claim a supplier practice', !/random width/i.test(widthNote(B({ width: null }))), widthNote(B({ width: null })));
+  ok('S6 printed width now returns no caveat', widthNote(B({width:{raw:null,inches:5.5}}))==='', widthNote(B({width:{raw:null,inches:5.5}})));
+ok('S6 unknown note does not claim a supplier practice', !/random width/i.test(widthNote(B({ width: null }))), widthNote(B({ width: null })));
   ok('S6 RW note does claim it', /random width/i.test(widthNote(B({ width: null, widthPolicy: 'randomWidth' }))), null);
 }
 

@@ -77,8 +77,13 @@ const TallyMatrixPanel = ({
   const num = (n: number | null | undefined, dp = 0) =>
     n === null || n === undefined ? '\u00B7' : n.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
 
+  // color is MANDATORY here, not decoration. archColors.ts spells out why: this modal
+  // is a light surface in both themes, so text must use fixed hex. Omitting it lets the
+  // cell inherit the theme variable, which in dark mode paints pale text on white and
+  // the whole table reads as blank. Caught only by looking at it.
   const cell: React.CSSProperties = {
-    padding: '5px 10px', fontSize: 11.5, borderBottom: '1px solid #E2E8F0', textAlign: 'right', whiteSpace: 'nowrap',
+    padding: '5px 10px', fontSize: 11.5, borderBottom: '1px solid #E2E8F0', textAlign: 'right',
+    whiteSpace: 'nowrap', color: ARCH_SURFACE.text,
   };
   const head: React.CSSProperties = {
     ...cell, fontWeight: 700, color: ARCH_SURFACE.textMid,
@@ -104,7 +109,7 @@ const TallyMatrixPanel = ({
   const nBundles = totals.bundles;
 
   return (
-    <div style={{ width: '100%', alignSelf: 'flex-start' }}>
+    <div style={{ width: '100%', alignSelf: 'flex-start', color: ARCH_SURFACE.text }}>
       {sample && (
         <div style={{
           background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 8,
@@ -181,6 +186,8 @@ const TallyMatrixPanel = ({
             &dagger; Only some bundles at that length state the figure, so the sum covers part of the row.
           </div>
         )}
+        {/* Only the width CAVEATS render here. Provenance lives in the dialog footer -
+            printing both put two near-identical sentences under the table. */}
         {widthNote(bundle)}
       </div>
 
