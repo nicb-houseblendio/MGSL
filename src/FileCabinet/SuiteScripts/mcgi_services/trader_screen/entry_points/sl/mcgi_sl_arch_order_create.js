@@ -42,9 +42,9 @@
  *                isSplit, splitTargetQty } ],
  *     insuranceRate?, dryRun? }
  *
- * Quantities are DISPLAY units — board feet for Lumber. The library converts to
- * NetSuite's stored base unit for the lot assignment; nothing here does unit
- * maths.
+ * Quantities are DISPLAY units — board feet for Lumber, including the lot
+ * assignment. NETSUITE does the converting, not the library; nothing here does
+ * unit maths. Corrected 2026-09-02: this line used to say the library converts.
  *
  * `dryRun: true` validates against live stock and writes nothing. The wizard
  * uses it to catch a cart that went stale while the trader was pricing it.

@@ -838,8 +838,14 @@ define([
      * the figure. The line-level values are therefore taken ONCE per
      * (transaction, line) in JS and the assignment rows are used only to
      * attribute quantity to lots. This is the same cartesian trap that
-     * `archSplitQueue` documents, and the reason `ia.transactionline` joins on
-     * the line NUMBER rather than `tl.id`.
+     * `archSplitQueue` documents.
+     *
+     * ⚠️ This sentence used to end "and the reason `ia.transactionline` joins on
+     * the line NUMBER rather than `tl.id`". That is BACKWARDS and it is corrected
+     * here on 2026-09-02. The join below uses `tl.id`, deliberately, and the note
+     * beside it records why: 35% of lines have id <> linesequencenumber, and
+     * joining on the sequence mis-attributes exactly those. Joining on the number
+     * is the bug, not the fix.
      *
      * ⚠️ EVERY QUANTITY IS IN THE ITEM'S BASE UNIT, exactly like
      * `quantityonhand`. A 500 BF sales-order line stores -0.5, a 1 500 BF

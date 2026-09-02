@@ -27,6 +27,7 @@
  */
 
 import type { TallyPayload, TallyBundle } from '@/lib/archTally';
+import { siblingsOf } from '@/lib/archTally';
 
 /** Packing List  030_2025 - PO 314307.pdf — 14 bundles, hand-verified, width printed */
 export const TALLY_314307: TallyPayload = {
@@ -1260,8 +1261,10 @@ export const demoTallyForLot = (lotNo: string): DemoTally | null => {
   if (!doc || !doc.bundles.length) return null;
   const bundle = doc.bundles[h % doc.bundles.length];
   if (!bundle) return null;
-  // Siblings share thickness, which is how a trader groups a shipment.
-  const siblings = doc.bundles.filter((b) => b.thickness?.inches === bundle.thickness?.inches);
+  // Siblings are the same ITEM, not merely the same thickness. Selecting on
+  // thickness alone mixes species: measured, a Sapele lot rendered 350 pieces
+  // when Sapele was 50. See sameItem() in archTally.ts.
+  const siblings = siblingsOf(doc.bundles, bundle);
   return {
     bundle,
     siblings,

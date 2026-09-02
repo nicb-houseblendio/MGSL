@@ -1,4 +1,4 @@
-import { toLengthDistribution, widthLabel, widthNote } from './archTally.ts';
+import { toLengthDistribution, widthLabel, widthNote, sameItem, siblingsOf } from './archTally.ts';
 import { TALLY_314307, TALLY_CHECHEN, demoTallyForLot } from './archTallyFixtures.ts';
 
 const B = (o) => ({ bundleNo: 'x', lot: null, species: null, thickness: { raw: null, inches: 1 },
@@ -96,6 +96,39 @@ ok('null input does not throw', toLengthDistribution(null).rows.length === 0, nu
   ok('S1 demo returns sample provenance', !!(d && d.sample && d.sample.sourceFile), d && d.sample);
   ok('S1 sample names a real source file', /314307|CHECHEN|\.pdf|\.xlsx/i.test(d.sample.sourceFile), d.sample.sourceFile);
   ok('S1 demo bundle is in its own siblings', d.siblings.indexOf(d.bundle) >= 0, null);
+}
+
+
+// ---- MULTI-SPECIES CONTAMINATION. One packing list carries several species.
+//      Reproduced 2026-09-02: selecting siblings by thickness alone rendered 350
+//      pieces across 3 bundles for a Sapele lot whose real content is 50 pieces.
+{
+  const S = (species, th, len, pcs, w) => B({
+    bundleNo: String(species) + len, species,
+    thickness: { raw: th + 'in', inches: th }, width: w || null, lengthFt: len,
+    totals: { pieces: pcs, boardFeet: null, volumeM3: null },
+  });
+  const doc = [
+    S('African Mahogany', 1, 8, 100),
+    S('African Mahogany', 1, 12, 200),
+    S('Sapele', 1, 10, 50),
+    S('African Mahogany', 2, 8, 75),
+  ];
+  const tot = (b) => toLengthDistribution(siblingsOf(doc, b)).totals;
+  ok('Sapele shows only Sapele', tot(doc[2]).pieces === 50 && tot(doc[2]).bundles === 1, tot(doc[2]));
+  ok('AM 4/4 shows only AM 4/4', tot(doc[0]).pieces === 300 && tot(doc[0]).bundles === 2, tot(doc[0]));
+  ok('AM 8/4 separated from AM 4/4 by thickness', tot(doc[3]).pieces === 75, tot(doc[3]));
+  ok('thickness alone WOULD have mixed three bundles',
+    doc.filter((b) => b.thickness.inches === 1).length === 3, null);
+  ok('width discriminates two otherwise identical items',
+    !sameItem(S('X', 1, 8, 1, { raw: null, inches: 6 }), S('X', 1, 8, 1, { raw: null, inches: 9 })), null);
+  ok('null width matches null width', sameItem(S('X', 1, 8, 1), S('X', 1, 12, 1)), null);
+  ok('a null species does not join a named group',
+    !sameItem(S(null, 1, 8, 1), S('Sapele', 1, 8, 1)), null);
+  ok('species match ignores case and surrounding space',
+    sameItem(S(' sapele ', 1, 8, 1), S('SAPELE', 1, 12, 1)), null);
+  ok('siblingsOf always includes the bundle itself', siblingsOf([], doc[0]).length === 1, null);
+  ok('siblingsOf tolerates a null list', siblingsOf(null, doc[0]).length === 1, null);
 }
 
 console.log(fail ? '\n' + fail + ' FAILED' : '\nall passed');

@@ -10,7 +10,7 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { fromCaptureResult, bundlesForLot } from './archTallyCapture.ts';
+import { fromCaptureResult, bundlesForLot, fromCaptureRecord, CAPTURE_STATUS } from './archTallyCapture.ts';
 import { toLengthDistribution, widthLabel } from './archTally.ts';
 
 const SCHEMA = path.join(
@@ -184,6 +184,88 @@ ok('a lot with nothing in it still yields a bundle',
   fromCaptureResult({ lots: [{}] }).payload.bundles.length === 1, null);
 ok('nameless lot does not pretend to have a number',
   fromCaptureResult({ lots: [{}] }).payload.bundles[0].lot === null, null);
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// fromCaptureRecord — one field, two writers, two shapes
+// ═══════════════════════════════════════════════════════════════════════════
+
+const TALLY_V1 = {
+  schema: 'mgsl.tally.v1',
+  po: 'PO-314888',
+  container: 'BMOU6888755',
+  bundles: [{
+    bundleNo: 'S8-0142', lot: 'LOT-2026-0871', species: 'Red Oak',
+    thickness: { raw: '4/4', inches: 1.0 },
+    matrix: { widthsIn: [6, 9], rows: [{ lengthFt: 8, pieces: { '6': 30, '9': 20 } }] },
+    totals: { pieces: 50, boardFeet: 240.0, volumeM3: null },
+  }],
+  provenance: { sourceFile: 'PL IPE PO 314888.pdf', skill: 'mgsl-tally-parse@0.1' },
+};
+
+const intake = (o) => JSON.stringify(o);
+
+// ---- shape sniffing
+{
+  const r = fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY', filename: 'x.pdf' }), resultsJson: JSON.stringify(TALLY_V1), status: 'PARSED' });
+  ok('skill payload detected as mgsl.tally.v1', r.shape === 'mgsl.tally.v1', r.shape);
+  ok('bundles come through untouched', r.payload.bundles.length === 1 && r.payload.bundles[0].bundleNo === 'S8-0142', r.payload && r.payload.bundles);
+  ok('container read from the payload', r.header.container === 'BMOU6888755', r.header);
+  ok('PO read from the payload', r.header.po === 'PO-314888', r.header);
+  ok('a real width x length GRID survives the v1 path', r.payload.bundles[0].matrix.widthsIn.length === 2, r.payload.bundles[0].matrix);
+}
+{
+  const lotReport = { sourceFile: 'x.pdf', references: { po: '314307', container: 'MEDU7574050' },
+    lots: [{ lot: '1535', pieces: 140, thicknessMm: 19.05, widthMm: 139.7, lengthMm: 2438.4 }] };
+  const r = fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY' }), resultsJson: JSON.stringify(lotReport), status: 'PARSED' });
+  ok('MR payload detected as lotReport', r.shape === 'lotReport', r.shape);
+  ok('lotReport container still surfaces', r.header.container === 'MEDU7574050', r.header);
+  ok('lotReport bundles converted', r.payload.bundles.length === 1, r.payload && r.payload.bundles.length);
+}
+
+// ---- docType discriminates; PL and BOL share this record
+{
+  const pl = fromCaptureRecord({ intakeJson: intake({ docType: 'PL' }), resultsJson: JSON.stringify(TALLY_V1), status: 'PARSED' });
+  ok('a PL capture is not a tally', pl.isTally === false, pl.isTally);
+  const bol = fromCaptureRecord({ intakeJson: intake({ docType: 'BOL' }), resultsJson: JSON.stringify(TALLY_V1), status: 'PARSED' });
+  ok('a BOL capture is not a tally', bol.isTally === false, bol.isTally);
+  const none = fromCaptureRecord({ resultsJson: JSON.stringify(TALLY_V1), status: 'PARSED' });
+  ok('no intake envelope is NOT assumed to be a tally', none.isTally === false, none.isTally);
+  const t = fromCaptureRecord({ intakeJson: intake({ docType: 'tally' }), resultsJson: JSON.stringify(TALLY_V1), status: 'PARSED' });
+  ok('docType match is case-insensitive', t.isTally === true, t.isTally);
+}
+
+// ---- status by NAME, never by id
+{
+  const shown = (st) => fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY' }), resultsJson: JSON.stringify(TALLY_V1), status: st }).displayable;
+  ok('PARSED is displayable', shown(CAPTURE_STATUS.PARSED) === true, null);
+  ok('MATCHED is displayable', shown(CAPTURE_STATUS.MATCHED) === true, null);
+  ok('REVIEWED is displayable', shown('REVIEWED') === true, null);
+  ok('PENDING is NOT displayable', shown(CAPTURE_STATUS.PENDING) === false, null);
+  ok('NEEDS_REVIEW is NOT displayable', shown(CAPTURE_STATUS.NEEDS_REVIEW) === false, null);
+  ok('ERROR is NOT displayable', shown(CAPTURE_STATUS.ERROR) === false, null);
+  ok('AWAITING_CLAUDE is NOT displayable', shown(CAPTURE_STATUS.AWAITING_CLAUDE) === false, null);
+  ok('status matching is case-insensitive', shown('parsed') === true, null);
+  ok('a numeric id is NOT accepted as a status', shown('4') === false, null);
+  const nr = fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY' }), resultsJson: JSON.stringify(TALLY_V1), status: 'NEEDS_REVIEW', statusReason: 'PDF only — matrix not parsed' });
+  ok('status reason is carried', nr.statusReason === 'PDF only — matrix not parsed', nr.statusReason);
+  ok('NEEDS_REVIEW sets needsReview on the header', nr.header.needsReview === true, nr.header);
+}
+
+// ---- garbage in, no matrix out
+{
+  ok('null record does not throw', fromCaptureRecord(null).shape === 'absent', null);
+  ok('undefined record does not throw', fromCaptureRecord(undefined).shape === 'absent', null);
+  ok('empty results is absent', fromCaptureRecord({ resultsJson: '' }).shape === 'absent', null);
+  ok('malformed JSON is absent, not a throw', fromCaptureRecord({ resultsJson: '{oops' }).shape === 'absent', null);
+  ok('a JSON scalar is absent', fromCaptureRecord({ resultsJson: '42' }).shape === 'absent', null);
+  const un = fromCaptureRecord({ resultsJson: JSON.stringify({ something: 'else' }) });
+  ok('an unknown shape is refused, not rendered', un.shape === 'unrecognised' && un.payload === null, un.shape);
+  const badSchema = fromCaptureRecord({ resultsJson: JSON.stringify({ schema: 'mgsl.tally.v9', bundles: [] }) });
+  ok('a future schema version is NOT read as v1', badSchema.shape === 'unrecognised', badSchema.shape);
+  const noBundles = fromCaptureRecord({ resultsJson: JSON.stringify({ schema: 'mgsl.tally.v1' }) });
+  ok('v1 without a bundles array is refused', noBundles.shape === 'unrecognised', noBundles.shape);
+}
 
 console.log(fail ? '\n' + fail + ' FAILED' : '\nall passed');
 process.exit(fail ? 1 : 0);

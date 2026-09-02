@@ -78,11 +78,44 @@ define(['N/record', 'N/query', 'N/runtime', 'N/log'], (record, query, runtime, l
     const stockUnitRate = (itemId) => {
         const rows = query.runSuiteQL({
             query:
-                'SELECT u.conversionrate AS rate ' +
+                'SELECT u.conversionrate AS rate, i.stockunit AS stockunit, i.saleunit AS saleunit ' +
                 'FROM item i JOIN unitstypeuom u ON u.internalid = i.stockunit ' +
                 'WHERE i.id = ?',
             params: [itemId],
         }).asMappedResults();
+
+        /* ── The SO true-up is the exposed half of this module, not the adjustment.
+         *
+         * An Inventory Adjustment line takes its unit from the item's STOCK unit,
+         * which is the same field the rate below is keyed on, so those two cannot
+         * drift apart. `trueUpSalesOrderLine` writes to a SALES ORDER line, whose
+         * unit NetSuite sources from the SALE unit, which nothing here reads.
+         *
+         * 🔴 THROWS, and it must happen HERE in revalidate rather than at the write.
+         * The adjustment posts BEFORE the true-up, so a late failure would leave
+         * real stock physically split against a mis-scaled order line. Refusing in
+         * revalidate keeps the whole thing pre-write, and the dry run runs through
+         * this same path so the warehouse learns before walking to the bundle.
+         *
+         * Concretely, with stockunit=BF and saleunit=MBF, a 500 BF customer portion
+         * would post a correct adjustment and then true the SO line up to 500 MBF,
+         * which is 500,000 BF. */
+        if (rows.length) {
+            const stockUnit = parseInt(rows[0].stockunit, 10);
+            const saleUnit  = parseInt(rows[0].saleunit, 10);
+            if (!stockUnit || !saleUnit || stockUnit !== saleUnit) {
+                log.error({
+                    title: 'ARCH Split — UNIT MISMATCH, SPLIT REFUSED',
+                    details: 'Item ' + itemId + ' has stockunit=' + stockUnit + ' saleunit=' + saleUnit +
+                             '. The adjustment would post in the stock unit and the Sales Order true-up ' +
+                             'in the sale unit. Fix the item record; do not convert in code.',
+                });
+                throw new Error('This item is stocked and sold in different units, so the split cannot ' +
+                                'be completed without writing the wrong quantity to the order. Nothing ' +
+                                'was adjusted. Set the sale unit to match the stock unit on the item.');
+            }
+        }
+
         const rate = rows.length ? parseFloat(rows[0].rate) : NaN;
         if (!isFinite(rate) || rate <= 0) {
             log.audit('ARCH Split', 'Item ' + itemId + ' has no usable stock-unit rate; treating as 1:1');
@@ -296,11 +329,11 @@ define(['N/record', 'N/query', 'N/runtime', 'N/log'], (record, query, runtime, l
         return id;
     };
 
-    const addLine = (adj, v, input, storedDelta, lotRef) => {
+    const addLine = (adj, v, input, displayDelta, lotRef) => {
         adj.selectNewLine({ sublistId: 'inventory' });
         adj.setCurrentSublistValue({ sublistId: 'inventory', fieldId: 'item',        value: v.lot.itemId });
         adj.setCurrentSublistValue({ sublistId: 'inventory', fieldId: 'location',    value: input.locationId });
-        adj.setCurrentSublistValue({ sublistId: 'inventory', fieldId: 'adjustqtyby', value: storedDelta });
+        adj.setCurrentSublistValue({ sublistId: 'inventory', fieldId: 'adjustqtyby', value: displayDelta });
 
         const detail = adj.getCurrentSublistSubrecord({ sublistId: 'inventory', fieldId: 'inventorydetail' });
         detail.selectNewLine({ sublistId: 'inventoryassignment' });
@@ -327,7 +360,7 @@ define(['N/record', 'N/query', 'N/runtime', 'N/log'], (record, query, runtime, l
                 value:     String(lotRef.receipt),
             });
         }
-        detail.setCurrentSublistValue({ sublistId: 'inventoryassignment', fieldId: 'quantity', value: storedDelta });
+        detail.setCurrentSublistValue({ sublistId: 'inventoryassignment', fieldId: 'quantity', value: displayDelta });
         detail.commitLine({ sublistId: 'inventoryassignment' });
 
         adj.commitLine({ sublistId: 'inventory' });

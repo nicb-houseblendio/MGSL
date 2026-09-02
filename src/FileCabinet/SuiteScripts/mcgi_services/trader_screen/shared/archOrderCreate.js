@@ -41,19 +41,32 @@
  * here; Veneer and Ovals are rate 1 and pass a wrong conversion through
  * unchanged. Do not "simplify" either side.
  *
- * 🔴 AND THE ASSIGNMENT SIDE IS DIFFERENT AGAIN ON A SALES ORDER. The note that
- * used to sit here said the base-unit side was inferred and unverified. It was,
- * and it was WRONG. Measured on SO 126446: passing the base figure 0.4 stored
- * 0.0004, because NetSuite reads a sales order's assignment quantity as DISPLAY
- * units and converts it itself. An Inventory Adjustment takes BASE for the same
- * field. So:
+ * ✅ EVERY WRITE TAKES DISPLAY. NetSuite does the converting, not us.
  *
  *   SO line `quantity`                     DISPLAY
  *   SO   inventoryassignment.quantity      DISPLAY
- *   IA   inventoryassignment.quantity      BASE
+ *   IA   `adjustqtyby` and assignment      DISPLAY
  *
- * `verifyAssignments` is what caught this, by re-reading what NetSuite actually
- * stored instead of trusting the inference. Keep it.
+ * 🔴 THIS BLOCK USED TO SAY THE IA SIDE TOOK **BASE**, AND IT WAS WRONG.
+ * Corrected 2026-09-02. The claim rested on IA-CWP-347, where the stored line
+ * quantity and the stored assignment quantity are both 1.103 — but that is a
+ * READ-BACK of what NetSuite stored, and it says nothing about what was passed
+ * in. Two runs of the same function settle it:
+ *
+ *   IA-CWP-412  680 BF remainder  passed BASE (0.68)  → stored 6.8E-4  ❌ 1000x short
+ *   IA-CWP-413  650 BF remainder  passed DISPLAY      → stored 0.65    ✅
+ *   IA-CWP-467  645 BF remainder  passed DISPLAY      → stored 0.645   ✅
+ *
+ * The old note also ended "Do not 'make these consistent'". They already are,
+ * and that instruction was defending an asymmetry that does not exist. It is
+ * removed deliberately — `archSplitExecute.js:269-280` says the same thing
+ * correctly ("pass DISPLAY units when WRITING. Nothing here is converted"), and
+ * the two must not disagree again.
+ *
+ * `verifyAssignments` re-reads what NetSuite actually stored rather than trusting
+ * any of this. Keep it — it is the only automated check that would notice a unit
+ * error at all, and note it compares BASE to BASE, so it cannot catch a
+ * stock-unit/sale-unit divergence. That is what the guard in `resolveLines` is for.
  *
  * ── What is deliberately NOT accepted from the caller ────────────────────────
  * Subsidiary and department come from the customer and the location, never from
@@ -699,6 +712,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 '  i.cseg_subsidiary_loc AS segment, ' +
                 '  inl.location          AS locationid, ' +
                 '  inl.quantityonhand    AS storedqty, ' +
+                '  i.stockunit           AS stockunit, ' +
+                '  i.saleunit            AS saleunit, ' +
                 '  u.conversionrate      AS rate ' +
                 'FROM inventorynumberlocation inl ' +
                 'JOIN inventorynumber inv ON inv.id = inl.inventorynumber ' +
@@ -718,6 +733,11 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 segment:    int(r.segment),
                 locationId: int(r.locationid),
                 storedQty:  numOr(r.storedqty, 0),
+                // Both units, because the rate below is keyed on the STOCK unit
+                // while the SO line NetSuite writes is keyed on the SALE unit.
+                // Free to carry: same row, same query. See the guard in resolveLines.
+                stockUnit:  int(r.stockunit),
+                saleUnit:   int(r.saleunit),
                 rate:       numOr(r.rate, 0),
             };
         });
@@ -988,6 +1008,54 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             // rate 1 a Lumber line would be off by a factor of a thousand. The
             // cache builder makes the same call, excluding rateless lots rather
             // than counting them.
+            /* ── The sale unit must BE the stock unit ──────────────────────
+             *
+             * Everything on this screen is quoted in the STOCK unit, and every
+             * rate read in this file comes from `i.stockunit`. But the quantity
+             * we write lands on a SALES ORDER line, whose unit NetSuite sources
+             * from `i.saleunit`. Nothing in this codebase reads `saleunit`, so
+             * if the two ever differ we hand NetSuite a stock-unit number and it
+             * applies a sale-unit conversion.
+             *
+             * 🔴 THE FAILURE IS INVISIBLE, WHICH IS WHY IT REFUSES RATHER THAN WARNS.
+             * `amount = quantity x rate` is identical whichever unit the quantity
+             * is in, so the order total, the margin and the confirmation all look
+             * right while the line commits a thousand times the wood. Nothing
+             * downstream catches it: the `wanted <= onHandDisplay` gate below is
+             * computed from the STOCK-unit rate and passes; `assignLots` matches
+             * on `displayQty` and matches; and `verifyAssignments` compares BASE
+             * to BASE, where NetSuite applied the same wrong conversion to the
+             * line and the assignment, so it reports no mismatch.
+             *
+             * Measured 2026-09-02: units type 1 (MBF) is the ONLY type in this
+             * account with more than one UOM row, so the only divergence that can
+             * be expressed is BF <-> MBF, which is exactly the 1000x. Today
+             * `saleunit <> stockunit` occurs on ZERO items in sandbox and ZERO in
+             * production. This guard is therefore for the future, and the moment
+             * it guards is specific: production has no hardwood items and no
+             * `cseg_subsidiary_loc` on `item` at all, so all six SKUs get created
+             * by hand at cutover, and the unused MBF row sits in the dropdown one
+             * click away from BF.
+             *
+             * ERROR, not AUDIT, unlike the rateless case below. A missing rate
+             * means an item was never configured; divergent units mean somebody
+             * CHOSE two different ones. It is rare, abnormal, and a person has to
+             * go and fix a record. */
+            if (!st.stockUnit || !st.saleUnit || st.stockUnit !== st.saleUnit) {
+                log.error({
+                    title: 'ARCH Order — UNIT MISMATCH, LINE REFUSED',
+                    details: st.itemCode + ' (item ' + st.itemId + ') has stockunit=' +
+                             st.stockUnit + ' saleunit=' + st.saleUnit + '. The screen quotes ' +
+                             'the stock unit and the SO line would use the sale unit, so the ' +
+                             'committed quantity would be wrong by the conversion between them. ' +
+                             'Fix the item record; do not convert in code.',
+                });
+                problems.push(label + ': ' + st.itemCode + ' is stocked and sold in different units, ' +
+                              'so ordering it would commit the wrong quantity. It was refused rather ' +
+                              'than converted. Set the sale unit to match the stock unit on the item.');
+                return;
+            }
+
             const rate = st.rate;
             if (!(rate > 0)) {
                 problems.push(label + ': ' + st.itemCode + ' has no usable stock-unit conversion rate, ' +

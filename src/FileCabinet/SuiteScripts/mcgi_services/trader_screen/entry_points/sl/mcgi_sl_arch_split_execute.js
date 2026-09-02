@@ -32,8 +32,9 @@
  * POST, JSON body:
  *   { soId, lineUniqueKey, lotId, locationId, customerQty, remainderQty,
  *     subsidiaryId, adjustmentAccountId, soTranId, dryRun? }
- * Quantities are DISPLAY units — board feet for Lumber. The library converts to
- * NetSuite's stored base unit; nothing here should do unit maths.
+ * Quantities are DISPLAY units — board feet for Lumber, all the way to the write.
+ * NETSUITE does the converting, not the library; nothing anywhere should do unit
+ * maths. Corrected 2026-09-02: this line used to say the library converts.
  *
  * Replies { ok: true, ... } or { ok: false, error, code }. Never a raw stack —
  * the warehouse screen shows the message verbatim to someone holding a tape
@@ -183,7 +184,10 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
             // Sales Order or lot has been deleted since the queue was drawn.
             // That is the guard working, not a system fault, so it must not be
             // logged as an error.
-            const expected = /no longer|already|more than|greater than|nothing on hand|cannot be negative|does not exist/i.test(message);
+            // `different units` is the UOM guard in archSplitExecute.stockUnitRate. It is
+            // a data-setup refusal like the others here, so it must not log as a system
+            // fault. The item-record error is logged separately, at ERROR, where it happens.
+            const expected = /no longer|already|more than|greater than|nothing on hand|cannot be negative|does not exist|different units/i.test(message);
             if (expected) {
                 log.audit('ARCH Split Execute', 'Refused for user ' + user.id + ': ' + message);
             } else {

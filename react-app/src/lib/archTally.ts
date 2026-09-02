@@ -134,6 +134,46 @@ const rowSortKey = (r: TallyRow): number => {
   return Number.POSITIVE_INFINITY;
 };
 
+/**
+ * Do two bundles describe the SAME ITEM?
+ *
+ * 🔴 THIS IS THE SELECTION PREDICATE AND GETTING IT WRONG CONTAMINATES THE VIEW.
+ * One packing list routinely carries several species. Philippe's example on the
+ * 2026-08-27 call was one PO holding African Mahogany 4/4, African Mahogany 8/4 and
+ * Sapele, and his requirement was that a trader looking at Sapele sees the Sapele
+ * tally and nothing else. Selecting on thickness alone satisfies neither half of
+ * that: measured, it renders 350 pieces across 3 bundles for a Sapele lot whose
+ * real content is 50 pieces.
+ *
+ * An ARCH item IS species + thickness + width — that is what the grid's own
+ * "Purpleheart 4/4 KD" description encodes. So all three must match.
+ *
+ * Nulls match nulls deliberately. A single-species document with no species
+ * recorded should still group, and a random-width supplier has null width on every
+ * bundle. What must NEVER happen is a null matching a value, which would let an
+ * unlabelled bundle join any group.
+ */
+export const sameItem = (a: TallyBundle, b: TallyBundle): boolean => {
+  if (!a || !b) return false;
+  const norm = (v: string | null | undefined) => (v == null ? null : String(v).trim().toUpperCase());
+  const dim = (v: number | null | undefined) => (v == null ? null : v);
+  return norm(a.species) === norm(b.species)
+    && dim(a.thickness?.inches) === dim(b.thickness?.inches)
+    && dim(a.width?.inches) === dim(b.width?.inches);
+};
+
+/**
+ * The bundles that belong to the same item as `bundle`, including it.
+ *
+ * Always use this to build the set handed to toLengthDistribution. Filtering by
+ * hand is how the contamination above happened.
+ */
+export const siblingsOf = (bundles: TallyBundle[], bundle: TallyBundle): TallyBundle[] => {
+  if (!Array.isArray(bundles) || !bundle) return bundle ? [bundle] : [];
+  const kin = bundles.filter((b) => sameItem(b, bundle));
+  return kin.length ? kin : [bundle];
+};
+
 /** One length (or length range) across a set of bundles: the view that matters. */
 export interface TallyDistRow {
   label: string;

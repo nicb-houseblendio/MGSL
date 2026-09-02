@@ -1,34 +1,45 @@
 /**
- * Read a packing-list capture into the tally render model.
+ * Read a packing-list capture record into the tally render model.
  *
- * ── WHY THIS FILE EXISTS, and it corrects archTally.ts ───────────────────────
- * Philippe's item 4 says the tally matrix "sera feedé par le custom record". That
- * custom record is `customrecord_msl_plc_capture`, and the JSON it holds in
- * `custrecord_msl_plc_results_json` is written by the SHIPPED packing-list parser
- * (MSL_LIB_PLSchema.js, SCHEMA_VERSION '1.0'). Its shape is NOT `mgsl.tally.v1`:
+ * ── THE RECORD, settled 2026-08-27 ───────────────────────────────────────────
+ * Philippe's item 4 says the matrix "sera feedé par le custom record". That record
+ * is `customrecord_msl_plc_capture`, and the decision is explicit:
  *
- *   { parsedAt, engine, sourceFile,
- *     references: { po, invoice, contract, container, billOfLading, supplier, documentDate },
- *     totals:     { lotCount, pieces, volumeM3, boardFeet },
- *     lots: [ { lot, species, grade, thicknessMm, widthMm, lengthMm, pieces, volumeM3,
- *               boardFeet, printed{thickness,width,length}, matrix, needsReview } ],
- *     warnings, needsReview }
+ *   record-format.md, Nic, 2026-08-27
+ *     "Phase 1 tally storage REUSES the existing packing-list capture record.
+ *      `customrecord_mgsl_tally` (SDD §3.3.1) will NOT be created — that section
+ *      and the shell-per-PO model in §3.2.6 are superseded on this point."
  *
- * ⚠️ archTally.ts records a decision that `mgsl.tally.v1` "is what we STORE". That is
- * true of the parsing SKILL's hand-off, and false of this record. The screen must
- * therefore read the PARSER's shape, and we adapt at the boundary rather than change
- * a parser already running in production for a front-end preference. `mgsl.tally.v1`
- * stays the render model; this file is the only place that knows about capture JSON.
+ * That document lives at McGillStLaurent/Architectural/Tally/record-format.md on
+ * origin/master of the houseblend-clients repo, a path never checked out locally,
+ * which is why several ARCH-side notes written AFTER it still describe the storage
+ * question as open. It is not open.
+ *
+ * ── ⚠️ ONE FIELD, TWO WRITERS, TWO SHAPES ────────────────────────────────────
+ * `custrecord_msl_plc_results_json` is claimed by two authorities, and both are
+ * right, which is why this file sniffs instead of assuming:
+ *
+ *   record-format.md            "The canonical `mgsl.tally.v1` payload"
+ *   MSL_LIB_CaptureCommon.js:46 "v0: written by the MR (lot report; Long Text)"
+ *
+ * The Cowork skill (Phase 1, operated by Carlos) writes `mgsl.tally.v1`. The email
+ * capture MR writes `MSL_LIB_PLSchema.toLotReport`'s shape. They share one Long
+ * Text field on one record, discriminated only by `docType` in a DIFFERENT field.
+ * An earlier version of this header asserted the parser shape was the only one and
+ * called archTally.ts's mgsl.tally.v1 decision "false of this record". Corrected
+ * 2026-09-02: both shapes are real, `fromCaptureRecord` dispatches on the payload.
  *
  * ── WHAT buildLotMatrix CAN AND CANNOT PRODUCE ───────────────────────────────
  * Its per-lot matrix is { axis, widths[], widthsRaw[], rows[{len,lenRaw,counts,pcs,bf}],
  * colPcs{}, totPcs, totBF } where `axis` is one of none | width | length | scalar.
  * It is an if / else-if: a lot gets a WIDTH breakdown or a LENGTH breakdown, never
  * both. So the shipped parser STRUCTURALLY cannot emit a two-dimensional grid, which
- * is the same conclusion the six hand-verified documents give empirically.
+ * is the same conclusion the six hand-verified documents give empirically. The
+ * mgsl.tally.v1 template CAN express a grid — its worked example is 6"/9" x 8'/12' —
+ * so the two shapes do not have equal expressive power and the sniff matters.
  *
- * `rows[].bf` is always null - the parser only ever fills `totBF` - so per-row board
- * feet come from the lot total, and only when the lot has a single row.
+ * `rows[].bf` is always null in the parser shape - it only ever fills `totBF` - so
+ * per-row board feet come from the lot total, and only when the lot has a single row.
  *
  * A width column key is the literal string 'RW' when the document printed random
  * width. That is the parser stating a supplier practice, so it is the one honest
@@ -255,4 +266,148 @@ export const bundlesForLot = (payload: TallyPayload | null, lotNo: string): Tall
   if (!payload || !Array.isArray(payload.bundles) || !lotNo) return [];
   const want = String(lotNo).trim().toUpperCase();
   return payload.bundles.filter((b) => String(b.lot ?? '').trim().toUpperCase() === want);
+};
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   The capture RECORD, as built (v0)
+
+   record-format.md: "The account is built to v0: exactly the six fields below.
+   The ~30 other `custrecord_msl_plc_*` IDs in code and RECORDS.md are the v1 full
+   schema — defined as strings, NOT created in the account."
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** The six v0 fields. Ids from MSL_LIB_CaptureCommon.js `CAP`, the code source of truth. */
+export const CAPTURE_FIELDS = {
+  FILE: 'custrecord_msl_plc_file',
+  INTAKE_JSON: 'custrecord_msl_plc_intake_json',
+  RESULT_JSON: 'custrecord_msl_plc_results_json',
+  STATUS: 'custrecord_msl_plc_status',
+  STATUS_REASON: 'custrecord_msl_plc_status_reason',
+  BATCH_ID: 'custrecord_msl_plc_batch_id',
+} as const;
+
+/**
+ * Status VALUE NAMES, never internal ids.
+ *
+ * record-format.md is explicit: "Resolve values by NAME, never by internal id (SB1
+ * and prod lists are created manually; ids differ)". Comparing ids across
+ * environments is the bug this constant exists to prevent.
+ */
+export const CAPTURE_STATUS = {
+  PENDING: 'PENDING',
+  PARSING: 'PARSING',
+  AWAITING_CLAUDE: 'AWAITING_CLAUDE',
+  PARSED: 'PARSED',
+  MATCHED: 'MATCHED',
+  NEEDS_REVIEW: 'NEEDS_REVIEW',
+  DUPLICATE: 'DUPLICATE',
+  UNSUPPORTED: 'UNSUPPORTED',
+  ERROR: 'ERROR',
+} as const;
+
+/** Statuses whose payload is safe to show a trader. */
+const DISPLAYABLE = new Set<string>([CAPTURE_STATUS.PARSED, CAPTURE_STATUS.MATCHED, 'REVIEWED']);
+
+/** One capture record as the server hands it over. All fields are raw strings. */
+export interface CaptureRecord {
+  id?: string | number | null;
+  intakeJson?: string | null;
+  resultsJson?: string | null;
+  /** The status TEXT, resolved by name upstream. Never an internal id. */
+  status?: string | null;
+  statusReason?: string | null;
+  fileUrl?: string | null;
+}
+
+export interface CaptureIntake {
+  filename?: string | null;
+  /** 'TALLY' for skill-pushed tallies; 'PL' / 'BOL' for email captures sharing this record. */
+  docType?: string | null;
+  source?: string | null;
+  variant?: string | null;
+}
+
+export interface CaptureReadResult {
+  payload: TallyPayload | null;
+  header: CaptureHeader;
+  /** Which writer produced the payload, or why nothing was read. */
+  shape: 'mgsl.tally.v1' | 'lotReport' | 'unrecognised' | 'absent';
+  /** True when the record is a tally rather than a PL or BOL capture. */
+  isTally: boolean;
+  /** True when the status says this payload may be shown. */
+  displayable: boolean;
+  status: string | null;
+  statusReason: string | null;
+}
+
+const parseJson = (raw: unknown): Record<string, unknown> | null => {
+  if (raw && typeof raw === 'object') return raw as Record<string, unknown>;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Read one capture record, sniffing which of the two payload shapes it holds.
+ *
+ * Never throws and never guesses. A record it cannot read comes back with
+ * `payload: null` and a `shape` saying why, because the Tally View still has the
+ * source PDF to fall back to and a wrong matrix is worse than no matrix.
+ */
+export const fromCaptureRecord = (rec: CaptureRecord | null | undefined): CaptureReadResult => {
+  const status = rec?.status ? String(rec.status).trim().toUpperCase() : null;
+  const statusReason = rec?.statusReason ? String(rec.statusReason) : null;
+  const intake = (parseJson(rec?.intakeJson) || {}) as CaptureIntake;
+  const docType = intake.docType ? String(intake.docType).trim().toUpperCase() : null;
+
+  // docType lives in intake_json, a DIFFERENT field from the payload. A record with
+  // no intake envelope is not assumed to be a tally - PL and BOL captures share this
+  // record and their payloads would render as nonsense.
+  const isTally = docType === 'TALLY';
+  const displayable = !!status && DISPLAYABLE.has(status);
+
+  const empty: CaptureHeader = {
+    po: null, container: null, supplier: null, documentDate: null,
+    sourceFile: intake.filename ?? null, needsReview: status === CAPTURE_STATUS.NEEDS_REVIEW, warnings: [],
+  };
+
+  const raw = parseJson(rec?.resultsJson);
+  if (!raw) return { payload: null, header: empty, shape: 'absent', isTally, displayable, status, statusReason };
+
+  // ── shape 1: the skill's canonical payload, used as-is
+  if (raw.schema === 'mgsl.tally.v1' && Array.isArray(raw.bundles)) {
+    const payload = raw as unknown as TallyPayload;
+    return {
+      payload,
+      header: {
+        po: payload.po ?? null,
+        container: payload.container ?? null,
+        supplier: null,
+        documentDate: null,
+        sourceFile: payload.provenance?.sourceFile ?? intake.filename ?? null,
+        needsReview: status === CAPTURE_STATUS.NEEDS_REVIEW,
+        warnings: [],
+      },
+      shape: 'mgsl.tally.v1',
+      isTally,
+      displayable,
+      status,
+      statusReason,
+    };
+  }
+
+  // ── shape 2: the email MR's lot report, converted
+  if (Array.isArray(raw.lots)) {
+    const converted = fromCaptureResult(raw);
+    if (converted) {
+      return { payload: converted.payload, header: converted.header, shape: 'lotReport', isTally, displayable, status, statusReason };
+    }
+  }
+
+  return { payload: null, header: empty, shape: 'unrecognised', isTally, displayable, status, statusReason };
 };
