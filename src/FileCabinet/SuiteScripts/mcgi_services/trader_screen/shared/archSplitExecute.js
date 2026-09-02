@@ -75,7 +75,7 @@ define(['N/record', 'N/query', 'N/runtime', 'N/log'], (record, query, runtime, l
      * units type configured at all, which is how every softwood item is set up —
      * those derive volume from pack fields instead and never reach this module.
      */
-    const stockUnitRate = (itemId) => {
+    const checkedStockUnitRate = (itemId) => {
         const rows = query.runSuiteQL({
             query:
                 'SELECT u.conversionrate AS rate, i.stockunit AS stockunit, i.saleunit AS saleunit ' +
@@ -234,7 +234,7 @@ define(['N/record', 'N/query', 'N/runtime', 'N/log'], (record, query, runtime, l
         }
 
         const lot = readLotState(input.lotId, input.locationId);
-        const rate = stockUnitRate(lot.itemId);
+        const rate = checkedStockUnitRate(lot.itemId);
 
         const customerStored  = toStored(input.customerQty,  rate);
         const remainderStored = toStored(input.remainderQty, rate);
@@ -533,7 +533,7 @@ define(['N/record', 'N/query', 'N/runtime', 'N/log'], (record, query, runtime, l
         // Exported for the test runner and for the Suitelet's dry-run mode.
         revalidate: revalidate,
         nextChildLotNumber: nextChildLotNumber,
-        stockUnitRate: stockUnitRate,
+        checkedStockUnitRate: checkedStockUnitRate,
         toStored: toStored,
         toDisplay: toDisplay,
     };

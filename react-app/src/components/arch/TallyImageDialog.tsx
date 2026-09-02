@@ -69,7 +69,7 @@ const TallyMatrixPanel = ({
   sample?: { sourceFile: string | null; po: string | null; species: string | null; container?: string | null } | null;
 }) => {
   const list = siblings && siblings.length ? siblings : [bundle];
-  const { rows, totals } = toLengthDistribution(list);
+  const { rows, totals, mixedItems } = toLengthDistribution(list);
   // Mark by IDENTITY, not by bundleNo: CHECHEN really contains pack 92 twice, and
   // marking by number would highlight both of its rows.
   const selfIdx = list.indexOf(bundle);
@@ -107,6 +107,32 @@ const TallyMatrixPanel = ({
   );
 
   const nBundles = totals.bundles;
+
+  /* 🔴 A MIXED SET IS A CALLER BUG AND MUST NOT BE TOTALLED.
+   *
+   * One packing list carries several species. If whoever built `siblings` selected
+   * on thickness alone, this panel would add Sapele to African Mahogany and print
+   * the sum as the trader's stock. Measured before `siblingsOf` existed: 350 pieces
+   * shown for a 50-piece Sapele lot.
+   *
+   * The reducer detects the mixture; refusing to draw is this layer's job. Showing
+   * nothing is recoverable, showing a confident wrong total is not. */
+  if (mixedItems || selfIdx < 0) {
+    return (
+      <div style={{ width: '100%', alignSelf: 'flex-start', color: ARCH_SURFACE.text }}>
+        <div style={{
+          background: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 8,
+          padding: '14px 16px', fontSize: 12, color: '#7F1D1D', lineHeight: 1.55,
+        }}>
+          <b>No total is shown, because this set of bundles cannot be trusted.</b>{' '}
+          {mixedItems
+            ? 'They are not all the same species, thickness and width, so a total would mix items.'
+            : 'The bundle you opened is not among them, so this is some other item\'s tally.'}{' '}
+          That is a fault in how the bundles were selected, not in the document.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ width: '100%', alignSelf: 'flex-start', color: ARCH_SURFACE.text }}>

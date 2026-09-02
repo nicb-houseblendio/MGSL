@@ -206,6 +206,18 @@ export interface TallyDistribution {
     volumePartial: boolean;
     boardFeetPartial: boolean;
   };
+  /**
+   * True when the bundles handed in are NOT all the same item.
+   *
+   * 🔴 A CALLER BUG, AND THE VIEW MUST NOT SHOW A TOTAL WHEN IT IS SET. This
+   * function cannot know which item the trader clicked, so it cannot filter — but
+   * it can tell that somebody handed it a mixture, and refuse to be the thing that
+   * silently adds Sapele to African Mahogany. Selecting siblings by thickness
+   * alone did exactly that: 350 pieces reported for a 50-piece Sapele lot.
+   *
+   * Use `siblingsOf()` to build the input and this stays false.
+   */
+  mixedItems: boolean;
 }
 
 /**
@@ -304,8 +316,13 @@ export const toLengthDistribution = (bundles: TallyBundle[]): TallyDistribution 
     if (b?.totals?.boardFeet != null) { boardFeet = (boardFeet || 0) + b.totals.boardFeet; boardFeetSeen += 1; }
   }
 
+  // Homogeneity is checked here rather than trusted from the caller. Every bundle
+  // must be the same item as the first; one that is not makes the totals a lie.
+  const mixedItems = list.length > 1 && !list.every((b) => sameItem(b, list[0]));
+
   return {
     rows,
+    mixedItems,
     totals: {
       bundles: list.length,
       pieces,

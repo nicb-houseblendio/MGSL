@@ -131,5 +131,51 @@ ok('null input does not throw', toLengthDistribution(null).rows.length === 0, nu
   ok('siblingsOf tolerates a null list', siblingsOf(null, doc[0]).length === 1, null);
 }
 
+
+// ---- the reducer refuses to be the thing that silently sums a mixture
+{
+  const S = (species, th, len, pcs) => B({ bundleNo: String(species) + len, species,
+    thickness: { raw: th + 'in', inches: th }, width: null, lengthFt: len,
+    totals: { pieces: pcs, boardFeet: null, volumeM3: null } });
+  const mixed = [S('African Mahogany', 1, 8, 100), S('Sapele', 1, 10, 50)];
+  ok('mixed species flagged', toLengthDistribution(mixed).mixedItems === true, null);
+  const mixedTh = [S('Sapele', 1, 8, 10), S('Sapele', 2, 8, 10)];
+  ok('mixed thickness flagged', toLengthDistribution(mixedTh).mixedItems === true, null);
+  const clean = [S('Sapele', 1, 8, 10), S('Sapele', 1, 12, 20)];
+  ok('a homogeneous set is NOT flagged', toLengthDistribution(clean).mixedItems === false, null);
+  ok('a single bundle is never flagged', toLengthDistribution([clean[0]]).mixedItems === false, null);
+  ok('an empty set is not flagged', toLengthDistribution([]).mixedItems === false, null);
+  ok('siblingsOf output is never flagged',
+    toLengthDistribution(siblingsOf(mixed, mixed[1])).mixedItems === false, null);
+}
+
+
+// ---- the two guards are load-bearing TOGETHER, so test the seam between them.
+//      mixedItems cannot catch a set of ONE wrong bundle; only the view's
+//      selfIdx check can. Neither alone is sufficient.
+{
+  const S = (species, len, pcs) => B({
+    bundleNo: String(species) + len, species,
+    thickness: { raw: '1in', inches: 1 }, width: null, lengthFt: len,
+    totals: { pieces: pcs, boardFeet: null, volumeM3: null },
+  });
+  const sapele = S('Sapele', 10, 50);
+  const mahog = S('African Mahogany', 8, 100);
+
+  const lone = toLengthDistribution([mahog]);
+  ok('a single WRONG bundle is not flagged as mixed', lone.mixedItems === false, null);
+  ok('  ...so only the view selfIdx guard can catch it', [mahog].indexOf(sapele) === -1, null);
+
+  const doc = [mahog, sapele];
+  ok('siblingsOf always contains the clicked bundle (Sapele)', siblingsOf(doc, sapele).indexOf(sapele) >= 0, null);
+  ok('siblingsOf always contains the clicked bundle (Mahogany)', siblingsOf(doc, mahog).indexOf(mahog) >= 0, null);
+  ok('siblingsOf on an unrelated set returns just the bundle',
+    siblingsOf([mahog], sapele).length === 1 && siblingsOf([mahog], sapele)[0] === sapele, null);
+  ok('  ...which is homogeneous, confirming selfIdx is the protection there',
+    toLengthDistribution(siblingsOf([mahog], sapele)).mixedItems === false, null);
+  ok('via siblingsOf the clicked bundle is always at a findable index',
+    siblingsOf(doc, sapele).indexOf(sapele) >= 0 && siblingsOf(doc, mahog).indexOf(mahog) >= 0, null);
+}
+
 console.log(fail ? '\n' + fail + ' FAILED' : '\nall passed');
 process.exit(fail ? 1 : 0);

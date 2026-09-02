@@ -41,6 +41,13 @@
  * `rows[].bf` is always null in the parser shape - it only ever fills `totBF` - so
  * per-row board feet come from the lot total, and only when the lot has a single row.
  *
+ * ⚠️ NOTHING IMPORTS THIS FILE YET. The dispatcher, the docType check and the
+ * status gate are all correct and all inert: `ArchLotTable` still calls
+ * `demoTallyForLot` unconditionally, because zero capture records exist in either
+ * environment and the v0 record has no lot anchor to join on. This is the read half
+ * of the wiring, written and tested ahead of the data, not a live code path. Do not
+ * read a passing test suite here as evidence that the screen shows real tallies.
+ *
  * A width column key is the literal string 'RW' when the document printed random
  * width. That is the parser stating a supplier practice, so it is the one honest
  * source for `widthPolicy` and the reason this adapter never guesses it.
@@ -306,7 +313,16 @@ export const CAPTURE_STATUS = {
   ERROR: 'ERROR',
 } as const;
 
-/** Statuses whose payload is safe to show a trader. */
+/**
+ * Statuses whose payload is safe to show a trader.
+ *
+ * ⚠️ 'REVIEWED' IS NOT A LIST VALUE YET. record-format.md leaves it open: "add a
+ * REVIEWED list value (recommended; one admin edit, by-name resolution makes it
+ * non-breaking) or reuse MATCHED. Settle before Lucas codes the skill." It is
+ * accepted here so that adding it later needs no front-end change, and matching by
+ * NAME is what makes that safe. If the decision lands on reusing MATCHED instead,
+ * this line already handles it and nothing breaks either way.
+ */
 const DISPLAYABLE = new Set<string>([CAPTURE_STATUS.PARSED, CAPTURE_STATUS.MATCHED, 'REVIEWED']);
 
 /** One capture record as the server hands it over. All fields are raw strings. */

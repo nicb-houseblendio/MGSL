@@ -689,7 +689,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * was looking at rather than being a second opinion.
      *
      * The conversion rate is joined in here rather than looked up per line. A
-     * twelve-line order calling `stockUnitRate` once per line is twelve extra
+     * twelve-line order calling `checkedStockUnitRate` once per line is twelve extra
      * SuiteQL round trips at 10 governance units each, on an endpoint with a
      * 1,000-unit budget that also has to save a transaction.
      *
@@ -1002,7 +1002,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 return;
             }
 
-            // Refuse rather than fall back to 1:1. `splitLib.stockUnitRate` treats
+            // Refuse rather than fall back to 1:1. `splitLib.checkedStockUnitRate` treats
             // a missing rate as 1 and logs it, which is right for reading a
             // warehouse queue but wrong here: this document COMMITS stock, and at
             // rate 1 a Lumber line would be off by a factor of a thousand. The

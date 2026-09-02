@@ -184,7 +184,7 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
             // Sales Order or lot has been deleted since the queue was drawn.
             // That is the guard working, not a system fault, so it must not be
             // logged as an error.
-            // `different units` is the UOM guard in archSplitExecute.stockUnitRate. It is
+            // `different units` is the UOM guard in archSplitExecute.checkedStockUnitRate. It is
             // a data-setup refusal like the others here, so it must not log as a system
             // fault. The item-record error is logged separately, at ERROR, where it happens.
             const expected = /no longer|already|more than|greater than|nothing on hand|cannot be negative|does not exist|different units/i.test(message);
