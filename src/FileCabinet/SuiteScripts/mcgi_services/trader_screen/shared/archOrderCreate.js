@@ -178,6 +178,10 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * prices the draft against the same default, so stamping it here keeps the
      * margin the trader saw and the margin the order records in agreement. If it
      * were left to NetSuite's own default the two could silently diverge.
+     *
+     * This is the FRACTION, which is what prices a line and what the browser is
+     * handed back. The field itself is a Percent and wants 0.3 for the same
+     * rate -- see `insuranceRateStored`.
      */
     const INSURANCE_RATE_DEFAULT = 0.003;
 
@@ -355,6 +359,32 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         const n = num(param('custscript_arch_insurance_rate'));
         return n !== null && n >= 0 && n < 1 ? n : INSURANCE_RATE_DEFAULT;
     };
+
+    /**
+     * The same rate in the form the FIELD wants.
+     *
+     * 🔴 `custbody_mgsl_insurancerate` is `fieldvaluetype = Percent`, so
+     * `setValue` takes the number a person would type into it -- 0.3 for 0.3%
+     * -- and not the fraction that multiplies a price. Handing it the fraction
+     * stored 0.003% of the price, which is 3.0E-5: a hundredth of the rate the
+     * trader was quoted.
+     *
+     * Measured in the sandbox 2026-09-02: exactly 3 sales orders in the whole
+     * account carry 3.0E-5 and they are the only three this endpoint has ever
+     * created (SO-CWP-001344, 001345, 001346), against 3,987 at 0.003. Among
+     * those 3,987 is SO-CWP-001329, an ARCH line that took its rate from the
+     * form rather than from here -- so the correct value was sitting next to
+     * the wrong one in the same account the whole time.
+     *
+     * The stamp exists so the margin the trader saw and the margin the order
+     * records agree. Unscaled, it was putting them a hundredfold apart, in the
+     * direction that understates cost and overstates profit.
+     *
+     * Only the WRITE is scaled. `insuranceRate()` stays the fraction, because
+     * that is what prices the draft, what `archOrderPricing.ts` defaults to,
+     * and what this endpoint hands back to the browser.
+     */
+    const insuranceRateStored = () => insuranceRate() * 100;
 
     /**
      * A refusal the caller can act on, as opposed to a system failure.
@@ -1277,7 +1307,45 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         return present;
     };
 
-    const addLine = (so, line, index, remanOk) => {
+    /**
+     * Are the split line fields actually deployed?
+     *
+     * The same question `remanFieldsPresent` asks, with a sharper edge. In this
+     * sandbox all three are deployed and the write has never once failed, which
+     * is exactly why it went unguarded. Production carries NONE of the eight
+     * `custcol_mgsl_*` fields -- measured 2026-09-02 by SOAP getCustomizationId
+     * over transactionColumnCustomField, which is the only source that answers
+     * this reliably -- so the first split line written there would throw.
+     *
+     * And it would not throw at the `setSublistValue`. It throws out of
+     * `record.save`, as a bare UNEXPECTED_ERROR naming no field, which loses THE
+     * WHOLE ORDER rather than just the marker.
+     *
+     * Not memoised, for the reason `remanFieldsPresent` gives: a module-level
+     * cache would keep answering "no" after somebody deployed the fields.
+     */
+    const splitFieldsPresent = (so) => {
+        let present;
+        try {
+            const fields = so.getSublistFields({ sublistId: 'item' }) || [];
+            present = fields.indexOf(F_SPLIT)        !== -1
+                   && fields.indexOf(F_SPLIT_BF)     !== -1
+                   && fields.indexOf(F_SPLIT_STATUS) !== -1;
+        } catch (e) {
+            // If the probe itself fails, do not write. Same asymmetry as reman.
+            present = false;
+        }
+        if (!present) {
+            log.audit('ARCH Order split',
+                'The split line fields are not on the sales order record, so the split ' +
+                'marker was NOT written. Deploy custcol_mgsl_split, _split_bf and ' +
+                '_split_status to turn this on. The order itself is unaffected, but the ' +
+                'warehouse queue will not see these bundles.');
+        }
+        return present;
+    };
+
+    const addLine = (so, line, index, remanOk, splitOk) => {
         const set = (fieldId, value) =>
             so.setSublistValue({ sublistId: 'item', fieldId: fieldId, line: index, value: value });
 
@@ -1315,18 +1383,41 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             }
         }
 
+        /* Split, guarded the same way, and it must never be able to lose the
+         * order either. An order saved without its marker is recoverable by
+         * ticking the box by hand -- the bundle is committed either way. An
+         * order that never saved is not.
+         *
+         * Reported rather than swallowed, for the reason reman is: the marker is
+         * what puts the bundle in the warehouse queue, so a trader told "split
+         * requested" when nothing was written would be waiting on a cut that
+         * nobody will ever be asked to make. */
+        let splitWritten = true;
         if (line.isSplit) {
-            set(F_SPLIT,    true);
-            set(F_SPLIT_BF, line.displayQty);
-            // setSublistText is not available in standard mode, so the split
-            // status goes in by its list value id rather than its label.
-            so.setSublistValue({
-                sublistId: 'item', fieldId: F_SPLIT_STATUS, line: index,
-                value: splitStatusPendingId(),
-            });
+            if (splitOk) {
+                try {
+                    set(F_SPLIT,    true);
+                    set(F_SPLIT_BF, line.displayQty);
+                    // setSublistText is not available in standard mode, so the split
+                    // status goes in by its list value id rather than its label.
+                    so.setSublistValue({
+                        sublistId: 'item', fieldId: F_SPLIT_STATUS, line: index,
+                        value: splitStatusPendingId(),
+                    });
+                } catch (e) {
+                    splitWritten = false;
+                    log.error('ARCH Order split NOT written',
+                        'Line ' + index + ' (' + (line.itemCode || line.itemId) + '): ' +
+                        (e.name || '') + ': ' + (e.message || String(e)) +
+                        ' | The fields passed the presence probe but refused the write. The ' +
+                        'order itself is unaffected and is reported as split-not-stored.');
+                }
+            } else {
+                splitWritten = false;
+            }
         }
 
-        return remanWritten;
+        return { reman: remanWritten, split: splitWritten };
     };
 
     /**
@@ -2022,7 +2113,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             // `input.insuranceRate` from the browser, unbounded, which
             // contradicts this module's own rule about not letting a screen
             // choose financial context. It is configuration now.
-            setIfPresent(so, H_INSURANCE, insuranceRate(), 'the ops and insurance rate');
+            setIfPresent(so, H_INSURANCE, insuranceRateStored(), 'the ops and insurance rate');
 
             // ── Idempotency ─────────────────────────────────────────────────
             //
@@ -2126,7 +2217,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             // Configuration, so filled rather than restated. Overwriting it would
             // silently re-cost every line already on the order.
             if (!num(so.getValue({ fieldId: H_INSURANCE }))) {
-                setIfPresent(so, H_INSURANCE, insuranceRate(), 'the ops and insurance rate');
+                setIfPresent(so, H_INSURANCE, insuranceRateStored(), 'the ops and insurance rate');
             }
         }
 
@@ -2162,11 +2253,14 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         const firstNewLine = appending ? so.getLineCount({ sublistId: 'item' }) : 0;
         const wantsReman = resolved.lines.some((l) => !!l.reman);
         const remanOk = wantsReman ? remanFieldsPresent(so) : false;
+        const wantsSplit = resolved.lines.some((l) => !!l.isSplit);
+        const splitOk = wantsSplit ? splitFieldsPresent(so) : false;
         // `every` over the write outcomes, not the intent: one refused line makes
         // the whole order reman-not-stored, because a trader told "recorded" would
-        // stop carrying ANY of it across by hand.
-        const remanWrites = resolved.lines.map(
-            (line, i) => addLine(so, line, firstNewLine + i, remanOk));
+        // stop carrying ANY of it across by hand. The split marker is reported the
+        // same way and for the same reason.
+        const lineWrites = resolved.lines.map(
+            (line, i) => addLine(so, line, firstNewLine + i, remanOk, splitOk));
 
         let soId;
         try {
@@ -2249,7 +2343,14 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 quantity: l.displayQty,
                 isSplit:  l.isSplit,
             })),
-            splitLinesQueued: resolved.lines.filter((l) => l.isSplit).length,
+            /* Lines the warehouse will ACTUALLY be asked to split, not lines that
+             * asked to be split. The confirmation dialog renders this as "N lines
+             * queued for the warehouse to split", so counting intent here would
+             * keep making that promise on an order where the marker never landed
+             * -- which is precisely the failure the guard above exists to survive.
+             * `lineWrites` is index-parallel to `resolved.lines`. */
+            splitLinesQueued: resolved.lines.filter(
+                (l, i) => l.isSplit && lineWrites[i] && lineWrites[i].split).length,
             /* Whether the reman instructions actually reached the order.
              *
              * Reported rather than assumed, and this is the whole point: the
@@ -2262,7 +2363,13 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
              * `false` with `remanRequested: true` means the trader typed
              * instructions that were NOT saved and must be passed on by hand. */
             remanRequested: wantsReman,
-            remanStored: wantsReman && remanOk && remanWrites.every(Boolean),
+            remanStored: wantsReman && remanOk && lineWrites.every((w) => w.reman),
+            /* Same contract for the split marker, and it carries further than the
+             * reman note does: the marker is the ONLY thing that puts a bundle in
+             * the warehouse queue, so `splitRequested && !splitStored` means the
+             * stock is committed and nobody will ever be told to cut it. */
+            splitRequested: wantsSplit,
+            splitStored: wantsSplit && splitOk && lineWrites.every((w) => w.split),
             assignmentRows: check.assignmentRows,
             assignmentMismatches: check.mismatches,
             // Reported, not asserted — this is how the sign convention for a
@@ -2321,10 +2428,12 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * are deployed, and the endpoint would keep reporting `remanStored: false`
      * while looking entirely healthy.
      *
-     * So `split` is here as a CONTROL. `custcol_mgsl_split` is deployed and is
-     * written successfully on every split line, so it MUST read true. If it ever
-     * reads false, the probe mechanism is broken and the reman answer means
-     * nothing -- do not go looking for a missing deploy.
+     * So `split` is here as a CONTROL, but only in an account where the split
+     * fields are deployed. In THIS sandbox they are, so it must read true, and a
+     * false reading means the probe mechanism is broken rather than a missing
+     * deploy. In PRODUCTION it will read false and be entirely correct: none of
+     * the eight custcol_mgsl_* fields exist there (measured 2026-09-02). Check
+     * whether the fields exist before concluding anything about the probe.
      *
      * Creates an UNSAVED sales order and asks it. `record.create` writes nothing;
      * only `save` does. Runs under the deployment's `runasrole`, same as a real

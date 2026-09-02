@@ -69,6 +69,19 @@ export interface ArchOrderResult {
    * did NOT reach NetSuite and has to pass them on by hand.
    */
   remanStored?: boolean;
+  /** True when any line asked to be split. */
+  splitRequested?: boolean;
+  /**
+   * True when the split MARKER actually reached the SO lines.
+   *
+   * Same contract as `remanStored` and it carries further: the marker is the
+   * only thing that puts a bundle in the warehouse queue, so `splitRequested &&
+   * !splitStored` means the stock is committed and nobody will ever be told to
+   * cut it. The three `custcol_mgsl_split*` fields exist in the sandbox and in
+   * no other environment, so this is false by default in production until they
+   * are deployed. `splitLinesQueued` already counts only the lines that landed.
+   */
+  splitStored?: boolean;
 }
 
 /**
