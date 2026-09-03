@@ -297,9 +297,12 @@ export const ArchOrderDraftDialog = ({
           >
             <span style={{ fontSize: 13, lineHeight: 1 }}>⚠️</span>
             <span>
-              The <strong>planing and cutting rates</strong> below are still placeholders, and the
-              split fee is not charged at all until it is configured. Operations &amp; insurance is
-              real. <strong>Do not quote a customer from these margins.</strong>
+              The <strong>split fee</strong> is not charged at all until it is configured.
+              Operations &amp; insurance is a real rate, but NetSuite reads it from the customer
+              and charges it on revenue, not on lot cost, so the operations &amp; insurance cost
+              folded into the margin below is too small and the margin reads better than the
+              order will record.{' '}
+              <strong>Do not quote a customer from these margins.</strong>
             </span>
           </div>
 

@@ -8,10 +8,30 @@
  * Review steps. Do not quote a customer from these numbers, and do not let them
  * harden into fact because they have been in the codebase a while.
  *
- * ✅ Operations & insurance is the EXCEPTION, and is no longer provisional.
- * NetSuite has been carrying the real rate all along on the SO header. See
- * `opsInsuranceRate()` for the measurement; the prototype's figure was wrong by
- * a factor of 21.7 and made every margin on this screen read too low.
+ * ⚠️ Operations & insurance is a REAL rate that this screen nonetheless gets
+ * wrong twice, and the earlier version of this note claimed the opposite. It
+ * said NetSuite "has been carrying the real rate all along on the SO header",
+ * which was read as agreement. It is not:
+ *
+ *   THE RATE.  `custbody_mgsl_insurancerate` is sourced from the customer, and
+ *              the customer's rate is sourced from its credit insurer
+ *              (customrecord_mgsl_assureur -> customer -> transaction; the
+ *              chain is readable in customfield.source). Measured in prod
+ *              2026-09-03: 664 customers on Atradius at 0.003, 29 at 0.015, 18
+ *              at 0.0015, 105 with no insurer and no rate. This screen prices
+ *              every one of them at the configured default.
+ *   THE BASIS.  Production charges it on REVENUE. MCGI_SUE_SalesPurchaseDiscount
+ *              computes (subtotal * rate) / 100, and the GL agrees to the cent
+ *              on five sampled prod documents (CM-CWP-63 4,515.84 -> 13.55;
+ *              CM-CWP-61 2,284.80 -> 6.85; CM-CWP-62 1,927.46 -> 5.78;
+ *              CM-CWP-60 1,612.80 -> 4.84; IND001051 443.92 -> 1.33). This file
+ *              charges it on lot cost -- see the basis note at
+ *              `opsInsuranceCost`, which is deliberate and now contradicted.
+ *
+ * Both differences run the same way: they understate the charge and flatter the
+ * margin. Left as-is pending MGSL's decision on the basis, because changing it
+ * changes every quoted margin on the screen. The prototype's own figure was
+ * separately wrong by 21.7x, which is why a measured rate is used at all.
  *
  * The margin model itself is the part worth keeping: the trader enters a price
  * per board foot and immediately sees profit against the LOT COST, which is what
@@ -118,10 +138,20 @@ export const CUT_RATE = 0.2;
  * ── Why a configured default rather than a read of the field ────────────────
  * The wizard prices a DRAFT. There is no SO record to read the rate off until
  * the order is created, so a default is not laziness here, it is the only thing
- * available at the moment the trader needs the number. It is overridable
- * through MCGI_CONFIG so a subsidiary on a different rate does not need a
- * rebuild, and the write path should stamp the value it used onto the SO rather
- * than letting NetSuite default it independently.
+ * available at the moment the trader needs the number.
+ *
+ * ⚠️ "Overridable through MCGI_CONFIG" is what this used to say, and it is
+ * false. No SuiteScript emits an `opsInsuranceRate` key: the live production
+ * shell (file 54340, sha256 1127971f..., 2026-05-01) builds a configObj of eight
+ * keys and the word "insurance" does not appear in it. The fallback below is
+ * therefore the only value this screen has ever used, so treat it as a constant
+ * that merely looks configurable.
+ *
+ * ⚠️ And the write path deliberately no longer stamps this value over the
+ * SO. It used to, which overwrote the rate NetSuite sources from the customer;
+ * `customerInsuranceRate` in archOrderCreate.js now fills the field only when
+ * the customer carries no rate of its own. So the number below is a QUOTE, not
+ * a prediction of what the order will record.
  */
 export const OPS_INSURANCE_RATE_DEFAULT = 0.003;
 
@@ -133,8 +163,9 @@ export const opsInsuranceRate = (): number => {
 
 /*
  * `RATES_ARE_PROVISIONAL = true` used to live here. Deleted 2026-08-21: nothing
- * imported it, and it had become false. ops+insurance is the real 0.003 read off
- * the SO, and the reman rates are client-confirmed; the only unconfirmed figure
+ * imported it, and it had become false. ops+insurance is a real 0.003 (the house
+ * Atradius rate, not a read of the SO -- see the header), and the reman rates are
+ * client-confirmed; the only unconfirmed figure
  * left is the split fee, which `splitFeeEnabled()` already gates to zero. An
  * exported flag nobody reads cannot be trusted to be true, and tsc will never
  * say so -- unused EXPORTS are not errors, which is exactly how it survived
@@ -221,11 +252,30 @@ export const lineEconomics = (
   const planingCost = reman?.planing && remanChargeable ? bf * PLANING_RATE : 0;
   const cuttingCost = reman?.cutting && remanChargeable ? bf * CUT_RATE : 0;
   const processingCost = splitCost + planingCost + cuttingCost;
-  // Charged on MATERIAL COST, not revenue. The prototype is explicit about this
-  // (`opIns = l.mbf * l.avgPriceMBF * OPINS_RATE` — quantity x lot cost), and the
-  // basis is not cosmetic: costing it on revenue makes the charge rise with the
-  // price the trader types, so raising the price made the margin look worse than
-  // it is. Insurance and handling track the value of the WOOD, not the invoice.
+  /* Charged on MATERIAL COST, not revenue. The prototype is explicit about this
+   * (`opIns = l.mbf * l.avgPriceMBF * OPINS_RATE` -- quantity x lot cost), and the
+   * rationale is real: costing it on revenue makes the charge rise with the price
+   * the trader types, so raising the price makes the margin look worse.
+   *
+   * ⚠️ BUT PRODUCTION DOES THE OPPOSITE, and this comment used to read as
+   * though the question were settled. MCGI_SUE_SalesPurchaseDiscount posts
+   * (subtotal * rate) / 100 off the invoice, i.e. REVENUE, and the GL agrees to
+   * the cent on five sampled prod documents (see the header for the figures).
+   * Across the four ARCH item lines this endpoint has written (sbx 126449,
+   * 126450, 126654), revenue runs 1.607x to 2.135x each line's OWN lot cost:
+   * PUR44KD at 6.94225 against 4.32, and ZEB84KD at 25.80844, 26.840775 and
+   * 26.15255 against 14.15, 14.15 and 12.25 CAD/BF. So the real charge is 61% to
+   * 113% larger than this line computes, and the error is optimistic at every
+   * data point. An earlier draft quoted the 61% floor as the measurement.
+   *
+   * Those four prices were typed in testing, not traded, so read the range as
+   * the spread seen so far and not as a measurement of ARCH pricing.
+   *
+   * Deliberately NOT changed here. Which basis is right is MGSL's call, not
+   * ours: the prototype's reasoning is sound and the GL's behaviour is a fact,
+   * and they disagree. Until it is settled the screen states the divergence in
+   * its own copy rather than quietly picking a side. Do not "fix" this line
+   * without that answer. */
   const opsInsuranceCost = lotCost * opsInsuranceRate();
 
   const profit = revenue - lotCost - processingCost - opsInsuranceCost;

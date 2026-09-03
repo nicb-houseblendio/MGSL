@@ -2045,9 +2045,12 @@ export const SOWizard = ({
   const priceBody = (
     <div>
       <ProvisionalNote>
-        Profit is computed against the <strong>lot cost</strong>, which is real, and the{' '}
-        {(opsInsuranceRate() * 100).toFixed(2)}% operations &amp; insurance charge, which is the rate
-        NetSuite already carries on the SO. The reman rates are confirmed at $0.20/BF
+        Profit is computed against the <strong>lot cost</strong>, which is real, and a{' '}
+        {(opsInsuranceRate() * 100).toFixed(2)}% operations &amp; insurance charge. That charge is the
+        one cost here that NetSuite computes <strong>differently</strong>: NetSuite takes the rate
+        from the customer, not from this screen, and applies it to revenue rather than to lot cost.
+        For every ARCH customer today that makes the real charge larger than shown, so this margin
+        is optimistic. The reman rates are confirmed at $0.20/BF
         per service. The one rate not applied here is the <strong>split fee</strong>:
         MGSL quote ${SPLIT_FEE_PLACEHOLDER} per split, but it stays switched off until they ask for
         it, so a split line currently costs nothing in this margin. <strong>Do not quote a customer from these margins.</strong>
@@ -2285,10 +2288,14 @@ export const SOWizard = ({
       </table>
 
       {/* The prototype spells the arithmetic out here. Worth keeping: the margin
-          is the number the trader is judged on. Its inputs are no longer
-          guesses -- lot cost is real, ops & insurance is the rate on the SO, and the reman
-          rates are client-confirmed -- so it has to stay auditable rather than become a
-          black box that nobody can check. */}
+          is the number the trader is judged on, and the legend below is an honest
+          description of what THIS SCREEN computes -- which is not the same as what
+          NS records. Lot cost is real and the reman rates are client-confirmed, but
+          ops & insurance diverges twice over: NS sources the rate from the customer
+          (custentity_mgsl_insurancerate) and charges it on the invoice SUBTOTAL, while
+          this line charges a configured rate on lot cost. See the basis note in
+          archOrderPricing.ts. Keep it auditable rather than let it become a black
+          box nobody can check. */}
       <div
         style={{
           marginTop: 14,

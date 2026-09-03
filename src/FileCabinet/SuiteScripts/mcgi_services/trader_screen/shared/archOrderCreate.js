@@ -171,13 +171,21 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
     const H_INSURANCE   = 'custbody_mgsl_insurancerate';
 
     /**
-     * Operations + insurance rate stamped onto the order.
+     * FALLBACK operations + insurance rate, for a customer that carries none.
      *
      * Measured across all 4,216 SOs in the account on 2026-08-20: 3,979 (94.4%)
      * carry 0.003, the range is 0.0015-0.015 and only 48 are null. The front end
-     * prices the draft against the same default, so stamping it here keeps the
-     * margin the trader saw and the margin the order records in agreement. If it
-     * were left to NetSuite's own default the two could silently diverge.
+     * prices the draft against this same default.
+     *
+     * ⚠️ It is NOT stamped unconditionally. `custbody_mgsl_insurancerate` is
+     * sourced from the customer, and this module only fills it when the customer
+     * has no rate of its own: 105 of 815 active customers in prod on 2026-09-03,
+     * against 710 that carry one, 47 of those at something other than 0.003. On
+     * those 710 the order records the customer's rate while the trader was quoted
+     * this one, so the two DO diverge -- by design, and reported rather than
+     * hidden: see `customerInsuranceRate`, the audit line at the write site, and
+     * `insuranceRateSource` in the result. Stamping over the customer to force
+     * agreement was the old behaviour, and it overwrote negotiated rates.
      *
      * This is the FRACTION, which is what prices a line and what the browser is
      * handed back. The field itself is a Percent and wants 0.3 for the same
@@ -385,6 +393,94 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * and what this endpoint hands back to the browser.
      */
     const insuranceRateStored = () => insuranceRate() * 100;
+
+    /**
+     * The customer's own negotiated ops+insurance rate, as a FRACTION, or null.
+     *
+     * 🔴 The body field is SOURCED FROM THE CUSTOMER, and this module used to
+     * write straight over it. Measured in PRODUCTION 2026-09-03: of the 4,838
+     * sales orders that have `createdby IS NOT NULL` and a customer carrying a
+     * rate -- saved by a user or a script, so sourcing actually ran -- 4,836
+     * store exactly their customer's `custentity_mgsl_insurancerate`, including
+     * all 192 belonging to a customer at 0.015 and all 17 at 0.0015. Two differ,
+     * both on Billed orders and neither from sourcing: SO-IND-246044 (id 22210)
+     * carries a hand-typed 0.015 against a 0.003 customer, and SO-IND-246519 (id
+     * 41736) was left blank. Only the first is an override; the second is the
+     * empty-field case the append guard exists for. These counts drift, roughly
+     * 40 new SOs a day; the invariant that carries the argument is that agreement
+     * inside every rate cohort is total. `custbody_mgsl_insurancerate` is
+     * also `<displayType>DISABLED</displayType>` on form 386, which is what a
+     * field fed from somewhere else looks like.
+     *
+     * ⚠️ Do NOT cite the 0.015 cohort as proof, as an earlier draft of this
+     * comment did. Those 173 sandbox orders all have `createdby IS NULL` --
+     * migrated, never saved through any code path -- and sit on form 359 (172)
+     * and 373 (1), none on ARCH's 386. They show what an import wrote, not what
+     * sourcing does.
+     *
+     * Read through SuiteQL like everything else in this file, NOT through
+     * `lookupFields`: both fields are `fieldvaluetype = Percent`, SuiteQL returns
+     * a Percent as the stored FRACTION (0.003 for 0.3%), and that is the same
+     * unit `insuranceRate()` speaks. `lookupFields` formats for display and would
+     * hand back a string whose shape depends on account preferences.
+     *
+     * Returns null for "no rate" AND for "could not tell", which are the same
+     * thing to the caller: fall back to configuration, exactly as before this
+     * existed. 0 is NOT null -- a customer genuinely set to 0% keeps its 0.
+     */
+    const customerInsuranceRate = (customerId) => {
+        const id = int(customerId);
+        if (!id) return null;
+        try {
+            const rows = query.runSuiteQL({
+                query: 'SELECT custentity_mgsl_insurancerate AS rate FROM customer WHERE id = ?',
+                params: [id],
+            }).asMappedResults();
+            if (!rows.length) {
+                /* Not "no rate" -- the ROW did not come back, and the two are
+                 * indistinguishable to the caller. Worth one line because this
+                 * deployment runs as customrole2184 (see <runasrole> in
+                 * customscript_mcgi_sl_arch_order_create.xml) and this account has
+                 * already produced a table that role cannot read: see
+                 * custscript_arch_default_sales_rep, "the role cannot read the
+                 * employee table", measured 2026-08-20. If that ever happens to
+                 * `customer`, every order falls back to configuration and reports
+                 * rateSource:'configuration', which looks entirely correct. */
+                log.audit('ARCH Order Create',
+                    'Customer ' + id + ' returned no row for its ops+insurance rate ' +
+                    '(deleted, or not visible to this deployment role). Falling back ' +
+                    'to configuration.');
+                return null;
+            }
+            /* ⚠️ numOr, not num. `num` is the STRICT guard for REQUEST payloads:
+             * its regex is /^-?\d+(\.\d+)?$/ and rejects exponent notation. This
+             * is a Percent column, and this account formats a Percent below 0.001
+             * in exponent form -- measured 2026-09-03, SO-CWP-001344/45/46 read
+             * their own custbody_mgsl_insurancerate back as the string "3.0E-5".
+             *
+             * Changes nothing today: every customer rate in both environments is
+             * 0.0015, 0.003, 0.015 or unset, and 0.0015 is above the threshold. It
+             * stops a customer negotiated below 0.1% from silently reverting to the
+             * configured rate. Every other SuiteQL number in this file already goes
+             * through numOr for exactly this reason.
+             *
+             * ⛔ NO [0,1) BOUND HERE, deliberately. `insuranceRate()` bounds the
+             * script PARAMETER because that value gets WRITTEN. This one never is:
+             * when it is non-null the caller writes nothing and lets NetSuite
+             * source the field. Nulling an out-of-range value would push the caller
+             * into the configuration branch and stamp 0.3% over a negotiated rate,
+             * which is the bug this function was added to remove. 0 stays 0. */
+            return numOr(rows[0].rate, null);
+        } catch (e) {
+            // Never fail an order over a rate lookup. The fallback is the
+            // behaviour this function replaced, so the worst case is the old one.
+            log.audit('ARCH Order Create',
+                'Could not read the ops+insurance rate on customer ' + id +
+                ', falling back to configuration: ' +
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return null;
+        }
+    };
 
     /**
      * A refusal the caller can act on, as opposed to a system failure.
@@ -1935,6 +2031,21 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             ? record.load({ type: record.Type.SALES_ORDER, id: existingId, isDynamic: false })
             : record.create({ type: record.Type.SALES_ORDER, isDynamic: false });
 
+        /* What rate the order will actually carry, and where it came from,
+         * returned on the response and written to the execution log.
+         *
+         * ⚠️ NOTHING READS THEM YET. `ArchOrderResult` in archOrderApi.ts
+         * declares neither key and no component reads either, so this is a
+         * server-side and API-level record rather than something the trader sees.
+         * The screen's own copy is what discloses the divergence today.
+         *
+         * `effectiveRate` starts null and is filled by the create branch or by
+         * the post-save read. `rateSource` starts at 'configuration' rather than
+         * null, which is a deliberate floor and also a limit: an append whose
+         * post-save read fails keeps that initial answer. */
+        let effectiveRate = null;
+        let rateSource = 'configuration';
+
         if (!appending) {
             const h = input.header || {};
             const customerId = int(h.customerId);
@@ -2109,11 +2220,60 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 }
             }
 
-            // Not taken from the request. An earlier version accepted
-            // `input.insuranceRate` from the browser, unbounded, which
-            // contradicts this module's own rule about not letting a screen
-            // choose financial context. It is configuration now.
-            setIfPresent(so, H_INSURANCE, insuranceRateStored(), 'the ops and insurance rate');
+            /* Ops + insurance: FILL ONLY, never clobber.
+             *
+             * Not taken from the request. An earlier version accepted
+             * `input.insuranceRate` from the browser, unbounded, which
+             * contradicts this module's own rule about not letting a screen
+             * choose financial context.
+             *
+             * 🔴 But it is not ours to assert either. This line used to stamp
+             * `insuranceRateStored()` UNCONDITIONALLY over a value NetSuite
+             * sources from the customer, and it really did overwrite: the three
+             * oldest form-386 orders (126449, 126450, 126654) hold 3.0E-5
+             * against customers carrying 0.003, which is the old 100x scale value
+             * written straight over the sourced one.
+             *
+             * The 1.5% exposure is ahead of us, not behind. Measured 2026-09-03:
+             * 16 active subsidiary-5 customers carry 0.015, and subsidiary 5 is
+             * where every ARCH lot and all three customers with a form-386 order
+             * live. None of those three is one of the 16 -- customers 2853, 3285
+             * and 2878 all sit at 0.003, and production has no form-386 order at
+             * all -- so no order has yet been stamped 0.3% over a negotiated 1.5%.
+             * The first order from any of the 16 would have been, understating
+             * cost and overstating profit fivefold. The earlier 100x scale bug at
+             * least looked absurd; this one would not have.
+             *
+             * ⚠️ THE APPEND PATH'S GUARD CANNOT SIMPLY BE COPIED HERE, and that
+             * is the trap. The record is created in STANDARD mode (`isDynamic:
+             * false`, see `record.create` above), where sourcing does not run
+             * until `save({ enableSourcing: true })`. So on a NEW record
+             * `so.getValue(H_INSURANCE)` is empty no matter what the customer
+             * carries, a read-back guard would pass every time, and it would
+             * clobber exactly as before while looking fixed. The customer has to
+             * be asked directly.
+             *
+             * When the customer has a rate we write NOTHING and let NetSuite
+             * source it. That also keeps the Percent conversion in one place
+             * instead of two. */
+            const custRate = customerInsuranceRate(customerId);
+            if (custRate === null) {
+                effectiveRate = insuranceRate();
+                rateSource = 'configuration';
+                setIfPresent(so, H_INSURANCE, insuranceRateStored(), 'the ops and insurance rate');
+            } else {
+                effectiveRate = custRate;
+                rateSource = 'customer';
+                if (custRate !== insuranceRate()) {
+                    // Worth a line in the log, because the margin the trader was
+                    // shown was computed against the configured rate, not this one.
+                    log.audit('ARCH Order Create',
+                        'Customer ' + customerId + ' carries its own ops+insurance rate ' +
+                        custRate + ', which differs from the configured ' + insuranceRate() +
+                        '. Leaving the field to NetSuite; the quoted margin used the ' +
+                        'configured rate and is optimistic by the difference.');
+                }
+            }
 
             // ── Idempotency ─────────────────────────────────────────────────
             //
@@ -2214,10 +2374,48 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 so.setValue({ fieldId: 'location', value: headerLocation });
             }
 
-            // Configuration, so filled rather than restated. Overwriting it would
-            // silently re-cost every line already on the order.
-            if (!num(so.getValue({ fieldId: H_INSURANCE }))) {
-                setIfPresent(so, H_INSURANCE, insuranceRateStored(), 'the ops and insurance rate');
+            /* Ops + insurance on an APPEND: fill a gap from the CUSTOMER, never
+             * restate configuration over a rate the order already has.
+             *
+             * `!num(...)` was the wrong emptiness test twice over.
+             *
+             * It treats a legitimate stored 0% as absent. No instance today --
+             * measured 2026-09-03, 0 prod customers and 0 prod sales orders sit at
+             * 0%, so a stored 0 cannot arise from sourcing. A hand-typed one could:
+             * two prod orders diverge from their customer (see
+             * `customerInsuranceRate`), one an override to 0.015 on SO-IND-246044
+             * and one left blank on SO-IND-246519. Neither is 0, so the guard is
+             * safe today -- but do not read this as proof that an order can only
+             * ever hold its customer's rate.
+             *
+             * ⚠️ And `num` is the STRICT guard for REQUEST payloads: its regex is
+             * /^-?\d+(\.\d+)?$/. If `getValue` on a Percent hands back a display
+             * form such as "1.5%" it parses to null, the guard fires on an order
+             * that is NOT blank, and configuration gets stamped over a negotiated
+             * rate -- 10 open production orders carry 0.015. That return shape is
+             * NOT established here and cannot be read read-only. `numOr` is
+             * correct under either shape: parseFloat takes "1.5" and "1.5%" alike,
+             * returns 0 for a real zero, and NaN only for genuinely empty.
+             *
+             * The gap was also filled from configuration when the field is sourced
+             * from the CUSTOMER. No appendable blank-rate order has a rated
+             * customer today -- all eight are intercompany or test entities -- so
+             * this changes nothing yet; it fires the first time a rate is added to
+             * a customer that already has an open order.
+             *
+             * ⚠️ This WRITES where the create branch deliberately stays silent,
+             * and that asymmetry is correct: whether `save({ enableSourcing: true
+             * })` re-sources a blank field on an EXISTING record is not
+             * established, so silence here would be a gamble, while writing the
+             * customer's own value is the same number sourcing would produce.
+             *
+             * Nothing is REPORTED from here. The post-save read is the one place
+             * that answers what the order actually carries, on both paths. */
+            if (numOr(so.getValue({ fieldId: H_INSURANCE }), null) === null) {
+                const custRate = customerInsuranceRate(entityId);
+                setIfPresent(so, H_INSURANCE,
+                    custRate === null ? insuranceRateStored() : custRate * 100,
+                    'the ops and insurance rate');
             }
         }
 
@@ -2316,17 +2514,45 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         /* Confirmation PDF. LAST, and after the audit line, so the order's own
          * record in the log is written before anything that talks to the outside
          * world. Non-fatal by construction — see sendOrderPdf. */
-        const tranId = (function () {
+        const saved = (function () {
             try {
                 const r = query.runSuiteQL({
-                    query: 'SELECT tranid FROM transaction WHERE id = ?',
+                    query: 'SELECT tranid, custbody_mgsl_insurancerate AS rate ' +
+                           'FROM transaction WHERE id = ?',
                     params: [soId],
                 }).asMappedResults();
-                return r.length ? String(r[0].tranid) : 'SO ' + soId;
+                if (!r.length) return { tranId: 'SO ' + soId, rate: null };
+                /* `numOr`, not `num`: this account renders a Percent below 0.001
+                 * in exponent form and `num`'s regex /^-?\d+(\.\d+)?$/ rejects
+                 * it. Measured 2026-09-03: SO-CWP-001344/45/46 read their own
+                 * custbody_mgsl_insurancerate back as the string "3.0E-5". */
+                return { tranId: String(r[0].tranid), rate: numOr(r[0].rate, null) };
             } catch (e) {
-                return 'SO ' + soId;
+                return { tranId: 'SO ' + soId, rate: null };
             }
         }());
+        const tranId = saved.tranId;
+
+        /* What the ORDER carries, read back AFTER the save so sourcing has run.
+         *
+         * 🔴 This is the only reading that is true on BOTH paths. An append never
+         * enters the create branch, so `effectiveRate` stayed null and `rateSource`
+         * still said 'configuration' for an order that may carry anything: 11 open
+         * production sales orders carry a rate other than the configured 0.003
+         * today (10 at 0.015, 1 at 0.0015), and 16 active subsidiary-5 customers
+         * are set to 0.015. The response understated the ops cost fivefold while
+         * naming configuration as the source.
+         *
+         * SuiteQL returns a Percent as the stored FRACTION (0.015, not 1.5), which
+         * is the unit `insuranceRate()` speaks, so nothing is scaled here. A null
+         * rate leaves whichever branch ran to keep its own answer. */
+        if (saved.rate !== null) {
+            effectiveRate = saved.rate;
+            /* On an append the source is not knowable after the fact -- the order
+             * may have carried this rate before the append touched it -- so the
+             * honest answer is the order itself. */
+            if (appending) rateSource = 'order';
+        }
         const pdfMail = sendOrderPdf(soId, tranId, int(runtime.getCurrentUser().id));
 
         return {
@@ -2375,7 +2601,25 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             // Reported, not asserted — this is how the sign convention for a
             // sales order's assignments gets established on the first real write.
             storedSigns: check.storedSigns,
-            insuranceRate: insuranceRate(),
+            /* The rate the ORDER carries, read back off the saved record, not the
+             * one configuration holds.
+             *
+             * `insuranceRateSource` is only as precise as the create branch:
+             * 'configuration' means that branch stamped the fallback, 'customer'
+             * means it wrote nothing and left the field to NetSuite's sourcing.
+             * On an APPEND it is always 'order' once the read-back returns a
+             * value, and that is coarser than it looks: it covers an order that
+             * already carried the rate AND one whose blank field this very call
+             * just filled from the customer or from configuration. Do not read
+             * 'order' as proof the value predates this request. When the
+             * read-back returns nothing at all, an append still reports
+             * 'configuration' and the configured rate, which is a statement
+             * about configuration and not about the order.
+             *
+             * Any value different from the screen's own default means the margin
+             * the trader saw is wrong by at least that difference. */
+            insuranceRate: effectiveRate !== null ? effectiveRate : insuranceRate(),
+            insuranceRateSource: rateSource,
             idempotencyKey: idempotencyKey,
             // Non-empty means the order exists but those bundles are NOT locked.
             lotsNotAttributed: unplaced,
