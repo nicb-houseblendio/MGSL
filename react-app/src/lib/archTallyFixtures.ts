@@ -1,7 +1,18 @@
 /**
- * Tally fixtures, generated from MSL_PL_GroundTruth.json. DO NOT HAND-EDIT.
+ * Tally fixtures, generated from MSL_PL_GroundTruth.json.
  *
- * Regenerate: node scratchpad/genfix.mjs <path-to-MSL_PL_GroundTruth.json> <out.ts>
+ * ⚠️ THE GENERATOR IS GONE (noted 2026-09-04). This header used to read "DO NOT
+ * HAND-EDIT / Regenerate: node scratchpad/genfix.mjs <ground-truth> <out.ts>", but
+ * that path was a session scratchpad and no `genfix.mjs` exists anywhere in the repo
+ * or on disk. So this file is hand-maintained in practice, under a comment that
+ * forbade hand-editing. If you need to change it, edit it carefully and by hand, and
+ * keep the totals in step with MSL_PL_GroundTruth.json - archTally.test.mjs asserts
+ * 2,025 pieces for 314307 and 2,139 for CHECHEN, so a bad edit is caught.
+ *
+ * Related: a third document, the multi-width `detail pl inv 2026_00031.xlsx`, lives
+ * in its own file (archTallyDetailPL.ts) rather than here, deliberately. It is NOT
+ * in DEMO_DOCS, because its lengths are metric (2400-4500mm) and would render as
+ * 7.874' / 8.858' on whichever lots the demo hash assigned it to.
  *
  * ── WHAT IS AND IS NOT IN HERE ───────────────────────────────────────────────
  * The ground truth hand-transcribes PER BUNDLE for exactly TWO of its six

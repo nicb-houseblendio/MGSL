@@ -221,6 +221,12 @@ const intake = (o) => JSON.stringify(o);
   ok('MR payload detected as lotReport', r.shape === 'lotReport', r.shape);
   ok('lotReport container still surfaces', r.header.container === 'MEDU7574050', r.header);
   ok('lotReport bundles converted', r.payload.bundles.length === 1, r.payload && r.payload.bundles.length);
+  // REGRESSION 2026-09-04. fromCaptureResult set header.container and then built the
+  // payload without it, so every lot-report capture lost the container on the half
+  // that actually gets rendered. Asserting the header alone is what let it survive:
+  // assert BOTH, always.
+  ok('lotReport container reaches the PAYLOAD, not just the header',
+    r.payload.container === 'MEDU7574050', r.payload && r.payload.container);
 }
 
 // ---- docType discriminates; PL and BOL share this record

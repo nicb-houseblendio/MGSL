@@ -248,6 +248,12 @@ export const fromCaptureResult = (raw: unknown): CaptureTally | null => {
   const payload: TallyPayload = {
     schema: 'mgsl.tally.v1',
     po: header.po,
+    // 🔴 DO NOT DROP THIS. It was missing until 2026-09-04, so every lot-report
+    // capture built a header carrying the container and a payload without it.
+    // Anything reading the PAYLOAD - which is what fromCaptureRecord returns for
+    // the v1 shape, and what TallyImageDialog renders - silently got nothing.
+    // The test suite did not catch it because it asserted `header.container` only.
+    container: header.container,
     bundles: res.lots.map((l) => toBundle(l)),
     provenance: {
       sourceFile: header.sourceFile,

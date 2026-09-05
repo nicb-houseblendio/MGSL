@@ -31,16 +31,46 @@
  *   CHECHEN     18 bundles  1.25" and 1.0", lengths 3-10 ft, width NOT printed
  *
  * EVERY ONE of those 32 bundles has exactly one thickness, one width (or none)
- * and one length. NOT ONE contains a matrix. The `widthsIn: [6, 9]` example in
- * payload-template.json is synthetic and the dense grid in the UI mock is drawn
- * by a random fixture generator.
+ * and one length. None of the 32 contains a matrix.
  *
- * ⚠️ So a per-bundle matrix view is the WRONG GRAIN. A bundle is one cell. The
- * distribution a trader wants - "which lengths do I hold, and how many" - lives
- * ACROSS bundles of the same item, which is what toLengthDistribution() builds.
- * The richer per-bundle shapes are still handled below (multi-row bundles, length
- * ranges) because the schema permits them and a future supplier may send one, but
- * no document we hold today uses either.
+ * ⚠️⚠️ CORRECTION (2026-09-04), AND IT REVERSES THE CONCLUSION THIS NOTE USED TO
+ * DRAW. The paragraph above is true of the 32 TRANSCRIBED bundles and was then
+ * generalised to the corpus. That generalisation was wrong, and it is the same
+ * mistake as the 2026-08-30 correction above: reading a transcription limit as a
+ * document property.
+ *
+ * A THIRD document was read directly on 2026-09-04, not through the ground truth:
+ *
+ *   detail pl inv 2026_00031.xlsx   14 bundles, SAPELI KD, container CAAU9944443
+ *     one thickness (25mm) and ONE length per bundle, but 11 to 22 DISTINCT
+ *     WIDTHS each, across 28 populated columns from 100mm to 400mm in 10mm steps
+ *
+ * It reconciles 14/14 on pieces (width columns sum to `t_pcs`) and 14/14 on volume,
+ * to document totals of 1,901 pieces and 31.9613 m3. So a real supplier document
+ * DOES carry a per-bundle width breakdown, at far higher cardinality than the
+ * `widthsIn: [6, 9]` template example - that literal is synthetic, but what it
+ * expresses is attested.
+ *
+ * Two further claims this note used to make, both withdrawn:
+ *   - "the dense grid in the UI mock is drawn by a random fixture generator" is
+ *     FALSE. `demoTallyForLot` is a deterministic `h*31 + charCodeAt` hash and
+ *     there is no `Math.random` in any ARCH tally file.
+ *   - "A bundle is one cell" is false for this document: a bundle is one LENGTH
+ *     spanning many WIDTHS, i.e. a row of a width matrix.
+ *
+ * ⚠️ SO THERE ARE TWO CORRECT GRAINS, NOT ONE, AND THEY ARE NOT ALTERNATIVES.
+ * A lot is one bundle (Marc-Antoine, 2026-09: one PO line per thickness, three
+ * lines yielding 24 bundles, PO number plus an increment per bundle). Therefore:
+ *   - ACROSS bundles of an item, the distribution is by LENGTH. That is what a
+ *     trader asks first ("do I hold enough 12-footers?") and it only exists once
+ *     bundles are grouped, since no bundle spans two lengths. toLengthDistribution().
+ *   - WITHIN one bundle, the breakdown is by WIDTH. No sibling set is involved, so
+ *     it needs neither sameItem() nor siblingsOf() - and must not relax either,
+ *     because the width equality in sameItem() is what stopped a measured bug
+ *     where a Sapele lot rendered 350 pieces against a real 50.
+ *
+ * Multi-row bundles and length ranges are still handled below because the schema
+ * permits them, though no document we hold uses either.
  *
  * CHECHEN prints "Anchos: RW" (random width), so a width-less bundle is a first
  * class case and not an error. Its header also says "Largos: RL", but the ground
@@ -64,8 +94,28 @@ export interface TallyRow {
 }
 
 export interface TallyMatrix {
-  /** Column headers. Empty when the supplier prints random width (RW). */
+  /**
+   * Column headers, in the unit `widthUnit` declares. Empty when the supplier prints
+   * random width (RW).
+   *
+   * NOTE THE NAME IS NOW A LIE FOR METRIC DOCUMENTS and is kept only because renaming
+   * it would break the stored contract with the parsing skill. Read `widthUnit`.
+   */
   widthsIn: number[];
+  /**
+   * The unit `widthsIn` and the `pieces` keys are expressed in. Defaults to inches
+   * when absent, so every payload written before 2026-09-04 stays correct.
+   *
+   * WHY THIS EXISTS. `detail pl inv 2026_00031.xlsx` is metric: 28 populated columns
+   * from 100mm to 400mm in even 10mm steps. Converting to inches turns those into
+   * 3.937, 4.331, 4.724 - uneven decimals that no longer round-trip once any consumer
+   * rounds them, and keys like "3.937" in the `pieces` map. Storing the document's own
+   * unit and saying so is lossless; converting is not.
+   *
+   * This is the same rule as `widthPolicy` below: state the fact explicitly rather
+   * than leaving a reader to infer it from the shape of the data.
+   */
+  widthUnit?: 'in' | 'mm';
   rows: TallyRow[];
 }
 
@@ -88,6 +138,16 @@ export interface TallyBundle {
   /** NetSuite lot, when the document could be tied to one. Null before matching. */
   lot: string | null;
   species: string | null;
+  /**
+   * Grade as the document prints it, e.g. "FIRST AND SECOND" (FAS).
+   *
+   * Added 2026-09-04. It had no home at all before, so the adapter dropped it:
+   * `CaptureLot.grade` exists in archTallyCapture.ts and `toBundle` never read it.
+   * Free text on purpose - the account's Grade segment is empty for hardwood, so
+   * there is nothing to resolve an id against yet, and inventing a mapping would be
+   * worse than carrying the supplier's own words.
+   */
+  grade?: string | null;
   thickness: { raw: string | null; inches: number | null } | null;
   /** Null when the document carries no per-bundle breakdown at all. */
   matrix: TallyMatrix | null;
@@ -334,9 +394,27 @@ export const toLengthDistribution = (bundles: TallyBundle[]): TallyDistribution 
   };
 };
 
+/**
+ * The widths a bundle's MATRIX declares, or null when it has none.
+ *
+ * A multi-width bundle has no single printed width, so `b.width` is correctly null on
+ * one - but the widths are right there in the matrix, and the two functions below used
+ * to miss them entirely. See the correction note on widthNote().
+ */
+const matrixWidths = (b: TallyBundle): { list: number[]; unit: string } | null => {
+  const list = Array.isArray(b?.matrix?.widthsIn) ? (b.matrix as TallyMatrix).widthsIn : [];
+  if (!list.length) return null;
+  return { list, unit: b?.matrix?.widthUnit === 'mm' ? 'mm' : '"' };
+};
+
 /** How to describe a bundle's width, without inventing a supplier practice. */
 export const widthLabel = (b: TallyBundle): string => {
   if (b?.width?.inches != null) return `${b.width.inches}"`;
+  const m = matrixWidths(b);
+  if (m) {
+    if (m.list.length === 1) return `${m.list[0]}${m.unit}`;
+    return `${m.list.length} widths, ${Math.min(...m.list)}-${Math.max(...m.list)}${m.unit}`;
+  }
   return b?.widthPolicy === 'randomWidth' ? 'RW' : '—';
 };
 
@@ -349,8 +427,136 @@ export const widthLabel = (b: TallyBundle): string => {
  */
 export const widthNote = (b: TallyBundle): string => {
   if (b?.width?.inches != null) return '';
+  // 🔴 CORRECTION 2026-09-05. Without this branch a multi-width bundle fell through
+  // to the "no width" sentence below and printed a flat falsehood: detail-pl's first
+  // bundle states 19 widths and the note claimed the document gave none. These two
+  // functions were written when a bundle had at most ONE width and only ever read the
+  // scalar `b.width`, which is correctly null when there is no single width to state.
+  // Nothing to caveat here: the breakdown is on screen.
+  if (matrixWidths(b)) return '';
   if (b?.widthPolicy === 'randomWidth') {
     return 'This supplier prints random width (RW), so there is no width breakdown. Any width figure here would be invented.';
   }
   return 'This document does not give a width for these bundles, so none is shown.';
+};
+
+/* ── WIDTH, the second grain ─────────────────────────────────────────────────── */
+
+/** One width column of a single bundle. */
+export interface TallyWidthRow {
+  /** The width as printed, in `unit`. Null for pieces the document did not attribute. */
+  width: number | null;
+  /** '150mm', '6"', or 'unstated'. */
+  label: string;
+  pieces: number;
+  /** Share of the bundle's attributed pieces, 0..1. For a bar, not for arithmetic. */
+  share: number;
+}
+
+export interface TallyWidthDistribution {
+  rows: TallyWidthRow[];
+  /** The unit the widths are in, taken from the matrix. Inches when undeclared. */
+  unit: 'in' | 'mm';
+  totals: {
+    /** Distinct widths carrying stock. */
+    widths: number;
+    /**
+     * Pieces ATTRIBUTED TO A WIDTH - deliberately not called `pieces`, because it is
+     * not the bundle's total and must never be rendered as one. A random-width bundle
+     * attributes nothing, so this is 0 while the bundle holds 63 pieces. The total the
+     * bundle claims is `statedPieces`; whether they agree is `footsToTotal`.
+     */
+    attributed: number;
+    /** What the bundle itself claims. Compare it: see `footsToTotal`. */
+    statedPieces: number | null;
+  };
+  /**
+   * Pieces the document placed under no width (a random-width column). Shown as its
+   * own row rather than folded into a width, because attributing them would invent a
+   * measurement.
+   */
+  unattributed: number;
+  /**
+   * True when there is no breakdown to show - one width or none. The caller should
+   * fall back to the scalar `widthLabel(bundle)` rather than draw a one-row table.
+   */
+  degenerate: boolean;
+  /**
+   * FALSE means the width columns do not sum to the bundle's own stated piece count.
+   * The view must not present a total when this is false: a partial sum shown as a
+   * total is the one error a trader cannot see. Same rule as `volumePartial` above.
+   */
+  footsToTotal: boolean;
+}
+
+/**
+ * The width breakdown WITHIN one bundle.
+ *
+ * ── WHY THIS TAKES ONE BUNDLE AND NOT A SET ──────────────────────────────────
+ * A width breakdown is a property of a single bundle, so this needs no sibling set
+ * and deliberately does not use `sameItem` or `siblingsOf`. That matters: `sameItem`
+ * requires equal widths, so a sibling set can never BE multi-width, and relaxing it
+ * to allow one would reopen the measured bug it was added to close (a Sapele lot
+ * rendering 350 pieces against a real 50).
+ *
+ * So the two grains are complementary, not rival:
+ *   toLengthDistribution(siblings)  - ACROSS bundles of an item, by LENGTH
+ *   toWidthDistribution(bundle)     - WITHIN one bundle, by WIDTH
+ *
+ * ── WHAT IT DELIBERATELY DOES NOT DO ─────────────────────────────────────────
+ * No board feet and no volume. Both are derivable per width in principle
+ * (thickness x width x length / 12 x pieces), and both are refused here, because the
+ * one real multi-width document we hold states volume with no reproducible rounding
+ * contract - 9 rows at 3dp, 5 at 4dp, two truncating where twelve round half-up. A
+ * derived figure would disagree with the paper in the fourth decimal on most rows.
+ * Pieces are integers the document prints; those are safe to sum.
+ *
+ * Widths are summed ACROSS length rows, so a bundle that did span two lengths still
+ * yields one width distribution.
+ */
+export const toWidthDistribution = (bundle: TallyBundle | null | undefined): TallyWidthDistribution => {
+  const unit: 'in' | 'mm' = bundle?.matrix?.widthUnit === 'mm' ? 'mm' : 'in';
+  const fmt = (w: number): string => (unit === 'mm' ? `${w}mm` : `${w}"`);
+
+  const rows = Array.isArray(bundle?.matrix?.rows) ? (bundle!.matrix as TallyMatrix).rows : [];
+  const declared = Array.isArray(bundle?.matrix?.widthsIn) ? (bundle!.matrix as TallyMatrix).widthsIn : [];
+
+  const byWidth = new Map<number, number>();
+  let unattributed = 0;
+
+  for (const r of rows) {
+    for (const [k, v] of Object.entries(r?.pieces || {})) {
+      const n = Number(v) || 0;
+      if (!n) continue;
+      // An empty key is the random-width column. A key that is not a number, or one
+      // absent from widthsIn, is a parser fault - count it, never guess a width.
+      const w = k === '' ? NaN : Number(k);
+      if (!Number.isFinite(w) || !declared.includes(w)) { unattributed += n; continue; }
+      byWidth.set(w, (byWidth.get(w) || 0) + n);
+    }
+  }
+
+  const attributed = [...byWidth.values()].reduce((a, b) => a + b, 0);
+  const out: TallyWidthRow[] = [...byWidth.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([w, pieces]) => ({
+      width: w,
+      label: fmt(w),
+      pieces,
+      share: attributed > 0 ? pieces / attributed : 0,
+    }));
+
+  if (unattributed > 0) {
+    out.push({ width: null, label: 'unstated', pieces: unattributed, share: 0 });
+  }
+
+  const stated = bundle?.totals?.pieces ?? null;
+  return {
+    rows: out,
+    unit,
+    totals: { widths: byWidth.size, attributed, statedPieces: stated },
+    unattributed,
+    degenerate: byWidth.size <= 1,
+    footsToTotal: stated == null ? false : attributed + unattributed === stated,
+  };
 };
