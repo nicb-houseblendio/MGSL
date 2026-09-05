@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:deploy": "npm run build && node scripts/copy-html.js",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --experimental-strip-types --import ./scripts/test-alias-hook.mjs --test src/lib/*.test.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
