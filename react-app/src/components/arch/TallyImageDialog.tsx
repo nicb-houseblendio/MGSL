@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
-import { toLengthDistribution, widthLabel, widthNote } from '@/lib/archTally';
+import { toLengthDistribution, toWidthDistribution, widthLabel, widthNote } from '@/lib/archTally';
 import type { TallyBundle } from '@/lib/archTally';
 
 /**
@@ -73,6 +73,10 @@ const TallyMatrixPanel = ({
   // Mark by IDENTITY, not by bundleNo: CHECHEN really contains pack 92 twice, and
   // marking by number would highlight both of its rows.
   const selfIdx = list.indexOf(bundle);
+
+  // WIDTH is a property of the ONE opened bundle, never of the sibling set: sameItem
+  // requires equal widths, so a sibling set can never itself be multi-width.
+  const w = toWidthDistribution(bundle);
 
   const num = (n: number | null | undefined, dp = 0) =>
     n === null || n === undefined ? '\u00B7' : n.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
@@ -205,6 +209,108 @@ const TallyMatrixPanel = ({
           </tfoot>
         </table>
       </div>
+
+      {/* ── WIDTH, the second grain. Added 2026-09-05 (Philippe item 4).
+        *
+        * ROW PER WIDTH, NOT COLUMN. The dialog is a hard 720px and the widest real
+        * bundle we hold carries 22 widths; at this cell padding that wants ~1,210px.
+        * A vertical table fits the same data in 250-510px of height.
+        *
+        * Renders NOTHING when the breakdown is degenerate (one width or none), which
+        * is every bundle in the current demo rotation - the scalar widthLabel in the
+        * heading above already says everything a single-width bundle has to say. */}
+      {!w.degenerate && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textLight, marginBottom: 4 }}>
+            Widths inside bundle <span className="font-mono">{bundle.bundleNo}</span>
+            {' '}&middot; {w.totals.widths} {w.totals.widths === 1 ? 'width' : 'widths'}
+            {w.unit === 'mm' ? ' (as the document prints them, in mm)' : ''}
+          </div>
+
+          <div style={{ background: '#fff', border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'auto', maxHeight: '32vh' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={{ ...head, textAlign: 'left' }}>Width</th>
+                  <th style={head}>Pieces</th>
+                  <th style={{ ...head, textAlign: 'left' }}>Share</th>
+                </tr>
+              </thead>
+              <tbody>
+                {w.rows.map((r) => (
+                  <tr key={r.label}>
+                    <td style={{ ...cell, textAlign: 'left', fontWeight: 600, fontStyle: r.width === null ? 'italic' : undefined }} className="font-mono">
+                      {r.label}
+                    </td>
+                    <td style={cell} className="font-mono">{num(r.pieces)}</td>
+                    <td style={{ ...cell, textAlign: 'left', width: '45%' }}>
+                      {/* The unattributed row gets no bar: its share is 0 by construction,
+                        * and drawing an empty bar next to a real piece count reads as
+                        * "none of these", which is the opposite of the truth. */}
+                      {r.width === null ? (
+                        <span style={{ color: ARCH_SURFACE.textLight, fontSize: 10.5 }}>no width given</span>
+                      ) : (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ flex: 1, height: 6, background: '#F1F5F9', borderRadius: 3, overflow: 'hidden' }}>
+                            <span style={{ display: 'block', height: '100%', width: `${Math.max(1, r.share * 100)}%`, background: '#93C5FD' }} />
+                          </span>
+                          <span className="font-mono" style={{ fontSize: 10.5, color: ARCH_SURFACE.textMid, minWidth: 34, textAlign: 'right' }}>
+                            {(r.share * 100).toFixed(1)}%
+                          </span>
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+
+              {/* 🔴 THREE CASES, AND ONLY ONE OF THEM IS A TOTAL.
+                *
+                * footsToTotal is FALSE in two very different situations and they must
+                * not be shown the same way:
+                *   - the document states no total at all. Nothing is wrong; the columns
+                *     are all we have, so they are labelled "Shown", never "Total".
+                *   - the document states a total the columns contradict. That is the one
+                *     error a trader cannot see, so no total is printed at all. */}
+              {w.footsToTotal ? (
+                <tfoot>
+                  <tr>
+                    <td style={{ ...cell, textAlign: 'left', fontWeight: 700, background: '#F8FAFC' }}>Total</td>
+                    <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
+                      {num(w.totals.statedPieces)}
+                    </td>
+                    <td style={{ ...cell, background: '#F8FAFC' }} />
+                  </tr>
+                </tfoot>
+              ) : w.totals.statedPieces === null ? (
+                <tfoot>
+                  <tr>
+                    <td style={{ ...cell, textAlign: 'left', fontWeight: 700, background: '#F8FAFC' }}>Shown</td>
+                    <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
+                      {num(w.totals.attributed + w.unattributed)}
+                    </td>
+                    <td style={{ ...cell, background: '#F8FAFC', textAlign: 'left', fontSize: 10.5, color: ARCH_SURFACE.textLight }}>
+                      the document states no total
+                    </td>
+                  </tr>
+                </tfoot>
+              ) : null}
+            </table>
+          </div>
+
+          {!w.footsToTotal && w.totals.statedPieces !== null && (
+            <div style={{
+              marginTop: 6, background: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 6,
+              padding: '8px 10px', fontSize: 10.5, color: '#7F1D1D', lineHeight: 1.5,
+            }}>
+              <b>No total is shown for the widths.</b> The bundle states{' '}
+              <span className="font-mono">{num(w.totals.statedPieces)}</span> pieces and these columns
+              sum to <span className="font-mono">{num(w.totals.attributed + w.unattributed)}</span>. Read
+              the widths off the document rather than this table.
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ marginTop: 8, fontSize: 10.5, color: ARCH_SURFACE.textLight, lineHeight: 1.5 }}>
         {anyPartial && (

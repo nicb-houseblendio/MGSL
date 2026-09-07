@@ -3,6 +3,7 @@ import { formatQty, unitLabel } from '@/lib/archUom';
 import { lotAllocation, formatShortDate } from '@/lib/archFixtures';
 import { ARCH_BUCKET_META, ARCH_RESERVE_INK, ARCH_SURFACE } from '@/components/arch/archColors';
 import { TallyButton, TallyImageDialog } from '@/components/arch/TallyImageDialog';
+import { demoTallyProps } from '@/lib/archTallyFixtures';
 import type { ArchSummaryRow } from '@/types/arch';
 
 /**
@@ -170,6 +171,10 @@ export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchRes
           imageUrl={tallyImages[tallyOpen] || row.lots.find((l) => l.lotNo === tallyOpen)?.tallyImageUrl}
           onClose={() => setTallyOpen(null)}
           onUpload={onUploadTally}
+          /* A reserved lot is ALSO in the On Hand table above, so this is the same lot
+             number with two tally buttons on one screen. Until 2026-09-05 they opened
+             two different dialogs. See demoTallyProps for why the choice lives there. */
+          {...demoTallyProps(tallyOpen)}
         />
       )}
     </div>

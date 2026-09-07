@@ -1,6 +1,6 @@
 import { TALLY_DETAIL_PL, DETAIL_PL_TOTALS } from './archTallyDetailPL.ts';
 import { toLengthDistribution, siblingsOf, sameItem, toWidthDistribution } from './archTally.ts';
-import { demoTallyForLot, TALLY_314307, TALLY_CHECHEN } from './archTallyFixtures.ts';
+import { demoTallyForLot, TALLY_314307, TALLY_CHECHEN, demoWidthTallyForLot, demoTallyProps } from './archTallyFixtures.ts';
 
 let fail = 0;
 const ok = (name, cond, got) => {
@@ -221,6 +221,65 @@ const ok = (name, cond, got) => {
     widthLabel(TALLY_CHECHEN.bundles[0]));
   ok('random width still gets its caveat', /random width/i.test(widthNote(TALLY_CHECHEN.bundles[0])),
     widthNote(TALLY_CHECHEN.bundles[0]));
+}
+
+// ---- demoWidthTallyForLot: the OPT-IN feed for the width table. Added 2026-09-05.
+// The width table renders nothing on a degenerate bundle, and both documents in the
+// demo rotation are degenerate, so without this accessor the table is unreachable.
+{
+  const sampled = ['316027-1', '315970-7', '315604-13', '315411-16A', '1535', 'ZEB84KD-2'];
+  const got = sampled.map((l) => demoWidthTallyForLot(l));
+  ok('every sampled lot gets a bundle', got.every((d) => d && d.bundle), got.map((d) => !!d));
+  ok('every one of them is MULTI-width, so the table always draws',
+    got.every((d) => toWidthDistribution(d.bundle).degenerate === false), null);
+  ok('every one carries sample provenance naming the source document',
+    got.every((d) => d.sample && d.sample.sourceFile === 'detail pl inv 2026_00031.xlsx'), got.map((d) => d.sample));
+  ok('the container is carried, so the banner can name the shipment',
+    got.every((d) => d.sample.container === 'CAAU9944443'), null);
+  ok('deterministic: the same lot gives the same bundle twice',
+    demoWidthTallyForLot('316027-1').bundle === demoWidthTallyForLot('316027-1').bundle, null);
+  ok('the clicked bundle is always inside its own siblings',
+    got.every((d) => d.siblings.indexOf(d.bundle) >= 0), null);
+  ok('an empty lot number gets nothing', demoWidthTallyForLot('') === null, null);
+
+  // 🔴 THE POINT OF THE SEPARATE ACCESSOR. Adding detail-pl to DEMO_DOCS would have
+  // been one line; it would also have put 7.874' lengths on a third of ARCH lots.
+  ok('the default rotation is UNCHANGED by the new accessor',
+    sampled.every((l) => demoTallyForLot(l).sample.sourceFile !== 'detail pl inv 2026_00031.xlsx'), null);
+  ok('  ...and still renders whole-foot lengths',
+    sampled.every((l) => Number.isInteger(demoTallyForLot(l).bundle.lengthFt)), null);
+}
+
+// ---- demoTallyProps: ONE selection, so the two call sites cannot diverge again.
+// Added 2026-09-05. ArchReservedSection passed none of these until then, so a reserved
+// lot had two tally buttons on one screen opening two different dialogs.
+{
+  const sampled = ['316027-1', '315970-7', '315604-13', '315411-16A', '1535', 'ZEB84KD-2'];
+  const props = sampled.map((l) => demoTallyProps(l));
+  ok('every lot gets all three props, not a subset',
+    props.every((p) => p.bundle && Array.isArray(p.siblings) && p.sample), props.map((p) => Object.keys(p)));
+  ok('two calls for the same lot agree, so both tables show the same dialog',
+    sampled.every((l) => demoTallyProps(l).bundle === demoTallyProps(l).bundle), null);
+  ok('it matches demoTallyForLot while the flag is unset',
+    sampled.every((l) => demoTallyProps(l).bundle === demoTallyForLot(l).bundle), null);
+  ok('the clicked bundle is findable by identity inside its siblings, which is how the dialog marks it',
+    props.every((p) => p.siblings.indexOf(p.bundle) >= 0), null);
+  ok('an empty lot number yields undefined props rather than throwing',
+    demoTallyProps('').bundle === undefined, null);
+
+  // the opt-in flag, exercised through the same helper both components call
+  const g = globalThis;
+  const had = Object.prototype.hasOwnProperty.call(g, 'window');
+  if (!had) g.window = {};
+  g.window.MCGI_CONFIG = { tallyDemoDoc: 'detail-pl' };
+  ok('with the flag set, the helper serves the multi-width document',
+    sampled.every((l) => demoTallyProps(l).sample.sourceFile === 'detail pl inv 2026_00031.xlsx'), null);
+  ok('  ...and every bundle it serves is multi-width',
+    sampled.every((l) => toWidthDistribution(demoTallyProps(l).bundle).degenerate === false), null);
+  g.window.MCGI_CONFIG = {};
+  ok('clearing the flag restores the default rotation',
+    sampled.every((l) => demoTallyProps(l).bundle === demoTallyForLot(l).bundle), null);
+  if (!had) delete g.window; else delete g.window.MCGI_CONFIG;
 }
 
 console.log(fail ? `\n${fail} FAILED` : '\nall passed');

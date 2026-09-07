@@ -39,6 +39,7 @@
 
 import type { TallyPayload, TallyBundle } from '@/lib/archTally';
 import { siblingsOf } from '@/lib/archTally';
+import { TALLY_DETAIL_PL } from '@/lib/archTallyDetailPL';
 
 /** Packing List  030_2025 - PO 314307.pdf — 14 bundles, hand-verified, width printed */
 export const TALLY_314307: TallyPayload = {
@@ -1281,4 +1282,73 @@ export const demoTallyForLot = (lotNo: string): DemoTally | null => {
     siblings,
     sample: { sourceFile: doc.provenance?.sourceFile ?? null, po: doc.po, species: bundle.species, container: doc.container ?? null },
   };
+};
+
+/**
+ * OPT-IN ONLY: serve the one real multi-width document, so the width table can be
+ * seen at all. Added 2026-09-05.
+ *
+ * ⚠️ WHY THIS IS NOT JUST ADDED TO DEMO_DOCS. detail-pl is metric (2400-4500mm), so
+ * through rowLabel() its lengths render as 7.874' / 8.858' / 9.843' - correct, and
+ * unreadable. Putting it in the rotation would degrade the WORKING length view on
+ * roughly a third of ARCH lots to show off a table nobody asked to see there. A test
+ * asserts it never leaks into demoTallyForLot; that test must keep passing.
+ *
+ * So this is reached only when someone asks for it by name, and the caller is
+ * responsible for asking. Every bundle it returns is multi-width, so the width table
+ * always draws; the length table beside it will show a fractional foot figure, which
+ * is the accepted cost of looking at this document.
+ *
+ * Deterministic by lot number, same as demoTallyForLot, so screenshots reproduce.
+ */
+export const demoWidthTallyForLot = (lotNo: string): DemoTally | null => {
+  if (!lotNo) return null;
+  const doc = TALLY_DETAIL_PL;
+  if (!doc.bundles.length) return null;
+  const bundle = doc.bundles[hash(lotNo) % doc.bundles.length];
+  if (!bundle) return null;
+  return {
+    bundle,
+    siblings: siblingsOf(doc.bundles, bundle),
+    sample: { sourceFile: doc.provenance?.sourceFile ?? null, po: doc.po, species: bundle.species, container: doc.container ?? null },
+  };
+};
+
+/**
+ * The three tally props a TallyImageDialog call site needs, chosen in ONE place.
+ *
+ * ── WHY THIS IS A FUNCTION AND NOT TWO COPIES ────────────────────────────────
+ * There are two call sites - ArchLotTable and ArchReservedSection - and until
+ * 2026-09-05 only the first passed these at all. A reserved lot appears in BOTH
+ * tables on the same screen, so the same lot number had two tally buttons giving two
+ * different dialogs: a parsed length table with a sample banner from one, an
+ * image-or-placeholder from the other. Copying the selection into the second site
+ * would fix today and reopen tomorrow, so the selection lives here instead.
+ *
+ * ── THE ARGUMENT AGAINST DOING THIS, RECORDED ────────────────────────────────
+ * What the reserved section was missing is FIXTURE data, deliberately labelled "not
+ * this lot's document". So it was arguably the more honest of the two, and feeding it
+ * the same demo makes both buttons equally wrong rather than both right. That is
+ * true, and it is not the reason to leave it: the gap is structural. When lots carry
+ * a real tally link, whatever supplies it goes through this function and reaches both
+ * tables. The yellow sample banner names the source file either way.
+ *
+ * MCGI_CONFIG.tallyDemoDoc === 'detail-pl' swaps in the one real multi-width document
+ * so the width table can be seen. Off by default and off in production: that document
+ * is metric, so its lengths render as 7.874'. Settable from the browser console
+ * (window.MCGI_CONFIG.tallyDemoDoc = 'detail-pl', then reopen the dialog) with no
+ * build and no Suitelet deploy.
+ */
+export const demoTallyProps = (lotNo: string): {
+  bundle?: TallyBundle; siblings?: TallyBundle[]; sample?: DemoTally['sample'];
+} => {
+  const cfg = typeof window !== 'undefined'
+    ? (window as unknown as { MCGI_CONFIG?: { tallyDemoDoc?: string } }).MCGI_CONFIG
+    : undefined;
+  // ONE call, not two: each builds a fresh siblings array, and the dialog finds the
+  // clicked bundle by reference identity.
+  const demo = cfg?.tallyDemoDoc === 'detail-pl'
+    ? demoWidthTallyForLot(lotNo)
+    : demoTallyForLot(lotNo);
+  return { bundle: demo?.bundle, siblings: demo?.siblings, sample: demo?.sample };
 };
