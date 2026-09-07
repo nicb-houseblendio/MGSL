@@ -273,5 +273,93 @@ const intake = (o) => JSON.stringify(o);
   ok('v1 without a bundles array is refused', noBundles.shape === 'unrecognised', noBundles.shape);
 }
 
+
+// ---- grade and widthUnit must survive the lotReport path.
+// Both were declared on TallyBundle before anything populated them: grade was added
+// BECAUSE the adapter dropped it, and then the adapter still dropped it. Fixed
+// 2026-09-05; these pin it.
+{
+  const lotReport = {
+    sourceFile: 'g.pdf',
+    references: { po: '314307', container: 'MEDU7574050' },
+    lots: [{
+      lot: '1535', pieces: 50, grade: 'FIRST AND SECOND',
+      thicknessMm: 25, widthMm: 139.7, lengthMm: 2438.4,
+      matrix: { axis: 'width', widths: [5.5, 6], rows: [{ len: 8, counts: { '5.5': 30, '6': 20 }, pcs: 50 }] },
+    }],
+  };
+  const r = fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY' }), resultsJson: JSON.stringify(lotReport), status: 'PARSED' });
+  const b = r.payload.bundles[0];
+  ok('grade survives the adapter', b.grade === 'FIRST AND SECOND', b.grade);
+  ok('matrix declares its unit rather than relying on the default',
+    b.matrix.widthUnit === 'in', b.matrix && b.matrix.widthUnit);
+  // The parser converts to inches via widthIn() (d.mm / 25.4), so 'in' is the truth
+  // here, not an assumption. If a future parser emits mm this assertion is the tripwire.
+  ok('width keys are the parser\'s inches, carried through', b.matrix.widthsIn.join(',') === '5.5,6',
+    b.matrix.widthsIn);
+  ok('a lot with no grade yields null, not undefined',
+    fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY' }),
+      resultsJson: JSON.stringify({ lots: [{ lot: 'x', pieces: 1 }] }), status: 'PARSED' })
+      .payload.bundles[0].grade === null, null);
+}
+
+// ---- the check reaches the caller. Added 2026-09-05.
+// fromCaptureRecord has FOUR returns; the check is applied at one wrapper exit so a
+// fifth shape cannot silently ship unchecked. These assertions are what enforce that.
+{
+  const rec = (r, st) => ({ intakeJson: intake({ docType: 'TALLY' }), resultsJson: JSON.stringify(r), status: st || 'PARSED' });
+
+  ok('a clean v1 payload reports ok', fromCaptureRecord(rec(TALLY_V1)).check.ok, fromCaptureRecord(rec(TALLY_V1)).check);
+
+  // the same payload, one column removed, so 30 + 10 no longer makes the stated 50
+  const bad = JSON.parse(JSON.stringify(TALLY_V1));
+  bad.bundles[0].matrix.rows[0].pieces['9'] = 10;
+  const rb = fromCaptureRecord(rec(bad));
+  ok('a v1 payload that does not foot is FLAGGED, not rejected', rb.check.ok === false && rb.payload !== null, rb.check);
+  ok('  ...and the issue names the bundle a view must not total',
+    rb.check.issues[0].bundleNo === 'S8-0142' && rb.check.issues[0].index === 0, rb.check.issues);
+
+  // the converted lotReport path must be checked too, not just the pass-through cast
+  const badLot = { sourceFile: 'x.pdf', references: { po: '1' },
+    lots: [{ lot: 'L1', pieces: 99, matrix: { axis: 'width', widths: [6], rows: [{ len: 2438.4, counts: { '6': 3 } }] } }] };
+  const rl = fromCaptureRecord(rec(badLot));
+  ok('the converted lotReport path is checked as well', rl.shape === 'lotReport' && rl.check.ok === false, rl.check);
+
+  // every non-payload exit still carries a check, so no caller needs a guard
+  ok('an absent payload still carries a check', fromCaptureRecord(rec(null)).check.ok === true, null);
+  ok('an unrecognised payload still carries a check', fromCaptureRecord(rec({ nope: 1 })).check.ok === true, null);
+  ok('a null record still carries a check', fromCaptureRecord(null).check.ok === true, null);
+}
+
+// ---- PER-LOT needsReview. The parser flags the individual lot it doubts; until
+// 2026-09-05 only the DOCUMENT-level flag reached the header, so a document whose 7th
+// bundle could not be read cleanly rendered exactly like a clean one.
+{
+  const doc = { sourceFile: 'x.pdf', references: { po: '1' }, lots: [
+    { lot: 'A', pieces: 10 },
+    { lot: 'B', pieces: 10, needsReview: true },
+  ] };
+  const r = fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY' }), resultsJson: JSON.stringify(doc), status: 'PARSED' });
+  ok('one flagged lot marks the document for review', r.header.needsReview === true, r.header);
+  ok('  ...and the warning NAMES it, because "needs review" alone is not actionable',
+    r.header.warnings.some((w) => w.includes('B')), r.header.warnings);
+  ok('  ...naming the lot, not the unflagged one', r.header.warnings.every((w) => !w.includes('A')), r.header.warnings);
+
+  const clean = { sourceFile: 'x.pdf', references: { po: '1' }, lots: [{ lot: 'A', pieces: 10 }] };
+  const rc = fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY' }), resultsJson: JSON.stringify(clean), status: 'PARSED' });
+  ok('no flagged lot leaves the document clean', rc.header.needsReview === false && rc.header.warnings.length === 0, rc.header);
+
+  // a lot with no number still has to be findable
+  const anon = { sourceFile: 'x.pdf', references: { po: '1' }, lots: [{ pieces: 10, needsReview: true }] };
+  const ra = fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY' }), resultsJson: JSON.stringify(anon), status: 'PARSED' });
+  ok('a flagged lot with no number is named by position', ra.header.warnings.some((w) => w.includes('#1')), ra.header.warnings);
+
+  // document-level warnings must survive, not be replaced
+  const both = { sourceFile: 'x.pdf', references: { po: '1' }, warnings: ['page 2 was skewed'],
+    lots: [{ lot: 'C', pieces: 10, needsReview: true }] };
+  const rboth = fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY' }), resultsJson: JSON.stringify(both), status: 'PARSED' });
+  ok('the parser own document warnings are kept alongside the new one', rboth.header.warnings.length === 2, rboth.header.warnings);
+}
+
 console.log(fail ? '\n' + fail + ' FAILED' : '\nall passed');
 process.exit(fail ? 1 : 0);

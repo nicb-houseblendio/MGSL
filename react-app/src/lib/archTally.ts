@@ -560,3 +560,94 @@ export const toWidthDistribution = (bundle: TallyBundle | null | undefined): Tal
     footsToTotal: stated == null ? false : attributed + unattributed === stated,
   };
 };
+
+/* ── VALIDATION: does the payload agree with itself? ──────────────────────────── */
+
+/**
+ * One way a bundle contradicts itself. Never a parse failure - the payload read fine;
+ * its numbers disagree.
+ */
+export interface TallyBundleIssue {
+  /** Position in `payload.bundles`, so a view can suppress exactly this bundle. */
+  index: number;
+  bundleNo: string;
+  kind: 'strayWidth' | 'doesNotFoot';
+  /** Plain sentence, safe to show a trader. */
+  detail: string;
+}
+
+export interface TallyPayloadCheck {
+  ok: boolean;
+  issues: TallyBundleIssue[];
+}
+
+/**
+ * Check a payload against ITSELF. Nothing did this before: `fromCaptureRecord` casts a
+ * `mgsl.tally.v1` payload straight through, so a bundle claiming 50 pieces over columns
+ * summing to 5,000 reached the dialog and drew a bold `Total` row as fact.
+ *
+ * ── THE TWO CHECKS, AND WHY EXACTLY THESE TWO ────────────────────────────────
+ * 1. `strayWidth` - a `pieces` key that is not in `widthsIn`. This CANNOT be read off
+ *    `toWidthDistribution`: that reducer deliberately folds an unknown key into
+ *    `unattributed`, where it is indistinguishable from a genuine random-width column.
+ *    So the raw rows are walked again here. A stray key means the matrix header and its
+ *    body disagree, which is a parser fault, not a document one.
+ * 2. `doesNotFoot` - attributed + unattributed != the bundle's own `totals.pieces`.
+ *
+ * ── WHAT IS DELIBERATELY NOT A FAULT ─────────────────────────────────────────
+ * A bundle with NO stated total. `footsToTotal` is false in that case, but nothing is
+ * wrong: the document simply did not print a total, and flagging it would put a warning
+ * on every random-width bundle we hold. Only a stated total that disagrees is an issue.
+ *
+ * A bundle with no matrix is likewise clean - a scalar bundle has nothing to foot.
+ *
+ * ── AND NOT VOLUME OR BOARD FEET ─────────────────────────────────────────────
+ * Same reason `toWidthDistribution` refuses to derive them: detail-pl states volume
+ * with no reproducible rounding contract, so a derived check would reject 11 of 14
+ * genuine rows. Pieces are integers the document prints.
+ *
+ * Returns a flag, never throws. A view that cannot trust one bundle still has the
+ * source PDF and the other thirteen bundles.
+ */
+export const checkPayload = (payload: TallyPayload | null | undefined): TallyPayloadCheck => {
+  const issues: TallyBundleIssue[] = [];
+  const bundles = Array.isArray(payload?.bundles) ? payload!.bundles : [];
+
+  bundles.forEach((b, index) => {
+    // A non-object in the bundles array is not this function's problem to describe,
+    // but it must not throw here either.
+    if (!b || typeof b !== 'object') return;
+    const bundleNo = String(b.bundleNo ?? index + 1);
+    const m = b.matrix;
+    if (!m || !Array.isArray(m.rows) || !m.rows.length) return;
+
+    const declared = Array.isArray(m.widthsIn) ? m.widthsIn : [];
+    const stray = new Set<string>();
+    for (const r of m.rows) {
+      for (const [k, v] of Object.entries(r?.pieces || {})) {
+        if (!(Number(v) || 0)) continue;
+        if (k === '') continue; // the random-width column, legitimate
+        const w = Number(k);
+        if (!Number.isFinite(w) || !declared.includes(w)) stray.add(k);
+      }
+    }
+    if (stray.size) {
+      issues.push({
+        index, bundleNo, kind: 'strayWidth',
+        detail: `Bundle ${bundleNo} counts pieces under ${[...stray].join(', ')}, which the document's width list does not contain.`,
+      });
+    }
+
+    const d = toWidthDistribution(b);
+    // Only a STATED total can fail to foot. See the header.
+    if (d.totals.statedPieces != null && !d.footsToTotal) {
+      const summed = d.totals.attributed + d.unattributed;
+      issues.push({
+        index, bundleNo, kind: 'doesNotFoot',
+        detail: `Bundle ${bundleNo} states ${d.totals.statedPieces} pieces but its widths sum to ${summed}.`,
+      });
+    }
+  });
+
+  return { ok: issues.length === 0, issues };
+};

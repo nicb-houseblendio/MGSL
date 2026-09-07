@@ -54,6 +54,8 @@
  */
 
 import type { TallyBundle, TallyPayload, TallyRow, WidthPolicy } from '@/lib/archTally';
+import { checkPayload } from '@/lib/archTally';
+import type { TallyPayloadCheck } from '@/lib/archTally';
 
 /** The per-lot matrix buildLotMatrix() emits. */
 export interface CaptureMatrix {
@@ -207,11 +209,20 @@ const toBundle = (l: CaptureLot): TallyBundle => {
     bundleNo: l?.lot != null && String(l.lot).trim() !== '' ? String(l.lot) : '—',
     lot: l?.lot != null ? String(l.lot) : null,
     species: l?.species ?? null,
+    // Was dropped entirely until 2026-09-05: CaptureLot.grade has always existed and
+    // nothing read it, so TallyBundle.grade was added and then still went unpopulated.
+    grade: l?.grade ?? null,
     thickness: { raw: l?.printed?.thickness ?? (thicknessMm != null ? `${thicknessMm}mm` : null), inches: mmToIn(thicknessMm) },
     width: widthMm != null ? { raw: l?.printed?.width ?? `${widthMm}mm`, inches: mmToIn(widthMm) } : null,
     widthPolicy: widthPolicyOf(m, widthMm),
     lengthFt: lengthMm != null ? Math.round((lengthMm / 304.8) * 1000) / 1000 : rowLen,
-    matrix: rows.length ? { widthsIn, rows } : null,
+    // widthUnit is 'in' and that is a FACT about this path, not a default we are falling
+    // back on. MSL_LIB_PLSchema.js builds the matrix keys through widthIn(), which does
+    // `d.mm / 25.4` (and lenFt() does `d.mm / 304.8`), so a metric document is already
+    // converted before the adapter sees it. Stated explicitly so a reader does not have
+    // to go and check the parser, and so a future parser emitting mm is a visible change
+    // here rather than a silent mislabel.
+    matrix: rows.length ? { widthsIn, widthUnit: 'in' as const, rows } : null,
     totals: { pieces: num(l?.pieces), boardFeet: num(l?.boardFeet), volumeM3: num(l?.volumeM3) },
     provenance: { page: null, confidence: null },
   };
@@ -235,14 +246,26 @@ export const fromCaptureResult = (raw: unknown): CaptureTally | null => {
   if (!res || !Array.isArray(res.lots) || res.lots.length === 0) return null;
 
   const refs = res.references || {};
+
+  // PER-LOT needsReview, which nothing read until 2026-09-05. The parser sets it on the
+  // individual lot it doubts; only the DOCUMENT-level flag reached the header, so a
+  // document whose 7th bundle the parser could not read cleanly rendered exactly like a
+  // clean one. Roll it up, and name the lots - "this document needs review" is not
+  // actionable, "bundle 7 needs review" is.
+  const flagged = res.lots.filter((l) => l?.needsReview)
+    .map((l, i) => (l?.lot != null && String(l.lot).trim() !== '' ? String(l.lot) : `#${i + 1}`));
+
   const header: CaptureHeader = {
     po: refs.po ?? null,
     container: refs.container ?? null,
     supplier: refs.supplier ?? null,
     documentDate: refs.documentDate ?? null,
     sourceFile: res.sourceFile ?? null,
-    needsReview: !!res.needsReview,
-    warnings: Array.isArray(res.warnings) ? res.warnings : [],
+    needsReview: !!res.needsReview || flagged.length > 0,
+    warnings: [
+      ...(Array.isArray(res.warnings) ? res.warnings : []),
+      ...(flagged.length ? [`The parser flagged ${flagged.length === 1 ? 'bundle' : 'bundles'} ${flagged.join(', ')} for review.`] : []),
+    ],
   };
 
   const payload: TallyPayload = {
@@ -361,6 +384,20 @@ export interface CaptureReadResult {
   displayable: boolean;
   status: string | null;
   statusReason: string | null;
+  /**
+   * Whether the payload agrees with itself: width columns footing to the bundle's
+   * own stated piece count, and no `pieces` key the width list does not declare.
+   *
+   * A FLAG, not an exception. `ok: false` does not mean the read failed - the payload
+   * is still returned in full, because the trader has the source PDF and thirteen good
+   * bundles beside the bad one. What it means is that a view MUST NOT draw a total for
+   * the bundles named in `issues`. A partial sum shown as a total is the one error a
+   * trader cannot see.
+   *
+   * Always present, including when `payload` is null (an empty payload trivially agrees
+   * with itself), so a caller never has to guard it.
+   */
+  check: TallyPayloadCheck;
 }
 
 const parseJson = (raw: unknown): Record<string, unknown> | null => {
@@ -381,7 +418,7 @@ const parseJson = (raw: unknown): Record<string, unknown> | null => {
  * `payload: null` and a `shape` saying why, because the Tally View still has the
  * source PDF to fall back to and a wrong matrix is worse than no matrix.
  */
-export const fromCaptureRecord = (rec: CaptureRecord | null | undefined): CaptureReadResult => {
+const readRecord = (rec: CaptureRecord | null | undefined): Omit<CaptureReadResult, 'check'> => {
   const status = rec?.status ? String(rec.status).trim().toUpperCase() : null;
   const statusReason = rec?.statusReason ? String(rec.statusReason) : null;
   const intake = (parseJson(rec?.intakeJson) || {}) as CaptureIntake;
@@ -432,4 +469,16 @@ export const fromCaptureRecord = (rec: CaptureRecord | null | undefined): Captur
   }
 
   return { payload: null, header: empty, shape: 'unrecognised', isTally, displayable, status, statusReason };
+};
+
+/**
+ * Read one capture record and say whether its numbers hold together.
+ *
+ * The read itself is `readRecord` above; this wraps it so the check runs at ONE exit.
+ * That matters: `readRecord` has four separate returns, and a check bolted onto each
+ * would be three chances to forget one when a fifth shape is added.
+ */
+export const fromCaptureRecord = (rec: CaptureRecord | null | undefined): CaptureReadResult => {
+  const read = readRecord(rec);
+  return { ...read, check: checkPayload(read.payload) };
 };

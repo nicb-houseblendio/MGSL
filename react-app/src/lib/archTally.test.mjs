@@ -1,4 +1,5 @@
-import { toLengthDistribution, widthLabel, widthNote, sameItem, siblingsOf } from './archTally.ts';
+import { toLengthDistribution, widthLabel, widthNote, sameItem, siblingsOf, checkPayload } from './archTally.ts';
+import { TALLY_DETAIL_PL } from './archTallyDetailPL.ts';
 import { TALLY_314307, TALLY_CHECHEN, demoTallyForLot } from './archTallyFixtures.ts';
 
 const B = (o) => ({ bundleNo: 'x', lot: null, species: null, thickness: { raw: null, inches: 1 },
@@ -175,6 +176,79 @@ ok('null input does not throw', toLengthDistribution(null).rows.length === 0, nu
     toLengthDistribution(siblingsOf([mahog], sapele)).mixedItems === false, null);
   ok('via siblingsOf the clicked bundle is always at a findable index',
     siblingsOf(doc, sapele).indexOf(sapele) >= 0 && siblingsOf(doc, mahog).indexOf(mahog) >= 0, null);
+}
+
+// ---- checkPayload: does the payload agree with ITSELF?
+// Added 2026-09-05. Before this, fromCaptureRecord cast a v1 payload straight through,
+// so a bundle claiming 50 pieces over columns summing to 5,000 drew a bold Total row.
+{
+  const P = (bundles) => ({ schema: 'mgsl.tally.v1', po: null, container: null, bundles });
+
+  // --- the three documents we actually hold must all be clean, or the flag is useless
+  ok('detail-pl (14 real multi-width bundles) is clean', checkPayload(TALLY_DETAIL_PL).ok, checkPayload(TALLY_DETAIL_PL).issues);
+  ok('314307 is clean', checkPayload(TALLY_314307).ok, checkPayload(TALLY_314307).issues);
+  ok('CHECHEN (random width) is clean', checkPayload(TALLY_CHECHEN).ok, checkPayload(TALLY_CHECHEN).issues);
+
+  // --- a short sum against a STATED total is the defect this exists for
+  {
+    const c = checkPayload(P([B({ bundleNo: 'A', totals: { pieces: 50, boardFeet: null, volumeM3: null },
+      matrix: { widthsIn: [6, 9], rows: [{ lengthFt: 8, pieces: { '6': 3, '9': 2 } }] } })]));
+    ok('a bundle whose widths do not sum to its stated total is flagged', c.ok === false && c.issues.length === 1, c);
+    ok('  ...as doesNotFoot', c.issues[0].kind === 'doesNotFoot', c.issues[0]);
+    ok('  ...naming both numbers, so a trader can see which is wrong',
+      c.issues[0].detail.includes('50') && c.issues[0].detail.includes(' 5.'), c.issues[0].detail);
+  }
+
+  // --- and an OVER-sum, which is the same fault in the other direction
+  ok('widths summing to MORE than the stated total is also flagged',
+    checkPayload(P([B({ totals: { pieces: 4, boardFeet: null, volumeM3: null },
+      matrix: { widthsIn: [6], rows: [{ lengthFt: 8, pieces: { '6': 900 } }] } })])).ok === false, null);
+
+  // --- a key the width list does not declare. NOT derivable from toWidthDistribution:
+  // that reducer folds an unknown key into `unattributed`, where it is indistinguishable
+  // from a legitimate random-width column. This is why checkPayload walks the rows again.
+  {
+    const c = checkPayload(P([B({ bundleNo: 'S', totals: { pieces: 10, boardFeet: null, volumeM3: null },
+      matrix: { widthsIn: [6], rows: [{ lengthFt: 8, pieces: { '6': 4, '7': 6 } }] } })]));
+    ok('a pieces key absent from widthsIn is flagged', c.issues.some((i) => i.kind === 'strayWidth'), c.issues);
+    ok('  ...naming the offending key', c.issues[0].detail.includes('7'), c.issues[0].detail);
+    ok('  ...and the bundle still FOOTS (4+6=10), so stray is caught independently',
+      c.issues.length === 1, c.issues);
+  }
+
+  // --- the empty key is the random-width column and must never read as stray
+  ok("an empty '' key is the RW column, not a stray width",
+    checkPayload(P([B({ totals: { pieces: 7, boardFeet: null, volumeM3: null },
+      matrix: { widthsIn: [6], rows: [{ lengthFt: 8, pieces: { '': 7 } }] } })])).ok, null);
+
+  // --- THE NON-FAULT. footsToTotal is false whenever no total is stated, and that is
+  // not an error: the document simply did not print one. Flagging it would put a warning
+  // on every unstated bundle we hold.
+  ok('a bundle with NO stated total is not flagged, though footsToTotal is false',
+    checkPayload(P([B({ totals: { pieces: null, boardFeet: null, volumeM3: null },
+      matrix: { widthsIn: [6, 9], rows: [{ lengthFt: 8, pieces: { '6': 3, '9': 2 } }] } })])).ok, null);
+
+  // --- a scalar bundle has no matrix and nothing to foot
+  ok('a bundle with no matrix is clean',
+    checkPayload(P([B({ totals: { pieces: 12, boardFeet: null, volumeM3: null }, matrix: null })])).ok, null);
+  ok('a matrix with no rows is clean',
+    checkPayload(P([B({ totals: { pieces: 12, boardFeet: null, volumeM3: null }, matrix: { widthsIn: [6], rows: [] } })])).ok, null);
+
+  // --- index must point at the RIGHT bundle, or a view suppresses the wrong table
+  {
+    const c = checkPayload(P([
+      B({ bundleNo: 'good', totals: { pieces: 5, boardFeet: null, volumeM3: null }, matrix: { widthsIn: [6], rows: [{ lengthFt: 8, pieces: { '6': 5 } }] } }),
+      B({ bundleNo: 'bad', totals: { pieces: 99, boardFeet: null, volumeM3: null }, matrix: { widthsIn: [6], rows: [{ lengthFt: 8, pieces: { '6': 5 } }] } }),
+    ]));
+    ok('the issue indexes the offending bundle, not the first', c.issues.length === 1 && c.issues[0].index === 1, c.issues);
+    ok('  ...and carries its bundleNo', c.issues[0].bundleNo === 'bad', c.issues[0]);
+  }
+
+  // --- garbage in. This is a flag on a read path that must never throw.
+  ok('null payload is clean rather than an exception', checkPayload(null).ok, null);
+  ok('undefined payload is clean', checkPayload(undefined).ok, null);
+  ok('a payload with no bundles array is clean', checkPayload({ schema: 'mgsl.tally.v1' }).ok, null);
+  ok('non-object bundles do not throw', checkPayload(P([null, 'x', 42])).ok, null);
 }
 
 console.log(fail ? '\n' + fail + ' FAILED' : '\nall passed');
