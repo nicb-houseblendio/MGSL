@@ -329,7 +329,7 @@ export const ArchOrderDraftDialog = ({
                 ['Incoterms', draft.header.incoterms],
                 ['Currency', draft.header.currency],
                 ['Payment terms', draft.header.paymentTerms],
-                ['Sales team', draft.header.salesTeam],
+                ['Sales rep', draft.header.salesTeam],
               ] as [string, string][]
             ).map(([k, v]) => (
               <div key={k}>

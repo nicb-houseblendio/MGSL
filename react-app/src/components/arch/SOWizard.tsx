@@ -27,7 +27,6 @@ import {
 } from '@/lib/archOrderPricing';
 import {
   INCOTERMS,
-  SALES_TEAMS,
   SALES_TEAM_NAMES,
   addressesFor,
   currenciesFor,
@@ -1251,7 +1250,7 @@ export const SOWizard = ({
      *   Ship date         custbody_mgsl_expectedshipdate   (H_SHIP_DATE)
      *   Payment terms     terms
      *   Incoterms         custbody_incoterms               (H_INCOTERMS)
-     *   Sales team        custbody_sales_rep + employee    (H_SALES_REP)
+     *   Sales rep         custbody_sales_rep + employee    (H_SALES_REP)
      *
      * Customer PO is `otherrefnum`, NOT `custbody_customer_po_num`; that one is
      * dead, populated on 0 of 1,728 SOs. The other six ProvisionalNotes in this
@@ -1566,7 +1565,7 @@ export const SOWizard = ({
       </div>
 
       <div>
-        <label style={label}>Sales team *</label>
+        <label style={label}>Sales rep *</label>
         <select
           value={salesTeam}
           disabled={!customer}
@@ -1582,7 +1581,7 @@ export const SOWizard = ({
             {customer
               ? liveReps.length
                 ? `— Select sales rep (${liveReps.length}) —`
-                : '— Select sales team —'
+                : '— Select sales rep —'
               : 'Select a customer first'}
           </option>
           {/*
@@ -1614,55 +1613,8 @@ export const SOWizard = ({
         */}
         {repsLoaded && liveReps.length === 0 && customer && (
           <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
-            ⚠️ These team names are for reference only — your role cannot read the employee
-            list, so the rep is decided by NetSuite configuration rather than by this choice.
-          </div>
-        )}
-        {(SALES_TEAMS[salesTeam] || []).length > 0 && (
-          <div style={{ marginTop: 8, border: '1px solid #E2E8F0', borderRadius: 9, overflow: 'hidden' }}>
-            <div
-              style={{
-                padding: '6px 10px',
-                background: '#F8FAFC',
-                fontSize: 9.5,
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                letterSpacing: 0.4,
-                color: ARCH_SURFACE.textMid,
-                borderBottom: '1px solid #E2E8F0',
-              }}
-            >
-              Commission split
-            </div>
-            {SALES_TEAMS[salesTeam].map((m, i, arr) => (
-              <div
-                key={m.name}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '7px 10px',
-                  borderBottom: i < arr.length - 1 ? '1px solid #E2E8F0' : 'none',
-                }}
-              >
-                <span style={{ fontSize: 12.5, color: ARCH_SURFACE.text, flex: '0 0 150px' }}>{m.name}</span>
-                <div style={{ flex: 1, height: 7, borderRadius: 4, background: '#E2E8F0', overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      width: `${m.pct}%`,
-                      height: '100%',
-                      background: `linear-gradient(90deg, ${ARCH_SURFACE.green}, #237A52)`,
-                    }}
-                  />
-                </div>
-                <span
-                  className="font-mono"
-                  style={{ fontSize: 12, fontWeight: 700, color: ARCH_SURFACE.navy, flex: '0 0 42px', textAlign: 'right' }}
-                >
-                  {m.pct}%
-                </span>
-              </div>
-            ))}
+            ⚠️ These names are placeholders. Your role cannot read the employee list, so the
+            rep on the order is decided by NetSuite configuration, not by this choice.
           </div>
         )}
       </div>
@@ -2355,7 +2307,7 @@ export const SOWizard = ({
           // internal id — so printing it raw showed the trader "120" where a name
           // belongs. Resolve it back to the name, and fall through to the value
           // itself on the fixture path, where it already IS a team name.
-          ['Sales team', salesRepName || salesTeam || '—'],
+          ['Sales rep', salesRepName || salesTeam || '—'],
         ].map(([k, v]) => (
           <div key={k}>
             <div
@@ -2376,14 +2328,6 @@ export const SOWizard = ({
               {k}
             </div>
             <div style={{ fontSize: 12.5, fontWeight: 600, color: ARCH_SURFACE.text }}>{v}</div>
-            {/* The prototype carries the commission split through to Review.
-                It is decided on the Customer step and never restated, so this
-                was the one place the trader could not check it before creating. */}
-            {k === 'Sales team' && (SALES_TEAMS[salesTeam] || []).length > 0 && (
-              <div style={{ fontSize: 10, color: ARCH_SURFACE.textMid, marginTop: 2 }}>
-                {SALES_TEAMS[salesTeam].map((mem) => `${mem.name} ${mem.pct}%`).join(' · ')}
-              </div>
-            )}
           </div>
         ))}
       </div>

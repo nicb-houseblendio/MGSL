@@ -36,22 +36,15 @@ const PAYMENT_TERMS = [
   'Net 60 days',
 ];
 
-export const SALES_TEAMS: Record<string, { name: string; pct: number }[]> = {
-  'Hardwood — East': [
-    { name: 'Christopher Pajot', pct: 60 },
-    { name: 'Melissa De Castro', pct: 40 },
-  ],
-  'Hardwood — West': [
-    { name: 'Alec Wolf', pct: 50 },
-    { name: 'Tom Gorelle', pct: 50 },
-  ],
-  'Architectural Specialties': [
-    { name: 'Léo Dupuis', pct: 70 },
-    { name: 'Antoine Quimper', pct: 30 },
-  ],
-};
-
-export const SALES_TEAM_NAMES = Object.keys(SALES_TEAMS);
+/**
+ * Offline-only options for the sales-rep dropdown, shown when NetSuite gave us no
+ * reps (disconnected, or a role that cannot read employees). Names and nothing
+ * else: the prototype attached commission percentages to these and drew them as
+ * bars on the Customer step and on Review, which no NetSuite field feeds. Removed
+ * 2026-09-08 rather than shown as if it were configuration. No order can be
+ * created on this path anyway; the write refuses without a real rep id.
+ */
+export const SALES_TEAM_NAMES = ['Hardwood — East', 'Hardwood — West', 'Architectural Specialties'];
 
 /**
  * The individuals who sell. Open orders group by trader, not by sales team, which
