@@ -1339,9 +1339,31 @@ export const demoWidthTallyForLot = (lotNo: string): DemoTally | null => {
  * (window.MCGI_CONFIG.tallyDemoDoc = 'detail-pl', then reopen the dialog) with no
  * build and no Suitelet deploy.
  */
-export const demoTallyProps = (lotNo: string): {
+export const demoTallyProps = (
+  lotNo: string,
+  tally?: { status: string; sourceFile?: string | null; docUrl?: string | null; bundles: TallyBundle[] } | null,
+): {
   bundle?: TallyBundle; siblings?: TallyBundle[]; sample?: DemoTally['sample'];
 } => {
+  /* 🔴 REAL DATA WINS, AND IT CARRIES NO `sample`.
+   *
+   * The sample banner is the only thing on screen telling a trader the numbers are
+   * not this lot's own document. Returning it beside real data would be a lie in the
+   * one place it matters, so `sample` is deliberately absent on this branch rather
+   * than passed through as something harmless-looking.
+   *
+   * ⚠️ SIBLINGS ARE THIS LOT'S BUNDLES ONLY, which narrows the length view.
+   * The cache sends the bundles whose `lot` matched this lot exactly, not the whole
+   * document, so "lengths held at this thickness" is scoped to one lot rather than to
+   * every bundle of the item. That is a real limitation of what the server currently
+   * sends, not a bug here. Widening it means having the MR emit the document's other
+   * bundles too, and that is a size decision on a cache payload measured in kilobytes.
+   */
+  if (tally && Array.isArray(tally.bundles) && tally.bundles.length) {
+    const bundle = tally.bundles[0];
+    return { bundle, siblings: siblingsOf(tally.bundles, bundle), sample: undefined };
+  }
+
   const cfg = typeof window !== 'undefined'
     ? (window as unknown as { MCGI_CONFIG?: { tallyDemoDoc?: string } }).MCGI_CONFIG
     : undefined;

@@ -1,3 +1,4 @@
+import type { TallyBundle } from '@/lib/archTally';
 /**
  * CWP ARCH (hardwood) data contract.
  *
@@ -99,10 +100,36 @@ export interface ArchLot {
    */
   heldPacks?: number;
   /**
-   * File-cabinet URL of the supplier tally (a photo/scan of the packing list).
-   * Null when no tally has been attached to the lot yet.
+   * File-cabinet URL of the supplier tally (a photo/scan of the packing list),
+   * uploaded BY HAND against the lot. A different thing from `tally` below, which
+   * is the parsed document. The dialog can show both.
+   * Null when no image has been attached to the lot yet.
    */
   tallyImageUrl?: string | null;
+  /**
+   * The PARSED tally for this lot, resolved server-side by the ARCH cache MR from
+   * `customrecord_msl_plc_capture`. Added 2026-09-07, when the serve side was built.
+   *
+   * 🔴 NULL IS THE COMMON AND CORRECT CASE, not a failure. A lot only carries a
+   * tally when some bundle inside a stored payload names it EXACTLY. Suppliers number
+   * bundles 1535-1548 while NetSuite numbers the same goods 316027-1, so most lots
+   * legitimately have none: SDD s4.2, "the push never guesses a lot". Those fall back
+   * to the document, then to the dialog's empty state.
+   *
+   * `bundles` are the raw payload objects, carried through unreshaped so that
+   * `archTally.ts` remains the single implementation of the arithmetic. Run
+   * `checkPayload()` over them before drawing a total.
+   */
+  tally?: {
+    /** PARSED | MATCHED | REVIEWED. Resolved by NAME: the list ids differ per environment. */
+    status: string;
+    /** The document this came from, for the provenance line. */
+    sourceFile?: string | null;
+    /** The source document itself, the middle rung of the fallback chain. */
+    docUrl?: string | null;
+    /** Raw `mgsl.tally.v1` bundle objects whose `lot` matched this lot exactly. */
+    bundles: TallyBundle[];
+  } | null;
 }
 
 export interface ArchSummaryRow {

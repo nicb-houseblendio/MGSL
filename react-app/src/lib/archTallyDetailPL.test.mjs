@@ -282,5 +282,33 @@ const ok = (name, cond, got) => {
   if (!had) delete g.window; else delete g.window.MCGI_CONFIG;
 }
 
+// ---- demoTallyProps with REAL data. Added 2026-09-07 when the serve side landed.
+// The sample banner is the only thing telling a trader the numbers are not this lot's
+// own document, so its presence/absence is the load-bearing assertion here.
+{
+  const realBundles = [
+    { bundleNo: 'A', lot: '316027-1', species: 'SAPELI KD', thickness: { raw: '25mm', inches: 0.98 },
+      width: null, widthPolicy: 'printed', lengthFt: 8, grade: 'FAS',
+      matrix: { widthsIn: [6, 9], widthUnit: 'in', rows: [{ lengthFt: 8, pieces: { '6': 30, '9': 20 } }] },
+      totals: { pieces: 50, boardFeet: 240, volumeM3: null }, provenance: { page: null, confidence: null } },
+  ];
+  const real = demoTallyProps('316027-1', { status: 'PARSED', sourceFile: 'PL.pdf', docUrl: null, bundles: realBundles });
+
+  ok('real data is preferred over the fixture', real.bundle === realBundles[0], real.bundle && real.bundle.bundleNo);
+  ok('  ...and carries NO sample banner, which would be a lie beside real numbers',
+    real.sample === undefined, real.sample);
+  ok('  ...with the clicked bundle inside its own siblings', real.siblings.indexOf(real.bundle) >= 0, null);
+  ok('  ...and the width table would draw from it',
+    toWidthDistribution(real.bundle).degenerate === false, toWidthDistribution(real.bundle));
+
+  // null tally is the COMMON case: most lots have no matching bundle, by design
+  const none = demoTallyProps('316027-1', null);
+  ok('a lot with no tally falls back to the fixture', none.bundle === demoTallyForLot('316027-1').bundle, null);
+  ok('  ...and the fixture DOES carry the sample banner', !!none.sample, none.sample);
+  ok('an empty bundles array is treated as no tally',
+    demoTallyProps('316027-1', { status: 'PARSED', bundles: [] }).sample !== undefined, null);
+  ok('an undefined tally behaves exactly as before', demoTallyProps('316027-1').sample !== undefined, null);
+}
+
 console.log(fail ? `\n${fail} FAILED` : '\nall passed');
 if (fail) process.exit(1);

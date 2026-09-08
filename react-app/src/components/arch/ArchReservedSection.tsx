@@ -174,7 +174,7 @@ export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchRes
           /* A reserved lot is ALSO in the On Hand table above, so this is the same lot
              number with two tally buttons on one screen. Until 2026-09-05 they opened
              two different dialogs. See demoTallyProps for why the choice lives there. */
-          {...demoTallyProps(tallyOpen)}
+          {...demoTallyProps(tallyOpen, row.lots.find((l) => l.lotNo === tallyOpen)?.tally)}
         />
       )}
     </div>

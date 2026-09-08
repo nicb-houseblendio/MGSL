@@ -770,6 +770,122 @@ define([
         }
     };
 
+    /* == Tally resolution (SDD Phase 1, section 3.2.3) =========================
+     *
+     * Until 2026-09-07 this file contained exactly ONE tally token in 1,953 lines:
+     * `tallyImageUrl: null`. The whole read and render half of the tally feature was
+     * built, tested and deployed while nothing on the server ever sent it data. This
+     * is that missing half.
+     *
+     * 🔴 MATCH ON THE PAYLOAD'S OWN `lot` VALUE, EXACTLY, OR NOT AT ALL.
+     * The SDD is explicit and it is not a compromise: "the push never guesses a lot"
+     * (s4.2), and a bundle's lot reference, where set, must belong to that PO's own
+     * receipts (s4.1). A supplier numbers bundles 1535-1548; NetSuite numbers the same
+     * goods 316027-1. Those do not correspond and are not meant to. A bundle whose
+     * `lot` is null is CORRECT, not broken - it falls back to the document view and
+     * lands in Carlos's queue for a human to assign. Never derive a lot from a bundle
+     * number, a position, or a PO prefix.
+     *
+     * 🔴 STATUS BY NAME, NEVER BY INTERNAL ID. The two environments disagree:
+     * REVIEWED is list value 101 in sandbox and does not exist in production at all
+     * (9 values there, 10 here). BUILTIN.DF gives the name, which is why it is used.
+     *
+     * The foot-check deliberately does NOT run here. `checkPayload()` in
+     * react-app/src/lib/archTally.ts is the single implementation and it runs in the
+     * browser; this function carries the payload through untouched so there is only
+     * ever one dialect of the arithmetic. Consequence, accepted 2026-09-07: nothing
+     * guards the WRITE, and the NetSuite-side half of SDD s4.1 stays unmet until
+     * Lucas's skill exists.
+     */
+    const TALLY_STATUSES = { PARSED: 1, MATCHED: 1, REVIEWED: 1 };
+
+    /** Cap on capture records read per reduce call, with a loud log if it bites. */
+    const TALLY_MAX = 500;
+
+    const TALLY_SQL =
+        'SELECT ' +
+        '  c.id                                    AS captureid, ' +
+        // BUILTIN.DF resolves the list VALUE to its NAME. See the status note above.
+        '  BUILTIN.DF(c.custrecord_msl_plc_status) AS statusname, ' +
+        '  c.custrecord_msl_plc_container_no       AS container, ' +
+        '  c.custrecord_msl_plc_intake_json        AS intake, ' +
+        '  c.custrecord_msl_plc_results_json       AS payload, ' +
+        // The source document, for the middle rung of the fallback chain. LEFT JOIN:
+        // a capture with no file attached is normal and must still yield its matrix.
+        '  f.url                                   AS fileurl ' +
+        'FROM customrecord_msl_plc_capture c ' +
+        '  LEFT JOIN file f ON f.id = c.custrecord_msl_plc_file ' +
+        "WHERE c.isinactive = 'F'";
+
+    /**
+     * lotNo (upper, trimmed) -> { status, container, sourceFile, docUrl, bundles }
+     *
+     * One query per reduce call, mirroring loadLotCosts. Wrapped for the same reason:
+     * a tally failure must degrade to "no tally shown" and must never cost the row its
+     * quantities, which are why the screen exists.
+     */
+    const loadTallies = () => {
+        try {
+            const rows = query.runSuiteQL({ query: TALLY_SQL }).asMappedResults() || [];
+            if (rows.length >= TALLY_MAX) {
+                log.error('ARCH tally cap hit',
+                    'TALLY_SQL returned ' + rows.length + ' rows, at or over the ' + TALLY_MAX +
+                    ' cap. Lots beyond it silently show no tally. Add a PO or lot filter here ' +
+                    'before this grows further.');
+            }
+            const byLot = {};
+            for (let i = 0; i < rows.length && i < TALLY_MAX; i++) {
+                const r = rows[i];
+
+                // docType lives in the INTAKE envelope, a different field from the
+                // payload. PL and BOL captures share this record and their payloads
+                // would render as nonsense, so a record with no envelope is not
+                // assumed to be a tally.
+                let docType = '';
+                try {
+                    const env = JSON.parse(r.intake || '{}') || {};
+                    docType = String(env.docType || '').trim().toUpperCase();
+                } catch (e) { docType = ''; }
+                if (docType !== 'TALLY') continue;
+
+                const status = String(r.statusname || '').trim().toUpperCase();
+                if (!TALLY_STATUSES[status]) continue;
+
+                let payload = null;
+                try { payload = JSON.parse(r.payload || 'null'); } catch (e) { payload = null; }
+                if (!payload || payload.schema !== 'mgsl.tally.v1' || !Array.isArray(payload.bundles)) {
+                    log.audit('ARCH tally skipped',
+                        'capture ' + r.captureid + ' is a TALLY at ' + status +
+                        ' but its Results JSON is not a readable mgsl.tally.v1 payload.');
+                    continue;
+                }
+
+                const prov = payload.provenance || {};
+                for (let j = 0; j < payload.bundles.length; j++) {
+                    const b = payload.bundles[j];
+                    const lot = b && b.lot != null ? String(b.lot).trim().toUpperCase() : '';
+                    // The whole point. An unmatched bundle is expected, not an error.
+                    if (!lot) continue;
+                    if (!byLot[lot]) {
+                        byLot[lot] = {
+                            status:     status,
+                            container:  r.container || payload.container || null,
+                            sourceFile: prov.sourceFile || null,
+                            docUrl:     r.fileurl || null,
+                            bundles:    [],
+                        };
+                    }
+                    byLot[lot].bundles.push(b);
+                }
+            }
+            return byLot;
+        } catch (e) {
+            log.error('ARCH tally resolution failed',
+                'Rows keep their quantities and report no tally. ' + e.message);
+            return {};
+        }
+    };
+
     /**
      * Every ARCH lot with a balance, one row per lot × location.
      *
@@ -1300,8 +1416,11 @@ define([
             const bk       = pair.buckets;
             const rate     = pair.rate;
             const perLot   = (bk && bk.lots) || {};
+            // One query per pair, same shape as loadLotCosts. See loadTallies.
+            const tallies  = loadTallies();
 
             const lots = pair.lots.map((l) => {
+                const tally  = tallies[String(l.lotNo || '').trim().toUpperCase()] || null;
                 const isHeld = Object.prototype.hasOwnProperty.call(heldLots, l.lotNo);
                 const lb     = perLot[l.lotNo] || null;
                 return {
@@ -1310,14 +1429,13 @@ define([
                     // Derived from the lot-number prefix, which IS the PO by
                     // Marc-Antoine's own bundle nomenclature — see poFromLotNo.
                     po:            poFromLotNo(l.lotNo),
-                    // ⛔ NO SOURCE, and there cannot be one from the lot number.
-                    // A container can span several POs (2026-08-19), so the
-                    // prefix that gives `po` above can never give a container.
-                    // Real container tracking needs the packing-list lot →
-                    // container capture and has no other route. Container is
-                    // also mostly a decking/IPE concern, which this screen is
-                    // not for, so this is a display nicety and not Phase 1.
-                    containerNo:   '',
+                    // A container can span several POs (2026-08-19), so the lot-number
+                    // prefix that gives `po` above can never give a container. The only
+                    // route is the packing-list capture, and as of 2026-09-07 that route
+                    // EXISTS: custrecord_msl_plc_container_no was created 09-03 and
+                    // loadTallies reads it. Empty where no capture matches the lot, which
+                    // is still most lots.
+                    containerNo:   (tally && tally.container) || '',
                     onHand:        l.storedQty / rate,
                     // Per-lot figures exist ONLY where the order line carries an
                     // inventory-detail assignment. A line without one contributes
@@ -1336,6 +1454,23 @@ define([
                     // must keep showing it. It is only withheld from `available`.
                     onHold:        isHeld,
                     heldPacks:     isHeld ? heldLots[l.lotNo] : 0,
+                    /* THE FALLBACK CHAIN, SDD s3.2.3: matrix, then document, then
+                     * placeholder. `null` means the third rung - the dialog already
+                     * renders its own empty state for that and needs no help.
+                     *
+                     * 🔴 The bundles are carried through RAW, exactly as the payload
+                     * stored them. Do not reshape, round or total them here: the browser
+                     * runs archTally.ts over them, and a second dialect of that
+                     * arithmetic on the server is the one thing guaranteed to drift. */
+                    tally: tally ? {
+                        status:     tally.status,
+                        sourceFile: tally.sourceFile,
+                        docUrl:     tally.docUrl,
+                        bundles:    tally.bundles,
+                    } : null,
+                    // Kept: the image a user uploads by hand is a different thing from
+                    // the parsed document, and the dialog shows both. A capture's file
+                    // arrives as `tally.docUrl` above, never here.
                     tallyImageUrl: null,
                 };
             });

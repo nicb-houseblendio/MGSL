@@ -542,7 +542,7 @@ export const ArchLotTable = ({
           onUpload={handleUpload}
           /* Fixture-only until lots carry a real tally link. Lets the client review
              the four render states against their own documents. See archTallyFixtures. */
-          {...demoTallyProps(tallyOpen)}
+          {...demoTallyProps(tallyOpen, row.lots.find((l) => l.lotNo === tallyOpen)?.tally)}
         />
       )}
     </div>
