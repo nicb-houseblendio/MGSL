@@ -37,5 +37,17 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('confirmation dialog: row is labelled Sales rep', /\['Sales rep', draft\.header\.salesTeam\]/.test(d) && !/'Sales team'/.test(d));
 }
 
+// SO wizard gates come from archOrderGate, not from an inline count. Two gates
+// collapsed into one is what made Edit say "Add at least one lot" over a full cart.
+{
+  const w = src('components/arch/SOWizard.tsx');
+  ok('wizard: imports orderGate', /import \{ orderGate \} from '@\/lib\/archOrderGate'/.test(w));
+  ok('wizard: step gate and write gate both read the gate object', /const itemsOk = gate\.itemsStepOk;/.test(w) && /startOk && gate\.canWrite && headerOk/.test(w));
+  ok('wizard: no inline writableLines.length > 0 gate survives', !/itemsOk = writableLines\.length > 0/.test(w));
+  ok('wizard: editing an order prefills its Customer PO', /setCustomerPO\(o\.customerPO \|\| ''\)/.test(w));
+  const v = src('components/arch/ArchOpenOrdersView.tsx');
+  ok('orders view: Edit is hidden on fixture orders (no internalId)', /editable = o\.status !== 'Ready to Build' && !!o\.internalId/.test(v));
+}
+
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');
 process.exit(fail ? 1 : 0);

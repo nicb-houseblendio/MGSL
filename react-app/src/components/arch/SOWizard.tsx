@@ -34,6 +34,7 @@ import {
   salesTeamFor,
 } from '@/lib/archOrderFixtures';
 import { useArchOpenOrders } from '@/hooks/useArchOpenOrders';
+import { orderGate } from '@/lib/archOrderGate';
 import type {
   ArchCartLine,
   ArchOrderDraft,
@@ -521,6 +522,10 @@ export const SOWizard = ({
     // REQUIRED field can never be filled, which blocked this whole path. It also
     // means the draft carries a customer the server can resolve.
     setCustomerId(o.customerId || '');
+    // The order's own Customer PO (otherrefnum). Left empty, the required field
+    // blocked the Customer step on every edit, and typing anything into it sent a
+    // header value the order does not carry.
+    setCustomerPO(o.customerPO || '');
     setShipTo(o.shipTo);
     // Keeps the address the order already has when it has one, rather than moving
     // it to the customer's default behind the trader's back.
@@ -718,7 +723,10 @@ export const SOWizard = ({
    * it — so checking `lines` would have let a trader walk the whole wizard with
    * nothing added and be refused by the server with "The order has no lines."
    */
-  const itemsOk = writableLines.length > 0;
+  // Two gates, not one. The STEP passes when the cart holds anything (an order's
+  // own lines included); the WRITE needs something new. See archOrderGate.
+  const gate = orderGate({ mode, lineCount: lines.length, writableCount: writableLines.length });
+  const itemsOk = gate.itemsStepOk;
   /**
    * Customer PO is REQUIRED, and that is NetSuite's rule rather than a preference.
    *
@@ -773,7 +781,7 @@ export const SOWizard = ({
     price: priceOk,
     review: true,
   };
-  const canCreate = startOk && itemsOk && headerOk && splitOk && remanOk && priceOk;
+  const canCreate = startOk && gate.canWrite && headerOk && splitOk && remanOk && priceOk;
 
   const step = STEPS[stepIndex];
   const accent = mode === 'existing' ? EDIT_ACCENT : ARCH_SURFACE.green;
@@ -2800,13 +2808,17 @@ export const SOWizard = ({
           </button>
 
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
-            {!stepValid[step.key] && (
+            {(!stepValid[step.key] || (step.key === 'review' && !canCreate)) && (
               // #8F5612, not #B36B16. This is the line that tells the trader WHY
               // Continue is dead, and at 3.99:1 on the footer it was the least
               // readable text on the step. Same amber family, 5.1:1.
+              // On Review it explains a dead Update/Create button instead, which
+              // used to be dead with no reason anywhere on the screen.
               <span style={{ fontSize: 11.5, color: AMBER_TEXT, fontWeight: 600 }}>
-                {step.key === 'items'
-                  ? 'Add at least one lot'
+                {step.key === 'review'
+                  ? gate.reviewHint || 'Complete the earlier steps'
+                  : step.key === 'items'
+                  ? gate.itemsHint || 'Add at least one lot'
                   : step.key === 'customer'
                     ? 'Complete the required fields'
                     : step.key === 'split'

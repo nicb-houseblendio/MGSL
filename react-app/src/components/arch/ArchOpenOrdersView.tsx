@@ -532,7 +532,11 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                     {list.map((o, i) => {
                       const isOpen = !!expanded[o.soNo];
                       // "Une fois qu'il est ready to build... on peut plus edit."
-                      const editable = o.status !== 'Ready to Build';
+                      // And never on a fixture order: internalId is null there by
+                      // construction, so the write path could not append to it, and
+                      // offering Edit walked the trader into a wizard that ends in a
+                      // refusal.
+                      const editable = o.status !== 'Ready to Build' && !!o.internalId;
                       return (
                         <React.Fragment key={o.soNo}>
                           <tr
