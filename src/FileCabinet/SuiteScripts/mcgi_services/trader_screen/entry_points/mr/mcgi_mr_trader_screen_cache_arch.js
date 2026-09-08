@@ -815,7 +815,12 @@ define([
         '  f.url                                   AS fileurl ' +
         'FROM customrecord_msl_plc_capture c ' +
         '  LEFT JOIN file f ON f.id = c.custrecord_msl_plc_file ' +
-        "WHERE c.isinactive = 'F'";
+        "WHERE c.isinactive = 'F' " +
+        // NEWEST FIRST, and the order is load-bearing rather than tidy. Two documents can
+        // name the same lot (a re-push, a supersede), and record-format.md leaves dedupe
+        // procedural until anchoring exists. Without ORDER BY, "first row wins" meant the
+        // tally a trader sees could change between builds for no visible reason.
+        'ORDER BY c.id DESC';
 
     /**
      * lotNo (upper, trimmed) -> { status, container, sourceFile, docUrl, bundles }
@@ -824,11 +829,23 @@ define([
      * a tally failure must degrade to "no tally shown" and must never cost the row its
      * quantities, which are why the screen exists.
      */
+    let _tallyCache = null;
+
     const loadTallies = () => {
+        // Memoized. reduce() runs once per item+location pair, 13 today, and this query
+        // has no filter beyond isinactive, so an unmemoized call meant reading every
+        // capture record 13 times an hour. NetSuite reuses a reduce execution context
+        // across keys where it can, so this collapses those reads; where it cannot, it
+        // costs nothing. Deliberately NOT threaded through getInputData's pairs: that
+        // would put the whole map in the MR key payload for every pair.
+        if (_tallyCache) return _tallyCache;
         try {
             const rows = query.runSuiteQL({ query: TALLY_SQL }).asMappedResults() || [];
+            // log.audit, NOT log.error. This is a per-run condition and reduce runs once
+            // per pair, so at error level a hit cap would emit 13 ERROR lines an hour,
+            // roughly 312 a day, and possibly emails. Level goes by cause, not importance.
             if (rows.length >= TALLY_MAX) {
-                log.error('ARCH tally cap hit',
+                log.audit('ARCH tally cap hit',
                     'TALLY_SQL returned ' + rows.length + ' rows, at or over the ' + TALLY_MAX +
                     ' cap. Lots beyond it silently show no tally. Add a PO or lot filter here ' +
                     'before this grows further.');
@@ -866,8 +883,19 @@ define([
                     const lot = b && b.lot != null ? String(b.lot).trim().toUpperCase() : '';
                     // The whole point. An unmatched bundle is expected, not an error.
                     if (!lot) continue;
-                    if (!byLot[lot]) {
+                    if (byLot[lot]) {
+                        // Newest already won, thanks to ORDER BY c.id DESC. Say so rather
+                        // than resolve it silently: two documents claiming one lot is a
+                        // human question (supersede? re-push?) and Carlos owns it.
+                        log.audit('ARCH tally lot claimed twice',
+                            'lot ' + lot + ' appears in more than one capture. Keeping the ' +
+                            'newest (capture ' + byLot[lot].captureId + ') and ignoring ' +
+                            'capture ' + r.captureid + '.');
+                        continue;
+                    }
+                    {
                         byLot[lot] = {
+                            captureId:  r.captureid,
                             status:     status,
                             container:  r.container || payload.container || null,
                             sourceFile: prov.sourceFile || null,
@@ -878,6 +906,7 @@ define([
                     byLot[lot].bundles.push(b);
                 }
             }
+            _tallyCache = byLot;
             return byLot;
         } catch (e) {
             log.error('ARCH tally resolution failed',

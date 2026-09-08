@@ -1344,6 +1344,7 @@ export const demoTallyProps = (
   tally?: { status: string; sourceFile?: string | null; docUrl?: string | null; bundles: TallyBundle[] } | null,
 ): {
   bundle?: TallyBundle; siblings?: TallyBundle[]; sample?: DemoTally['sample'];
+  source?: { sourceFile: string | null; status: string } | null;
 } => {
   /* 🔴 REAL DATA WINS, AND IT CARRIES NO `sample`.
    *
@@ -1361,7 +1362,17 @@ export const demoTallyProps = (
    */
   if (tally && Array.isArray(tally.bundles) && tally.bundles.length) {
     const bundle = tally.bundles[0];
-    return { bundle, siblings: siblingsOf(tally.bundles, bundle), sample: undefined };
+    return {
+      bundle,
+      siblings: siblingsOf(tally.bundles, bundle),
+      sample: undefined,
+      // 🔴 REAL DATA STILL HAS TO SAY WHERE IT CAME FROM.
+      // Dropping `sample` removed the only line naming the document, so a parsed matrix
+      // arrived with no provenance at all - and "which packing list is this?" is the
+      // first question anyone asks when a number looks wrong. It is also what labels a
+      // seeded or test capture as what it is.
+      source: { sourceFile: tally.sourceFile ?? null, status: tally.status },
+    };
   }
 
   const cfg = typeof window !== 'undefined'

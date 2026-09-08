@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
-import { toLengthDistribution, toWidthDistribution, widthLabel, widthNote } from '@/lib/archTally';
+import { toLengthDistribution, toWidthDistribution, widthLabel, widthNote, checkPayload } from '@/lib/archTally';
 import type { TallyBundle } from '@/lib/archTally';
 
 /**
@@ -45,6 +45,11 @@ interface TallyImageDialogProps {
    * attached to a real lot.
    */
   sample?: { sourceFile: string | null; po: string | null; species: string | null; container?: string | null } | null;
+  /**
+   * Provenance for a REAL parsed tally, where `sample` is deliberately absent. Names the
+   * document and its capture status so a matrix is never anonymous on screen.
+   */
+  source?: { sourceFile: string | null; status: string } | null;
 }
 
 /**
@@ -61,18 +66,33 @@ interface TallyImageDialogProps {
  * only some bundles stated is marked partial rather than shown as a total.
  */
 const TallyMatrixPanel = ({
-  bundle, siblings, imageUrl, sample,
+  bundle, siblings, imageUrl, sample, source,
 }: {
   bundle: TallyBundle;
   siblings: TallyBundle[];
   imageUrl?: string | null;
   sample?: { sourceFile: string | null; po: string | null; species: string | null; container?: string | null } | null;
+  source?: { sourceFile: string | null; status: string } | null;
 }) => {
   const list = siblings && siblings.length ? siblings : [bundle];
   const { rows, totals, mixedItems } = toLengthDistribution(list);
   // Mark by IDENTITY, not by bundleNo: CHECHEN really contains pack 92 twice, and
   // marking by number would highlight both of its rows.
   const selfIdx = list.indexOf(bundle);
+
+  /* 🔴 THE LENGTH TABLE MUST NOT TOTAL A BUNDLE THAT DOES NOT ADD UP.
+   *
+   * checkPayload() was written on 09-06, wired to CaptureReadResult, and given the
+   * explicit contract "a view MUST NOT draw a total for the bundles named in issues".
+   * No component read it. Measured 2026-09-08 on real cache data, lot 316027-2: the
+   * width table refused to total, printing "columns sum to 25 vs stated 30", while this
+   * length table printed a bold Total 30 pieces / 360 BF two inches above it, with no
+   * dagger. One screen, two answers, and the confident one is the one a trader acts on.
+   *
+   * The set is checked, not just the clicked bundle: the total sums every bundle in the
+   * list, so one bad member poisons it. */
+  const check = checkPayload({ schema: 'mgsl.tally.v1', po: null, container: null, bundles: list });
+  const cannotTotal = !check.ok;
 
   // WIDTH is a property of the ONE opened bundle, never of the sibling set: sameItem
   // requires equal widths, so a sibling set can never itself be multi-width.
@@ -154,6 +174,17 @@ const TallyMatrixPanel = ({
         </div>
       )}
 
+      {!sample && source && (
+        <div style={{
+          background: '#F1F5F9', border: '1px solid #CBD5E1', borderRadius: 6,
+          padding: '7px 10px', marginBottom: 8, fontSize: 10.5, color: ARCH_SURFACE.textMid,
+          lineHeight: 1.5,
+        }}>
+          Parsed from <span className="font-mono">{source.sourceFile || 'an unnamed document'}</span>
+          {' '}&middot; capture status <span className="font-mono">{source.status}</span>.
+        </div>
+      )}
+
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
         <span style={{ fontSize: 12.5, fontWeight: 700, color: ARCH_SURFACE.textMid }}>
           {bundle.species || 'Tally'}
@@ -194,19 +225,33 @@ const TallyMatrixPanel = ({
               );
             })}
           </tbody>
-          <tfoot>
-            <tr>
-              <td style={{ ...cell, textAlign: 'left', fontWeight: 700, background: '#F8FAFC' }}>Total</td>
-              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(totals.bundles)}</td>
-              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(totals.pieces)}</td>
-              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
-                {cellVal(totals.volumeM3, totals.volumePartial, 3)}
-              </td>
-              <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
-                {cellVal(totals.boardFeet, totals.boardFeetPartial)}
-              </td>
-            </tr>
-          </tfoot>
+          {cannotTotal ? (
+            <tfoot>
+              <tr>
+                <td colSpan={5} style={{
+                  ...cell, textAlign: 'left', fontWeight: 600, background: '#FEF2F2',
+                  color: '#7F1D1D', whiteSpace: 'normal', lineHeight: 1.5,
+                }}>
+                  No total is shown, because at least one bundle does not add up.{' '}
+                  {check.issues[0].detail} Read the figures off the document.
+                </td>
+              </tr>
+            </tfoot>
+          ) : (
+            <tfoot>
+              <tr>
+                <td style={{ ...cell, textAlign: 'left', fontWeight: 700, background: '#F8FAFC' }}>Total</td>
+                <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(totals.bundles)}</td>
+                <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">{num(totals.pieces)}</td>
+                <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
+                  {cellVal(totals.volumeM3, totals.volumePartial, 3)}
+                </td>
+                <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
+                  {cellVal(totals.boardFeet, totals.boardFeetPartial)}
+                </td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 
@@ -359,6 +404,7 @@ export const TallyImageDialog = ({
   bundle,
   siblings,
   sample,
+  source,
 }: TallyImageDialogProps) => {
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -486,7 +532,7 @@ export const TallyImageDialog = ({
           }}
         >
           {bundle ? (
-            <TallyMatrixPanel bundle={bundle} siblings={siblings || []} imageUrl={imageUrl} sample={sample} />
+            <TallyMatrixPanel bundle={bundle} siblings={siblings || []} imageUrl={imageUrl} sample={sample} source={source} />
           ) : imageUrl ? (
             <img
               src={imageUrl}

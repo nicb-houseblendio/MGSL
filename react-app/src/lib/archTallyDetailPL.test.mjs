@@ -1,5 +1,5 @@
 import { TALLY_DETAIL_PL, DETAIL_PL_TOTALS } from './archTallyDetailPL.ts';
-import { toLengthDistribution, siblingsOf, sameItem, toWidthDistribution } from './archTally.ts';
+import { toLengthDistribution, siblingsOf, sameItem, toWidthDistribution, checkPayload } from './archTally.ts';
 import { demoTallyForLot, TALLY_314307, TALLY_CHECHEN, demoWidthTallyForLot, demoTallyProps } from './archTallyFixtures.ts';
 
 let fail = 0;
@@ -308,6 +308,54 @@ const ok = (name, cond, got) => {
   ok('an empty bundles array is treated as no tally',
     demoTallyProps('316027-1', { status: 'PARSED', bundles: [] }).sample !== undefined, null);
   ok('an undefined tally behaves exactly as before', demoTallyProps('316027-1').sample !== undefined, null);
+}
+
+// ---- FIX 2 + 3, from the 2026-09-08 adversarial review.
+// The dialog now checks the WHOLE sibling set before drawing a length total, and real
+// data carries its own provenance line now that the sample banner is correctly absent.
+{
+  const good = { bundleNo: 'G', lot: 'L1', species: 'ZEBRAWOOD', thickness: { raw: '8/4', inches: 2 },
+    width: null, widthPolicy: 'printed', lengthFt: 8, grade: 'FAS',
+    matrix: { widthsIn: [6, 9], widthUnit: 'in', rows: [{ lengthFt: 8, pieces: { '6': 20, '9': 20 } }] },
+    totals: { pieces: 40, boardFeet: 320, volumeM3: null }, provenance: { page: null, confidence: null } };
+  // states 30, columns sum to 25 - the real shape of seeded lot 316027-2
+  const bad = { ...good, bundleNo: 'B', lot: 'L2', lengthFt: 12,
+    matrix: { widthsIn: [6, 9], widthUnit: 'in', rows: [{ lengthFt: 12, pieces: { '6': 15, '9': 10 } }] },
+    totals: { pieces: 30, boardFeet: 360, volumeM3: null } };
+
+  const P = (bundles) => ({ schema: 'mgsl.tally.v1', po: null, container: null, bundles });
+
+  ok('a clean set may be totalled', checkPayload(P([good])).ok, null);
+  ok('a non-footing bundle refuses the total', checkPayload(P([bad])).ok === false, null);
+  ok('ONE bad member poisons the whole set, because the total sums them all',
+    checkPayload(P([good, bad])).ok === false, checkPayload(P([good, bad])).issues);
+  ok('  ...and the message names the offending bundle so the refusal is actionable',
+    checkPayload(P([good, bad])).issues[0].bundleNo === 'B', checkPayload(P([good, bad])).issues[0]);
+  ok('  ...and states both figures', (() => {
+    const d = checkPayload(P([good, bad])).issues[0].detail;
+    return d.indexOf('30') >= 0 && d.indexOf('25') >= 0;
+  })(), checkPayload(P([good, bad])).issues[0].detail);
+  // the length reducer itself still computes a total; the REFUSAL is the view's job
+  ok('the reducer still reports its arithmetic, the view decides whether to print it',
+    toLengthDistribution([good, bad]).totals.pieces === 70, toLengthDistribution([good, bad]).totals);
+
+  // fix 3: provenance
+  const real = demoTallyProps('316027-2', { status: 'PARSED', sourceFile: 'PL-real.pdf', docUrl: null, bundles: [bad] });
+  ok('real data carries a source line', !!real.source, real.source);
+  ok('  ...naming the document', real.source.sourceFile === 'PL-real.pdf', real.source);
+  ok('  ...and the capture status', real.source.status === 'PARSED', real.source);
+  ok('  ...while the sample banner stays absent', real.sample === undefined, null);
+  ok('a fixture carries a sample and NO source line', (() => {
+    const f = demoTallyProps('316027-2', null);
+    return !!f.sample && !f.source;
+  })(), null);
+  ok('so exactly one provenance line renders, never two and never zero', (() => {
+    for (const t of [null, { status: 'PARSED', sourceFile: 'x.pdf', bundles: [bad] }]) {
+      const p = demoTallyProps('316027-2', t);
+      if (!!p.sample === !!p.source) return false;
+    }
+    return true;
+  })(), null);
 }
 
 console.log(fail ? `\n${fail} FAILED` : '\nall passed');
