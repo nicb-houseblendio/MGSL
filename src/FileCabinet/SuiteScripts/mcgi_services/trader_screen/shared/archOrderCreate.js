@@ -274,6 +274,19 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
     };
 
     /**
+     * The signed-in person's employee id. NOT `int()`: NetSuite's built-in
+     * Administrators are real employee records with NEGATIVE internal ids, and in
+     * this account Philippe Dubois is -5 (active, has an email, verified 2026-09-08).
+     * `int(-5)` is null, so the CREATOR mail reported 'no creator' for the one
+     * Administrator who can reach this endpoint, and the current-user rep fallback
+     * was skipped for him too. Zero is the only value that is never a person.
+     */
+    const currentUserId = () => {
+        const n = Number(runtime.getCurrentUser().id);
+        return Number.isSafeInteger(n) && n !== 0 ? n : null;
+    };
+
+    /**
      * Strict finite number, or null. Rejects trailing garbage the same way, so
      * "100abc" is refused rather than silently becoming 100.
      */
@@ -1933,13 +1946,12 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      */
     const PDF_EMAIL_PARAM = 'custscript_arch_pdf_email_to';
 
-    const sendOrderPdf = (soId, tranId, creatorId) => {
-        /* 🔴 READ DEFENSIVELY. `param()` calls getParameter with no try/catch, and
-         * a parameter that is not on the DEPLOYED script is not guaranteed to come
-         * back null — it can throw. Without this, uploading the JS before the
-         * script object would break order creation outright, which is a far worse
-         * outcome than an unsent email. This way the file is deployable on its own
-         * and the object can follow whenever the feature is actually wanted. */
+    const sendOrderPdf = (soId, tranId, creatorId, appending) => {
+        /* READ DEFENSIVELY. `param()` already swallows a throwing getParameter and
+         * returns null (a parameter missing from the DEPLOYED script object can
+         * throw rather than read null). The try here is belt and braces so that
+         * uploading this JS before the script object can never break order
+         * creation, which would be a far worse outcome than an unsent email. */
         let target = '';
         try {
             target = String(param(PDF_EMAIL_PARAM) || '').trim();
@@ -1979,7 +1991,10 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 recipients: toCreator ? creatorId : target,
                 subject: 'Sales order ' + tranId,
                 body:
-                    'Sales order ' + tranId + ' has been created from the CWP ARCH trader screen.\n\n' +
+                    // Appends reach this too, and used to be told the order 'has been
+                    // created'. Say what happened.
+                    'Sales order ' + tranId + (appending ? ' has been updated' : ' has been created') +
+                    ' from the CWP ARCH trader screen.\n\n' +
                     'The PDF is attached. Quantities and bundles on it are what NetSuite holds.\n\n' +
                     'Reman instructions, if any were entered on the trader screen, are NOT on this ' +
                     'order and are not in the PDF — see the note on the Review step.',
@@ -2141,7 +2156,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             // See `resolveSalesRep` for the fallbacks and why a rep that is not a
             // real sales rep breaks the save outright.
             const repId = resolveSalesRep(
-                int(h.salesRepId), int(runtime.getCurrentUser().id), customerId);
+                int(h.salesRepId), currentUserId(), customerId);
             if (!repId) {
                 /*
                  * Names the CAUSE, not just the symptom. The single generic
@@ -2151,7 +2166,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                  * ask. See `diagnoseSalesRep`.
                  */
                 const why = diagnoseSalesRep(
-                    int(h.salesRepId), int(runtime.getCurrentUser().id), customerId);
+                    int(h.salesRepId), currentUserId(), customerId);
                 const detail = {
                     REQUESTED_NOT_VISIBLE:
                         'The sales rep you selected is outside the subsidiaries this endpoint ' +
@@ -2553,7 +2568,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
              * honest answer is the order itself. */
             if (appending) rateSource = 'order';
         }
-        const pdfMail = sendOrderPdf(soId, tranId, int(runtime.getCurrentUser().id));
+        const pdfMail = sendOrderPdf(soId, tranId, currentUserId(), appending);
 
         return {
             ok: true,
@@ -2717,5 +2732,6 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         // Exported for the test runner.
         resolveLines: resolveLines,
         verifyAssignments: verifyAssignments,
+        sendOrderPdf: sendOrderPdf,
     };
 });
