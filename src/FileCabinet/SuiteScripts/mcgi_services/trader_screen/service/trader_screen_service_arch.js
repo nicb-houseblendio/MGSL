@@ -26,7 +26,8 @@ define([
     'N/runtime', 'N/log', 'N/query',
     '../shared/cacheKeys_arch',
     '../shared/cacheClient',
-], (runtime, log, query, CacheKeysARCH, CacheClient) => {
+    '../shared/archSalesTeam',
+], (runtime, log, query, CacheKeysARCH, CacheClient, ArchSalesTeam) => {
 
     const getMyCache = () => CacheClient.getCache();
 
@@ -653,8 +654,15 @@ define([
         '  t.status                        AS status, ' +
         '  t.entity                        AS customerid, ' +
         '  BUILTIN.DF(t.entity)            AS customer, ' +
+        // Header Sales Rep. NULL on every ARCH order (Team Selling puts the rep on
+        // the sublist instead); kept as the fallback. See archSalesTeam.js.
         '  t.employee                      AS repid, ' +
         '  BUILTIN.DF(t.employee)          AS rep, ' +
+        // Who saved the record. Returned, NOT used as the trader: on 2 of the 4
+        // real orders it is a developer/integration user, and Marc-Antoine's
+        // literal ask ("the creator") would have grouped those under House Blend.
+        '  t.createdby                     AS createdbyid, ' +
+        '  BUILTIN.DF(t.createdby)         AS createdby, ' +
         // The ISO CODE. BUILTIN.DF gives "US Dollar", which is a label and throws
         // RangeError if it ever reaches a currency formatter — see
         // handleGetCustomers, where that took the whole React app down.
@@ -802,8 +810,21 @@ define([
         const lineSeen = {};
         const lineOrder = [];
 
+        /* The trader, from the Sales Team sublist, as a SECOND query keyed by
+         * transaction id. Never joined into the line query above: a two-rep order
+         * would double every one of its lines. Unavailable is survivable (header
+         * rep, then "Unassigned"); a thrown request is not. */
+        let teamRep = {};
+        try {
+            teamRep = ArchSalesTeam.repByTransaction(rows.map((r) => r.tranid));
+        } catch (e) {
+            log.audit('ARCH open orders — sales team unavailable, header rep only',
+                (e.name || '') + ': ' + (e.message || String(e)));
+        }
+
         rows.forEach((r) => {
             const tranId = String(r.tranid);
+            const team = teamRep[tranId] || null;
             if (!byOrder[tranId]) {
                 const letter = statusLetter(r.status);
                 byOrder[tranId] = {
@@ -812,10 +833,21 @@ define([
                     soNo:       String(r.sono || ('SO ' + tranId)),
                     customer:   String(r.customer || ''),
                     customerId: r.customerid ? String(r.customerid) : null,
-                    // The trader IS the sales rep on the transaction. Grouping the
-                    // tab by anything else would invent an owner.
-                    trader:     String(r.rep || 'Unassigned'),
-                    traderId:   r.repid ? String(r.repid) : null,
+                    // The trader IS the sales rep on the transaction, and on this
+                    // account that lives on the Sales Team sublist, not the header:
+                    // the header read null on 4 of 4 real orders and this said
+                    // "Unassigned" for all of them. Sublist first, header second,
+                    // then the honest blank. Grouping by anything else (creator,
+                    // customer's default rep) would invent an owner.
+                    trader:     String((team && team.rep) || r.rep || 'Unassigned'),
+                    // The id is what the wizard's rep dropdown pre-selects on; with
+                    // null here every Edit opened with the rep blank.
+                    traderId:   (team && team.repId) ? String(team.repId) : (r.repid ? String(r.repid) : null),
+                    /** More than one rep on the sublist; `traderTied` when they share evenly. */
+                    traderShared: !!(team && team.shared),
+                    traderTied:   !!(team && team.tied),
+                    createdBy:    String(r.createdby || ''),
+                    createdById:  r.createdbyid ? String(r.createdbyid) : null,
                     shipTo:     addressLabel(r.shipto),
                     shipToFull: String(r.shipto || ''),
                     currency:   String(r.currencycode || ''),
@@ -823,10 +855,10 @@ define([
                     incoterms:  String(r.incoterms || ''),
                     created:    isoDate(r.trandate),
                     shipDate:   isoDate(r.shipdate),
-                    // NetSuite's Sales Team sublist is deliberately NOT read. The
-                    // wizard already falls back when this is blank, and returning
-                    // the rep's name under a "team" label would be a guess dressed
-                    // up as data.
+                    // The sublist is read for the TRADER above. This field stays
+                    // blank: the wizard's header field is one rep (custbody_sales_rep),
+                    // not a team, and a name under a "team" label would be a guess
+                    // dressed up as data.
                     salesTeam:  '',
                     status:     archStatusFor(letter),
                     nsStatus:   letter,

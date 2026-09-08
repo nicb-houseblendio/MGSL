@@ -38,7 +38,7 @@
  * RETURNED, with `lotMissing: true`, rather than filtered out. Hiding them would
  * make a broken order look like no order at all.
  */
-define(['N/query', 'N/log'], (query, log) => {
+define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
 
     const STATUS_PENDING = 'Pending';
 
@@ -97,6 +97,8 @@ define(['N/query', 'N/log'], (query, log) => {
             '  t.id                             AS soid, ' +
             '  t.tranid                         AS sono, ' +
             '  BUILTIN.DF(t.entity)             AS customer, ' +
+            // Header rep: null on every ARCH order (Team Selling). Fallback only;
+            // the sublist is read separately below. See archSalesTeam.js.
             '  BUILTIN.DF(t.employee)           AS trader, ' +
             '  BUILTIN.DF(tl.location)          AS locationname, ' +
             // ISO, explicitly. A bare date column comes back formatted to the
@@ -193,6 +195,15 @@ define(['N/query', 'N/log'], (query, log) => {
         let lotMissingCount = 0;
 
         const rateless = [];
+        // Same second query as the open-orders tab, for the same reason: joined
+        // into the line query a two-rep order would double its bundles.
+        let teamRep = {};
+        try {
+            teamRep = ArchSalesTeam.repByTransaction(rows.map((r) => r.soid));
+        } catch (e) {
+            log.audit('ARCH Split Queue — sales team unavailable, header rep only',
+                (e.name || '') + ': ' + (e.message || String(e)));
+        }
         rows.forEach((r) => {
             // Same rule as the ARCH cache builder: a MISSING conversion rate is
             // an error, not a default of 1. Lumber's real rate is 0.001, so
@@ -216,7 +227,7 @@ define(['N/query', 'N/log'], (query, log) => {
                     soNo:         r.sono,
                     soId:         r.soid,
                     customer:     r.customer || '',
-                    trader:       r.trader || '',
+                    trader:       (teamRep[String(r.soid)] && teamRep[String(r.soid)].rep) || r.trader || '',
                     locationName: r.locationname || '',
                     // Fall back to the transaction date when no expected ship date is
                     // set, so the queue's urgency pill always has something to sort on

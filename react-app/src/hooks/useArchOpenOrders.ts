@@ -35,7 +35,18 @@ export interface ArchLiveOpenOrder extends ArchOpenOrder {
   /** 🔴 What the write endpoint needs. Null on a fixture, which cannot be appended to. */
   internalId: string | null;
   customerId?: string | null;
+  /** Sales Team sublist rep (header rep as fallback). What the wizard pre-selects. */
   traderId?: string | null;
+  /** More than one rep on the order's Sales Team; `traderTied` when they share evenly. */
+  traderShared?: boolean;
+  traderTied?: boolean;
+  /**
+   * Who saved the record. Returned because Marc-Antoine asked for "the creator"
+   * on the band; NOT what `trader` shows, because on half the real orders it is
+   * a developer or integration user. Kept for that decision, not rendered.
+   */
+  createdBy?: string;
+  createdById?: string | null;
   customerPO?: string;
   shipToFull?: string;
   /** NetSuite's own status letter and label, kept because `status` is a projection. */
