@@ -11,7 +11,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fromCaptureResult, bundlesForLot, fromCaptureRecord, CAPTURE_STATUS } from './archTallyCapture.ts';
-import { toLengthDistribution, widthLabel, toWidthDistribution } from './archTally.ts';
+import { toLengthDistribution, widthLabel, toWidthDistribution, checkPayload } from './archTally.ts';
 import { TALLY_DETAIL_PL } from './archTallyDetailPL.ts';
 
 const SCHEMA = path.join(
@@ -410,6 +410,68 @@ const intake = (o) => JSON.stringify(o);
     ok('  ...and the bundle is NOT degenerate while pieces sit unattributed, so the table renders',
       d.degenerate === false, d);
   }
+}
+
+// ---- THE TWO ROUNDING CONTRACTS, pinned 2026-09-08.
+// Every width in this suite was an exact quarter inch, so mmToIn's 2dp fallback and the
+// parser's 3dp r3 returned identical values and the divergence was invisible. Measured:
+// 19 of 27 realistic widths disagreed. These use NON-quarter widths on purpose.
+{
+  const rw = (widthMm, cols) => {
+    const b = S.newBundle();
+    b.bundleNo = leaf('R1');
+    b.thickness = dimMm('25mm', 25);
+    b.width = dimMm(widthMm + 'mm', widthMm);
+    b.length = dimFt("8'", 8);
+    b.widthBreakdown = cols.map((c) => ({ width: dimMm(c[0] + 'mm', c[0]), pieces: c[1] }));
+    b.pieces = leaf(cols.reduce((a, c) => a + c[1], 0));
+    return b;
+  };
+  // 133mm is 5.23622...", 100mm is 3.937". Neither is a quarter.
+  const b = fromCaptureResult(S.toLotReport(doc([rw(133, [[133, 6], [100, 4]])]))).payload.bundles[0];
+
+  ok('the scalar width uses the SAME 3dp contract as the matrix',
+    b.width.inches === 5.236, b.width && b.width.inches);
+  ok('  ...and the matrix keys agree with it', b.matrix.widthsIn.indexOf(5.236) >= 0, b.matrix.widthsIn);
+  ok('  ...so widthLabel cannot print a number the table contradicts',
+    String(widthLabel(b)).indexOf('5.236') >= 0, widthLabel(b));
+  ok('a second non-quarter width also matches the parser',
+    b.matrix.widthsIn.indexOf(3.937) >= 0, b.matrix.widthsIn);
+  ok('thickness follows the same contract: 25mm is 0.984, not 0.98',
+    b.thickness.inches === 0.984, b.thickness);
+  ok('an EXACT quarter still snaps, because 139.7mm really is 5.5"',
+    fromCaptureResult(S.toLotReport(doc([rw(139.7, [[139.7, 10]])]))).payload.bundles[0].width.inches === 5.5, null);
+  ok('25.4mm is exactly one inch',
+    fromCaptureResult(S.toLotReport(doc([rw(25.4, [[25.4, 10]])]))).payload.bundles[0].width.inches === 1, null);
+  ok('two non-quarter widths stay TWO in the matrix, as sameItem now sees them',
+    b.matrix.widthsIn.length === 2, b.matrix.widthsIn);
+}
+
+// ---- THE RANDOM-WIDTH KEY, pinned 2026-09-08. '' is what our adapter emits, 'RW' is
+// what the shipped parser and the document use, and the skill that writes v1 payloads is
+// Lucas's. Before this an 'RW'-keyed payload was reported as a parser fault.
+{
+  const RB = (pieces, stated) => ({ schema: 'mgsl.tally.v1', po: null, container: null,
+    bundles: [{ bundleNo: 'RW1', lot: null, species: null,
+      thickness: { raw: null, inches: 1 }, width: null, widthPolicy: 'RW', lengthFt: 8,
+      matrix: { widthsIn: [6], rows: [{ lengthFt: 8, pieces }] },
+      totals: { pieces: stated, boardFeet: null, volumeM3: null },
+      provenance: { page: null, confidence: null } }] });
+
+  ok("an 'RW' key is NOT a stray width", checkPayload(RB({ '6': 4, 'RW': 6 }, 10)).ok,
+    checkPayload(RB({ '6': 4, 'RW': 6 }, 10)).issues);
+  ok("  ...nor lower-case 'rw'", checkPayload(RB({ '6': 4, 'rw': 6 }, 10)).ok, null);
+  ok("  ...nor ' RW ' with spaces", checkPayload(RB({ '6': 4, ' RW ': 6 }, 10)).ok, null);
+  ok('an empty key is still accepted', checkPayload(RB({ '6': 4, '': 6 }, 10)).ok, null);
+  ok('a genuine stray width is STILL flagged, so this did not just disable the check',
+    checkPayload(RB({ '6': 4, '7': 6 }, 10)).issues.some((i) => i.kind === 'strayWidth'),
+    checkPayload(RB({ '6': 4, '7': 6 }, 10)).issues);
+  ok("'RW' pieces are counted, not dropped", (() => {
+    const d = toWidthDistribution(RB({ '6': 4, 'RW': 6 }, 10).bundles[0]);
+    return d.totals.attributed + d.unattributed === 10 && d.unattributed === 6;
+  })(), null);
+  ok('  ...and the table renders rather than hiding them',
+    toWidthDistribution(RB({ '6': 4, 'RW': 6 }, 10).bundles[0]).degenerate === false, null);
 }
 
 console.log(fail ? '\n' + fail + ' FAILED' : '\nall passed');

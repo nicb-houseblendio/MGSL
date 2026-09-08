@@ -470,6 +470,18 @@ export const widthNote = (b: TallyBundle): string => {
 
 /* ── WIDTH, the second grain ─────────────────────────────────────────────────── */
 
+/**
+ * Is this `pieces` key the random-width column rather than a measurement?
+ *
+ * '' is what our own adapter emits; 'RW' is what the shipped parser and the document
+ * itself use. Both mean "the supplier did not state a width for these pieces", which is
+ * a fact about the paper and never a fault.
+ */
+export const isRandomWidthKey = (k: string): boolean => {
+  const s = String(k ?? '').trim().toUpperCase();
+  return s === '' || s === 'RW';
+};
+
 /** One width column of a single bundle. */
 export interface TallyWidthRow {
   /** The width as printed, in `unit`. Null for pieces the document did not attribute. */
@@ -660,7 +672,16 @@ export const checkPayload = (payload: TallyPayload | null | undefined): TallyPay
     for (const r of m.rows) {
       for (const [k, v] of Object.entries(r?.pieces || {})) {
         if (!(Number(v) || 0)) continue;
-        if (k === '') continue; // the random-width column, legitimate
+        // 🔴 TWO SPELLINGS OF THE SAME COLUMN, AND BOTH ARE LEGITIMATE.
+        // The adapter normalises the random-width column to '' (toRows in
+        // archTallyCapture.ts), but the shipped parser's own key is the literal 'RW'
+        // (see the CaptureMatrix note there), and the skill that writes v1 payloads is
+        // Lucas's, not ours. Before 2026-09-08 only '' was excused, so a payload written
+        // with `pieces: {'RW': 63}` was reported as "counts pieces under RW, which the
+        // document's width list does not contain" - every CHECHEN-style random-width
+        // bundle would have read as a parser fault. Accept both rather than make a
+        // boundary we do not control depend on our spelling.
+        if (isRandomWidthKey(k)) continue;
         const w = Number(k);
         if (!Number.isFinite(w) || !declared.includes(w)) stray.add(k);
       }

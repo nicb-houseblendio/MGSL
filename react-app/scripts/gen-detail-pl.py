@@ -71,7 +71,12 @@ def mm_to_in(mm):
     already within a whisker, else 2dp. A genuinely odd width stays odd."""
     raw = mm / 25.4
     q = round(raw * 4) / 4
-    return q if abs(raw - q) < 1e-6 else round(raw * 100) / 100
+    # 3dp, mirroring mmToIn in archTallyCapture.ts, which moved from 2dp to 3dp on
+    # 2026-09-08 to agree with the parser's own r3. This function exists to produce a
+    # fixture that looks like adapter output, so it must move with it: at 2dp this
+    # emitted 0.98 for a 25mm board while the adapter emitted 0.984, and nothing
+    # compared them, so a reader could not tell which was authoritative.
+    return q if abs(raw - q) < 1e-6 else round(raw * 1000) / 1000
 
 
 def mm_to_ft(mm):

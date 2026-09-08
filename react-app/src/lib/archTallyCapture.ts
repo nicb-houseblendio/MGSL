@@ -138,7 +138,17 @@ const mmToIn = (mm: number | null): number | null => {
   // rounding whisker of one. 19.05mm -> 0.75", 31.75mm -> 1.25". Never force it:
   // a genuinely odd width must stay odd rather than be tidied into a lie.
   const q = Math.round(raw * 4) / 4;
-  return Math.abs(raw - q) < 1e-6 ? q : Math.round(raw * 100) / 100;
+  // 🔴 3dp, NOT 2dp, and the precision is not a style choice.
+  // The parser keys every matrix column through its own `r3` (MSL_LIB_PLSchema.js:321),
+  // which is round-to-3dp. This function produced 2dp, so the SAME physical width
+  // printed two different numbers depending on which path reached the screen: 133mm was
+  // `5.24"` through widthLabel's scalar branch and `5.236"` through the matrix branch.
+  // Measured 2026-09-07 across 27 realistic widths: 19 disagreed at 2dp, 0 disagree at
+  // 3dp. Worse, `sameItem` compares width.inches, so two widths under 0.005" apart
+  // merged into one item while staying two matrix rows - the length view could say
+  // "1 width" and the width table "2 widths" on the same screen.
+  // The quarter snap above is kept because it is EXACT, not a tidy-up: 139.7mm is 5.5".
+  return Math.abs(raw - q) < 1e-6 ? q : Math.round(raw * 1000) / 1000;
 };
 
 /**
