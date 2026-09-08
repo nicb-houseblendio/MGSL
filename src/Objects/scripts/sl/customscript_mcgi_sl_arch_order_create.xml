@@ -140,7 +140,22 @@
            HERE as well as to custscript_arch_order_roles when it is known; the
            audience decides who can reach the URL, the parameter decides who the
            script will act for. -->
-      <audslctrole>ADMINISTRATOR</audslctrole>
+      <!-- 🔴 RECONCILED WITH THE ACCOUNT 2026-09-08. This read ADMINISTRATOR only,
+           while the live deployment had carried ADMINISTRATOR + customrole2181 since
+           the UI change on 08-31. Deploying the old value would have silently locked
+           the ARCH trader out of the order endpoint, undoing that change. The exact
+           syntax below is NOT a guess: it is what `object:import` returned from this
+           account for this deployment. Verify against the account before changing it
+           again - `SELECT audslctrole FROM scriptdeployment WHERE scriptid = '...'`
+           reads it without an import. -->
+      <audslctrole>ADMINISTRATOR|[scriptid=customrole2181]</audslctrole>
+      <!-- 🔴 ALSO RECONCILED, and a second lockout vector. The account carries 2181
+           here; this block did not carry the field at all, so a deploy would have
+           cleared the script's own role allowlist and left the endpoint refusing
+           everyone but Administrator even with the audience fixed. The two are
+           different gates: the AUDIENCE decides who may reach the URL, this parameter
+           decides who the script will act for. Both have to name the trader role. -->
+      <custscript_arch_order_roles>2181</custscript_arch_order_roles>
       <eventtype></eventtype>
       <isdeployed>T</isdeployed>
       <isonline>F</isonline>
