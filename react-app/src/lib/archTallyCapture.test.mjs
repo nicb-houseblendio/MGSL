@@ -6,36 +6,80 @@
  * newDocument/newHeader/newBundle and passed through its own toLotReport, so what
  * reaches fromCaptureResult() is byte-for-byte what the custom record will hold.
  *
- * Run: npx tsx src/lib/archTallyCapture.test.mjs
+ * Run: npm test  (from react-app). The old header said `npx tsx` and tsx is not
+ * installed in this project; see scripts/test-alias-hook.mjs.
  */
 import fs from 'fs';
 import path from 'path';
+import url from 'url';
 import { fromCaptureResult, bundlesForLot, fromCaptureRecord, CAPTURE_STATUS } from './archTallyCapture.ts';
-import { toLengthDistribution, widthLabel, toWidthDistribution, checkPayload } from './archTally.ts';
+import { toLengthDistribution, widthLabel, toWidthDistribution, checkPayload, widthNote, sameItem, siblingsOf } from './archTally.ts';
 import { TALLY_DETAIL_PL } from './archTallyDetailPL.ts';
 
-const SCHEMA = path.join(
-  'D:', 'HouseBlend', 'Clients', 'MGSL', 'Tasks', 'Task 11 - PO Allocation', 'docs',
+/* 🔴 THIS PATH LEAVES THE REPO, AND THAT IS THE POINT AND THE HAZARD.
+ *
+ * The parser is a production artifact living in a dated vendor dump under a DIFFERENT
+ * task folder. Testing against it is what makes these assertions worth having, and it
+ * also means one moved folder silently retires the only tests that touch real parser
+ * code: `readFileSync` throws at module load, and node reports ONE failure for the whole
+ * file rather than the ~130 assertions that never ran.
+ *
+ * So: resolve relative to this file first, fall back to the absolute path, and if neither
+ * exists FAIL LOUDLY with the reason rather than crash with a stack trace. A skip that
+ * looks like a pass is the outcome to avoid. */
+const HERE = path.dirname(url.fileURLToPath(import.meta.url));
+// src/lib -> react-app -> Implementation -> MGSL. Four levels, not three: Tasks/ is a
+// sibling of Implementation, not a child of it.
+const REL = ['..', '..', '..', '..', 'Tasks', 'Task 11 - PO Allocation', 'docs',
   'Implementation data', 'Prod-all-custom-scripts-2026-08-27', 'SuiteScripts',
-  'mcgi_services', 'packing_list', 'MSL_LIB_PLSchema.js',
-);
-
-let S;
-{
-  const src = fs.readFileSync(SCHEMA, 'utf8');
-  let captured = null;
-  const define = (deps, factory) => { captured = factory(); };
-  // eslint-disable-next-line no-new-func
-  new Function('define', src)(define);
-  S = captured;
-}
+  'mcgi_services', 'packing_list', 'MSL_LIB_PLSchema.js'];
+const CANDIDATES = [
+  path.resolve(HERE, ...REL),
+  path.join('D:', 'HouseBlend', 'Clients', 'MGSL', 'Tasks', 'Task 11 - PO Allocation', 'docs',
+    'Implementation data', 'Prod-all-custom-scripts-2026-08-27', 'SuiteScripts',
+    'mcgi_services', 'packing_list', 'MSL_LIB_PLSchema.js'),
+];
+const SCHEMA = CANDIDATES.find((c) => fs.existsSync(c)) || null;
 
 let fail = 0;
 const ok = (name, cond, got) => {
   console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (cond ? '' : '   got: ' + JSON.stringify(got)));
   if (!cond) fail++;
 };
-ok('real parser module loaded', !!S && S.SCHEMA_VERSION === '1.0' && typeof S.toLotReport === 'function', S && S.SCHEMA_VERSION);
+
+if (!SCHEMA) {
+  ok('the real parser MSL_LIB_PLSchema.js was found', false, CANDIDATES);
+  console.log('');
+  console.log('FAILED: the shipped parser is not on this machine, so every assertion in');
+  console.log('this file was skipped. That is NOT a pass. Looked in:');
+  for (const c of CANDIDATES) console.log("  " + c);
+  process.exit(1);
+}
+
+let S;
+{
+  const src = fs.readFileSync(SCHEMA, 'utf8');
+  let captured = null;
+  /* ⚠️ The shim ignores `deps` and calls the factory with NO arguments, which is
+   * correct only while the parser stays `define([], ...)`. The moment it takes a real
+   * dependency the factory receives undefined and throws, so assert the assumption
+   * rather than discover it in a stack trace. */
+  const define = (deps, factory) => {
+    if (Array.isArray(deps) && deps.length) {
+      throw new Error('MSL_LIB_PLSchema.js now declares dependencies (' + deps.join(', ') +
+        '). The AMD shim in this test passes none, so it must be taught to supply them.');
+    }
+    captured = factory();
+  };
+  // eslint-disable-next-line no-new-func
+  new Function('define', src)(define);
+  S = captured;
+}
+
+// Do NOT pin SCHEMA_VERSION: it belongs to another repo and a harmless bump to 1.1
+// would fail this suite for no reason. Assert the shape we actually depend on.
+ok('real parser module loaded', !!S && typeof S.toLotReport === 'function' && typeof S.newBundle === 'function', S && S.SCHEMA_VERSION);
+ok('  ...and its schema version is recorded, not enforced: ' + (S && S.SCHEMA_VERSION), true, null);
 
 const dimMm = (raw, mm) => S.dimension(raw, mm, 'mm', mm, null, null, 1);
 const dimFt = (raw, ft) => S.dimension(raw, ft, 'ft', null, null, ft, 1);
@@ -472,6 +516,105 @@ const intake = (o) => JSON.stringify(o);
   })(), null);
   ok('  ...and the table renders rather than hiding them',
     toWidthDistribution(RB({ '6': 4, 'RW': 6 }, 10).bundles[0]).degenerate === false, null);
+}
+
+// ---- ITEM 5, the gaps that protect items 1 to 4. Added 2026-09-08.
+
+// A METRIC-LENGTH LOT REPORT. This is the normal real-world case and had zero
+// assertions: every parser-path test set lengthMm to null and fell through to the
+// matrix row's length instead, so toBundle's own lengthMm conversion never ran.
+{
+  const b = S.newBundle();
+  b.bundleNo = leaf('M1');
+  b.thickness = dimMm('50mm', 50);
+  b.width = dimMm('150mm', 150);
+  b.length = { raw: '2400mm', value: 2400, unit: 'mm', mm: 2400, inches: null, feet: null, confidence: 1 };
+  b.pieces = leaf(12);
+  const res = S.toLotReport(doc([b]));
+  const out = fromCaptureResult(res).payload.bundles[0];
+
+  ok('a metric length converts through toBundle, 2400mm is 7.874ft',
+    out.lengthFt === 7.874, out.lengthFt);
+  ok('  ...and the length row prints it as a fractional foot, not a lie',
+    toLengthDistribution([out]).rows[0].label === "7.874'", toLengthDistribution([out]).rows[0].label);
+  ok('  ...and the metric width follows the 3dp contract too',
+    out.width.inches === 5.906, out.width);
+  ok('  ...and the thickness likewise', out.thickness.inches === 1.969, out.thickness);
+}
+
+// ADAPTER OUTPUT MEETS THE WIDTH GRAIN. Every width assertion in this project ran
+// against a fixture or a hand stub; toWidthDistribution, widthNote and sameItem had
+// never been fed anything fromCaptureResult produced.
+{
+  const b = S.newBundle();
+  b.bundleNo = leaf('AW');
+  b.thickness = dimMm('25.4mm', 25.4);
+  b.length = dimFt("8'", 8);
+  b.widthBreakdown = [
+    { width: dimMm('152.4mm', 152.4), pieces: 30 },
+    { width: dimMm('228.6mm', 228.6), pieces: 20 },
+  ];
+  b.pieces = leaf(50);
+  const a = fromCaptureResult(S.toLotReport(doc([b]))).payload.bundles[0];
+  const w = toWidthDistribution(a);
+
+  ok('toWidthDistribution accepts ADAPTER output, not just fixtures',
+    w.rows.length === 2 && w.totals.attributed === 50, w);
+  ok('  ...keys it by the adapter inches', w.rows.map((r) => r.width).join(',') === '6,9', w.rows);
+  ok('  ...and foots against the bundle the adapter built', w.footsToTotal === true, w);
+  ok('  ...and is not degenerate, so the table renders', w.degenerate === false, w);
+  ok('widthNote makes no false claim on adapter output', widthNote(a) === '', widthNote(a));
+  ok('sameItem holds for a bundle against itself, through the adapter',
+    sameItem(a, a) === true, null);
+  ok('siblingsOf on adapter output always contains the bundle',
+    siblingsOf([a], a).indexOf(a) >= 0, null);
+  ok('checkPayload passes on a clean adapter payload',
+    checkPayload({ schema: 'mgsl.tally.v1', bundles: [a] }).ok, null);
+}
+
+// FIXTURE AND ADAPTER MUST AGREE. detail-pl is generated to look like adapter output, so
+// if the two rounding contracts ever diverge again this is where it shows.
+{
+  const b = S.newBundle();
+  b.bundleNo = leaf('TH');
+  b.thickness = dimMm('25.00mm', 25);
+  b.length = dimFt("8'", 8);
+  b.pieces = leaf(1);
+  const viaAdapter = fromCaptureResult(S.toLotReport(doc([b]))).payload.bundles[0].thickness.inches;
+  const inFixture = TALLY_DETAIL_PL.bundles[0].thickness.inches;
+
+  ok('the detail-pl fixture encodes the SAME thickness the adapter produces for 25mm',
+    viaAdapter === inFixture, { viaAdapter, inFixture });
+  ok('  ...and that value is 0.984, the 3dp contract', viaAdapter === 0.984, viaAdapter);
+}
+
+// A COMMITTED NON-FOOTING PAYLOAD. Until now the only one that ever existed was a
+// hand-seeded NetSuite record, since deleted. Without a committed fixture the refusal
+// paths in both tables are unreachable from the test suite.
+{
+  const bundles = [
+    { bundleNo: 'NF-A', lot: null, species: 'SAPELI KD', grade: 'FIRST AND SECOND',
+      thickness: { raw: '25.00mm', inches: 0.984 }, width: null, widthPolicy: 'printed',
+      lengthFt: 8, matrix: { widthsIn: [6, 9], widthUnit: 'in',
+        rows: [{ lengthFt: 8, pieces: { '6': 15, '9': 10 } }] },
+      totals: { pieces: 30, boardFeet: 360, volumeM3: null },
+      provenance: { page: 1, confidence: null } },
+  ];
+  const NF = { schema: 'mgsl.tally.v1', po: '316027', container: 'NON-FOOTING-FIXTURE', bundles };
+
+  const chk = checkPayload(NF);
+  ok('the non-footing fixture is caught', chk.ok === false, chk);
+  ok('  ...as doesNotFoot', chk.issues[0].kind === 'doesNotFoot', chk.issues[0]);
+  ok('  ...naming both figures', chk.issues[0].detail.indexOf('30') >= 0 && chk.issues[0].detail.indexOf('25') >= 0,
+    chk.issues[0].detail);
+  const w = toWidthDistribution(bundles[0]);
+  ok('  ...the width table refuses its total', w.footsToTotal === false, w);
+  ok('  ...while still showing the columns it does have',
+    w.rows.length === 2 && w.totals.attributed === 25, w.rows);
+  ok('  ...and it is NOT degenerate, so the refusal is visible rather than hidden',
+    w.degenerate === false, w);
+  ok('the length table refuses too, because the set cannot be totalled',
+    checkPayload({ schema: 'mgsl.tally.v1', bundles }).ok === false, null);
 }
 
 console.log(fail ? '\n' + fail + ' FAILED' : '\nall passed');
