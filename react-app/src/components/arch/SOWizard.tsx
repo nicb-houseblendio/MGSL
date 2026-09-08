@@ -2596,7 +2596,18 @@ export const SOWizard = ({
         retyped on an existing line does not take effect, and a trader who was not
         told would reasonably assume it had.
       */}
-      {mode === 'existing' && (
+      {/* The zero case is a DIFFERENT sentence, not a plural. Since the Items step
+          stopped requiring a writable line (archOrderGate), Review is reachable with
+          only the order's own lines in the cart, and this read "Only the 0 added lots
+          are written", which is true but reads as a bug. */}
+      {mode === 'existing' && writableLines.length === 0 && (
+        <ProvisionalNote>
+          <strong>Nothing would be written to {existingSO}.</strong> Every line shown is already
+          on the order. Add a lot to update it; the lines already there are left exactly as they
+          are.
+        </ProvisionalNote>
+      )}
+      {mode === 'existing' && writableLines.length > 0 && (
         <ProvisionalNote>
           <strong>
             Only the {writableLines.length} added {writableLines.length === 1 ? 'lot' : 'lots'}{' '}
@@ -2815,8 +2826,13 @@ export const SOWizard = ({
               // On Review it explains a dead Update/Create button instead, which
               // used to be dead with no reason anywhere on the screen.
               <span style={{ fontSize: 11.5, color: AMBER_TEXT, fontWeight: 600 }}>
+                {/* `reviewHint` explains an empty writable set, which is only the WHOLE
+                    reason the button is dead when every other step passes. Showing it
+                    unconditionally told a trader "nothing to write" while an earlier
+                    step was also blocking, and they never learned about the other one. */}
                 {step.key === 'review'
-                  ? gate.reviewHint || 'Complete the earlier steps'
+                  ? (startOk && headerOk && splitOk && remanOk && priceOk && gate.reviewHint) ||
+                    'Complete the earlier steps'
                   : step.key === 'items'
                   ? gate.itemsHint || 'Add at least one lot'
                   : step.key === 'customer'

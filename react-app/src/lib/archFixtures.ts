@@ -147,11 +147,18 @@ const buildRow = (index: number): ArchSummaryRow => {
     outbound,
     onOrder,
     inTransit,
-    // Ready to Build is a STATUS on reserved stock, not a second commitment (decided
-    // 2026-08-19, todo-list "Ready to build"), so it is never subtracted here. The live
-    // cache does the same at mcgi_mr_trader_screen_cache_arch.js `- reserve - 0 - outbound`;
-    // subtracting it a second time understated Available on every fixture paint.
-    available: Math.max(0, onHand + onOrder + inTransit - reserve - outbound),
+    // 🔴 readyToBuild IS subtracted, and a 2026-09-08 change that removed it was
+    // REVERTED the same day. The reasoning for removing it was that Ready to Build is
+    // a status on reserved stock, so its quantity sits inside `reserve` already. That
+    // is false for this generator BY CONSTRUCTION: `readyToBuild` above is nonzero only
+    // when `hasReserve` is false, so the two are disjoint, and dropping the term
+    // overstated Available on 5 of the demo rows (by up to 975 BF) and made rows read
+    // positive whose every on-hand bundle was locked. It also contradicted
+    // `commitmentOn` in archLots.ts, which counts readyToBuild as a commitment that
+    // LOCKS a bundle - and that is the rule the selection path enforces, so the grid
+    // has to agree with it. The live cache subtracting a literal 0 is not evidence
+    // either way: the value is 0 there only because no field sources it.
+    available: Math.max(0, onHand + onOrder + inTransit - reserve - readyToBuild - outbound),
     // Hardwood lot cost per unit — roughly $2.40 to $9.80. Same band across all
     // four categories: the fixtures exist to exercise layout, not to model
     // veneer pricing, and inventing a per-category band would read as real.

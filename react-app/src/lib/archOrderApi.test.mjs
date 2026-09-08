@@ -84,5 +84,43 @@ ok('a fast answer is returned intact', good.ok === true && good.tranId === 'SO-C
 await new Promise((res) => setTimeout(res, 120));
 ok('and the timer does not fire afterwards (no unhandled abort)', true);
 
+// ── 2026-09-08 evening: four defects found by an adversarial pass, all in code that
+//    shipped that morning. Each assertion below fails on the version that shipped.
+//
+// D1 the timeout was BELOW the measured server time. A one-line order took 102s in
+//    this account's own log (SO-CWP-001354), of which assignLots' second save was 62s.
+//    At 90s a correctly saved order was reported as "may not exist".
+ok('timeout is above the 102s measured for a one-line order', SUBMIT_TIMEOUT_MS > 102_000, SUBMIT_TIMEOUT_MS);
+ok('timeout is 300s', SUBMIT_TIMEOUT_MS === 300_000, SUBMIT_TIMEOUT_MS);
+
+// D2 the server distinguishes REFUSED from FAILED; the client dropped the field, so a
+//    throw AFTER the save committed was reported as "nothing was written".
+let f = orderOutcome({ ok: false, code: 'FAILED', error: 'SSS_USAGE_LIMIT_EXCEEDED' }, false);
+ok('a server FAILED is classified unknown, not refused', f.kind === 'unknown', f);
+ok('a server FAILED never claims nothing was written', !/nothing was written/i.test(f.title + ' ' + f.cartReason), f);
+ok('a server FAILED sends the trader to the SO list', /check the sales order list/i.test(f.cartReason || ''), f);
+let rf = orderOutcome({ ok: false, code: 'REFUSED', error: 'The order needs a customer' }, false);
+ok('a server REFUSED is still a refusal', rf.kind === 'refused', rf);
+ok('a server REFUSED may say nothing was written', /nothing was written/.test(rf.title), rf);
+ok('no code at all (client-side refusal) stays a refusal', orderOutcome({ ok: false, error: 'not connected' }, false).kind === 'refused');
+
+// the code must survive the transport layer, or none of the above can ever fire
+globalThis.window = { MCGI_CONFIG: { orderEndpointUrl: 'https://example.invalid/order' } };
+globalThis.fetch = () => Promise.resolve({ json: async () => ({ ok: false, code: 'FAILED', error: 'boom' }) });
+const carried = await createArchOrder(draft, 'ARCH-code-key');
+ok('the server code survives submit() and reaches the caller', carried.code === 'FAILED', carried);
+ok('and classifies as unknown end to end', orderOutcome(carried, false).kind === 'unknown');
+
+// D3 submit() must always RESOLVE. It built an AbortController above its own try, so a
+//    browser without one rejected instead, and ArchScreen had no catch: `submitting`
+//    stayed true and every exit from the confirmation modal is gated on it.
+const realAC = globalThis.AbortController;
+delete globalThis.AbortController;
+let resolved = true, out = null;
+try { out = await createArchOrder(draft, 'ARCH-no-ac'); } catch (e) { resolved = false; out = String(e); }
+globalThis.AbortController = realAC;
+ok('createArchOrder resolves even with no AbortController, never rejects', resolved, out);
+ok('and reports it as a transport failure rather than a refusal', resolved && out.ok === false && out.transportFailure === true, out);
+
 console.log(fail ? ('# FAIL ' + fail) : '# archOrderApi ok');
 process.exit(fail ? 1 : 0);

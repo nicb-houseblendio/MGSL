@@ -14,7 +14,8 @@ const queries = [];
 let canned = [];
 const query = { runSuiteQL: ({ query: sql }) => { queries.push(sql); return { asMappedResults: () => canned }; } };
 const audits = [];
-const log = { audit: (t, m) => audits.push(t + ' ' + m), error: () => {}, debug: () => {} };
+const errors = [];
+const log = { audit: (t, m) => audits.push(t + ' ' + m), error: (t, m) => errors.push(t + ' ' + m), debug: () => {} };
 
 let mod = null;
 const define = (deps, factory) => {
@@ -84,6 +85,53 @@ queries.length = 0; canned = [];
 repByTransaction(Array.from({ length: 1200 }, (_, i) => String(1000 + i)));
 ok('1,200 ids are sent in 3 chunks', queries.length === 3, queries.length);
 ok('no chunk exceeds 500 ids', queries.every((q) => ((q.match(/IN \(([^)]*)\)/) || [])[1] || '').split(',').length <= 500));
+
+// ── 2026-09-08 evening, three more defects in the morning's version ──────────────
+// D8 `tied` was gated on `!primaries.length`, so two PRIMARIES splitting evenly were
+//    reported as a clean single attribution. And `rivals` was counted over `members`
+//    while `best` came from `pool`, i.e. two different sets.
+let tp = pickRep([
+  { repid: '2090', rep: 'A', contribution: '0.5', isprimary: 'T' },
+  { repid: '2094', rep: 'B', contribution: '0.5', isprimary: 'T' },
+]);
+ok('two primaries at 50/50 are reported TIED', tp.tied === true, tp);
+ok('two primaries at 50/50 still pick the lowest id', tp.repId === '2090', tp);
+tp = pickRep([
+  { repid: '10', rep: 'Primary small', contribution: '0.1', isprimary: 'T' },
+  { repid: '20', rep: 'Big non-primary', contribution: '0.9', isprimary: 'F' },
+]);
+ok('one primary against a bigger non-primary is NOT tied', tp.tied === false && tp.repId === '10', tp);
+
+// D6 a rep whose id resolves but whose NAME the caller's role cannot read. SuiteQL
+//    omits null columns, so `rep` arrives undefined. Reporting a blank name let the
+//    service fall through to the header rep and group under "Unassigned" while Edit
+//    pre-selected the id.
+const nameless = pickRep([{ repid: '2094', contribution: '1', isprimary: 'F' }]);
+ok('an unreadable name still yields a usable label, not an empty string', !!nameless.rep && nameless.rep !== '', nameless);
+ok('and is flagged so the caller need not guess', nameless.nameUnreadable === true, nameless);
+ok('a readable name is not flagged', pickRep([{ repid: '1', rep: 'Real Name', contribution: '1' }]).nameUnreadable === false);
+
+// D5 one failing chunk discarded every chunk that had already succeeded, and the whole
+//    tab reverted to "Unassigned".
+let call = 0;
+const flaky = {
+  runSuiteQL: ({ query: sql }) => {
+    call++;
+    if (call === 2) throw new Error('SSS_REQUEST_TIME_EXCEEDED');
+    return { asMappedResults: () => [{ tranid: '5001', repid: '77', rep: 'Survivor', contribution: '1', isprimary: 'F' }] };
+  },
+};
+let mod2 = null;
+new Function('define', fs.readFileSync(FILE, 'utf8'))((deps, factory) => { mod2 = factory(flaky, log); });
+call = 0;
+const partial = mod2.repByTransaction(Array.from({ length: 600 }, (_, i) => String(5000 + i)));
+ok('a mid-run chunk failure does not throw', true);
+ok('and the chunk that succeeded is still returned', partial['5001'] && partial['5001'].rep === 'Survivor', partial);
+ok('the failed chunk is logged at ERROR', errors.filter((e) => /chunk read failed/.test(e)).length === 1, errors);
+ok('and the partial result is called out at ERROR, not buried in an audit line',
+  errors.filter((e) => /PARTIAL read/.test(e)).length === 1 && audits.filter((a) => /PARTIAL read/.test(a)).length === 0,
+  { errors, audits });
+ok('the partial-read message says it is partial, not empty', errors.some((e) => /partial result, not an empty one/.test(e)), errors);
 
 console.log(fail ? ('# FAIL ' + fail) : '# archSalesTeam ok');
 process.exit(fail ? 1 : 0);

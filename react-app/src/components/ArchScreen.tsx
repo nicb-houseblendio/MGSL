@@ -216,8 +216,37 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
 
     setSubmitting(true);
     setOrderResult(null);
-    const result = await createArchOrder(draft, orderKeyRef.current);
-    setSubmitting(false);
+    /*
+     * 🔴 THE `finally` IS LOAD-BEARING, not tidiness.
+     *
+     * Every one of the confirmation dialog's five exits is gated on `submitting`
+     * (onOpenChange, Escape, pointer-outside, interact-outside and, since 2026-09-08,
+     * the Done button), and this DialogContent renders no close X. So if `submitting`
+     * is ever left true the trader is stranded in a modal covering the whole screen
+     * with no way out but a reload, which loses the cart and tells them nothing about
+     * whether their order exists.
+     *
+     * `createArchOrder` is written to always resolve, but "written to" is not a
+     * guarantee: a throw anywhere before its own try rejects instead, and this was the
+     * only line that cleared the flag. Chrome also freezes a hidden tab, so a trader
+     * who submits and switches to NetSuite to watch for the order suspends both the
+     * fetch and its timeout, which is precisely the case the timeout cannot rescue.
+     */
+    let result: ArchOrderResult;
+    try {
+      result = await createArchOrder(draft, orderKeyRef.current);
+    } catch (e) {
+      // Never claim nothing was written: we do not know how far the request got.
+      result = {
+        ok: false,
+        transportFailure: true,
+        error:
+          (e instanceof Error ? e.message : 'The request could not be completed.') +
+          ' If you retry, use the same order — a duplicate will be refused rather than created twice.',
+      };
+    } finally {
+      setSubmitting(false);
+    }
     setOrderResult(result);
     setCartNote(orderOutcome(result, false).cartReason);
 

@@ -173,11 +173,14 @@ export interface ArchSummaryRow {
   /** How many of this row's lots are held. */
   heldLotCount?: number;
   /**
-   * onHand + onOrder + inTransit − reserve − outbound − held, floored at 0.
-   * readyToBuild is NOT subtracted: it is a status ON reserved stock (decided
-   * 2026-08-19), so its quantity is already inside `reserve`. Both the live cache
-   * (`- reserve - 0 - outbound`) and the fixtures follow this. Held stock is
-   * excluded here and ONLY here.
+   * onHand + onOrder + inTransit − reserve − readyToBuild − outbound − held,
+   * floored at 0. Held stock is excluded here and ONLY here.
+   *
+   * All three of reserve, readyToBuild and outbound are subtracted because they are
+   * successive stages of one pipeline, which is the same reason `commitmentOn` in
+   * archLots.ts adds all three to decide whether a bundle is locked. Keep this
+   * formula and that function in agreement: a row reporting Available while every
+   * one of its bundles is locked shows unsellable stock as sellable.
    */
   available: number;
 

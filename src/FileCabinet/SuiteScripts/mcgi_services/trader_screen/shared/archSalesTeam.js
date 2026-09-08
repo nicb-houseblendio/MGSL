@@ -13,9 +13,25 @@
  * order under "Unassigned" (Marc-Antoine, 2026-09-08).
  *
  * ── Why not `isprimary` ─────────────────────────────────────────────────────
- * The flag reads 'F' on 5 of 5 sublist rows in the account, our own writer
- * included, so a `WHERE isprimary = 'T'` filter returns nothing and would leave
- * the tab exactly as broken. It is honoured when set, never relied on.
+ * The flag reads 'F' on all 5 sublist rows of the ARCH orders created from the
+ * trader screen, our own writer included, so a `WHERE isprimary = 'T'` filter
+ * returns nothing for them and would leave the tab exactly as broken. It IS set
+ * elsewhere in the account: 54 primary rows out of 10,162, across 8,658
+ * transactions, measured 2026-09-08. So it is honoured when present and never
+ * relied on. ⚠️ An earlier version of this note said "'F' on 5 of 5 rows in the
+ * account", which was a four-order measurement written up as account-wide.
+ *
+ * ── ⚠️ UNVERIFIED UNDER THE TRADER ROLE ─────────────────────────────────────
+ * Every measurement behind this file was taken as Administrator. The trader screen
+ * service is called from a RESTlet, a RESTlet IGNORES `runasrole` and runs as the
+ * CALLER, and `archOrderCreate.js:668` already records that the ARCH trader role
+ * cannot read the employee table at all ("Record employee was not found") - which is
+ * why `listSalesReps` was moved off the RESTlet onto a Suitelet. If that role also
+ * cannot read `transactionsalesteam`, or reads it but cannot resolve
+ * `BUILTIN.DF(st.employee)`, the tab returns to "Unassigned" for the actual users and
+ * the failure is invisible. TEST AS EMPLOYEE 3293 (role 2181) BEFORE CALLING THIS
+ * FIXED. Partly mitigated below: an id that resolves with an unreadable name no
+ * longer falls through to the header rep, so the name and the id cannot disagree.
  *
  * ── The rule ────────────────────────────────────────────────────────────────
  * A primary member if any; else the highest contribution; a tie goes to the
@@ -66,14 +82,26 @@ define(['N/query', 'N/log'], (query, log) => {
             if (c > bc || (c === bc && parseInt(m.repid, 10) < parseInt(best.repid, 10))) best = m;
         });
         const top = num(best.contribution);
-        const rivals = members.filter((m) => m !== best && num(m.contribution) >= top).length;
+        // Counted within POOL, not members: `best` came from pool, so comparing it
+        // against members measured two different sets. And with no `!primaries.length`
+        // guard - two PRIMARIES splitting evenly is still a coin toss, and gating on the
+        // flag reported that as a clean single attribution.
+        const rivals = pool.filter((m) => m !== best && num(m.contribution) >= top).length;
+        // A rep the caller's role can identify but not NAME: SuiteQL omits a null column
+        // from the row entirely, so `rep` arrives ''. Reporting an id with a blank name
+        // let the service fall through to the header rep and group the order under
+        // "Unassigned" while Edit pre-selected the id, the two halves disagreeing.
+        const repId = best.repid ? String(best.repid) : null;
+        const name = String(best.rep || '').trim();
         return {
-            repId:       best.repid ? String(best.repid) : null,
-            rep:         String(best.rep || ''),
+            repId:       repId,
+            rep:         name || (repId ? 'Employee ' + repId : ''),
+            /** True when the id resolved but the caller's role could not read the name. */
+            nameUnreadable: !!repId && !name,
             memberCount: members.length,
             shared:      members.length > 1,
-            /** True when the pick was a coin toss on equal contributions, no primary set. */
-            tied:        !primaries.length && rivals > 0,
+            /** True when the pick was a coin toss between equal contributions. */
+            tied:        rivals > 0,
         };
     };
 
@@ -91,13 +119,33 @@ define(['N/query', 'N/log'], (query, log) => {
         const out = {};
         if (!ids.length) return out;
         const byTran = {};
+        // The try is INSIDE the loop on purpose. Wrapped around the whole loop, or left
+        // to the caller's catch where it was until 2026-09-08, a failure on the last
+        // chunk threw away every rep the earlier chunks had already resolved and the
+        // whole tab reverted to "Unassigned".
+        let failedChunks = 0;
+        const chunkCount = Math.ceil(ids.length / CHUNK);
         for (let i = 0; i < ids.length; i += CHUNK) {
             const slice = ids.slice(i, i + CHUNK);
-            const rows = query.runSuiteQL({ query: SQL.replace('%IDS%', slice.join(',')) }).asMappedResults();
-            rows.forEach((r) => {
-                const k = String(r.tranid);
-                (byTran[k] = byTran[k] || []).push(r);
-            });
+            try {
+                const rows = query.runSuiteQL({ query: SQL.replace('%IDS%', slice.join(',')) }).asMappedResults();
+                rows.forEach((r) => {
+                    const k = String(r.tranid);
+                    (byTran[k] = byTran[k] || []).push(r);
+                });
+            } catch (e) {
+                failedChunks++;
+                log.error('ARCH sales team - chunk read failed, keeping what resolved',
+                    'ids ' + slice[0] + '..' + slice[slice.length - 1] + ': ' +
+                    (e.name || '') + ': ' + (e.message || String(e)));
+            }
+        }
+        if (failedChunks) {
+            // ERROR, not audit: some orders will silently read Unassigned, and an hourly
+            // audit line once hid a four-day outage on this screen.
+            log.error('ARCH sales team - PARTIAL read',
+                failedChunks + ' of ' + chunkCount + ' chunk(s) failed, so some orders fall back to ' +
+                'the header rep and will read Unassigned. This is a partial result, not an empty one.');
         }
         Object.keys(byTran).forEach((k) => { out[k] = pickRep(byTran[k]); });
         const tiedCount = Object.keys(out).filter((k) => out[k].tied).length;

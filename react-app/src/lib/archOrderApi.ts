@@ -48,6 +48,12 @@ export interface ArchOrderResult {
    * catch below has always known the difference and simply never reported it.
    */
   transportFailure?: boolean;
+  /**
+   * The server's own verdict on whether anything was written. 'REFUSED' means it
+   * declined before saving, so "nothing was written" is safe to say. 'FAILED' means
+   * it threw, and the order may already exist. Absent on a client-side refusal.
+   */
+  code?: 'REFUSED' | 'FAILED' | string;
   appended?: boolean;
   splitLinesQueued?: number;
   /** Non-empty means the order EXISTS but its bundles are not locked. */
@@ -221,15 +227,27 @@ export const fetchSalesRepsFromEndpoint = async (): Promise<ArchSalesRepDTO[] | 
 };
 
 /**
- * How long a create/append may take before we stop waiting. Generous, because
- * a many-line order with lot attribution is slow server-side; but finite,
- * because the confirmation dialog refuses every dismissal while `submitting`
- * is true (Done, Escape, outside click), so a request that never returns would
- * otherwise leave the trader with no way out of a modal covering the screen.
- * Giving up here does NOT cancel the server: the order may still be created,
- * which is why the result is a transportFailure and says so.
+ * How long a create/append may take before we stop waiting.
+ *
+ * 🔴 300s, NOT 90s. 90 was measured to be BELOW the real server time and was
+ * corrected the same day it shipped. From this account's own execution log, a
+ * ONE-line, one-lot order (SO-CWP-001354) took 102 seconds end to end: the header
+ * assignment, the first save, then `assignLots` reloading and saving the order a
+ * second time, which alone was 62 of those seconds. At 90s the trader would have
+ * been told "NetSuite did not answer, the order may still have been created" about
+ * an order that saved correctly with its lot attached, and per-line work scales it.
+ *
+ * Still finite, because the confirmation dialog refuses every dismissal while
+ * `submitting` is true, so a request that never returns must not strand the trader
+ * in a modal. That is now belt and braces rather than the only guard:
+ * `handleCreateOrder` clears `submitting` in a `finally`, so even a rejection
+ * releases the dialog.
+ *
+ * Giving up here does NOT cancel the server: the order may still be created, which
+ * is why the result is a transportFailure and says so. Most of this window is
+ * POST-commit, so an abort here almost never means "nothing happened".
  */
-export const SUBMIT_TIMEOUT_MS = 90_000;
+export const SUBMIT_TIMEOUT_MS = 300_000;
 
 const submit = async (payload: unknown, timeoutMs: number = SUBMIT_TIMEOUT_MS): Promise<ArchOrderResult> => {
   const url = endpointUrl();
@@ -239,9 +257,13 @@ const submit = async (payload: unknown, timeoutMs: number = SUBMIT_TIMEOUT_MS): 
       error: 'This screen is not connected to NetSuite, so nothing was written.',
     };
   }
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  // Both INSIDE the try. Constructed above it, a ReferenceError in a browser with no
+  // AbortController would reject rather than return, and every caller treats this
+  // function as one that always resolves.
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    const ctrl = new AbortController();
+    timer = setTimeout(() => ctrl.abort(), timeoutMs);
     const r = await fetch(url, {
       method: 'POST',
       credentials: 'include',
@@ -258,6 +280,14 @@ const submit = async (payload: unknown, timeoutMs: number = SUBMIT_TIMEOUT_MS): 
         ok: false,
         error: (body && body.error) || 'The order could not be created.',
         problems: body && body.problems,
+        // 🔴 CARRY THE CODE. The server distinguishes REFUSED (it declined before
+        // writing anything) from FAILED (it threw, possibly AFTER the save committed)
+        // at mcgi_sl_arch_order_create.js:231-234, and dropping it made every server
+        // error read as "nothing was written" - the exact false statement the
+        // transportFailure flag exists to prevent. `assignLots` opens with a bare
+        // record.load and closes with a bare so.save, so a throw in there leaves a
+        // real order behind and comes back as FAILED.
+        code: body && body.code,
       };
     }
     return body;
@@ -280,7 +310,7 @@ const submit = async (payload: unknown, timeoutMs: number = SUBMIT_TIMEOUT_MS): 
           : 'NetSuite could not be reached.',
     };
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
   }
 };
 
@@ -328,11 +358,20 @@ export const orderOutcome = (result: ArchOrderResult | null | undefined, submitt
         : '';
     return { kind: 'created', title: `Sales order created${ref}`, cartReason: null };
   }
+  // Two different ways of not knowing, and neither may claim nothing was written.
   if (result.transportFailure) {
     return {
       kind: 'unknown',
       title: 'NetSuite did not answer — the order may or may not exist',
       cartReason: 'Outcome unknown: NetSuite did not answer. Check the sales order list before retrying.',
+    };
+  }
+  if (result.code === 'FAILED') {
+    return {
+      kind: 'unknown',
+      title: 'NetSuite reported an error — the order may already exist',
+      cartReason:
+        'Outcome unknown: NetSuite reported an error after it began saving. Check the sales order list before retrying.',
     };
   }
   return {

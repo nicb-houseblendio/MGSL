@@ -590,6 +590,19 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                               >
                                 {o.soNo}
                               </button>
+                              {/* Hidden entirely on a fixture order, where internalId is
+                                  null and the append could not resolve a target. That also
+                                  means a RESTlet failure, which falls the whole tab back to
+                                  fixtures, removes Edit from every row - so say why rather
+                                  than leaving the affordance silently absent. */}
+                              {!editable && !o.internalId && (
+                                <span
+                                  title="These are demo orders because the live list could not be loaded, so they cannot be edited."
+                                  style={{ marginLeft: 6, fontSize: 10, color: ARCH_SURFACE.textLight }}
+                                >
+                                  demo
+                                </span>
+                              )}
                               {editable && (
                                 <button
                                   type="button"
