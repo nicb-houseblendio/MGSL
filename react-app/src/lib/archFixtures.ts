@@ -147,7 +147,11 @@ const buildRow = (index: number): ArchSummaryRow => {
     outbound,
     onOrder,
     inTransit,
-    available: Math.max(0, onHand + onOrder + inTransit - reserve - readyToBuild - outbound),
+    // Ready to Build is a STATUS on reserved stock, not a second commitment (decided
+    // 2026-08-19, todo-list "Ready to build"), so it is never subtracted here. The live
+    // cache does the same at mcgi_mr_trader_screen_cache_arch.js `- reserve - 0 - outbound`;
+    // subtracting it a second time understated Available on every fixture paint.
+    available: Math.max(0, onHand + onOrder + inTransit - reserve - outbound),
     // Hardwood lot cost per unit — roughly $2.40 to $9.80. Same band across all
     // four categories: the fixtures exist to exercise layout, not to model
     // veneer pricing, and inventing a per-category band would read as real.

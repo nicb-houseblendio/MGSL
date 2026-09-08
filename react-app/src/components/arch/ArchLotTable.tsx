@@ -540,8 +540,9 @@ export const ArchLotTable = ({
           imageUrl={tallyImages[tallyOpen] || row.lots.find((l) => l.lotNo === tallyOpen)?.tallyImageUrl}
           onClose={() => setTallyOpen(null)}
           onUpload={handleUpload}
-          /* Fixture-only until lots carry a real tally link. Lets the client review
-             the four render states against their own documents. See archTallyFixtures. */
+          /* Real tally when the ARCH cache resolved one for this lot (row.lots[].tally),
+             else the labelled fixture so the four render states stay reviewable. The
+             selection is demoTallyProps, the only place that decides. */
           {...demoTallyProps(tallyOpen, row.lots.find((l) => l.lotNo === tallyOpen)?.tally)}
         />
       )}

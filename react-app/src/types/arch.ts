@@ -173,8 +173,11 @@ export interface ArchSummaryRow {
   /** How many of this row's lots are held. */
   heldLotCount?: number;
   /**
-   * onHand + onOrder + inTransit − reserve − readyToBuild − outbound − held,
-   * floored at 0. Held stock is excluded here and ONLY here.
+   * onHand + onOrder + inTransit − reserve − outbound − held, floored at 0.
+   * readyToBuild is NOT subtracted: it is a status ON reserved stock (decided
+   * 2026-08-19), so its quantity is already inside `reserve`. Both the live cache
+   * (`- reserve - 0 - outbound`) and the fixtures follow this. Held stock is
+   * excluded here and ONLY here.
    */
   available: number;
 

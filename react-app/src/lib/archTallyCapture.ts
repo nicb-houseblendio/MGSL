@@ -41,12 +41,16 @@
  * `rows[].bf` is always null in the parser shape - it only ever fills `totBF` - so
  * per-row board feet come from the lot total, and only when the lot has a single row.
  *
- * ⚠️ NOTHING IMPORTS THIS FILE YET. The dispatcher, the docType check and the
- * status gate are all correct and all inert: `ArchLotTable` still calls
- * `demoTallyForLot` unconditionally, because zero capture records exist in either
- * environment and the v0 record has no lot anchor to join on. This is the read half
- * of the wiring, written and tested ahead of the data, not a live code path. Do not
- * read a passing test suite here as evidence that the screen shows real tallies.
+ * ⚠️ NO PRODUCTION CODE IMPORTS THIS FILE. Only archTallyCapture.test.mjs does. The
+ * live path is different: the ARCH cache MR reads `customrecord_msl_plc_capture`
+ * server-side, keeps only `schema: 'mgsl.tally.v1'` payloads, and hands each lot its
+ * `tally` through the summary; `ArchLotTable` passes that to `demoTallyProps`, which
+ * prefers it over the fixture. This adapter reads the OLDER v0 lot-report shape that
+ * the deployed email-capture pipeline writes (`lots[]`, no `schema` key) and which the
+ * MR rejects. Whether Phase 1 adapts v0 or waits for the v1 writer is an open design
+ * question (2026-09-08). As of that date one capture record exists, in sandbox only,
+ * and its bundles carry supplier numbers (1535-1548) that match no NetSuite lot. Do
+ * not read a passing test suite here as evidence that the screen shows real tallies.
  *
  * A width column key is the literal string 'RW' when the document printed random
  * width. That is the parser stating a supplier practice, so it is the one honest
