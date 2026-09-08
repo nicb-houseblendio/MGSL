@@ -251,5 +251,35 @@ ok('null input does not throw', toLengthDistribution(null).rows.length === 0, nu
   ok('non-object bundles do not throw', checkPayload(P([null, 'x', 42])).ok, null);
 }
 
+// ---- DEFECT 1c, found 2026-09-07. A bundle listing the same length on two matrix lines
+// showed a dot for volume and BF on its only row while the Total printed real figures,
+// with NO dagger, so a total appeared that no row accounted for. Two rows at the same
+// length are one length reported twice, not a multi-length bundle.
+{
+  const dup = B({ bundleNo: 'dup', totals: { pieces: 2, boardFeet: 200, volumeM3: 1.5 },
+    matrix: { widthsIn: [6, 9], rows: [
+      { lengthFt: 8, pieces: { '6': 1 } },
+      { lengthFt: 8, pieces: { '9': 1 } },
+    ] } });
+  const d = toLengthDistribution([dup]);
+  ok('duplicate length lines collapse to ONE row', d.rows.length === 1, d.rows);
+  ok('  ...carrying every piece', d.rows[0].pieces === 2, d.rows[0]);
+  ok('  ...counted as one bundle', d.rows[0].bundles === 1, d.rows[0]);
+  ok('  ...and the row shows the volume rather than a dot beside a real total',
+    d.rows[0].volumeM3 === 1.5, d.rows[0]);
+  ok('  ...and the board feet likewise', d.rows[0].boardFeet === 200, d.rows[0]);
+  ok('the total agrees with the row it is built from',
+    d.totals.volumeM3 === d.rows[0].volumeM3 && d.totals.pieces === d.rows[0].pieces, d.totals);
+  ok('no dagger is needed, because nothing is partial',
+    d.rows[0].volumePartial === false && d.totals.volumePartial === false, d.rows[0]);
+
+  // a genuinely multi-LENGTH bundle must still withhold per-row volume
+  const multi = B({ bundleNo: 'm', totals: { pieces: 2, boardFeet: 200, volumeM3: 1.5 },
+    matrix: { widthsIn: [6], rows: [{ lengthFt: 8, pieces: { '6': 1 } }, { lengthFt: 12, pieces: { '6': 1 } }] } });
+  const dm = toLengthDistribution([multi]);
+  ok('a real two-LENGTH bundle still withholds per-row volume',
+    dm.rows.length === 2 && dm.rows.every((r) => r.volumeM3 === null), dm.rows);
+}
+
 console.log(fail ? '\n' + fail + ' FAILED' : '\nall passed');
 process.exit(fail ? 1 : 0);

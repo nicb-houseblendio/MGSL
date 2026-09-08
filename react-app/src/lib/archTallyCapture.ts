@@ -252,8 +252,15 @@ export const fromCaptureResult = (raw: unknown): CaptureTally | null => {
   // document whose 7th bundle the parser could not read cleanly rendered exactly like a
   // clean one. Roll it up, and name the lots - "this document needs review" is not
   // actionable, "bundle 7 needs review" is.
-  const flagged = res.lots.filter((l) => l?.needsReview)
-    .map((l, i) => (l?.lot != null && String(l.lot).trim() !== '' ? String(l.lot) : `#${i + 1}`));
+  // 🔴 INDEX THE DOCUMENT, NOT THE FILTERED LIST. Until 2026-09-07 this mapped over
+  // the ALREADY-FILTERED array, so `i` was the position among flagged lots: a document
+  // whose 7th and only doubtful lot was anonymous reported "bundle #1". It read correctly
+  // whenever exactly one lot was flagged, which is why the first test of it passed.
+  const flagged = res.lots
+    .map((l, i) => (l?.needsReview
+      ? (l?.lot != null && String(l.lot).trim() !== '' ? String(l.lot) : `#${i + 1}`)
+      : null))
+    .filter((v): v is string => v !== null);
 
   const header: CaptureHeader = {
     po: refs.po ?? null,
@@ -299,9 +306,17 @@ export const fromCaptureResult = (raw: unknown): CaptureTally | null => {
  * attaching the wrong shipment's tally to a lot is the failure that matters.
  */
 export const bundlesForLot = (payload: TallyPayload | null, lotNo: string): TallyBundle[] => {
-  if (!payload || !Array.isArray(payload.bundles) || !lotNo) return [];
-  const want = String(lotNo).trim().toUpperCase();
-  return payload.bundles.filter((b) => String(b.lot ?? '').trim().toUpperCase() === want);
+  if (!payload || !Array.isArray(payload.bundles)) return [];
+  // 🔴 TRIM BEFORE THE GUARD. `!lotNo` lets '   ' and '	' through because they are
+  // truthy; they then trim to '', which equals `String(b.lot ?? '')` for every bundle whose
+  // lot is null. Measured 2026-09-07: bundlesForLot(TALLY_DETAIL_PL, '   ') returned ALL 14
+  // bundles, which is precisely the wrong-shipment attachment this function exists to refuse.
+  const want = String(lotNo ?? '').trim().toUpperCase();
+  if (!want) return [];
+  return payload.bundles.filter((b) => {
+    const have = String(b?.lot ?? '').trim().toUpperCase();
+    return have !== '' && have === want;
+  });
 };
 
 

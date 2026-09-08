@@ -306,13 +306,41 @@ const bundleRows = (b: TallyBundle): Array<{
     }];
   }
 
-  const single = rows.length === 1;
-  return rows.map((r) => ({
-    label: rowLabel(r),
-    sortKey: rowSortKey(r),
-    pieces: rowPieces(r),
+  /* 🔴 COLLAPSE SAME-LENGTH LINES BEFORE ASKING "IS THIS ONE LENGTH?"
+   *
+   * `single` decides whether a row may carry the bundle's volume and board feet, because
+   * those figures are per BUNDLE and cannot be split across lengths. It used to be
+   * `rows.length === 1`, which treats two lines at the SAME length as a multi-length
+   * bundle. It is not: that is one length reported on two lines, typically two width
+   * groups.
+   *
+   * Measured 2026-09-07, and it was visible on screen: a bundle listing 8' twice showed a
+   * dot for volume and BF on its only row while the Total row printed the real figures,
+   * with NO dagger - `volumePartial` stayed false because no contribution had a figure to
+   * begin with (`volumeSeen === 0`). A total appeared that no row accounted for, which is
+   * the one error this whole model is built to refuse. */
+  const merged = new Map<string, { label: string; sortKey: number; pieces: number; bf: number | null; lines: number; bfLines: number }>();
+  for (const r of rows) {
+    const label = rowLabel(r);
+    let m = merged.get(label);
+    if (!m) { m = { label, sortKey: rowSortKey(r), pieces: 0, bf: null, lines: 0, bfLines: 0 }; merged.set(label, m); }
+    m.pieces += rowPieces(r);
+    m.lines += 1;
+    if (r.declaredBF != null) { m.bf = (m.bf || 0) + r.declaredBF; m.bfLines += 1; }
+  }
+
+  const out = [...merged.values()];
+  const single = out.length === 1;
+  return out.map((m) => ({
+    label: m.label,
+    sortKey: m.sortKey,
+    pieces: m.pieces,
     volumeM3: single ? (b?.totals?.volumeM3 ?? null) : null,
-    boardFeet: r.declaredBF != null ? r.declaredBF : (single ? (b?.totals?.boardFeet ?? null) : null),
+    // A declared BF covering only SOME of the merged lines is not this length's board
+    // feet, so it is discarded rather than summed into a figure that looks whole.
+    boardFeet: m.bf != null && m.bfLines === m.lines
+      ? m.bf
+      : (single ? (b?.totals?.boardFeet ?? null) : null),
   }));
 };
 
@@ -556,7 +584,13 @@ export const toWidthDistribution = (bundle: TallyBundle | null | undefined): Tal
     unit,
     totals: { widths: byWidth.size, attributed, statedPieces: stated },
     unattributed,
-    degenerate: byWidth.size <= 1,
+    // 🔴 A SINGLE WIDTH PLUS UNATTRIBUTED PIECES IS NOT DEGENERATE.
+    // `byWidth.size <= 1` hid the table whenever one width column sat beside pieces the
+    // document did not attribute, and those pieces then appeared NOWHERE: measured
+    // 2026-09-07 on `pieces: {'6': 3, '': 2}`, the two unstated pieces vanished from the
+    // UI entirely. A pure random-width bundle (size 0) stays degenerate on purpose - its
+    // only row would be `unstated`, and widthNote() already explains that in a sentence.
+    degenerate: byWidth.size === 0 || (byWidth.size === 1 && unattributed === 0),
     footsToTotal: stated == null ? false : attributed + unattributed === stated,
   };
 };

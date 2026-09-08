@@ -11,7 +11,8 @@
 import fs from 'fs';
 import path from 'path';
 import { fromCaptureResult, bundlesForLot, fromCaptureRecord, CAPTURE_STATUS } from './archTallyCapture.ts';
-import { toLengthDistribution, widthLabel } from './archTally.ts';
+import { toLengthDistribution, widthLabel, toWidthDistribution } from './archTally.ts';
+import { TALLY_DETAIL_PL } from './archTallyDetailPL.ts';
 
 const SCHEMA = path.join(
   'D:', 'HouseBlend', 'Clients', 'MGSL', 'Tasks', 'Task 11 - PO Allocation', 'docs',
@@ -359,6 +360,56 @@ const intake = (o) => JSON.stringify(o);
     lots: [{ lot: 'C', pieces: 10, needsReview: true }] };
   const rboth = fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY' }), resultsJson: JSON.stringify(both), status: 'PARSED' });
   ok('the parser own document warnings are kept alongside the new one', rboth.header.warnings.length === 2, rboth.header.warnings);
+}
+
+// ---- DEFECT REGRESSIONS, found 2026-09-07 by an adversarial coverage sweep.
+// All four were latent because nothing calls the read path yet; all become live the
+// moment the ARCH cache MR starts serving tallies.
+{
+  // 1a. The flagged-lot warning named the WRONG bundle. The map ran over the FILTERED
+  // array, so the index was the position among flagged lots, not in res.lots. With one
+  // flagged lot it read correctly by coincidence, which is why the original test passed.
+  const doc = (n, flagAt) => ({ sourceFile: 'x', references: { po: '1' },
+    lots: Array.from({ length: n }, (_, i) => ({
+      lot: flagAt.includes(i + 1) ? null : 'L' + (i + 1), pieces: 10,
+      needsReview: flagAt.includes(i + 1),
+    })) });
+  const w = (n, flagAt) => fromCaptureRecord({ intakeJson: intake({ docType: 'TALLY' }),
+    resultsJson: JSON.stringify(doc(n, flagAt)), status: 'PARSED' }).header.warnings;
+
+  ok('an anonymous flagged lot is named by its position in the DOCUMENT, not among the flagged',
+    w(7, [7])[0].includes('#7'), w(7, [7]));
+  ok('  ...and not by its rank in the filtered list', !w(7, [7])[0].includes('#1'), w(7, [7]));
+  ok('two anonymous flagged lots get their own document positions',
+    w(7, [3, 6])[0].includes('#3') && w(7, [3, 6])[0].includes('#6'), w(7, [3, 6]));
+  ok('a single flagged lot at position 1 still reads #1', w(3, [1])[0].includes('#1'), w(3, [1]));
+
+  // 1b. bundlesForLot returned the WHOLE DOCUMENT for a whitespace lot number: '   '
+  // is truthy, trims to '', and '' equals String(b.lot ?? '') for every null-lot bundle.
+  // This is the wrong-shipment join the function's own comment forbids.
+  ok('a whitespace lot number matches NOTHING, not every null-lot bundle',
+    bundlesForLot(TALLY_DETAIL_PL, '   ').length === 0, bundlesForLot(TALLY_DETAIL_PL, '   ').length);
+  ok('a tab likewise', bundlesForLot(TALLY_DETAIL_PL, '\t').length === 0, null);
+  ok('an empty string likewise', bundlesForLot(TALLY_DETAIL_PL, '').length === 0, null);
+  ok('a real lot number still finds its bundle', (() => {
+    const p = { schema: 'mgsl.tally.v1', po: null, container: null,
+      bundles: [{ bundleNo: 'a', lot: 'X1', matrix: null, totals: { pieces: 1, boardFeet: null, volumeM3: null } },
+                { bundleNo: 'b', lot: null, matrix: null, totals: { pieces: 1, boardFeet: null, volumeM3: null } }] };
+    return bundlesForLot(p, 'X1').length === 1 && bundlesForLot(p, '  ').length === 0;
+  })(), null);
+
+  // 1d. A zero-width column was dropped from widthsIn, then toRows folded its pieces
+  // into the '' bucket, so the pieces became "unstated" with nothing saying so.
+  {
+    const res = { sourceFile: 'x', references: { po: '1' }, lots: [{ lot: 'Z', pieces: 5,
+      matrix: { axis: 'width', widths: [0, 6], rows: [{ len: null, counts: { '0': 2, '6': 3 } }] } }] };
+    const b = fromCaptureResult(res).payload.bundles[0];
+    const d = toWidthDistribution(b);
+    ok('a zero-width column does not silently swallow its pieces',
+      d.totals.attributed + d.unattributed === 5, d);
+    ok('  ...and the bundle is NOT degenerate while pieces sit unattributed, so the table renders',
+      d.degenerate === false, d);
+  }
 }
 
 console.log(fail ? '\n' + fail + ' FAILED' : '\nall passed');
