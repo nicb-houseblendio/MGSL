@@ -17,6 +17,7 @@ import {
   createArchOrder,
   newIdempotencyKey,
   orderEndpointConfigured,
+  orderOutcome,
   type ArchOrderResult,
 } from '@/lib/archOrderApi';
 
@@ -118,6 +119,13 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
   const [createdDraft, setCreatedDraft] = React.useState<ArchOrderDraft | null>(null);
   const [orderResult, setOrderResult] = React.useState<ArchOrderResult | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
+  /**
+   * Why the cart is still here after the last attempt. Outlives the dialog on
+   * purpose: onClose nulls the result, and after Done the cart bar was the only
+   * thing left on screen, green, saying nothing about a refused or unanswered
+   * request. Reset on the next attempt and when the cart is cleared.
+   */
+  const [cartNote, setCartNote] = React.useState<string | null>(null);
 
   /**
    * One idempotency key per order ATTEMPT, reused across retries of that order.
@@ -189,6 +197,7 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
   );
 
   const handleCreateOrder = React.useCallback(async (draft: ArchOrderDraft) => {
+    setCartNote(null);
     setCreatedDraft(draft);
     setWizardOpen(false);
     setEditingSO(null);
@@ -199,6 +208,7 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
     // their selection.
     if (!orderEndpointConfigured()) {
       setOrderResult(null);
+      setCartNote(orderOutcome(null, false).cartReason);
       return;
     }
 
@@ -209,6 +219,7 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
     const result = await createArchOrder(draft, orderKeyRef.current);
     setSubmitting(false);
     setOrderResult(result);
+    setCartNote(orderOutcome(result, false).cartReason);
 
     if (result.ok) {
       // 🔴 The cart is cleared ONLY on success. Clearing it on failure would
@@ -282,7 +293,15 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
 
   return (
     <>
-      <SOCartBar cart={cart} onOpenWizard={() => setWizardOpen(true)} onClear={() => setCart([])} />
+      <SOCartBar
+        cart={cart}
+        note={cartNote}
+        onOpenWizard={() => setWizardOpen(true)}
+        onClear={() => {
+          setCart([]);
+          setCartNote(null);
+        }}
+      />
 
       {tab === 'inventory' && (
       <div className="px-4 pt-3 flex-shrink-0">

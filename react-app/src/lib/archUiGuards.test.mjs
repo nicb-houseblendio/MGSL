@@ -49,5 +49,19 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('orders view: Edit is hidden on fixture orders (no internalId)', /editable = o\.status !== 'Ready to Build' && !!o\.internalId/.test(v));
 }
 
+// Order confirmation: every dismissal route is guarded while submitting, and the
+// outcome text has one home. The Done button was the route the guards missed.
+{
+  const d = src('components/arch/ArchOrderDraftDialog.tsx');
+  ok('confirmation: Done is disabled while submitting', /disabled=\{submitting\}/.test(d));
+  ok('confirmation: Done onClick refuses while submitting', /if \(!submitting\) onClose\(\);/.test(d));
+  ok('confirmation: header reads orderOutcome, no inline copy of the branch', /orderOutcome\(result, !!submitting\)\.title/.test(d) && !/'NetSuite refused this order/.test(d));
+  ok('confirmation: notice reads orderOutcome for refused-vs-unknown', /orderOutcome\(result, false\)\.kind === 'refused'/.test(d));
+  const s = src('components/ArchScreen.tsx');
+  ok('screen: cart bar receives the outcome reason', /note=\{cartNote\}/.test(s) && /setCartNote\(orderOutcome\(result, false\)\.cartReason\)/.test(s));
+  const a = src('lib/archOrderApi.ts');
+  ok('api: fetch carries an abort signal and a timer', /signal: ctrl\.signal/.test(a) && /setTimeout\(\(\) => ctrl\.abort\(\), timeoutMs\)/.test(a) && /clearTimeout\(timer\)/.test(a));
+}
+
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');
 process.exit(fail ? 1 : 0);

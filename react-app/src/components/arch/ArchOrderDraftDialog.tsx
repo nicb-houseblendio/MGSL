@@ -4,7 +4,7 @@ import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import { fmtMoney, fmtPct, marginColor } from '@/lib/archOrderPricing';
 import type { ArchOrderDraft } from '@/types/archOrder';
-import type { ArchOrderResult } from '@/lib/archOrderApi';
+import { orderOutcome, type ArchOrderResult } from '@/lib/archOrderApi';
 
 /**
  * What the wizard produced, and what NetSuite did with it.
@@ -99,7 +99,7 @@ const OutcomeNotice = ({
      * `refused` means the server answered and declined, so the claim is safe.
      * Otherwise we do not know, and saying so is better than guessing.
      */
-    const refused = !!result.error && !result.transportFailure;
+    const refused = orderOutcome(result, false).kind === 'refused';
     return (
       <div style={{ ...notice, background: '#FEF2F2', border: '1px solid #FCA5A5', color: '#7F1D1D' }}>
         <div>
@@ -247,27 +247,10 @@ export const ArchOrderDraftDialog = ({
           }}
         >
           <div style={{ color: '#fff', fontSize: 15, fontWeight: 700 }}>
-            {submitting
-              ? 'Sending to NetSuite…'
-              : !result
-                ? 'Order assembled — not sent, this screen is not connected to NetSuite'
-                : result.ok
-                  ? // Prefer tranId: "SO-CWP-001346" is the number a trader can actually
-                    // search for. The server has always sent it; the UI type dropped it,
-                    // so this said "internal id 126654", which is findable by nobody.
-                    // salesOrderId stays as the fallback rather than showing nothing.
-                    `Sales order created${
-                      result.tranId
-                        ? ` — ${result.tranId}`
-                        : result.salesOrderId
-                          ? ` — internal id ${result.salesOrderId}`
-                          : ''
-                    }`
-                  : result.transportFailure
-                    ? // Same rule as the notice below: on a dropped request we do not
-                      // know, so do not assert "nothing was written".
-                      'NetSuite did not answer — the order may or may not exist'
-                    : 'NetSuite refused this order — nothing was written'}
+            {/* One classification for the header, the notice and the cart bar:
+                orderOutcome. The tranId-first rule and the "never say nothing was
+                written on a dropped request" rule both live there, tested. */}
+            {orderOutcome(result, !!submitting).title}
           </div>
           <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: 11.5, marginTop: 2 }}>
             {draft.mode === 'existing'
@@ -454,21 +437,30 @@ export const ArchOrderDraftDialog = ({
             background: '#F8FAFC',
           }}
         >
+          {/* Guarded like the other three dismissal routes above. This was the one
+              they missed: while the notice said "Do not close this window", Done
+              closed it, onClose nulled the draft, and the outcome of the in-flight
+              request landed nowhere. The trader saw the cart bar still green and
+              nothing else, which is the symptom Marc-Antoine reported. The fetch
+              has a timeout (SUBMIT_TIMEOUT_MS), so this cannot trap them either. */}
           <button
             type="button"
-            onClick={onClose}
+            disabled={submitting}
+            onClick={() => {
+              if (!submitting) onClose();
+            }}
             style={{
               padding: '9px 22px',
               borderRadius: 9,
               border: 'none',
-              background: ARCH_SURFACE.green,
-              color: '#fff',
+              background: submitting ? '#CBD5E1' : ARCH_SURFACE.green,
+              color: submitting ? '#64748B' : '#fff',
               fontSize: 13.5,
               fontWeight: 700,
-              cursor: 'pointer',
+              cursor: submitting ? 'not-allowed' : 'pointer',
             }}
           >
-            Done
+            {submitting ? 'Sending…' : 'Done'}
           </button>
         </div>
       </DialogContent>

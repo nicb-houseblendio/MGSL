@@ -13,11 +13,18 @@ import type { ArchCartLine } from '@/types/archOrder';
 
 interface SOCartBarProps {
   cart: ArchCartLine[];
+  /**
+   * Why these bundles are still selected after an attempt to order them
+   * (refused, unanswered, not connected). From orderOutcome().cartReason. The
+   * bar used to stay green and silent after a failed create, which read as
+   * "nothing happened".
+   */
+  note?: string | null;
   onOpenWizard: () => void;
   onClear: () => void;
 }
 
-export const SOCartBar = ({ cart, onOpenWizard, onClear }: SOCartBarProps) => {
+export const SOCartBar = ({ cart, note, onOpenWizard, onClear }: SOCartBarProps) => {
   if (cart.length === 0) return null;
 
   const itemCount = new Set(cart.map((l) => l.internalId)).size;
@@ -48,6 +55,13 @@ export const SOCartBar = ({ cart, onOpenWizard, onClear }: SOCartBarProps) => {
           {totalLabel}
         </span>
       </span>
+      {note && (
+        // #FDE68A on the bar's #1E6B47 is about 5:1; white would blend into the
+        // totals and the point of this line is to be noticed.
+        <span style={{ fontSize: 11.5, fontWeight: 600, color: '#FDE68A', lineHeight: 1.35, minWidth: 0 }}>
+          ⚠️ {note}
+        </span>
+      )}
 
       <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexShrink: 0 }}>
         <button

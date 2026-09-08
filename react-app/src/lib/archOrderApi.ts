@@ -159,15 +159,22 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
  * pricing it — and because a dry run that passes means the write will get past
  * the same checks.
  */
+export interface SubmitOptions {
+  /** Test hook and escape hatch; defaults to SUBMIT_TIMEOUT_MS. */
+  timeoutMs?: number;
+}
+
 export const validateArchOrder = async (
   draft: ArchOrderDraft,
-  idempotencyKey: string
-): Promise<ArchOrderResult> => submit({ ...toRequest(draft, idempotencyKey), dryRun: true });
+  idempotencyKey: string,
+  opts?: SubmitOptions
+): Promise<ArchOrderResult> => submit({ ...toRequest(draft, idempotencyKey), dryRun: true }, opts?.timeoutMs);
 
 export const createArchOrder = async (
   draft: ArchOrderDraft,
-  idempotencyKey: string
-): Promise<ArchOrderResult> => submit(toRequest(draft, idempotencyKey));
+  idempotencyKey: string,
+  opts?: SubmitOptions
+): Promise<ArchOrderResult> => submit(toRequest(draft, idempotencyKey), opts?.timeoutMs);
 
 export interface ArchSalesRepDTO {
   id: string;
@@ -213,7 +220,18 @@ export const fetchSalesRepsFromEndpoint = async (): Promise<ArchSalesRepDTO[] | 
   }
 };
 
-const submit = async (payload: unknown): Promise<ArchOrderResult> => {
+/**
+ * How long a create/append may take before we stop waiting. Generous, because
+ * a many-line order with lot attribution is slow server-side; but finite,
+ * because the confirmation dialog refuses every dismissal while `submitting`
+ * is true (Done, Escape, outside click), so a request that never returns would
+ * otherwise leave the trader with no way out of a modal covering the screen.
+ * Giving up here does NOT cancel the server: the order may still be created,
+ * which is why the result is a transportFailure and says so.
+ */
+export const SUBMIT_TIMEOUT_MS = 90_000;
+
+const submit = async (payload: unknown, timeoutMs: number = SUBMIT_TIMEOUT_MS): Promise<ArchOrderResult> => {
   const url = endpointUrl();
   if (!url) {
     return {
@@ -221,12 +239,15 @@ const submit = async (payload: unknown): Promise<ArchOrderResult> => {
       error: 'This screen is not connected to NetSuite, so nothing was written.',
     };
   }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const r = await fetch(url, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: ctrl.signal,
     });
     // ⚠️ A Suitelet answers 200 to everything — NetSuite gives no way to set a
     // status code — so branch on the payload and NEVER on r.status. The server
@@ -244,15 +265,79 @@ const submit = async (payload: unknown): Promise<ArchOrderResult> => {
     // A failed fetch does NOT mean the server did nothing. It may have created
     // the order and lost the response, which is exactly what the idempotency key
     // exists for: retrying with the same key is refused rather than duplicated.
+    // Our own timeout is the same case: we stopped listening, NetSuite did not
+    // necessarily stop working.
+    const timedOut = e instanceof Error && e.name === 'AbortError';
     return {
       ok: false,
       // The comment above is the whole reason this flag exists: we genuinely do not
       // know the outcome here, so the dialog must not claim nothing was written.
       transportFailure: true,
-      error:
-        e instanceof Error
+      error: timedOut
+        ? `NetSuite did not answer within ${Math.round(timeoutMs / 1000)} seconds. The order may still have been created: check the sales order list before retrying, and if you retry, use the same order — a duplicate will be refused rather than created twice.`
+        : e instanceof Error
           ? `${e.message}. If you retry, use the same order — a duplicate will be refused rather than created twice.`
           : 'NetSuite could not be reached.',
     };
+  } finally {
+    clearTimeout(timer);
   }
+};
+
+export type OrderOutcomeKind = 'submitting' | 'notConnected' | 'refused' | 'unknown' | 'created';
+
+export interface OrderOutcome {
+  kind: OrderOutcomeKind;
+  /** The confirmation dialog's headline. */
+  title: string;
+  /**
+   * Why the cart is still on screen after an attempt, or null when it is not
+   * (created: the cart is cleared; submitting: nothing to say yet). Shown on the
+   * cart bar, which outlives the dialog: after Done the bar was the only thing
+   * left and it said nothing about why the order was not created.
+   */
+  cartReason: string | null;
+}
+
+/**
+ * The ONE classification of an attempt's outcome. The dialog header, the
+ * notice body and the cart bar all read this; until 2026-09-08 the header and
+ * the notice each carried their own copy of the four-way branch, which is the
+ * divergence the two tally dialogs already paid for once.
+ *
+ * `unknown` (a dropped or timed-out request) must never say "nothing was
+ * written": the SO may exist. That sentence is reserved for `refused`, where
+ * the server answered and declined.
+ */
+export const orderOutcome = (result: ArchOrderResult | null | undefined, submitting: boolean): OrderOutcome => {
+  if (submitting) return { kind: 'submitting', title: 'Sending to NetSuite…', cartReason: null };
+  if (!result) {
+    return {
+      kind: 'notConnected',
+      title: 'Order assembled — not sent, this screen is not connected to NetSuite',
+      cartReason: 'Not sent: this screen is not connected to NetSuite.',
+    };
+  }
+  if (result.ok) {
+    // Prefer tranId: "SO-CWP-001346" is the number a trader can actually search
+    // for. salesOrderId stays as the fallback rather than showing nothing.
+    const ref = result.tranId
+      ? ` — ${result.tranId}`
+      : result.salesOrderId
+        ? ` — internal id ${result.salesOrderId}`
+        : '';
+    return { kind: 'created', title: `Sales order created${ref}`, cartReason: null };
+  }
+  if (result.transportFailure) {
+    return {
+      kind: 'unknown',
+      title: 'NetSuite did not answer — the order may or may not exist',
+      cartReason: 'Outcome unknown: NetSuite did not answer. Check the sales order list before retrying.',
+    };
+  }
+  return {
+    kind: 'refused',
+    title: 'NetSuite refused this order — nothing was written',
+    cartReason: `Refused by NetSuite: ${result.error || 'no reason given'} Your selection is intact.`,
+  };
 };
