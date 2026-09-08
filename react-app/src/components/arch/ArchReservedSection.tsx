@@ -113,6 +113,22 @@ export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchRes
           No reserved quantities on this item
         </div>
       ) : (
+        <>
+          {/* Honesty line. Six of the eight columns come from lotAllocation(), a seeded
+              generator, because the lot-to-SO link is not built: the cache carries a
+              committed quantity per lot and nothing about WHICH order committed it.
+              Worded without 'live' or 'demo' on purpose: this panel cannot tell the two
+              apart (on first paint lot.reserve is a fixture as well), so it names the
+              columns and defers the source question to the header badge. Remove this
+              only when the SO columns are read from NetSuite; a test guards the pair. */}
+          <div style={{
+            margin: '8px 12px 0', background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 8,
+            padding: '7px 11px', fontSize: 11, color: '#92400E', lineHeight: 1.5,
+          }}>
+            <b>Placeholder columns.</b> SO #, SO creation date, age, ship week, customer and trader are
+            generated for layout; the link from a lot to its sales order is not built yet. Lot, container
+            and quantity are the real figures whenever the header badge says Live.
+          </div>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
             <thead>
@@ -162,6 +178,7 @@ export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchRes
             </tbody>
           </table>
         </div>
+        </>
       )}
 
       {tallyOpen && (
