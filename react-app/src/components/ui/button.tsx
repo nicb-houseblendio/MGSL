@@ -42,6 +42,28 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       <Comp
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
+        /*
+         * 🔴 `type="button"` IS NOT COSMETIC HERE, IT IS THE DIFFERENCE BETWEEN
+         * A WORKING SCREEN AND A BLANK PAGE.
+         *
+         * A <button> with no type defaults to type="submit". In its default
+         * mode this app is served as an INLINEHTML field INSIDE a NetSuite
+         * serverWidget form, so every untyped button submitted that form: the
+         * browser POSTed the host Suitelet, which only answers GET, and the
+         * trader landed on a blank page reading {"error":"Method not allowed"}.
+         * Marc-Antoine hit it on the toolbar Refresh on 2026-09-09.
+         *
+         * It hid because FULLSCREEN mode builds its own HTML document with no
+         * NS form, so there is nothing to submit and every button behaves. Most
+         * of our own testing is fullscreen.
+         *
+         * Placed BEFORE {...props} deliberately, so a caller that really wants
+         * to submit still can by passing type="submit" — which is exactly what
+         * the one real <form> in this app, CreateOrderModal, already does.
+         * Skipped for asChild, where Slot renders someone else's element and
+         * that element may not be a button at all.
+         */
+        {...(asChild ? {} : { type: 'button' as const })}
         {...props}
       />
     );
