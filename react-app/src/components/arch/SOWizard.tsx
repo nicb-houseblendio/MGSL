@@ -10,6 +10,7 @@ import {
   type ArchCustomerAddress,
   type ArchSalesRep,
 } from '@/hooks/useArchCustomers';
+import { fetchIncoterms, type ArchIncotermsResult } from '@/lib/archOrderApi';
 import {
   SPLIT_FEE_PLACEHOLDER,
   splitFee,
@@ -704,7 +705,33 @@ export const SOWizard = ({
   const [shipTo, setShipTo] = React.useState('');
   const [currency, setCurrency] = React.useState('');
   const [shipDate, setShipDate] = React.useState('');
+  /*
+   * Incoterms: the display text AND the list id, because only the id is safe to
+   * write.
+   *
+   * 🔴 These options used to come from `INCOTERMS` in archOrderFixtures.ts, a
+   * hardcoded ['Delivered', 'Customer Pick Up', 'FOB Reload'] in a DEMO-DATA
+   * module, rendered against a MANDATORY field. Measured against the account on
+   * 2026-09-09 the real list is five values -- CIF, Delivered, FOB Mill, FOB Port,
+   * FOB Reload -- so "Customer Pick Up" does not exist and two real options were
+   * unreachable. NetSuite answered `Invalid custbody_incoterms reference key
+   * Customer Pick Up` and the order was never created.
+   *
+   * It survived because every automated test posted no incoterms at all and took
+   * the server default. Only the real wizard could find it.
+   *
+   * `CIF` is the reason this asks the FIELD rather than deriving the list from
+   * existing orders: it is a valid option that no order in the account has ever
+   * used, so a data-derived list would still have been missing one.
+   */
   const [incoterms, setIncoterms] = React.useState('');
+  const [incotermsId, setIncotermsId] = React.useState('');
+  const [incotermsOpts, setIncotermsOpts] = React.useState<ArchIncotermsResult | null>(null);
+  React.useEffect(() => {
+    let live = true;
+    fetchIncoterms().then((r) => { if (live) setIncotermsOpts(r); });
+    return () => { live = false; };
+  }, []);
 
   const [split, setSplit] = React.useState<Record<string, ArchSplitIntent>>({});
   const [reman, setReman] = React.useState<Record<string, ArchRemanIntent>>({});
@@ -919,6 +946,11 @@ export const SOWizard = ({
     loadAddressesFor(o.customerId || '', o.shipTo || undefined);
     setCurrency(o.currency);
     setIncoterms(o.incoterms);
+    /* The inherited value is TEXT off a saved order and carries no id, so the
+     * previous id must not survive into a different order's header. Empty means
+     * the server falls back to matching the text, which is what an append did
+     * before any of this existed. */
+    setIncotermsId('');
     /*
      * The rep already on the order, by ID, because that is what the live dropdown
      * is keyed on and what the write path needs. Falling straight through to
@@ -1243,6 +1275,7 @@ export const SOWizard = ({
       currency,
       shipDate,
       incoterms,
+      incotermsId: incotermsId || undefined,
       /*
        * 🔴 THE REP'S NAME, not a team name.
        *
@@ -1324,6 +1357,7 @@ export const SOWizard = ({
                     setShipTo('');
                     setCurrency('');
                     setIncoterms('');
+                    setIncotermsId('');
                     // Rep AND split. Switching away from an order must not leave
                     // that order's commission split on a blank new one.
                     setRepTeam(emptyRepTeam());
@@ -2057,12 +2091,38 @@ export const SOWizard = ({
 
       <div>
         <label style={label}>Incoterms *</label>
+        {/*
+          Demo mode keeps the fixture list so the offline walkthrough still has
+          buttons. The LIVE path renders only what NetSuite offers, and says so when
+          it cannot read them rather than falling back to invented values -- which is
+          the whole of this defect.
+        */}
+        {incotermsOpts === null && (
+          <div style={{ fontSize: 12, color: ARCH_SURFACE.textMid }}>Reading the list from NetSuite…</div>
+        )}
+        {incotermsOpts !== null && incotermsOpts.status === 'failed' && (
+          <div
+            style={{
+              fontSize: 12, padding: '8px 10px', borderRadius: 8,
+              background: '#FEF2F2', border: '1px solid #FCA5A5', color: '#7F1D1D',
+            }}
+          >
+            The incoterms list could not be read from NetSuite, so none are offered. This
+            field is mandatory, so the order cannot be created until it is readable.
+            {incotermsOpts.error ? ' ' + incotermsOpts.error : ''}
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {INCOTERMS.map((t) => (
+          {(incotermsOpts && incotermsOpts.status === 'ok'
+            ? incotermsOpts.incoterms
+            : incotermsOpts && incotermsOpts.status === 'offline'
+              ? INCOTERMS.map((t) => ({ id: '', name: t }))
+              : []
+          ).map(({ id, name: t }) => (
             <button
-              key={t}
+              key={id || t}
               type="button"
-              onClick={() => setIncoterms(t)}
+              onClick={() => { setIncoterms(t); setIncotermsId(id); }}
               style={{
                 flex: '1 1 120px',
                 padding: '11px 12px',

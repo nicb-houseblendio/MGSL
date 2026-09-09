@@ -451,5 +451,28 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /onReloadReady\?\.\(reload\)/.test(arch), false);
 }
 
+
+/* The failure notice must not tell the trader the request never came back when it did.
+ *
+ * `orderOutcome` has always separated the two ways of not knowing, with different
+ * titles and cart reasons. The dialog BODY had one branch for both, so a server that
+ * answered with an error printed that error underneath "The request did not come
+ * back, so we cannot tell you whether NetSuite saved it." Seen on 2026-09-09 when a
+ * rejected incoterms value came back as a clear server error.
+ */
+{
+  const dlg = src('components/arch/ArchOrderDraftDialog.tsx');
+  ok('outcome notice: the no-reply wording is gated on transportFailure',
+    /\) : result\.transportFailure \? \(/.test(dlg), false);
+  ok('outcome notice: a server error gets its OWN wording',
+    /NetSuite answered with an error/.test(dlg), false);
+  ok('outcome notice: and that branch does NOT claim the request never returned',
+    !/answered with an error[\s\S]{0,200}did not\s*\n?\s*come back/.test(dlg), false);
+  ok('outcome notice: both unknown branches still send the trader to the SO list',
+    (dlg.match(/Check the sales order list before trying again/g) || []).length >= 2, false);
+  ok('outcome notice: the refusal branch still claims nothing was written',
+    /Nothing was written\./.test(dlg), false);
+}
+
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');
 process.exit(fail ? 1 : 0);

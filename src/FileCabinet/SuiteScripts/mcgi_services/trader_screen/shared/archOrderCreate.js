@@ -374,6 +374,59 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
 
     const departmentId = () => int(param('custscript_arch_department')) || DEPARTMENT_DEFAULT;
 
+    /**
+     * The REAL incoterms options, read from NetSuite rather than invented.
+     *
+     * Served to the wizard the same way `listSalesReps` is, and for the same
+     * reason: the list and the validator must run under the same role so the
+     * screen cannot offer a value the write path then refuses. That failure is
+     * exactly what happened here, in its worst form -- the picker offered
+     * "Customer Pick Up", which is not a value in this account, and NetSuite
+     * answered `Invalid custbody_incoterms reference key`. The three options came
+     * from `archOrderFixtures.ts`, a demo-data module, driving a mandatory field.
+     *
+     * `getSelectOptions` is used rather than a `customlist` query on purpose:
+     * `custbody_incoterms` is not in the `customlist` or `customfield` tables that
+     * SuiteQL exposes here (both return zero rows for it, verified), so there is no
+     * list id to query. Asking the field itself needs no id and cannot drift from
+     * what the form would accept.
+     *
+     * The record is created and thrown away, never saved. `record.create` does not
+     * validate mandatory fields, so this costs a governance unit, not an order.
+     */
+    const listIncoterms = () => {
+        let rec;
+        try {
+            rec = record.create({ type: record.Type.SALES_ORDER, isDynamic: true });
+        } catch (e) {
+            return { incoterms: [], error: 'Could not open a sales order to read the ' +
+                'incoterms list: ' + (e.message || String(e)) };
+        }
+        try {
+            const fld = rec.getField({ fieldId: H_INCOTERMS });
+            if (!fld) {
+                return { incoterms: [], error: 'Field ' + H_INCOTERMS + ' is not on the ' +
+                    'sales-order form this role uses, so its options cannot be read.' };
+            }
+            const opts = fld.getSelectOptions({ filter: '', operator: 'contains' }) || [];
+            const out = [];
+            for (let i = 0; i < opts.length; i++) {
+                const v = opts[i] ? opts[i].value : null;
+                const t = opts[i] ? opts[i].text : null;
+                // NetSuite includes a blank option for an unset select. It is not a
+                // choice, and offering it would put the mandatory field right back
+                // where it started.
+                if (v === null || v === undefined) continue;
+                const id = String(v).trim();
+                if (!id || id === '0' || id === '-1') continue;
+                out.push({ id: id, name: String(t === null || t === undefined ? '' : t) });
+            }
+            return { incoterms: out, error: null };
+        } catch (e) {
+            return { incoterms: [], error: (e.name || '') + ': ' + (e.message || String(e)) };
+        }
+    };
+
     const archFormId = () => int(param('custscript_arch_so_form')) || ARCH_SO_FORM_DEFAULT;
 
     /**
@@ -1291,7 +1344,12 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * new one.
      */
     const applyIncoterms = (rec, h) => {
-        const id = int(h && h.incoterms);
+        /* An explicit ID wins over the display text, and the wizard now sends one.
+         * `setText` has to match a list label exactly, and a label the screen
+         * invented is how "Customer Pick Up" reached NetSuite and was rejected. The
+         * text path stays as a fallback so an older bundle against this script
+         * keeps working. */
+        const id = int(h && (h.incotermsId || h.incoterms));
         if (id) {
             rec.setValue({ fieldId: H_INCOTERMS, value: id });
         } else if (h && h.incoterms) {
@@ -3684,6 +3742,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         validateOrder: validateOrder,
         fieldReadiness: fieldReadiness,
         listSalesReps: listSalesReps,
+        listIncoterms: listIncoterms,
         // Exported for the test runner.
         resolveLines: resolveLines,
         verifyAssignments: verifyAssignments,

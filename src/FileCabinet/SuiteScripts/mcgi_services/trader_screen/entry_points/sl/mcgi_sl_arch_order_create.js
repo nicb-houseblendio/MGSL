@@ -150,6 +150,24 @@ define(['N/runtime', 'N/log', './../../shared/archOrderCreate'],
              */
             const action = String(context.request.parameters.action || '');
 
+            if (action === 'incoterms') {
+                /* The wizard's Incoterms picker. Served from here rather than
+                 * hardcoded in the bundle: it used to render three strings from
+                 * a fixtures module, one of which does not exist in this account,
+                 * and the field is mandatory -- so the wizard could not complete
+                 * an order at all. See listIncoterms. */
+                const ic = orderLib.listIncoterms();
+                return respond(context, 200, {
+                    ok: !ic.error,
+                    service: 'arch-order-create',
+                    action: 'incoterms',
+                    callerRole: user.role,
+                    count: ic.incoterms.length,
+                    incoterms: ic.incoterms,
+                    error: ic.error || undefined,
+                });
+            }
+
             if (action === 'salesReps') {
                 const reps = orderLib.listSalesReps();
                 return respond(context, 200, {

@@ -158,6 +158,8 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
     salesTeamId: salesTeamWriteEnabled() ? draft.header.salesTeamId || undefined : undefined,
     customerPO: draft.header.customerPO || undefined,
     incoterms: draft.header.incoterms || undefined,
+    // The ID is what the server prefers; the text stays for an older script.
+    incotermsId: draft.header.incotermsId || undefined,
     shipDate: draft.header.shipDate || undefined,
   },
   lines: draft.lines.map((l) => ({
@@ -238,6 +240,55 @@ export interface ArchSalesRepDTO {
  * RESTlet. That keeps the deploy order forgiving: a new bundle against an old
  * Suitelet degrades to exactly today's behaviour instead of breaking.
  */
+export interface ArchIncotermDTO { id: string; name: string }
+
+export interface ArchIncotermsResult {
+  /**
+   * 'offline' means there is no endpoint to ask, which is the demo walkthrough.
+   * 'failed' means there IS one and it could not answer. The wizard treats them
+   * differently on purpose: offline may show the sample list, a real failure must
+   * NOT, because showing a value NetSuite will reject is this defect.
+   */
+  status: 'ok' | 'failed' | 'offline';
+  incoterms: ArchIncotermDTO[];
+  error: string | null;
+}
+
+/**
+ * The REAL incoterms options, from NetSuite.
+ *
+ * 'failed' is distinguished from an empty list on purpose. This picker used to
+ * render three hardcoded strings out of `archOrderFixtures.ts`, one of which
+ * ("Customer Pick Up") does not exist in the account, against a MANDATORY field --
+ * so the wizard could not complete an order at all. Offering nothing and saying why
+ * is strictly better than offering a value the write path will refuse.
+ *
+ * Served by the order Suitelet rather than the RESTlet for the same reason as the
+ * sales-rep list: a RESTlet runs as the caller, and the list must be read under the
+ * role that validates the write.
+ */
+export const fetchIncoterms = async (): Promise<ArchIncotermsResult> => {
+  const url = endpointUrl();
+  if (!url) return { status: 'offline', incoterms: [], error: 'No order endpoint is configured.' };
+  try {
+    // Conditional separator: resolveScript already returns a query string.
+    const sep = url.indexOf('?') === -1 ? '?' : '&';
+    const r = await fetch(url + sep + 'action=incoterms', { method: 'GET', credentials: 'include' });
+    // A Suitelet answers 200 to everything, so branch on the payload, never r.status.
+    const body = (await r.json()) as { ok?: boolean; incoterms?: ArchIncotermDTO[]; error?: string };
+    if (!body || body.ok !== true || !Array.isArray(body.incoterms)) {
+      return {
+        status: 'failed',
+        incoterms: [],
+        error: (body && body.error) || 'The endpoint did not return a list.',
+      };
+    }
+    return { status: 'ok', incoterms: body.incoterms, error: null };
+  } catch (e) {
+    return { status: 'failed', incoterms: [], error: e instanceof Error ? e.message : String(e) };
+  }
+};
+
 export const fetchSalesRepsFromEndpoint = async (): Promise<ArchSalesRepDTO[] | null> => {
   const url = endpointUrl();
   if (!url) return null;

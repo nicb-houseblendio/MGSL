@@ -108,10 +108,24 @@ const OutcomeNotice = ({
               <strong>Nothing was written.</strong> Your selection is intact, so you can fix the
               problem and try again.
             </>
-          ) : (
+          ) : result.transportFailure ? (
             <>
               <strong>The order may or may not have been created.</strong> The request did not
               come back, so we cannot tell you whether NetSuite saved it.{' '}
+              <strong>Check the sales order list before trying again</strong> — retrying a
+              duplicate will be refused, which looks like a second failure.
+            </>
+          ) : (
+            /*
+             * NetSuite ANSWERED, with an error. Telling the trader "the request did not
+             * come back" is then simply false, and it was: on 2026-09-09 a rejected
+             * incoterms value printed a clear server error underneath a sentence saying
+             * no reply had arrived. `orderOutcome` has always separated these two, with
+             * different titles and cart reasons; this body had one branch for both.
+             */
+            <>
+              <strong>NetSuite answered with an error.</strong> We cannot tell from the answer
+              whether anything was saved first.{' '}
               <strong>Check the sales order list before trying again</strong> — retrying a
               duplicate will be refused, which looks like a second failure.
             </>

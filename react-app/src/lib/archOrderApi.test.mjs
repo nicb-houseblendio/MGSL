@@ -5,7 +5,8 @@
 // trader dismissed the dialog mid-request and lost the outcome, but it also means
 // a request that never returns would leave them with NO exit. The timeout below is
 // what makes the guard safe to ship; the two are one change.
-import { orderOutcome, createArchOrder, SUBMIT_TIMEOUT_MS } from './archOrderApi.ts';
+import { readFileSync } from 'node:fs';
+import { orderOutcome, createArchOrder, SUBMIT_TIMEOUT_MS, fetchIncoterms } from './archOrderApi.ts';
 
 let fail = 0;
 const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (cond ? '' : '   got: ' + JSON.stringify(got))); if (!cond) fail++; };
@@ -121,6 +122,76 @@ try { out = await createArchOrder(draft, 'ARCH-no-ac'); } catch (e) { resolved =
 globalThis.AbortController = realAC;
 ok('createArchOrder resolves even with no AbortController, never rejects', resolved, out);
 ok('and reports it as a transport failure rather than a refusal', resolved && out.ok === false && out.transportFailure === true, out);
+
+
+/* ── fetchIncoterms ───────────────────────────────────────────────────────────
+ *
+ * The picker used to render ['Delivered', 'Customer Pick Up', 'FOB Reload'] from
+ * archOrderFixtures.ts -- a DEMO-DATA module -- against a MANDATORY field. Measured
+ * against the account, the real list is five values and "Customer Pick Up" is not
+ * one of them, so NetSuite answered `Invalid custbody_incoterms reference key` and
+ * the wizard could not create an order at all. Every automated test had posted no
+ * incoterms and silently taken the server default, so only a real click found it.
+ *
+ * `offline` exists so the demo walkthrough can still show the sample list while a
+ * genuine failure shows NOTHING. Collapsing those two is what caused the defect.
+ */
+const REAL = [
+  { id: '6', name: 'CIF' },
+  { id: '3', name: 'Delivered' },
+  { id: '4', name: 'FOB Mill' },
+  { id: '7', name: 'FOB Port' },
+  { id: '5', name: 'FOB Reload' },
+];
+
+globalThis.window = { MCGI_CONFIG: { orderEndpointUrl: 'https://example.invalid/order' } };
+let lastUrl = null;
+globalThis.fetch = (url) => {
+  lastUrl = String(url);
+  return Promise.resolve({ json: async () => ({ ok: true, incoterms: REAL }) });
+};
+let ic = await fetchIncoterms();
+ok('incoterms: ok status on a good answer', ic.status === 'ok', ic);
+ok('incoterms: returns every option the account offers', ic.incoterms.length === 5, ic);
+ok('incoterms: carries ids, because the ID is what gets written',
+  ic.incoterms.every((x) => x.id && x.name), ic);
+ok('incoterms: asks the order endpoint with action=incoterms',
+  /action=incoterms/.test(lastUrl || ''), lastUrl);
+ok('incoterms: includes CIF, which NO order in the account has ever used',
+  ic.incoterms.some((x) => x.name === 'CIF'), ic);
+ok('incoterms: and does NOT invent "Customer Pick Up"',
+  !ic.incoterms.some((x) => /Customer Pick Up/i.test(x.name)), ic);
+
+// A server that answers but declines: no options, and say why.
+globalThis.fetch = () => Promise.resolve({ json: async () => ({ ok: false, error: 'field not on form' }) });
+ic = await fetchIncoterms();
+ok('incoterms: a refusing endpoint is FAILED, not offline', ic.status === 'failed', ic);
+ok('incoterms: failure offers NO options rather than a fallback',
+  ic.incoterms.length === 0, ic);
+ok('incoterms: and surfaces the reason', /field not on form/.test(ic.error || ''), ic);
+
+// A thrown fetch is still a failure, not offline.
+globalThis.fetch = () => Promise.reject(new Error('Failed to fetch'));
+ic = await fetchIncoterms();
+ok('incoterms: a thrown fetch is FAILED', ic.status === 'failed' && ic.incoterms.length === 0, ic);
+
+// No endpoint configured at all is the demo walkthrough, and is NOT a failure.
+globalThis.window = { MCGI_CONFIG: {} };
+ic = await fetchIncoterms();
+ok('incoterms: no endpoint is OFFLINE, so demo can show the sample list',
+  ic.status === 'offline' && ic.incoterms.length === 0, ic);
+
+/* The fixture list must never be mistaken for the live source again. */
+const { INCOTERMS } = await import('./archOrderFixtures.ts');
+ok('incoterms: the fixture list is still WRONG for this account, by design',
+  INCOTERMS.some((t) => /Customer Pick Up/i.test(t)), INCOTERMS);
+const wizard = readFileSync(new URL('../components/arch/SOWizard.tsx', import.meta.url), 'utf8');
+ok('incoterms: the wizard reaches for the fixture ONLY on the offline branch',
+  /status === 'offline'[\s\S]{0,120}INCOTERMS\.map/.test(wizard), false);
+ok('incoterms: and renders the fetched options on the live branch',
+  /status === 'ok'[\s\S]{0,80}incotermsOpts\.incoterms/.test(wizard), false);
+ok('incoterms: the wizard sends the ID, not just the text',
+  /incotermsId: incotermsId \|\| undefined/.test(wizard), false);
 
 console.log(fail ? ('# FAIL ' + fail) : '# archOrderApi ok');
 process.exit(fail ? 1 : 0);

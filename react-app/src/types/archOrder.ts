@@ -185,7 +185,17 @@ export interface ArchOrderHeader {
   shipTo: string;
   currency: string;
   shipDate: string;
+  /** Display text, for the Review row. */
   incoterms: string;
+  /**
+   * The list INTERNAL ID, which is what reaches NetSuite.
+   *
+   * Sent instead of the text because `setText` has to match a list label exactly,
+   * and a label the screen invented is how "Customer Pick Up" got rejected with
+   * `Invalid custbody_incoterms reference key`. The options now come from the
+   * account (`action=incoterms`), not from a fixtures array.
+   */
+  incotermsId?: string;
   salesTeam: string;
   paymentTerms: string;
 }
