@@ -1075,6 +1075,12 @@ define([
         'SELECT ' +
         '  tl.item                AS itemid, ' +
         '  tl.location            AS locationid, ' +
+        /* The location's NAME, added 2026-09-09. An item/location pair that has a
+         * bucket but NO on-hand lot never appears in LOT_SQL, so it has no other
+         * source for its own location name. See the orphan-recovery block in
+         * getInputData: without this the recovered row would render a blank
+         * location, and KNOWN_LOCATIONS covers only three ids. */
+        '  BUILTIN.DF(tl.location) AS locationname, ' +
         '  t.type                 AS trantype, ' +
         '  t.id                   AS tranid, ' +
         // The line's OWN id, which is what inventoryassignment points at —
@@ -1206,7 +1212,15 @@ define([
 
         rows.forEach((r) => {
             const key = String(r.itemid) + '__' + String(r.locationid);
-            if (!byPair[key]) byPair[key] = { totals: blank(), lots: {}, unattributed: blank() };
+            if (!byPair[key]) {
+                byPair[key] = {
+                    totals: blank(), lots: {}, unattributed: blank(),
+                    // Carried so a pair with NO on-hand lot can still name itself.
+                    itemId: String(r.itemid),
+                    locationId: String(r.locationid),
+                    locationName: r.locationname || '',
+                };
+            }
             const bucket = byPair[key];
 
             const isSale = String(r.trantype) === 'SalesOrd';
@@ -1226,10 +1240,32 @@ define([
                     // Already gone out the door.
                     bucket.totals.outbound += moved;
                 } else {
-                    // Ordered from a supplier, not yet received.
-                    bucket.totals.onOrder += open;
+                    /*
+                     * 🔴 ON ORDER AND IN TRANSIT ARE DISJOINT. Corrected 2026-09-09.
+                     *
+                     * They used to be NESTED, and `available` adds both, so the same
+                     * wood could be counted twice. `onOrder` was the whole open
+                     * quantity while `inTransit` was the billed-not-received part of
+                     * that same quantity: algebraically inTransit <= onOrder for every
+                     * input, and EQUAL as soon as billed >= ordered. So a purchase
+                     * order billed ahead of receipt booked its full quantity into both
+                     * buckets and inflated Available by that amount.
+                     *
+                     * Latent rather than live when found: all six hardwood PO lines
+                     * read quantitybilled 0, so inTransit was 0 everywhere and nothing
+                     * doubled. It would have appeared the first time a supplier
+                     * invoiced before delivering, which for imported hardwood on the
+                     * water is the normal case, not an exotic one.
+                     *
+                     * Now: `water` is the billed-not-received part, and `onOrder` is
+                     * what is left of the open quantity. The two sum to `open` by
+                     * construction, which is the invariant the grid's arithmetic wants.
+                     */
+                    const water = Math.max(0, Math.min(billed, ordered) - moved);
                     // Billed but not received — it is on the water.
-                    bucket.totals.inTransit += Math.max(0, Math.min(billed, ordered) - moved);
+                    bucket.totals.inTransit += water;
+                    // Ordered from a supplier and not yet on the water.
+                    bucket.totals.onOrder += Math.max(0, open - water);
                 }
             }
 
@@ -1603,6 +1639,90 @@ define([
                     storedQty: num(r.storedqty),
                 });
             });
+
+            /*
+             * ── 🔴 PAIRS THAT HAVE A BUCKET BUT NO ON-HAND LOT ────────────────────
+             *
+             * Added 2026-09-09. `byPair` above is built ONLY from LOT_SQL, whose WHERE
+             * ends `AND inl.quantityonhand <> 0`. `buckets` is keyed on the same
+             * itemId__locationId string but is read as a lookup, so any bucket key with
+             * no on-hand lot produced NO ROW AT ALL: no On Order, no In Transit, no
+             * unattributed, and not one line in the log. Stock on order simply was not
+             * on the screen.
+             *
+             * Measured when found: key 2912__108, PUR44KD at Ambassador Services
+             * International, carrying 600 BF on PO-CWP-001325. The grid's On Order read
+             * 8,350 BF while NetSuite's open hardwood PO lines totalled 8,950. That is
+             * the whole discrepancy, and it is the NORMAL state for a first delivery to
+             * a location: nothing is on hand there yet, which is exactly when a trader
+             * most wants to see what is coming.
+             *
+             * ITEM-LEVEL metadata is adopted from any pair that already carries the
+             * same itemId, because itemCode, description, species, category, thickness,
+             * unit and RATE are properties of the ITEM, not of the location. The rate is
+             * the one that matters: it is load-bearing (Lumber is 0.001, and defaulting
+             * it to 1 is wrong by three orders of magnitude), so it is copied from a
+             * real row and never invented.
+             *
+             * With NO donor there is nothing safe to do: the row cannot be built without
+             * a rate, and guessing one is the failure this file already refuses
+             * elsewhere. It is logged at ERROR and skipped, which is at least visible.
+             */
+            const bucketKeys = Object.keys(buckets);
+            const donorFor = (itemId) => {
+                const k = Object.keys(byPair).find((x) => byPair[x].itemId === itemId);
+                return k ? byPair[k] : null;
+            };
+            const recovered = [];
+            const unrecoverable = [];
+            bucketKeys.forEach((key) => {
+                if (byPair[key]) return;
+                const b = buckets[key] || {};
+                const itemId = String(b.itemId || String(key).split('__')[0]);
+                const donor = donorFor(itemId);
+                const t = b.totals || {};
+                const carried = (num(t.onOrder) || 0) + (num(t.inTransit) || 0) +
+                                (num(t.reserve) || 0) + (num(t.outbound) || 0);
+                if (!donor) {
+                    unrecoverable.push(key + ' (' + carried.toFixed(3) + ' stored units)');
+                    return;
+                }
+                byPair[key] = {
+                    itemId:       itemId,
+                    itemCode:     donor.itemCode,
+                    description:  donor.description,
+                    species:      donor.species,
+                    category:     donor.category,
+                    thickness:    donor.thickness,
+                    unit:         donor.unit,
+                    rate:         donor.rate,
+                    locationId:   String(b.locationId || String(key).split('__')[1]),
+                    locationName: b.locationName || KNOWN_LOCATIONS[String(b.locationId)] || '',
+                    holds:        holds[key] || {},
+                    buckets:      buckets[key],
+                    // No on-hand lot exists at this location. An EMPTY array, not a
+                    // fabricated lot: the drill-down correctly shows nothing on hand,
+                    // and bucketGap on the front end names the quantity no bundle claims.
+                    lots:         [],
+                };
+                recovered.push(byPair[key].itemCode + ' @ ' + (byPair[key].locationName || key));
+            });
+            if (recovered.length) {
+                // ERROR, not audit: these rows were MISSING from the screen until now,
+                // and an audit line on an hourly job is how a four-day outage hid here
+                // once before. It should be rare; if it is not, that is worth knowing.
+                log.error('ARCH cache — recovered ' + recovered.length + ' pair(s) that have stock ' +
+                    'on order or reserved but nothing on hand',
+                    'These produced NO grid row at all before 2026-09-09: ' + recovered.join('; ') +
+                    '. Their quantities were absent from On Order and In Transit.');
+            }
+            if (unrecoverable.length) {
+                log.error('ARCH cache — pair(s) with a bucket but NO on-hand lot and NO donor row',
+                    'Skipped because the item appears nowhere else, so its stock-unit rate could ' +
+                    'not be read and inventing one would be wrong by three orders of magnitude for ' +
+                    'Lumber: ' + unrecoverable.join('; ') + '. These quantities are missing from ' +
+                    'the grid. Fix by tagging the item or by giving BUCKET_SQL the item columns.');
+            }
 
             const out = {};
             Object.keys(byPair).forEach((k) => { out[k] = JSON.stringify(byPair[k]); });

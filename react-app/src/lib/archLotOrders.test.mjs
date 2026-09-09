@@ -264,7 +264,7 @@ const TEAM_ROWS = [
   { tranid: '126500', repid: '2090', rep: 'Justin Loveland', contribution: '0.5', isprimary: 'F' },
 ];
 
-const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false } = {}) => {
+const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS } = {}) => {
   const sqlLog = [];
   const errors = [];
   const audits = [];
@@ -280,8 +280,8 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false } = {}) => {
       if (/FROM transactionsalesteam/.test(sql)) {
         if (teamThrows) throw new Error('Search error occurred: permission');
         rows = teamRows;
-      } else if (/FROM inventorynumberlocation/.test(sql)) rows = LOT_ROWS;
-      else if (/FROM transactionline tl/.test(sql)) rows = BUCKET_ROWS;
+      } else if (/FROM inventorynumberlocation/.test(sql)) rows = lotRows;
+      else if (/FROM transactionline tl/.test(sql)) rows = bucketRows;
       else if (/FROM item i/.test(sql)) rows = [];                      // untagged check
       else if (/customrecord_msl_plc_capture/i.test(sql)) rows = [];     // tallies
       return { asMappedResults: () => rows };
@@ -451,6 +451,107 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false } = {}) => {
     !/render: \(l\) => lotAllocation\(l\.lotNo, bucket\)\.soNumber/.test(l));
   ok('F8 a bundle held by several orders discloses the others rather than dropping them',
     /is held by \$\{claims\(l\)\.length\} sales orders/.test(l));
+}
+
+
+/* ════ C. THE TWO CACHE DEFECTS, found by the 2026-09-09 adversarial review ═══
+ *
+ * Both are arithmetic on a trading screen, so both are driven through the REAL MR
+ * rather than asserted from source.
+ */
+{
+  /* ── C1. A pair with a BUCKET but NO on-hand lot used to vanish entirely ────
+   *
+   * `byPair` in getInputData is built only from LOT_SQL, whose WHERE ends
+   * `quantityonhand <> 0`, while buckets are read as a lookup (`buckets[key] ||
+   * null`). So a key with no on-hand lot produced NO ROW: no On Order, no In
+   * Transit, and not one line in the log. Measured live: 2912__108, PUR44KD at
+   * Ambassador Services International, 600 BF on PO-CWP-001325. The grid's On
+   * Order read 8,350 BF against NetSuite's 8,950. That is the whole gap, and it
+   * is the NORMAL state for a first delivery to a location.
+   */
+  const ORPHAN = bkRow({
+    locationid: '108', locationname: 'Ambassador Services International',
+    trantype: 'PurchOrd', tranid: '999001', docno: 'PO-CWP-001325',
+    lineno: '9', qty: '0.6', shiprecv: '0', billed: '0',
+    lotno: null, assignedqty: null,
+  });
+  const c1 = runMr({ bucketRows: BUCKET_ROWS.concat([ORPHAN]) });
+  const orphan = c1.written.find((r) => String(r.locationId) === '108');
+  ok('C1: the pair with stock on order but nothing on hand now produces a row', !!orphan,
+    c1.written.map((r) => r.itemCode + '@' + r.locationId));
+  ok('C1: and it carries the on-order quantity that used to disappear',
+    !!orphan && Math.round(orphan.onOrder) === 600, orphan && orphan.onOrder);
+  ok('C1: item-level metadata is ADOPTED from a real row, never invented',
+    !!orphan && orphan.itemCode === 'ZEB84KD' && orphan.unit === 'BF', orphan && [orphan.itemCode, orphan.unit]);
+  ok('C1: it names its own location, which no lot row could have told it',
+    !!orphan && orphan.locationName === 'Ambassador Services International', orphan && orphan.locationName);
+  ok('C1: it has NO lots, rather than a fabricated one',
+    !!orphan && Array.isArray(orphan.lots) && orphan.lots.length === 0, orphan && orphan.lots);
+  ok('C1: nothing is on hand there, so On Hand reads 0',
+    !!orphan && Math.round(orphan.onHand) === 0, orphan && orphan.onHand);
+  ok('C1: the recovery is logged at ERROR, because the row was MISSING before',
+    c1.errors.some((e) => /recovered/.test(e) && /nothing on hand/.test(e)), c1.errors);
+
+  /* A bucket for an item that appears in NO lot row has no donor, so its
+   * stock-unit rate cannot be read. Inventing one is wrong by three orders of
+   * magnitude for Lumber, which this file refuses to do elsewhere too. */
+  const NO_DONOR = bkRow({
+    itemid: '8888', locationid: '777', locationname: 'Nowhere',
+    trantype: 'PurchOrd', tranid: '999009', docno: 'PO-CWP-009999',
+    lineno: '99', qty: '5', shiprecv: '0', billed: '0', lotno: null, assignedqty: null,
+  });
+  const c1b = runMr({ bucketRows: BUCKET_ROWS.concat([NO_DONOR]) });
+  ok('C1: a bucket whose item appears nowhere else is NOT invented into a row',
+    !c1b.written.some((r) => String(r.internalId) === '8888'), c1b.written.map((r) => r.internalId));
+  ok('C1: and that omission is logged at ERROR rather than being silent',
+    c1b.errors.some((e) => /NO donor/.test(e)), c1b.errors);
+}
+
+{
+  /* ── C2. On Order and In Transit were NESTED, and Available adds both ──────
+   *
+   * onOrder was the WHOLE open quantity; inTransit was the billed-not-received
+   * PART of that same quantity. So inTransit <= onOrder for every input, and
+   * EQUAL once billed >= ordered: a purchase order billed ahead of receipt
+   * booked its full quantity into both buckets and inflated Available by it.
+   * Latent when found only because all six hardwood PO lines read billed 0,
+   * which for imported hardwood on the water is luck, not a property.
+   */
+  const po = (over) => bkRow(Object.assign({
+    trantype: 'PurchOrd', lotno: null, assignedqty: null, shiprecv: '0',
+  }, over));
+
+  const full = runMr({ bucketRows: [po({ tranid: '999002', docno: 'PO-A', lineno: '11', qty: '2', billed: '2' })] })
+    .written.find((r) => String(r.internalId) === '2915');
+  ok('C2: a fully billed, unreceived PO line is IN TRANSIT',
+    !!full && Math.round(full.inTransit) === 2000, full && full.inTransit);
+  ok('C2: and is NOT also counted as On Order',
+    !!full && Math.round(full.onOrder) === 0, full && full.onOrder);
+  ok('C2: the two buckets sum to the open quantity, never more',
+    !!full && Math.round(full.onOrder + full.inTransit) === 2000,
+    full && { onOrder: full.onOrder, inTransit: full.inTransit });
+
+  const half = runMr({ bucketRows: [po({ tranid: '999003', docno: 'PO-B', lineno: '12', qty: '2', billed: '0.5' })] })
+    .written.find((r) => String(r.internalId) === '2915');
+  ok('C2: half billed splits 500 in transit / 1,500 on order',
+    !!half && Math.round(half.inTransit) === 500 && Math.round(half.onOrder) === 1500,
+    half && { onOrder: half.onOrder, inTransit: half.inTransit });
+  ok('C2: and still sums to the open quantity',
+    !!half && Math.round(half.onOrder + half.inTransit) === 2000, half && [half.onOrder, half.inTransit]);
+
+  const none = runMr({ bucketRows: [po({ tranid: '999004', docno: 'PO-C', lineno: '13', qty: '2', shiprecv: '2', billed: '2' })] })
+    .written.find((r) => String(r.internalId) === '2915');
+  ok('C2: a fully received AND billed line is in neither bucket',
+    !!none && Math.round(none.onOrder) === 0 && Math.round(none.inTransit) === 0,
+    none && { onOrder: none.onOrder, inTransit: none.inTransit });
+
+  // Billed MORE than ordered, which NetSuite permits on an over-invoice.
+  const over = runMr({ bucketRows: [po({ tranid: '999005', docno: 'PO-D', lineno: '14', qty: '2', billed: '5' })] })
+    .written.find((r) => String(r.internalId) === '2915');
+  ok('C2: over-billed cannot push In Transit above the ordered quantity',
+    !!over && Math.round(over.inTransit) === 2000 && Math.round(over.onOrder) === 0,
+    over && { onOrder: over.onOrder, inTransit: over.inTransit });
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archLotOrders ok');
