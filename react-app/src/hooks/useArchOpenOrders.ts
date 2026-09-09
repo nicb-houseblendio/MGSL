@@ -20,6 +20,8 @@ import * as React from 'react';
 import { apiGet } from '@/lib/api';
 import { normalizeUnit } from '@/lib/archUom';
 import { getOpenOrders as getFixtureOrders } from '@/lib/archOrderFixtures';
+import { deriveTraderAttribution } from '@/lib/archTraderAttribution';
+import type { ArchTraderAttribution } from '@/lib/archTraderAttribution';
 import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archOrder';
 
 /** Selects the ARCH service on the shared RESTlet. Mirrors useArchCustomers. */
@@ -41,9 +43,25 @@ export interface ArchLiveOpenOrder extends ArchOpenOrder {
   traderShared?: boolean;
   traderTied?: boolean;
   /**
-   * Who saved the record. Returned because Marc-Antoine asked for "the creator"
-   * on the band; NOT what `trader` shows, because on half the real orders it is
-   * a developer or integration user. Kept for that decision, not rendered.
+   * WHERE `trader` came from. Absent on a response from a service older than
+   * 2026-09-08, which is why `deriveTraderAttribution` has a fallback.
+   *
+   * 🔴 'none' is the one that matters: it is the difference between "this order
+   * has no rep" and "this role could not read the reps", and those look identical
+   * on screen. See lib/archTraderAttribution.
+   */
+  traderSource?: 'salesTeam' | 'header' | 'none';
+  /** The rep's id resolved but their NAME did not; shows as "Employee <id>". */
+  traderNameUnreadable?: boolean;
+  /**
+   * Who saved the record.
+   *
+   * Marc-Antoine asked for exactly this ("devrait être la personne qui a créé le
+   * SO", 2026-09-08), so it IS rendered now, in its own labelled column, and it
+   * is the default grouping. It is still not what `trader` holds: on 2 of the 4
+   * real orders the creator is a developer or integration account ('House Blend
+   * 2' saved SO-CWP-001344/001345), so substituting it for the rep would credit
+   * the sale to us. Both, labelled. Neither standing in for the other.
    */
   createdBy?: string;
   createdById?: string | null;
@@ -90,6 +108,11 @@ interface OpenOrdersResponse {
   orders?: RawOrder[];
   /** How many items carry the Hardwood segment. Explains an empty tab. */
   taggedItemCount?: number | null;
+  /**
+   * Whether the rep column can be trusted. ABSENT from any service deployed
+   * before 2026-09-08, hence the derivation below.
+   */
+  traderAttribution?: Partial<ArchTraderAttribution>;
 }
 
 export interface ArchOpenOrdersState {
@@ -102,6 +125,15 @@ export interface ArchOpenOrdersState {
    * blank table is usually a tagging gap rather than a quiet day.
    */
   taggedItemCount: number | null;
+  /**
+   * Whether the SALES REP column is worth reading, which is a separate question
+   * from whether the orders loaded.
+   *
+   * 🔴 Null only while loading or on fixtures. On live data it is always
+   * populated: from the service when it sends it, derived from the orders when it
+   * does not. See `deriveTraderAttribution` for why that fallback exists.
+   */
+  traderAttribution: ArchTraderAttribution | null;
   reload: () => void;
 }
 
@@ -137,11 +169,37 @@ const toCartLine = (l: RawLine): ArchCartLine & { unattributed?: boolean; costSo
 const asFixtures = (): ArchLiveOpenOrder[] =>
   getFixtureOrders().map((o) => ({ ...o, internalId: null }));
 
+/**
+ * The service's own block where it sends one, the orders' own testimony where it
+ * does not. Never a partial object: the notice builder reads every field.
+ */
+const attributionFrom = (
+  orders: ArchLiveOpenOrder[],
+  raw?: Partial<ArchTraderAttribution>
+): ArchTraderAttribution => {
+  const derived = deriveTraderAttribution(orders);
+  if (!raw || typeof raw !== 'object') return derived;
+  const n = (v: unknown, fallback: number) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
+  const read = raw.salesTeamRead;
+  return {
+    orders: n(raw.orders, derived.orders),
+    fromSalesTeam: n(raw.fromSalesTeam, derived.fromSalesTeam),
+    fromHeader: n(raw.fromHeader, derived.fromHeader),
+    unattributed: n(raw.unattributed, derived.unattributed),
+    namesUnreadable: n(raw.namesUnreadable, derived.namesUnreadable),
+    salesTeamRead: read === 'ok' || read === 'failed' ? read : 'unknown',
+    salesTeamError: String(raw.salesTeamError || ''),
+    roleLabel: String(raw.roleLabel || ''),
+  };
+};
+
 export const useArchOpenOrders = (enabled = true): ArchOpenOrdersState => {
   const [orders, setOrders] = React.useState<ArchLiveOpenOrder[]>([]);
   const [source, setSource] = React.useState<ArchOpenOrdersSource>('loading');
   const [error, setError] = React.useState<string | null>(null);
   const [taggedItemCount, setTaggedItemCount] = React.useState<number | null>(null);
+  const [traderAttribution, setTraderAttribution] =
+    React.useState<ArchTraderAttribution | null>(null);
   const [nonce, setNonce] = React.useState(0);
 
   const reload = React.useCallback(() => setNonce((n) => n + 1), []);
@@ -161,19 +219,20 @@ export const useArchOpenOrders = (enabled = true): ArchOpenOrdersState => {
         if (!body || body.success !== true || !Array.isArray(body.orders)) {
           setOrders(asFixtures());
           setSource('fixtures');
+          setTraderAttribution(null);
           setError(
             (body && body.error) ||
               'Open orders could not be loaded, so these are demo orders.'
           );
           return;
         }
-        setOrders(
-          body.orders.map((o) => ({
-            ...o,
-            internalId: o.internalId ? String(o.internalId) : null,
-            lines: (o.lines || []).map(toCartLine),
-          }))
-        );
+        const live: ArchLiveOpenOrder[] = body.orders.map((o) => ({
+          ...o,
+          internalId: o.internalId ? String(o.internalId) : null,
+          lines: (o.lines || []).map(toCartLine),
+        }));
+        setOrders(live);
+        setTraderAttribution(attributionFrom(live, body.traderAttribution));
         setSource('netsuite');
         setTaggedItemCount(
           body.taggedItemCount === null || body.taggedItemCount === undefined
@@ -186,6 +245,7 @@ export const useArchOpenOrders = (enabled = true): ArchOpenOrdersState => {
         if (cancelled) return;
         setOrders(asFixtures());
         setSource('fixtures');
+        setTraderAttribution(null);
         setError(
           e instanceof Error
             ? `${e.message}. These are demo orders.`
@@ -198,5 +258,5 @@ export const useArchOpenOrders = (enabled = true): ArchOpenOrdersState => {
     };
   }, [enabled, nonce]);
 
-  return { orders, source, error, taggedItemCount, reload };
+  return { orders, source, error, taggedItemCount, traderAttribution, reload };
 };

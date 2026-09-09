@@ -10,9 +10,14 @@
  * 2,025 pieces for 314307 and 2,139 for CHECHEN, so a bad edit is caught.
  *
  * Related: a third document, the multi-width `detail pl inv 2026_00031.xlsx`, lives
- * in its own file (archTallyDetailPL.ts) rather than here, deliberately. It is NOT
- * in DEMO_DOCS, because its lengths are metric (2400-4500mm) and would render as
- * 7.874' / 8.858' on whichever lots the demo hash assigned it to.
+ * in its own file (archTallyDetailPL.ts) rather than here, deliberately.
+ *
+ * ⚠️ CORRECTION 2026-09-08. This note used to end "It is NOT in DEMO_DOCS, because its
+ * lengths are metric (2400-4500mm) and would render as 7.874' / 8.858' on whichever
+ * lots the demo hash assigned it to." The metric labels were real - measured - but
+ * excluding the document also excluded the WIDTH MATRIX from every lot on the screen,
+ * which is the client's first-listed complaint. archTallyLength.ts now recovers the
+ * millimetre figure for the label, and detail-pl is served BY DEFAULT. See DEMO_PICKS.
  *
  * ── WHAT IS AND IS NOT IN HERE ───────────────────────────────────────────────
  * The ground truth hand-transcribes PER BUNDLE for exactly TWO of its six
@@ -38,7 +43,7 @@
  */
 
 import type { TallyPayload, TallyBundle } from '@/lib/archTally';
-import { siblingsOf } from '@/lib/archTally';
+import { siblingsOf, toWidthDistribution } from '@/lib/archTally';
 import { TALLY_DETAIL_PL } from '@/lib/archTallyDetailPL';
 
 /** Packing List  030_2025 - PO 314307.pdf — 14 bundles, hand-verified, width printed */
@@ -1258,7 +1263,64 @@ export interface DemoTally {
  * Deterministic by lot number so screenshots reproduce. Delete this whole export
  * when lots carry a real tally link.
  */
-const DEMO_DOCS: TallyPayload[] = [TALLY_314307, TALLY_CHECHEN];
+/** Every fixture document the demo may draw on, in a fixed order so picks are stable. */
+const ALL_DEMO_DOCS: TallyPayload[] = [TALLY_DETAIL_PL, TALLY_314307, TALLY_CHECHEN];
+
+/** Askable by name from the browser console. See demoTallyProps. */
+const DEMO_DOC_BY_KEY: Record<string, TallyPayload> = {
+  'detail-pl': TALLY_DETAIL_PL,
+  '314307': TALLY_314307,
+  chechen: TALLY_CHECHEN,
+};
+
+/** One candidate the demo could serve: a bundle, and the document it belongs to. */
+interface DemoPick { doc: TallyPayload; bundle: TallyBundle }
+
+const allPicks = (): DemoPick[] => {
+  const out: DemoPick[] = [];
+  for (const doc of ALL_DEMO_DOCS) for (const bundle of doc.bundles) out.push({ doc, bundle });
+  return out;
+};
+
+/**
+ * 🔴 THE DEMO POOL IS BUNDLES THAT CAN DEMONSTRATE THE VIEW, NOT A LIST OF DOCUMENTS.
+ *
+ * ── THE COMPLAINT ────────────────────────────────────────────────────────────
+ * Marc-Antoine Poirier, 2026-09-08, and it was his most important point: "La matrice
+ * pour présenter le tally qui sera feedé par le custom record n'est pas présent."
+ *
+ * He was right from where he sat, and the honest reason is embarrassing. The width
+ * matrix was built, tested and deployed - and every bundle the screen could serve was
+ * DEGENERATE for width, so `toWidthDistribution().degenerate` was true and
+ * TallyImageDialog drew nothing. TALLY_314307's bundles carry the single width 5.5";
+ * TALLY_CHECHEN is `widthPolicy: 'randomWidth'` with no widths at all. The one real
+ * multi-width document was reachable only by typing a config key into the browser
+ * console. Measured over the 67 ARCH lots holding stock: 67 sample banners, 0 width
+ * grids. See archTallyReach.test.mjs, which now pins 67 of 67.
+ *
+ * ── WHY A RULE AND NOT A LONGER LIST ─────────────────────────────────────────
+ * Adding detail-pl to a three-document rotation would have shown the matrix on about
+ * a third of lots, which is the same failure with better odds - he would still click
+ * a lot and see nothing. So the pool is DERIVED: a bundle qualifies if its own width
+ * breakdown actually draws. That makes the guarantee structural rather than a fact
+ * about today's fixture list, and the moment a second multi-width document is
+ * transcribed it joins on its own.
+ *
+ * The cost is real and is recorded: TALLY_314307 and TALLY_CHECHEN no longer appear by
+ * default, so the RW caveat and the whole-foot length view are off the default screen.
+ * Both stay one console key away (MCGI_CONFIG.tallyDemoDoc = '314307' | 'chechen'),
+ * and both remain fully covered by archTally.test.mjs. Weighed against the client's
+ * first-listed complaint, a matrix he can see wins.
+ *
+ * ⚠️ THE FALLBACK IS NOT DECORATION. If a future edit leaves no multi-width bundle in
+ * the fixtures, the demo falls back to every bundle rather than serving nothing: a
+ * missing width table is a disappointment, a missing tally dialog is a broken button.
+ */
+const DEMO_PICKS: DemoPick[] = (() => {
+  const all = allPicks();
+  const wide = all.filter((p) => !toWidthDistribution(p.bundle).degenerate);
+  return wide.length ? wide : all;
+})();
 
 const hash = (s: string): number => {
   let h = 0;
@@ -1266,53 +1328,58 @@ const hash = (s: string): number => {
   return h;
 };
 
-export const demoTallyForLot = (lotNo: string): DemoTally | null => {
-  if (!lotNo) return null;
-  const h = hash(lotNo);
-  const doc = DEMO_DOCS[h % DEMO_DOCS.length];
-  if (!doc || !doc.bundles.length) return null;
-  const bundle = doc.bundles[h % doc.bundles.length];
-  if (!bundle) return null;
+const asDemoTally = (doc: TallyPayload, bundle: TallyBundle): DemoTally => ({
+  bundle,
   // Siblings are the same ITEM, not merely the same thickness. Selecting on
   // thickness alone mixes species: measured, a Sapele lot rendered 350 pieces
   // when Sapele was 50. See sameItem() in archTally.ts.
-  const siblings = siblingsOf(doc.bundles, bundle);
-  return {
-    bundle,
-    siblings,
-    sample: { sourceFile: doc.provenance?.sourceFile ?? null, po: doc.po, species: bundle.species, container: doc.container ?? null },
-  };
+  siblings: siblingsOf(doc.bundles, bundle),
+  sample: {
+    sourceFile: doc.provenance?.sourceFile ?? null,
+    po: doc.po,
+    species: bundle.species,
+    container: doc.container ?? null,
+  },
+});
+
+/** One named document's bundles, hashed by lot. The body every by-name accessor shares. */
+const demoTallyFromDoc = (lotNo: string, doc: TallyPayload): DemoTally | null => {
+  if (!lotNo || !doc || !doc.bundles.length) return null;
+  const bundle = doc.bundles[hash(lotNo) % doc.bundles.length];
+  return bundle ? asDemoTally(doc, bundle) : null;
+};
+
+export const demoTallyForLot = (lotNo: string): DemoTally | null => {
+  if (!lotNo || !DEMO_PICKS.length) return null;
+  const pick = DEMO_PICKS[hash(lotNo) % DEMO_PICKS.length];
+  return pick ? asDemoTally(pick.doc, pick.bundle) : null;
 };
 
 /**
- * OPT-IN ONLY: serve the one real multi-width document, so the width table can be
- * seen at all. Added 2026-09-05.
+ * Serve the one real multi-width document by name. Added 2026-09-05.
  *
- * ⚠️ WHY THIS IS NOT JUST ADDED TO DEMO_DOCS. detail-pl is metric (2400-4500mm), so
- * through rowLabel() its lengths render as 7.874' / 8.858' / 9.843' - correct, and
- * unreadable. Putting it in the rotation would degrade the WORKING length view on
- * roughly a third of ARCH lots to show off a table nobody asked to see there. A test
- * asserts it never leaks into demoTallyForLot; that test must keep passing.
+ * ── HISTORY, BECAUSE THE REASON THIS EXISTED HAS BEEN FIXED ──────────────────
+ * This was OPT-IN ONLY, and the reason was the length column: detail-pl is metric
+ * (2400-4500mm), so through rowLabel() its lengths print as 7.874' / 8.858' / 9.843'
+ * - correct, and unreadable. Putting it in the rotation was judged to degrade the
+ * WORKING length view to show off a table nobody had asked to see there.
  *
- * So this is reached only when someone asks for it by name, and the caller is
- * responsible for asking. Every bundle it returns is multi-width, so the width table
- * always draws; the length table beside it will show a fractional foot figure, which
- * is the accepted cost of looking at this document.
+ * That judgement was right about the symptom and wrong about the remedy. Hiding the
+ * document also hid the width matrix from every lot on the screen, which is exactly
+ * the thing the client says is missing. Measured 2026-09-08 the labels really do read
+ * as noise, so archTallyLength.ts now recovers the millimetre figure the document
+ * printed and the length column shows `2400mm` with a `7'10"` gloss. With the label
+ * readable, the objection is gone and DEMO_PICKS above serves this document by
+ * default.
+ *
+ * It stays a named accessor because `demoTallyProps` still routes
+ * MCGI_CONFIG.tallyDemoDoc = 'detail-pl' through it, and because pinning "this exact
+ * document, every bundle multi-width" is what several tests assert against.
  *
  * Deterministic by lot number, same as demoTallyForLot, so screenshots reproduce.
  */
-export const demoWidthTallyForLot = (lotNo: string): DemoTally | null => {
-  if (!lotNo) return null;
-  const doc = TALLY_DETAIL_PL;
-  if (!doc.bundles.length) return null;
-  const bundle = doc.bundles[hash(lotNo) % doc.bundles.length];
-  if (!bundle) return null;
-  return {
-    bundle,
-    siblings: siblingsOf(doc.bundles, bundle),
-    sample: { sourceFile: doc.provenance?.sourceFile ?? null, po: doc.po, species: bundle.species, container: doc.container ?? null },
-  };
-};
+export const demoWidthTallyForLot = (lotNo: string): DemoTally | null =>
+  demoTallyFromDoc(lotNo, TALLY_DETAIL_PL);
 
 /**
  * The three tally props a TallyImageDialog call site needs, chosen in ONE place.
@@ -1333,11 +1400,18 @@ export const demoWidthTallyForLot = (lotNo: string): DemoTally | null => {
  * a real tally link, whatever supplies it goes through this function and reaches both
  * tables. The yellow sample banner names the source file either way.
  *
- * MCGI_CONFIG.tallyDemoDoc === 'detail-pl' swaps in the one real multi-width document
- * so the width table can be seen. Off by default and off in production: that document
- * is metric, so its lengths render as 7.874'. Settable from the browser console
- * (window.MCGI_CONFIG.tallyDemoDoc = 'detail-pl', then reopen the dialog) with no
- * build and no Suitelet deploy.
+ * ── MCGI_CONFIG.tallyDemoDoc: PICK ONE DOCUMENT BY NAME ──────────────────────
+ * Settable from the browser console (window.MCGI_CONFIG.tallyDemoDoc = '…', then
+ * reopen the dialog) with no build and no Suitelet deploy. Accepts 'detail-pl',
+ * '314307' or 'chechen'; anything else falls through to the default pool.
+ *
+ * The DEFAULT changed on 2026-09-08 and the flag changed sides with it. It used to be
+ * the only way to see the width matrix at all, because the default rotation could not
+ * draw one on any lot. Now the default pool is the bundles that CAN draw one, and the
+ * flag is how you get the imperial and random-width documents back:
+ *   '314307' - printed single width 5.5", whole-foot lengths 8' to 20'
+ *   'chechen' - `widthPolicy: 'randomWidth'`, which is what produces the RW caveat
+ * Both are still fully covered by archTally.test.mjs; the flag is for looking at them.
  */
 export const demoTallyProps = (
   lotNo: string,
@@ -1378,10 +1452,10 @@ export const demoTallyProps = (
   const cfg = typeof window !== 'undefined'
     ? (window as unknown as { MCGI_CONFIG?: { tallyDemoDoc?: string } }).MCGI_CONFIG
     : undefined;
+  const key = cfg?.tallyDemoDoc;
   // ONE call, not two: each builds a fresh siblings array, and the dialog finds the
   // clicked bundle by reference identity.
-  const demo = cfg?.tallyDemoDoc === 'detail-pl'
-    ? demoWidthTallyForLot(lotNo)
-    : demoTallyForLot(lotNo);
+  const named = key ? DEMO_DOC_BY_KEY[key] : undefined;
+  const demo = named ? demoTallyFromDoc(lotNo, named) : demoTallyForLot(lotNo);
   return { bundle: demo?.bundle, siblings: demo?.siblings, sample: demo?.sample };
 };

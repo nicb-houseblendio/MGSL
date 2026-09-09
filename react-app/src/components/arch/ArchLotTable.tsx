@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { formatQty, formatCostPerUnit, displaySuffix, unitLabel } from '@/lib/archUom';
 import { isLotLocked, lockReason, lotQuantity, commitmentOn } from '@/lib/archLots';
+import { bucketLots, bucketGap, bucketGapReason, notSourcedNote } from '@/lib/archBuckets';
 import { lotAllocation, lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
 import { ARCH_BUCKET_META, ARCH_RESERVE_INK, ARCH_SURFACE } from '@/components/arch/archColors';
 import { TallyButton, TallyImageDialog } from '@/components/arch/TallyImageDialog';
@@ -84,6 +85,7 @@ export const ArchLotTable = ({
   }, []);
 
   const reserveMeta = ARCH_BUCKET_META.reserve;
+  const meta = ARCH_BUCKET_META[bucket];
   const isOnHand = bucket === 'onHand';
   /**
    * Views a trader could sell from. The bundle lock must apply to BOTH: a
@@ -105,10 +107,20 @@ export const ArchLotTable = ({
    * Every bundle is listed; the lock badge says why one cannot be sold, and the
    * "Show reserved" toggle adds the order/customer detail underneath.
    */
-  const lots = React.useMemo(
-    () => row.lots.filter((l) => lotQuantity(l, bucket) > 0),
-    [row.lots, bucket]
-  );
+  const lots = React.useMemo(() => bucketLots(row, bucket), [row, bucket]);
+
+  /**
+   * Quantity the header total carries that NO bundle here claims.
+   *
+   * Row buckets are summed from the order LINES; per-lot buckets exist only
+   * where a line names an inventory number. Where they disagree the table used
+   * to print a header total and a shorter list of bundles and say nothing — the
+   * shape that reads as stock having gone missing (Marc-Antoine, 2026-09-08:
+   * « on dirait qu'il fait juste disparaitre du TS »). It is named now.
+   */
+  const gap = React.useMemo(() => bucketGap(row, bucket), [row, bucket]);
+  const gapReason = gap > 0 ? bucketGapReason(bucket) : null;
+  const notSourced = notSourcedNote(bucket);
 
   const selectableLots = React.useMemo(
     () => lots.filter((l) => !(isSellableView && isLotLocked(l))),
@@ -142,8 +154,12 @@ export const ArchLotTable = ({
   /** Columns between the identity block and the quantity block, per bucket. */
   const leadColumns = React.useMemo<LeadColumn[]>(() => {
     if (bucket === 'reserve' || bucket === 'readyToBuild' || bucket === 'outbound') {
+      // Outbound's label used to say the stock was being held, which is the
+      // opposite of the truth: outbound is `quantityshiprecv`, wood that has
+      // already left on an Item Fulfillment. Nothing is holding it. The figure
+      // beside it is elapsed time since the shipment.
       const durationLabel =
-        bucket === 'readyToBuild' ? 'Building For' : bucket === 'outbound' ? 'Held For' : 'Reserved For';
+        bucket === 'readyToBuild' ? 'Building For' : bucket === 'outbound' ? 'Shipped' : 'Reserved For';
       return [
         {
           label: 'SO #',
@@ -173,6 +189,14 @@ export const ArchLotTable = ({
   }, [bucket]);
 
   const reservedTotal = isOnHand ? row.lots.reduce((s, l) => s + Math.round(l.reserve || 0), 0) : 0;
+  /**
+   * The row's RESERVED column can be larger than the figure on this toggle: the
+   * column is summed from the order lines, the toggle from the bundles those
+   * lines name. An order written without inventory detail moves the column and
+   * leaves every bundle at zero, so the panel below would open empty against a
+   * non-zero column. Declared on the toggle rather than left to be discovered.
+   */
+  const reservedNotOnAnyBundle = isOnHand ? Math.max(0, Math.round(row.reserve || 0) - reservedTotal) : 0;
 
   /** Nothing here can be sold — every listed bundle carries a commitment. */
   const nothingSellable = isSellableView && lots.length > 0 && selectableLots.length === 0;
@@ -219,7 +243,13 @@ export const ArchLotTable = ({
                 onClick={onToggleReserved}
                 role="switch"
                 aria-checked={showReserved}
-                title={showReserved ? 'Reserved lots listed under the on-hand table' : 'All on-hand lots'}
+                title={
+                  reservedNotOnAnyBundle > 0
+                    ? `${formatQty(reservedNotOnAnyBundle, row.unit)} ${unitLabel(row.unit)} more is reserved on this row's order lines but names no bundle, so it cannot be listed`
+                    : showReserved
+                      ? 'Reserved lots listed under the on-hand table'
+                      : 'All on-hand lots'
+                }
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -325,10 +355,70 @@ export const ArchLotTable = ({
         </div>
       )}
 
+      {/*
+        THE RECONCILIATION LINE. Shown whenever the header total is bigger than
+        the bundles listed under it, and it names the cause rather than leaving
+        the trader to work out whether they are looking at a data gap or a bug.
+        Not shown on a bucket that has no source at all — the notice below says
+        something stronger about those.
+      */}
+      {gap > 0 && gapReason && !notSourced && (
+        <div
+          style={{
+            margin: '0 0 12px',
+            background: '#FFFBEB',
+            border: '1px solid #FCD34D',
+            borderRadius: 8,
+            padding: '8px 11px',
+            fontSize: 11,
+            color: '#92400E',
+            lineHeight: 1.5,
+          }}
+        >
+          <b className="font-mono">
+            {formatQty(gap, row.unit, uom)} {displaySuffix(row.unit, uom)}
+          </b>{' '}
+          of the {meta.label.toLowerCase()} total above is not attributed to any bundle, so it cannot be
+          listed here. {gapReason}. The column total is still correct.
+        </div>
+      )}
+
+      {/*
+        A bucket with NO NetSuite source. `readyToBuild` is a hardcoded 0 in the
+        ARCH cache, so this tab can never hold anything and its header total can
+        never be anything but zero. Marc-Antoine expects a new order to land
+        here; saying why it does not beats an empty table that looks like a
+        transient state.
+      */}
+      {notSourced && (
+        <div
+          style={{
+            margin: '0 0 12px',
+            background: '#FFFBEB',
+            border: '1px solid #FCD34D',
+            borderRadius: 8,
+            padding: '8px 11px',
+            fontSize: 11,
+            color: '#92400E',
+            lineHeight: 1.5,
+          }}
+        >
+          <b>Not sourced yet.</b> {notSourced}
+        </div>
+      )}
+
       {lots.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 40, color: ARCH_SURFACE.textLight, fontSize: 14 }}>
           <div style={{ fontSize: 28, marginBottom: 8 }}>📭</div>
-          No bundles in this status
+          {/*
+            "No bundles in this status" was the only message, and on a bucket
+            carrying a quantity it was the wrong one — it read as "there is none
+            of this", which is exactly the vanishing Marc-Antoine described. The
+            quantity is real; what is missing is the bundle attribution.
+          */}
+          {gap > 0 && !notSourced
+            ? `The ${meta.label.toLowerCase()} total is real, but no bundle carries it, so there is nothing to list`
+            : 'No bundles in this status'}
         </div>
       ) : (
         <div
@@ -362,7 +452,23 @@ export const ArchLotTable = ({
                     </th>
                   ))}
                   <th style={headerCellStyle}>Grain</th>
-                  <th style={{ ...headerCellStyle, textAlign: 'right' }}>Total {displaySuffix(row.unit, uom)}</th>
+                  {/*
+                    "Total" was wrong on the Available tab, where the cell holds
+                    the bundle's UNCOMMITTED remainder rather than its total —
+                    741 of a 2,350 BF bundle reserved makes this cell 1,609, and
+                    calling that the bundle's total is how a reserved bundle came
+                    to read as available stock.
+                  */}
+                  <th
+                    style={{ ...headerCellStyle, textAlign: 'right' }}
+                    title={
+                      bucket === 'available'
+                        ? "Uncommitted quantity this bundle can contribute: its on-hand less anything reserved or released to build"
+                        : undefined
+                    }
+                  >
+                    {bucket === 'available' ? 'Avail.' : 'Total'} {displaySuffix(row.unit, uom)}
+                  </th>
                   {isOnHand && (
                     <th
                       style={{ ...headerCellStyle, textAlign: 'right' }}

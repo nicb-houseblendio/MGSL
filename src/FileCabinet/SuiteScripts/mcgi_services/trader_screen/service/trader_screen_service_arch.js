@@ -328,6 +328,26 @@ define([
     };
 
     /**
+     * The industrial companies, which ARCH does not sell to.
+     *
+     * "Need to filter out the industrial companies from the SO" — Lucas,
+     * 2026-09-08. Subsidiary 7 is IND, legal name "CWP Industriel Inc.", and it
+     * is the ONLY marker available: `customer.category` is NULL on all 807 active
+     * customers, and no custom entity field for division, industry or segment
+     * exists in the account (searched `customfield` for custentity% on
+     * 2026-09-08; the three that match are unrelated Charted/SII fields).
+     *
+     * Active customers by subsidiary, measured 2026-09-08:
+     *   5  CWP MTL      387
+     *   7  IND          342   <- excluded
+     *   21 WPRED         53
+     *   1  MGSL          24
+     *   2  COMMODITÉS     1
+     * So this removes exactly the 342 Lucas named and leaves 465.
+     */
+    const INDUSTRIAL_CUSTOMER_SUBSIDIARY = 7;
+
+    /**
      * Customers the wizard can raise an order for.
      *
      * Exists because the wizard's customer dropdown was a hardcoded list of
@@ -347,6 +367,23 @@ define([
      * picker searches. NetSuite still refuses an order whose customer its
      * subsidiary does not permit, which is a clean failure rather than a silent
      * one.
+     *
+     * ⚠️ THAT REASONING IS UNCHANGED, and the IND exclusion below is not a
+     * reversal of it. Scoping TO a subsidiary is a guess about who ARCH sells to;
+     * excluding subsidiary 7 removes the group the CLIENT named and nothing else
+     * (see INDUSTRIAL_CUSTOMER_SUBSIDIARY for Lucas's ask and the counts). 465 of
+     * the 807 still come back, including WPRED, MGSL and COMMODITÉS, and a
+     * customer with NO subsidiary is KEPT — the filter drops only what it can
+     * prove is industrial.
+     *
+     * ── Why the exclusion happens here and not in the WHERE clause ──────────
+     * The count of what was removed comes from the same rows that produced the
+     * list, so the two cannot drift; a `WHERE c.subsidiary <> 7` would need a
+     * second COUNT query to say the same thing, and SQL NULL semantics would have
+     * silently dropped a subsidiary-less customer as a bonus. `excludedIndustrialCount`
+     * and `totalActiveCount` travel with the response for the same reason
+     * `taggedItemCount` travels with openOrders: a filter that removes more than
+     * it should must not be able to look like an account with no customers.
      *
      * ── Why it is not cached ────────────────────────────────────────────────
      * One query per wizard open, against a table that changes when someone adds
@@ -376,7 +413,11 @@ define([
                     '  BUILTIN.DF(c.currency)   AS currencyname, ' +
                     '  c.terms                  AS termsid, ' +
                     '  BUILTIN.DF(c.terms)      AS termsname, ' +
-                    '  c.subsidiary             AS subsidiaryid ' +
+                    '  c.subsidiary             AS subsidiaryid, ' +
+                    // The NAME, so the exclusion below can describe itself
+                    // ("342 IND customers hidden") rather than carrying a
+                    // hardcoded label that goes stale if the record is renamed.
+                    '  BUILTIN.DF(c.subsidiary) AS subsidiaryname ' +
                     'FROM customer c ' +
                     'LEFT JOIN currency cur ON cur.id = c.currency ' +
                     "WHERE c.isinactive = 'F' " +
@@ -388,9 +429,34 @@ define([
                     'ORDER BY COALESCE(c.companyname, c.entityid)',
             }).asMappedResults();
 
+            /* Industrial companies out, and only those. A row with no subsidiary
+             * at all is kept: it cannot be shown to be industrial, and hiding the
+             * one name a trader is looking for is the worse failure. */
+            const isIndustrial = (r) =>
+                r.subsidiaryid !== null && r.subsidiaryid !== undefined &&
+                String(r.subsidiaryid) === String(INDUSTRIAL_CUSTOMER_SUBSIDIARY);
+            const excluded = rows.filter(isIndustrial);
+            const kept = rows.filter((r) => !isIndustrial(r));
+            const excludedName = excluded.length
+                ? String(excluded[0].subsidiaryname || '').trim()
+                : '';
+
+            /* An exclusion that empties the picker is a DEFECT, not a quiet day,
+             * and it is the one outcome nobody would report as a bug (the wizard
+             * simply looks broken). ERROR only for that case: the normal
+             * "342 removed" runs on every wizard open and an hourly ERROR line
+             * once hid a four-day outage on this screen. */
+            if (rows.length && !kept.length) {
+                log.error('ARCH service — customer list emptied by the industrial filter',
+                    'All ' + rows.length + ' active customers sit in subsidiary ' +
+                    INDUSTRIAL_CUSTOMER_SUBSIDIARY + ' (' + (excludedName || 'IND') + '), so the ' +
+                    'picker has nothing to offer. Either the exclusion is too broad or the ' +
+                    'customer base moved subsidiary.');
+            }
+
             return {
                 success: true,
-                customers: rows.map((r) => ({
+                customers: kept.map((r) => ({
                     id: String(r.id),
                     // companyname is blank on some records — County Line Materials
                     // LLC carries its name in entityid only — so neither field
@@ -403,6 +469,12 @@ define([
                     termsName: r.termsname ? String(r.termsname) : null,
                     subsidiaryId: r.subsidiaryid ? String(r.subsidiaryid) : null,
                 })),
+                /* What the filter did, so the picker can say why it is short or
+                 * empty instead of implying the account has no customers. */
+                totalActiveCount: rows.length,
+                excludedIndustrialCount: excluded.length,
+                excludedSubsidiaryId: String(INDUSTRIAL_CUSTOMER_SUBSIDIARY),
+                excludedSubsidiaryName: excludedName,
             };
         } catch (e) {
             // A failed customer list must not read as "this account has no
@@ -658,9 +730,13 @@ define([
         // the sublist instead); kept as the fallback. See archSalesTeam.js.
         '  t.employee                      AS repid, ' +
         '  BUILTIN.DF(t.employee)          AS rep, ' +
-        // Who saved the record. Returned, NOT used as the trader: on 2 of the 4
-        // real orders it is a developer/integration user, and Marc-Antoine's
-        // literal ask ("the creator") would have grouped those under House Blend.
+        // Who saved the record. Marc-Antoine asked for exactly this on 2026-09-08
+        // ("devrait être la personne qui a créé le SO"), so it is now DISPLAYED in
+        // its own column and can be grouped by — but it is still not what `trader`
+        // holds. On 2 of the 4 real orders the creator is a developer or
+        // integration user ('House Blend 2' saved SO-CWP-001344/001345), so
+        // substituting it for the rep would have credited the sale to us.
+        // Both, labelled. Neither silently standing in for the other.
         '  t.createdby                     AS createdbyid, ' +
         '  BUILTIN.DF(t.createdby)         AS createdby, ' +
         // The ISO CODE. BUILTIN.DF gives "US Dollar", which is a label and throws
@@ -769,6 +845,53 @@ define([
         return Math.round(n * f) / f;
     };
 
+    /**
+     * The role this request is ACTUALLY running under, named for a human.
+     *
+     * 🔴 THE FIRST THING TO CHECK when the rep column comes back empty, and the
+     * one thing nobody can see from the browser. This service is called from a
+     * RESTlet; a RESTlet IGNORES `runasrole` and runs as the CALLER. So the
+     * permissions that decide whether `transactionsalesteam` is readable are the
+     * TRADER'S, not the ones every measurement behind this feature was taken with
+     * (Administrator). `archOrderCreate.js:668` records an ARCH trader role that
+     * could not read the `employee` table at all, which is why `listSalesReps`
+     * had to move onto a Suitelet.
+     *
+     * ⚠️ COSTS A QUERY, so it is called ONLY when there is a problem to diagnose.
+     * A healthy tab must not pay for a diagnostic on every load. `roleId` alone is
+     * free but means nothing to the person reading the banner.
+     *
+     * Read from `rolepermissions` on 2026-09-08 for the role in question, 2181
+     * "MGSL - CWP ARC - Trader": LIST_EMPLOYEE level 1 (View), TRAN_SALESORD
+     * level 3 (Edit), ADMI_TEAMSELLINGCONTRIBUTION level 4 (Full). Its holder,
+     * employee 3293, sits in subsidiary 5 with every rep on these orders, and the
+     * role is `subsidiaryoption` OWN, so scope covers them. It SHOULD work. That
+     * is not the same as knowing it does, which is why this exists.
+     */
+    const currentRoleLabel = () => {
+        let user = null;
+        try { user = runtime.getCurrentUser(); } catch (e) { user = null; }
+        const id = user && user.role ? String(user.role) : '';
+        const scriptId = user && user.roleId ? String(user.roleId) : '';
+        let name = '';
+        if (id) {
+            try {
+                const r = query.runSuiteQL({
+                    query: 'SELECT name FROM role WHERE id = ?',
+                    params: [id],
+                }).asMappedResults();
+                name = r && r.length ? String(r[0].name || '').trim() : '';
+            } catch (e) {
+                // A role that cannot read the `role` table is itself a finding, but
+                // not one worth failing the tab for. The id still identifies it.
+                name = '';
+            }
+        }
+        const label = name || scriptId;
+        if (label && id) return label + ' (' + id + ')';
+        return label || (id ? 'role ' + id : '');
+    };
+
     const handleGetOpenOrders = () => {
         let rows;
         try {
@@ -815,11 +938,30 @@ define([
          * would double every one of its lines. Unavailable is survivable (header
          * rep, then "Unassigned"); a thrown request is not. */
         let teamRep = {};
+        let salesTeamRead = 'ok';
+        let salesTeamError = '';
+        /* Resolved at most once per request, and only if something asks. The log
+         * line below and the response block at the end both want it. */
+        let roleLabelCache = null;
+        const roleLabel = () => {
+            if (roleLabelCache === null) roleLabelCache = currentRoleLabel();
+            return roleLabelCache;
+        };
         try {
             teamRep = ArchSalesTeam.repByTransaction(rows.map((r) => r.tranid));
         } catch (e) {
-            log.audit('ARCH open orders — sales team unavailable, header rep only',
-                (e.name || '') + ': ' + (e.message || String(e)));
+            salesTeamRead = 'failed';
+            salesTeamError = (e.name ? e.name + ': ' : '') + (e.message || String(e));
+            /* ERROR, not audit. This was an audit line, and an audit line is
+             * exactly how this failure stays invisible: the header rep is null on
+             * every ARCH order, so a failure here makes the tab print "Unassigned"
+             * on every row — the precise symptom Marc-Antoine reported — and
+             * nothing anywhere says the column was UNREAD rather than empty. It is
+             * a failure by cause, not a per-run condition, so it belongs at ERROR.
+             * Reported to the browser as well; see `traderAttribution` below. */
+            log.error('ARCH open orders — sales team read FAILED, every order will read Unassigned',
+                salesTeamError + '. A RESTlet runs as the caller, so check that role first: ' +
+                roleLabel() + '.');
         }
 
         rows.forEach((r) => {
@@ -846,6 +988,15 @@ define([
                     /** More than one rep on the sublist; `traderTied` when they share evenly. */
                     traderShared: !!(team && team.shared),
                     traderTied:   !!(team && team.tied),
+                    /**
+                     * WHERE the name above came from: 'salesTeam', 'header' or
+                     * 'none'. Without it, "Unassigned" is indistinguishable from a
+                     * sublist the caller's role could not read, and the tab has no
+                     * way to tell those apart either. See `traderAttribution`.
+                     */
+                    traderSource: (team && team.rep) ? 'salesTeam' : (r.rep ? 'header' : 'none'),
+                    /** The rep's id resolved but their NAME did not; shows as "Employee <id>". */
+                    traderNameUnreadable: !!(team && team.nameUnreadable),
                     createdBy:    String(r.createdby || ''),
                     createdById:  r.createdbyid ? String(r.createdbyid) : null,
                     shipTo:     addressLabel(r.shipto),
@@ -1034,13 +1185,286 @@ define([
                 (e.name || '') + ': ' + (e.message || String(e)));
         }
 
+        /* ── Who owns these orders, and how sure are we ─────────────────────────
+         *
+         * 🔴 THE POINT IS THAT "UNASSIGNED EVERYWHERE" CANNOT BE SILENT AGAIN.
+         * That is the state Marc-Antoine reported on 2026-09-08, and the cause was
+         * reading a header field that is null on every ARCH order. The fix reads
+         * the Sales Team sublist instead — under Administrator, which is NOT who
+         * runs it: a RESTlet ignores `runasrole` and runs as the CALLER. If the
+         * trader's own role cannot read `transactionsalesteam`, the tab returns to
+         * exactly the reported symptom and nothing says so.
+         *
+         * So the counts travel with the orders, the same contract as
+         * `taggedItemCount` above: the front end can then say "unread" instead of
+         * printing "Unassigned" 40 times and letting the trader draw the wrong
+         * conclusion. `roleLabel` is filled ONLY when there is something to
+         * diagnose, because resolving it costs a query. */
+        const fromSalesTeam = ordered.filter((o) => o.traderSource === 'salesTeam').length;
+        const fromHeader    = ordered.filter((o) => o.traderSource === 'header').length;
+        const unattributed  = ordered.filter((o) => o.traderSource === 'none').length;
+        const namesUnreadable = ordered.filter((o) => o.traderNameUnreadable).length;
+        const attributionBroken =
+            salesTeamRead === 'failed' || (ordered.length > 0 && unattributed === ordered.length);
+
         return {
             success: true,
             source: 'netsuite',
             orders: ordered,
             taggedItemCount: taggedItemCount,
+            traderAttribution: {
+                orders:          ordered.length,
+                fromSalesTeam:   fromSalesTeam,
+                fromHeader:      fromHeader,
+                unattributed:    unattributed,
+                namesUnreadable: namesUnreadable,
+                salesTeamRead:   salesTeamRead,
+                salesTeamError:  salesTeamError,
+                roleLabel:       attributionBroken ? roleLabel() : '',
+            },
         };
     };
+
+    /**
+     * Setup > Sales Team: the named TEAMS, with their members and percentages.
+     *
+     * "Sales Team : Ça ne semble pas feeder de la bonne affaire : On veut les teams
+     * qui sont dela page (Setup > sales team)" — Marc-Antoine, 2026-09-08. That
+     * page is `entitygroup` with `issalesrep = 'T'`, and the percentages are
+     * `entitygroupmember.contribution`.
+     *
+     * ── The template / instance relationship, measured not assumed ────────────
+     * Sandbox, 2026-09-08:
+     *   44 active teams   (entitygroup, issalesrep 'T', grouptype 'Employee')
+     *   82 member rows    (entitygroupmember; 95 in the account overall)
+     *   sizes             9 teams of 1, 33 of 2, 1 of 3, 1 of 4
+     *   g.size            equal to the real member count on all 44 (0 mismatches)
+     *   contributions     summing to exactly 1 on all 44
+     *   isprimary 'T'     on 8 of the 82 rows
+     * and "Sam/Justin" (group 2805) is Samuel Nadon 0.5 / Justin Loveland 0.5,
+     * isprimary 'F' on both, which is BYTE FOR BYTE what SO-CWP-001352 stores in
+     * its `transactionsalesteam`. So the group is the template and the transaction
+     * sublist is the instance. `shared/archSalesTeam.js` reads the instance; this
+     * reads the template.
+     *
+     * ── ⚠️ READ ONLY, and deliberately so ────────────────────────────────────
+     * Nothing here writes. Selecting a team must not yet post a multi-member sales
+     * team onto a real sales order: that attributes COMMISSION on real sales
+     * documents and needs an explicit go-ahead from MGSL. Same shape as the split
+     * fee and the confirmation email, both of which ship configured off.
+     *
+     * ── Why this lives on the RESTlet and not beside listSalesReps ────────────
+     * `archOrderCreate.listSalesReps` was moved onto a Suitelet because the ARCH
+     * trader role could not read the `employee` table ("Record 'employee' was not
+     * found"). Three reasons that precedent does not carry here:
+     *
+     *  1. Its premise no longer holds, or never described role 2181. Read from
+     *     `rolepermissions` on 2026-09-08, role 2181 "MGSL - CWP ARC - Trader"
+     *     holds LIST_EMPLOYEE at permlevel 1 (View) with restriction -1, alongside
+     *     TRAN_SALESORD level 3 and ADMI_TEAMSELLINGCONTRIBUTION level 4. Moving a
+     *     second endpoint off the RESTlet on the strength of a note there is now
+     *     evidence against would be cargo cult.
+     *  2. It is a different access path. That failure was `FROM employee`. This
+     *     reads `FROM entitygroup` and takes the name from the member row's own
+     *     `m.name` column, with `BUILTIN.DF(m.employeemember)` only as a second
+     *     chance. One of the two can fail and a name still comes back.
+     *  3. The Suitelet is the ORDER WRITE endpoint. `listSalesReps` belongs there
+     *     because the list and the write-path VALIDATOR must run the same predicate
+     *     under the same role, so the screen cannot offer a rep the write will
+     *     refuse. There is no write path here to keep in step, by design (above).
+     *
+     * ── ⚠️ THE MEASURED RISK, and why this degrades loudly ───────────────────
+     * All 44 teams sit in SUBSIDIARY 1 (MGSL), none private, none restricted to
+     * owner. Role 2181 is `subsidiaryoption` OWN and its holder, employee 3293
+     * "Trader Hardwood", sits in subsidiary 5. If `entitygroup` is subsidiary
+     * scoped for an OWN role, the trader sees ZERO teams and the picker is simply
+     * empty. Nobody can log in as that role from here to settle it, so an empty
+     * result is a STATEMENT rather than a shrug: `notice` says what happened and
+     * names the role, `g.size` versus the members actually returned proves when
+     * members were withheld rather than absent, and a read that throws returns a
+     * failure instead of an empty list. Same machinery as `traderAttribution`.
+     */
+    const SALES_TEAMS_SQL =
+        'SELECT ' +
+        '  g.id                         AS teamid, ' +
+        '  g.groupname                  AS teamname, ' +
+        // The group's OWN member count. Equal to the real one on all 44 teams as
+        // Administrator, so a shortfall against the rows returned is PROOF that
+        // members were withheld from this caller, not that the team is small.
+        '  g.size                       AS declaredsize, ' +
+        '  m.employeemember             AS repid, ' +
+        // TWO names, deliberately. `m.name` is the member row's own column;
+        // BUILTIN.DF resolves through the employee record. Different access paths,
+        // so a role that can read one but not the other still gets a label.
+        '  m.name                       AS repname, ' +
+        '  BUILTIN.DF(m.employeemember) AS repdf, ' +
+        '  m.contribution               AS contribution, ' +
+        '  m.isprimary                  AS isprimary ' +
+        'FROM entitygroup g ' +
+        // 🔴 LEFT, and the member filter is in the ON clause, not the WHERE. Both
+        // for the same reason: a team whose members are unreadable must appear as a
+        // team with no members, which is visible, rather than dropping out of the
+        // list, which is the silent version of the same failure. `m."group"` MUST
+        // be quoted; `group` is a reserved word and the query is a hard 400 without
+        // the quotes.
+        'LEFT JOIN entitygroupmember m ON m."group" = g.id AND m.isinactive = \'F\' ' +
+        // The three filters that ARE the Setup > Sales Team page. 45 employee
+        // groups exist; the 45th carries issalesrep 'F' and is not a sales team.
+        /* 🔴 NO `g.grouptype` CLAUSE, and this is a SuiteQL DIALECT trap, not a
+ * simplification. `grouptype` selects and filters perfectly through the REST
+ * query endpoint (which is what sql.mjs uses, and where this query was
+ * developed), but inside SuiteScript's N/query the SAME column is a record
+ * join, and the live endpoint returned:
+ *   "Search error occurred: Record Join 'grouptype' for record 'EntityGroup'
+ *    was not found."
+ * This is the same class of divergence as `transaction.status`, which comes
+ * back 'B' through REST and 'SalesOrd:B' inside N/query. A shim test cannot
+ * catch it: only calling the deployed endpoint can.
+ *
+ * Dropping it costs nothing, measured: `issalesrep = 'T' AND isinactive = 'F'`
+ * returns the SAME 44 teams with or without the clause, and grouping those 44
+ * by grouptype gives Employee for all 44. There is no non-Employee sales-rep
+ * group in this account to exclude. */
+        "WHERE g.issalesrep = 'T' AND g.isinactive = 'F' " +
+        'ORDER BY g.groupname, m.employeemember';
+
+    const handleGetSalesTeams = () => {
+        /* Resolved at most ONCE per request. `currentRoleLabel` costs a query, and
+         * the notice, the log line and the response field all want it; three calls
+         * would be three queries for one string. */
+        let roleLabelCache = null;
+        const roleLabel = () => {
+            if (roleLabelCache === null) roleLabelCache = currentRoleLabel();
+            return roleLabelCache;
+        };
+
+        let rows;
+        try {
+            rows = query.runSuiteQL({ query: SALES_TEAMS_SQL }).asMappedResults();
+        } catch (e) {
+            log.error('ARCH service — sales team list failed',
+                (e.name || '') + ': ' + (e.message || String(e)) +
+                '. A RESTlet runs as the caller, so check that role first: ' +
+                roleLabel() + '.');
+            /* No `salesTeams` key at all on this path. Returning an empty array
+             * beside a failure invites a picker to render "no teams", which is the
+             * one thing this must never say when it does not know. */
+            return {
+                success: false,
+                error: 'The sales team list could not be loaded: ' + (e.message || String(e)),
+            };
+        }
+
+        /* ⚠️ THIS QUERY FANS OUT, one row per member, the same trap the open-orders
+         * query documents at length. Team-level values are taken ONCE per group and
+         * the member rows only fill its list. */
+        const byTeam = {};
+        const teams = [];
+        let memberRowCount = 0;
+
+        rows.forEach((r) => {
+            const teamId = String(r.teamid);
+            if (!byTeam[teamId]) {
+                const declared = parseInt(r.declaredsize, 10);
+                byTeam[teamId] = {
+                    id:   teamId,
+                    name: String(r.teamname || ('Team ' + teamId)),
+                    /** What the group record says it holds. See declaredsize above. */
+                    declaredSize: isFinite(declared) && declared > 0 ? declared : 0,
+                    members: [],
+                    memberCount: 0,
+                    nameUnreadableCount: 0,
+                    membersUnreadable: false,
+                    contributionTotal: 0,
+                };
+                teams.push(byTeam[teamId]);
+            }
+            const t = byTeam[teamId];
+
+            // The LEFT JOIN row for a team with no readable members carries no id.
+            if (!r.repid) return;
+            memberRowCount++;
+
+            const repId = String(r.repid);
+            const nm = String(r.repname || r.repdf || '').trim();
+            const c = parseFloat(r.contribution);
+            const frac = isFinite(c) ? c : 0;
+            if (!nm) t.nameUnreadableCount++;
+            t.members.push({
+                id: repId,
+                /* Same rule as archSalesTeam.pickRep, so the template and the
+                 * instance cannot label the same person differently. A blank name
+                 * would put an empty row in a picker; "null" would be worse. */
+                name: nm || ('Employee ' + repId),
+                nameUnreadable: !nm,
+                /* 🔴 THE PERCENT TRAP. SuiteQL returns a Percent as a FRACTION
+                 * (0.5), while `setValue` on the field takes the typed number (50).
+                 * That has already cost this project a real bug on the customer
+                 * rate fields, so both are returned under names that say which and
+                 * a future writer has nothing left to guess. */
+                contribution:    tidy(frac, 6),
+                contributionPct: tidy(frac * 100, 4),
+                isPrimary: String(r.isprimary || '').toUpperCase() === 'T',
+            });
+            t.memberCount = t.members.length;
+            t.contributionTotal = tidy(
+                t.members.reduce((s, m) => s + m.contribution, 0), 6);
+        });
+
+        teams.forEach((t) => { t.membersUnreadable = t.memberCount < t.declaredSize; });
+        /* Sorted HERE as well as in the SQL. The picker is alphabetical whatever
+         * order the engine hands back, and a plain comparator rather than
+         * localeCompare so the order does not depend on the engine's locale. */
+        teams.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+        const teamsWithMissingMembers = teams.filter((t) => t.membersUnreadable).length;
+        const membersWithUnreadableNames = teams.reduce((s, t) => s + t.nameUnreadableCount, 0);
+        const degraded =
+            teams.length === 0 || teamsWithMissingMembers > 0 || membersWithUnreadableNames > 0;
+
+        let notice = '';
+        if (!teams.length) {
+            notice =
+                'No sales team came back. This account had 44 of them under Setup > Sales Team ' +
+                'when this was written (measured 2026-09-08), so an empty result is far more ' +
+                'likely to be a permission or subsidiary-scope problem than an empty page: all ' +
+                '44 sit in subsidiary 1 (MGSL), and a role scoped to its own subsidiary may not ' +
+                'see them. This request ran as ' + roleLabel() + ', because a RESTlet ' +
+                'ignores runasrole and runs as the caller.';
+            /* ERROR, not audit. The picker is unusable in this state, and this is
+             * the line somebody greps for. The partial case below stays at audit:
+             * it runs on every wizard open and the list still works. */
+            log.error('ARCH service — sales team list came back EMPTY', notice);
+        } else if (degraded) {
+            notice =
+                (teamsWithMissingMembers
+                    ? teamsWithMissingMembers + ' team(s) returned fewer members than the group ' +
+                      'record says they hold. '
+                    : '') +
+                (membersWithUnreadableNames
+                    ? membersWithUnreadableNames + ' member name(s) could not be read and show ' +
+                      'as an employee id. '
+                    : '') +
+                'This request ran as ' + roleLabel() +
+                '; a RESTlet ignores runasrole and runs as the caller.';
+            log.audit('ARCH service — sales team list is incomplete', notice);
+        }
+
+        const out = {
+            success: true,
+            salesTeams: teams,
+            teamCount: teams.length,
+            /** Member rows that carried an id. Zero on every team is the bad case. */
+            memberRowCount: memberRowCount,
+            teamsWithMissingMembers: teamsWithMissingMembers,
+            membersWithUnreadableNames: membersWithUnreadableNames,
+            /** Only resolved when there is something to diagnose; it costs a query. */
+            roleLabel: degraded ? roleLabel() : '',
+        };
+        if (notice) out.notice = notice;
+        return out;
+    };
+
 
     const getHandler = (dataIn) => {
         const action = (dataIn && dataIn.action) || 'get';
@@ -1052,7 +1476,10 @@ define([
             customers:  handleGetCustomers,
             customerAddresses: handleGetCustomerAddresses,
             salesReps:  handleGetSalesReps,
+            // Setup > Sales Team. READ ONLY: see the note on handleGetSalesTeams
+            // for why nothing here posts a team onto a real order.
             openOrders: handleGetOpenOrders,
+            salesTeams: handleGetSalesTeams,
         };
         const handler = handlers[action];
         if (!handler) return { success: false, error: 'Unknown action: ' + action };

@@ -56,8 +56,24 @@ export const seededRandom = (key: string) => {
  *     bundle is even more spoken for, not less. Checking `reserve` alone let a
  *     trader select a bundle the warehouse was already building.
  */
+/*
+ * 🔴 `outbound` IS NOT COUNTED HERE, changed 2026-09-08, and the old comment above
+ * explains why it used to be: it described outbound as "further along the same
+ * pipeline, released to the warehouse and picked", i.e. a PENDING claim on wood that
+ * is still in the yard. That is not what the field holds. Live, `outbound` is
+ * `quantityshiprecv`, wood that has ALREADY left on an Item Fulfillment, and the ARCH
+ * cache says so itself: it only ever adds to a lot's `reserve` or `onOrder`, never its
+ * `outbound`, with the note "it is not on the lot any more". So a lot's outbound is
+ * always 0 live, and counting it locked FIXTURE bundles out of selling because of wood
+ * that had already shipped, which is the demo half of the phantom-reservation defect
+ * fixed in the cache the same day.
+ *
+ * reserve and readyToBuild stay, and the reason the original comment gives for them is
+ * still right: a PARTIALLY committed bundle is locked, because a bundle is the unit
+ * that ships, so a trader must not be able to sell round the part somebody else claimed.
+ */
 export const commitmentOn = (lot: ArchLot): number =>
-  (lot.reserve || 0) + (lot.readyToBuild || 0) + (lot.outbound || 0);
+  (lot.reserve || 0) + (lot.readyToBuild || 0);
 
 export const isLotLocked = (lot: ArchLot): boolean => commitmentOn(lot) > 0;
 
@@ -101,12 +117,28 @@ export const lockReason = (
  * A lot lives in exactly one: uncommitted on-hand, else on order, else in
  * transit. Stock cannot be in the yard and on a vessel at the same time.
  *
+ * 🔴 A HELD LOT IS NOT AVAILABLE, AND THE CHECK COMES FIRST.
+ *
+ * The row-level formula subtracts `held` from `available` and from nothing else
+ * (see types/arch.ts). Until 2026-09-08 this function ignored `onHold`
+ * completely, so the lots listed under Available included held bundles at their
+ * full on-hand quantity while the figure above them excluded exactly those. On a
+ * row whose only stock is held that means offering a trader a bundle the same
+ * screen reports as 0 Available.
+ *
+ * The check has to precede the cascade, not join it. A held lot with stock on
+ * order used to fall through to the On Order rung and come back available by
+ * another name. ARCH withholds the WHOLE lot rather than a quantity — the hold
+ * record's figure is "Packs on Hold" and ARCH has no packs — so there is no
+ * partial answer to give here.
+ *
  * Declared BEFORE lotQuantity, which calls it — these are const arrow functions,
  * so ordering is load-bearing for anything that ever calls them at module scope.
  */
 export const availabilityStatus = (
   lot: ArchLot
 ): { label: string; color: string; qty: number } | null => {
+  if (lot.onHold) return null;
   const netOnHand = (lot.onHand || 0) - commitmentOn(lot);
   if (netOnHand > 0) return { label: 'On Hand', color: '#1B5E20', qty: netOnHand };
   if ((lot.onOrder || 0) > 0) return { label: 'On Order', color: '#1565C0', qty: lot.onOrder };

@@ -44,25 +44,60 @@ interface InventoryTableARCHProps {
 /**
  * Metric columns, in the order stock moves through them.
  *
- * Matches the client prototype exactly: six buckets, no Outbound column.
+ * ✅ OUTBOUND IS BACK, 2026-09-08. The comment that used to sit here said so
+ * itself: "If traders query the arithmetic, this is the first thing to put
+ * back." Two of them did, on the same day.
  *
- * ⚠️ KNOWN CONSEQUENCE. Available is
- *   onHand + onOrder + inTransit − reserve − readyToBuild − outbound,
- * so on the rows that carry outbound stock a trader adding up the visible
- * columns will not arrive at Available. We showed Outbound for exactly that
- * reason and removed it on 2026-08-13 to match the prototype, which omits the
- * column while still generating outbound quantities — so its Available does not
- * reconcile either. Outbound is still in the Excel export, where a reconciling
- * column is worth more than the width it costs. If traders query the arithmetic,
- * this is the first thing to put back.
+ * Marc-Antoine: « quand je crée un SO ça devrait aller dans ready to build ou
+ * dans reserved mais en ce moment on dirait qu'il fait juste disparaitre du TS. »
+ *
+ * What actually happens to a bundle he sells, measured against the sandbox:
+ *   1. He writes the SO. The line is open, so the row's RESERVED rises — that
+ *      part works, and SO-CWP-001344's 2,160 BF sits in Reserved today.
+ *   2. It is fulfilled. RESERVED drops back to zero, ON HAND drops for real
+ *      (the Item Fulfillment relieves inventory), and the quantity moves into
+ *      `outbound` — which this grid did not render. So the wood left two visible
+ *      columns and arrived in none.
+ *   3. It never passes through READY TO BUILD, because that bucket is a
+ *      hardcoded 0 in the cache with no NetSuite field behind it.
+ * Steps 2 and 3 are the disappearance. The column restores the lane in step 2
+ * and the header note explains step 3.
+ *
+ * Outbound is NOT drillable. Its quantity is shipment history, deliberately
+ * attributed to no bundle — the wood is gone and the lot's on-hand is already
+ * net of it — so a drill-down could only ever open an empty table.
+ *
+ * ✅ THE COLUMNS NOW RECONCILE, which they did not before:
+ *   AVAILABLE = ON HAND + IN TRANSIT + ON ORDER − RESERVED − READY TO BUILD
+ *               − held stock
+ * with OUTBOUND standing outside the sum, because on-hand is already net of it.
+ * Subtracting it as well took the same wood off twice — 1,166 BF across the 13
+ * live rows on 2026-09-08, and unbounded, since nothing closes a shipped line.
+ * The measurement is in the cache MR beside the formula. All 13 rows reconcile
+ * exactly as this stands; 4 of 13 did not before.
  */
-const METRIC_COLUMNS: { key: ArchDetailKey; label: string; width: number }[] = [
-  { key: 'available', label: 'AVAILABLE', width: 105 },
-  { key: 'onHand', label: 'ON HAND', width: 100 },
-  { key: 'reserve', label: 'RESERVED', width: 100 },
-  { key: 'readyToBuild', label: 'READY TO BUILD', width: 130 },
-  { key: 'inTransit', label: 'IN TRANSIT', width: 105 },
-  { key: 'onOrder', label: 'ON ORDER', width: 100 },
+const METRIC_COLUMNS: { key: ArchDetailKey; label: string; width: number; drillable?: boolean; note?: string }[] = [
+  { key: 'available', label: 'AVAILABLE', width: 105, drillable: true },
+  { key: 'onHand', label: 'ON HAND', width: 100, drillable: true },
+  { key: 'reserve', label: 'RESERVED', width: 100, drillable: true },
+  {
+    key: 'readyToBuild',
+    label: 'READY TO BUILD',
+    width: 130,
+    drillable: true,
+    // The honest answer to Marc-Antoine's question, on the column he expects to
+    // see it in. Kept in step with notSourcedNote() in lib/archBuckets.ts.
+    note: 'Not sourced yet: no field in NetSuite feeds this, so it reads 0 on every row. Stock sold on an order sits in Reserved until it ships.',
+  },
+  {
+    key: 'outbound',
+    label: 'OUTBOUND',
+    width: 100,
+    drillable: false,
+    note: 'Already shipped out on a sales order. It has left On Hand, so it is NOT deducted from Available a second time. This column is history, not a claim on stock, and no bundle carries it, so there is nothing to drill into.',
+  },
+  { key: 'inTransit', label: 'IN TRANSIT', width: 105, drillable: true },
+  { key: 'onOrder', label: 'ON ORDER', width: 100, drillable: true },
 ];
 
 const METRIC_IDS = new Set<string>(METRIC_COLUMNS.map((c) => c.key));
@@ -71,9 +106,16 @@ const SortHeader = ({
   label,
   column,
   align,
+  note,
 }: {
   label: string;
   align?: 'left' | 'right';
+  /**
+   * What this column is, when the number alone would mislead. Carried as a
+   * native title so it needs no popover plumbing on a header that is also a
+   * drag handle and a sort button.
+   */
+  note?: string;
   column: {
     getIsSorted: () => false | 'asc' | 'desc';
     getToggleSortingHandler: () => ((event: unknown) => void) | undefined;
@@ -85,8 +127,12 @@ const SortHeader = ({
       type="button"
       className={`flex items-center gap-1 hover:text-white/90 select-none ${align === 'right' ? 'ml-auto' : ''}`}
       onClick={column.getToggleSortingHandler()}
+      title={note}
     >
       {label}
+      {/* A column whose number cannot be read at face value says so on the
+          header itself, not only in a tooltip nobody hovers. */}
+      {note && <span aria-hidden style={{ opacity: 0.75, fontSize: 10 }}>ⓘ</span>}
       {sorted === 'asc' ? (
         <ArrowUp className="h-3 w-3" />
       ) : sorted === 'desc' ? (
@@ -163,12 +209,14 @@ const MetricCell = ({
   bucket,
   uom,
   onDrillDown,
+  note,
 }: {
   bf: number;
   row: ArchSummaryRow;
   bucket: ArchDetailKey;
   uom: string;
   onDrillDown?: (bucket: ArchDetailKey, row: ArchSummaryRow) => void;
+  note?: string;
 }) => {
   // A zero carries no information, so it should not shout. The prototype dims
   // them to #7A8FA3 while real values keep their metric colour — and 45% of the
@@ -186,13 +234,14 @@ const MetricCell = ({
         onClick={() => onDrillDown(bucket, row)}
         className="hover:underline font-medium tabular-nums text-right w-full block"
         style={{ color }}
+        title={note}
       >
         {display}
       </button>
     );
   }
   return (
-    <span className="tabular-nums text-right block" style={{ color }}>
+    <span className="tabular-nums text-right block" style={{ color }} title={bf > 0 ? note : undefined}>
       {display}
     </span>
   );
@@ -218,12 +267,22 @@ export const InventoryTableARCH = ({
   }, [rowSelection, onRowSelectionChange]);
 
   const columns = React.useMemo<ColumnDef<ArchSummaryRow>[]>(() => {
-    const metricCols: ColumnDef<ArchSummaryRow>[] = METRIC_COLUMNS.map(({ key, label, width }) => ({
+    const metricCols: ColumnDef<ArchSummaryRow>[] = METRIC_COLUMNS.map(({ key, label, width, drillable, note }) => ({
       id: key,
       accessorFn: (r) => r[key],
-      header: ({ column }) => <SortHeader label={label} column={column} align="right" />,
+      header: ({ column }) => <SortHeader label={label} column={column} align="right" note={note} />,
       cell: ({ row }) => (
-        <MetricCell bf={row.original[key]} row={row.original} bucket={key} uom={uom} onDrillDown={onDrillDown} />
+        <MetricCell
+          bf={row.original[key]}
+          row={row.original}
+          bucket={key}
+          uom={uom}
+          // A non-drillable column renders a plain figure. Passing the handler
+          // and hiding the click would leave an underlined, pointer-cursored
+          // number that does nothing.
+          onDrillDown={drillable ? onDrillDown : undefined}
+          note={note}
+        />
       ),
       sortingFn: (a, b) => a.original[key] - b.original[key],
       size: width,

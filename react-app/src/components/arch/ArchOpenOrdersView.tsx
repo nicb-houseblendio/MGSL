@@ -1,8 +1,25 @@
 /**
  * Open Sales Orders — the trader screen's second tab.
  *
- * Orders grouped by the trader who sold them, each group with a subtotal, header
- * totals across whatever is visible, and rows that expand to their line items.
+ * Orders grouped by a person, each group with a subtotal, header totals across
+ * whatever is visible, and rows that expand to their line items.
+ *
+ * ── TWO people per order, and they are different people ─────────────────────
+ * Marc-Antoine asked on 2026-09-08 for "la personne qui a créé le SO". The rep
+ * who SOLD it and the user who SAVED it are not the same on real data: 'House
+ * Blend 2' (our integration account) saved SO-CWP-001344 and 001345, while the
+ * sales team on those orders is Camil Perrault. Showing the creator alone would
+ * credit our own account for MGSL's sales; showing the rep alone is what the
+ * client just told us was wrong. So BOTH are columns, both labelled, and the
+ * grouping axis is a control rather than a decision baked in here.
+ *
+ * The default axis is CREATED BY, because that is what he asked for and because
+ * it is read straight off the transaction: the rep comes from the
+ * `transactionsalesteam` sublist, which a RESTlet reads as the CALLER'S role and
+ * can therefore come back empty without anything looking broken. Grouping by the
+ * field that cannot silently vanish, with the other one on every row, is the
+ * arrangement where a failure is visible instead of quiet. See
+ * lib/archTraderAttribution.
  *
  * ONE TABLE, with a single `<colgroup>`. The first version rendered a separate
  * table per trader, which let every group auto-size its own columns: STATUS
@@ -36,6 +53,9 @@ import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import { traderInitials, traderColorMap } from '@/lib/archTraders';
 import { TRADERS } from '@/lib/archOrderFixtures';
+import { salesOrderUrl } from '@/lib/nsRecordUrl';
+import { traderAttributionNotice, UNASSIGNED } from '@/lib/archTraderAttribution';
+import { useNetSuite } from '@/context/NetSuiteContext';
 import { useArchOpenOrders } from '@/hooks/useArchOpenOrders';
 import type { ArchLiveOpenOrder } from '@/hooks/useArchOpenOrders';
 import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archOrder';
@@ -176,6 +196,47 @@ const td: React.CSSProperties = {
 
 const num: React.CSSProperties = { ...td, textAlign: 'right', whiteSpace: 'nowrap' };
 
+/* ── The two people on an order ──────────────────────────────────────────────*/
+
+/**
+ * Which of the two the list is grouped by. A control, not a decision: the client
+ * asked for the creator, the rep is what the commission follows, and neither may
+ * silently stand in for the other.
+ */
+type GroupAxis = 'creator' | 'rep';
+
+/** Label used when the transaction carries no creator we could read. */
+const CREATOR_UNKNOWN = 'Unknown';
+
+const AXES: Record<GroupAxis, { band: string; all: string; aria: string }> = {
+  creator: { band: 'Created by', all: 'All creators', aria: 'Filter by creator' },
+  rep:     { band: 'Sales rep',  all: 'All sales reps', aria: 'Filter by sales rep' },
+};
+
+/** The service already resolves this to a name, an "Employee <id>", or Unassigned. */
+const repOf = (o: ArchLiveOpenOrder): string => (o.trader || '').trim() || UNASSIGNED;
+
+/**
+ * ⚠️ NEVER the raw field. `createdBy` is '' on an order whose creator the
+ * caller's role cannot read, and grouping on '' produces a band with no name and
+ * a filter option that looks blank rather than absent.
+ */
+const creatorOf = (o: ArchLiveOpenOrder): string =>
+  (o.createdBy || '').trim() || CREATOR_UNKNOWN;
+
+const groupValue = (o: ArchLiveOpenOrder, axis: GroupAxis): string =>
+  axis === 'rep' ? repOf(o) : creatorOf(o);
+
+/** A name we could not read reads as absent, not as a person. */
+const PersonCell = ({ name, placeholder, title }: { name: string; placeholder: string; title?: string }) =>
+  name === placeholder ? (
+    <span style={{ color: ARCH_SURFACE.textLight, fontStyle: 'italic' }} title={title}>
+      {placeholder}
+    </span>
+  ) : (
+    <>{name}</>
+  );
+
 /** Shared shell for the source banner, so its three states cannot drift apart. */
 const notice: React.CSSProperties = {
   display: 'flex',
@@ -194,42 +255,104 @@ interface ArchOpenOrdersViewProps {
 }
 
 export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => {
-  const { orders, source, error, taggedItemCount } = useArchOpenOrders();
+  const { orders, source, error, taggedItemCount, traderAttribution } = useArchOpenOrders();
+  const { accountId } = useNetSuite();
   const isDemo = source !== 'netsuite';
 
   /**
-   * Traders that actually appear in the data, not the fixture roster.
+   * 🔴 GROUPED BY THE CREATOR BY DEFAULT, which is what the client asked for.
+   *
+   * "Ils affichent tous a unassigned, mais devrait être la personne qui a créé le
+   * SO" (Marc-Antoine, 2026-09-08). The rep stays a column and a grouping option;
+   * it is not removed and it is not what stands in for the creator.
+   *
+   * ⚠️ Unless there are no creators to group by, in which case it falls back to
+   * the rep rather than banding everything under one "Unknown". That is not
+   * hypothetical: FIXTURE orders carry no `createdBy` at all, so demo mode would
+   * otherwise collapse every invented order into a single meaningless group and
+   * lose the trader bands the fixtures exist to demonstrate. The same fallback
+   * covers a live response whose creator nobody's role can read.
+   */
+  const [axisOverride, setAxisOverride] = React.useState<GroupAxis | null>(null);
+  const anyCreator = React.useMemo(
+    () => orders.some((o) => (o.createdBy || '').trim() !== ''),
+    [orders]
+  );
+  const groupBy: GroupAxis = axisOverride !== null ? axisOverride : anyCreator ? 'creator' : 'rep';
+  const [groupFilter, setGroupFilter] = React.useState('');
+  const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
+
+  /* The filter holds a NAME, and a name from one axis will not match the other,
+     so a filter that survived an axis change would empty the table with nothing
+     saying why. Keyed on the RESOLVED axis, so it covers the fallback above
+     flipping when data arrives as well as the user changing the control. */
+  React.useEffect(() => setGroupFilter(''), [groupBy]);
+
+  /**
+   * Names that actually appear in the data, on the ACTIVE axis, not the fixture
+   * roster.
    *
    * The filter used to be populated from `TRADERS`, so with live orders it would
    * offer names nobody sold anything under and omit whoever did. TRADERS is still
    * imported for the COLOUR map, where a stable palette across the fixture and
-   * live sets is what keeps a trader the same colour between the two.
+   * live sets is what keeps a person the same colour between the two.
    */
-  const tradersPresent = React.useMemo(
-    () => [...new Set(orders.map((o) => o.trader).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+  const namesPresent = React.useMemo(
+    () => [...new Set(orders.map((o) => groupValue(o, groupBy)))].sort((a, b) => a.localeCompare(b)),
+    [orders, groupBy]
+  );
+  /* Both axes feed the palette, so a person keeps one colour when the grouping is
+     switched rather than being recoloured by their position in a different list. */
+  const traderColors = React.useMemo(
+    () =>
+      traderColorMap([
+        ...new Set([
+          ...TRADERS,
+          ...orders.map(repOf),
+          ...orders.map(creatorOf),
+        ]),
+      ]),
     [orders]
   );
-  const traderColors = React.useMemo(
-    () => traderColorMap([...new Set([...TRADERS, ...tradersPresent])]),
-    [tradersPresent]
-  );
-
-  const [traderFilter, setTraderFilter] = React.useState('');
-  const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
 
   const visible = React.useMemo(
-    () => (traderFilter ? orders.filter((o) => o.trader === traderFilter) : orders),
-    [orders, traderFilter]
+    () => (groupFilter ? orders.filter((o) => groupValue(o, groupBy) === groupFilter) : orders),
+    [orders, groupFilter, groupBy]
   );
 
   const groups = React.useMemo(() => {
-    const byTrader = new Map<string, ArchLiveOpenOrder[]>();
+    const byName = new Map<string, ArchLiveOpenOrder[]>();
     visible.forEach((o) => {
-      if (!byTrader.has(o.trader)) byTrader.set(o.trader, []);
-      byTrader.get(o.trader)!.push(o);
+      const k = groupValue(o, groupBy);
+      if (!byName.has(k)) byName.set(k, []);
+      byName.get(k)!.push(o);
     });
-    return [...byTrader.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [visible]);
+    return [...byName.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [visible, groupBy]);
+
+  /**
+   * 🔴 SAYS SO WHEN THE REP COLUMN IS UNREAD RATHER THAN EMPTY.
+   *
+   * The whole reason this tab said "Unassigned" everywhere is that it read a
+   * header field that is null on every ARCH order. The replacement reads the
+   * Sales Team sublist from inside a RESTlet, which runs as the CALLER, and
+   * nobody has been able to exercise the trader's own role. If that read comes
+   * back empty the tab regresses to the identical symptom, so it has to be able
+   * to tell the trader that the column is unread. See lib/archTraderAttribution.
+   */
+  const attNotice = React.useMemo(
+    () =>
+      traderAttributionNotice({
+        source,
+        orderCount: traderAttribution ? traderAttribution.orders : orders.length,
+        unattributedCount: traderAttribution ? traderAttribution.unattributed : 0,
+        namesUnreadable: traderAttribution ? traderAttribution.namesUnreadable : 0,
+        salesTeamRead: traderAttribution ? traderAttribution.salesTeamRead : 'unknown',
+        salesTeamError: traderAttribution ? traderAttribution.salesTeamError : '',
+        roleLabel: traderAttribution ? traderAttribution.roleLabel : '',
+      }),
+    [source, orders.length, traderAttribution]
+  );
 
   const allExpanded = visible.length > 0 && visible.every((o) => expanded[o.soNo]);
   const toggleAll = () => {
@@ -324,6 +447,38 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
             Tagging the remaining hardwood items will populate this tab.
           </span>
         </div>
+      ) : attNotice ? (
+        /*
+          THE FOURTH STATE: live, populated, and the SALES REP column cannot be
+          trusted. Mutually exclusive with the two above by construction —
+          `traderAttributionNotice` returns null on fixtures and on an empty tab —
+          so this never stacks under another banner.
+
+          🔴 Why it exists. The reported bug was "Unassigned on every row", caused
+          by reading a header field that is null on every ARCH order. The rep now
+          comes from the `transactionsalesteam` sublist, read inside a RESTlet,
+          which IGNORES runasrole and runs as the CALLER. Every measurement behind
+          that read was taken as Administrator; nobody can log in as the trader's
+          own role from here. If it comes back empty for the real users the tab
+          regresses to the identical symptom, and without this it would do so in
+          silence. Saying "unread" is not the same as printing "Unassigned".
+        */
+        <div
+          style={{
+            ...notice,
+            ...(attNotice.level === 'error'
+              ? { background: '#FEF2F2', borderBottom: '1px solid #FCA5A5', color: '#991B1B' }
+              : { background: '#FFF8E1', borderBottom: '1px solid #E6B800', color: '#7A4100' }),
+          }}
+        >
+          <span style={{ fontSize: 13, lineHeight: 1 }}>{attNotice.level === 'error' ? '🔴' : '⚠️'}</span>
+          <span>
+            <strong>
+              {attNotice.level === 'error' ? 'Sales rep unread.' : 'Sales rep incomplete.'}
+            </strong>{' '}
+            {attNotice.lines.join(' ')}
+          </span>
+        </div>
       ) : null}
       {/*
         FULL WIDTH, no content cap. This view was capped at 1680 to keep the
@@ -347,18 +502,31 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
           </div>
           <div style={{ fontSize: 11.5, color: ARCH_SURFACE.textMid, marginTop: 2 }}>
             {visible.length} open order{visible.length === 1 ? '' : 's'}
-            {traderFilter && <span style={{ color: ARCH_SURFACE.textLight }}> · filtered</span>}
+            {groupFilter && <span style={{ color: ARCH_SURFACE.textLight }}> · filtered</span>}
           </div>
         </div>
 
+        {/* Which of the two people the list is banded by. Both stay on every row. */}
         <select
-          value={traderFilter}
-          onChange={(e) => setTraderFilter(e.target.value)}
-          aria-label="Filter by trader"
+          value={groupBy}
+          onChange={(e) => setAxisOverride(e.target.value as GroupAxis)}
+          aria-label="Group orders by"
           style={{ ...control, minWidth: 168 }}
         >
-          <option value="">All traders</option>
-          {tradersPresent.map((t) => (
+          <option value="creator">Group by: Created by</option>
+          <option value="rep">Group by: Sales rep</option>
+        </select>
+
+        {/* Filters on whatever the grouping axis is, so the control and the bands
+            cannot disagree about which person is being talked about. */}
+        <select
+          value={groupFilter}
+          onChange={(e) => setGroupFilter(e.target.value)}
+          aria-label={AXES[groupBy].aria}
+          style={{ ...control, minWidth: 168 }}
+        >
+          <option value="">{AXES[groupBy].all}</option>
+          {namesPresent.map((t) => (
             <option key={t} value={t}>
               {t}
             </option>
@@ -440,18 +608,23 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
               `auto` takes the ENTIRE surplus before any sized column gets a
               pixel — so with Customer and Location unsized, going full width
               dumped roughly 420px into each and opened two voids mid-row.
-              Once all ten carry a width the surplus is shared in proportion,
+              Once all twelve carry a width the surplus is shared in proportion,
               which is what the Hardwood grid does (it sizes every column and
               sets minWidth to their sum) and why it spreads evenly.
               These numbers are content widths, not a layout: the ratios between
               them are what survives at 2560px.
             */}
+            {/* TWELVE columns since 2026-09-08: Sales rep and Created by are both
+                here. They are different people on real orders, and the client
+                asked for the second one, so neither may be the only one shown. */}
             <colgroup>
               <col style={{ width: 34 }} />
               <col style={{ width: 158 }} />
               <col style={{ width: 118 }} />
-              <col style={{ width: 230 }} />
-              <col style={{ width: 190 }} />
+              <col style={{ width: 206 }} />
+              <col style={{ width: 132 }} />
+              <col style={{ width: 132 }} />
+              <col style={{ width: 154 }} />
               <col style={{ width: 92 }} />
               <col style={{ width: 100 }} />
               <col style={{ width: 58 }} />
@@ -465,6 +638,12 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                 <th style={{ ...th, textAlign: 'left' }}>SO #</th>
                 <th style={{ ...th, textAlign: 'left' }}>Status</th>
                 <th style={{ ...th, textAlign: 'left' }}>Customer</th>
+                <th style={{ ...th, textAlign: 'left' }} title="The rep credited on the order's Sales Team sublist.">
+                  Sales rep
+                </th>
+                <th style={{ ...th, textAlign: 'left' }} title="The NetSuite user who saved the sales order.">
+                  Created by
+                </th>
                 <th style={{ ...th, textAlign: 'left' }}>Location</th>
                 <th style={{ ...th, textAlign: 'left' }}>Ship week</th>
                 <th style={{ ...th, textAlign: 'right' }}>Total BF</th>
@@ -477,13 +656,13 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
             {groups.length === 0 ? (
               <tbody>
                 <tr>
-                  <td colSpan={10} style={{ padding: '44px 0', textAlign: 'center', color: ARCH_SURFACE.textLight, fontSize: 12.5 }}>
-                    No open orders for this trader.
+                  <td colSpan={12} style={{ padding: '44px 0', textAlign: 'center', color: ARCH_SURFACE.textLight, fontSize: 12.5 }}>
+                    No open orders for this {groupBy === 'rep' ? 'sales rep' : 'creator'}.
                   </td>
                 </tr>
               </tbody>
             ) : (
-              groups.map(([trader, list]) => {
+              groups.map(([groupName, list]) => {
                 const subQtys = list.flatMap(orderQtys);
                 const subItems = list.reduce((s, o) => s + o.lines.length, 0);
                 const subSales = list.reduce((s, o) => s + orderRevenue(o), 0);
@@ -491,10 +670,12 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                 const subProfitKnown = list.every((o) => allCostsKnown(o.lines));
 
                 return (
-                  <tbody key={trader}>
-                    {/* Trader band */}
+                  <tbody key={groupName}>
+                    {/* Group band. LABELLED with the axis: a bare name over a list
+                        of orders is exactly the ambiguity that let a sales rep read
+                        as "the person who created the SO" and vice versa. */}
                     <tr>
-                      <td colSpan={10} style={{ padding: 0 }}>
+                      <td colSpan={12} style={{ padding: 0 }}>
                         <div
                           style={{
                             display: 'flex',
@@ -509,7 +690,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                               width: 20,
                               height: 20,
                               borderRadius: '50%',
-                              background: traderColors[trader] || '#64748B',
+                              background: traderColors[groupName] || '#64748B',
                               color: '#fff',
                               fontSize: 8.5,
                               fontWeight: 700,
@@ -519,9 +700,20 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                               flexShrink: 0,
                             }}
                           >
-                            {traderInitials(trader)}
+                            {traderInitials(groupName)}
                           </span>
-                          <span style={{ color: '#fff', fontSize: 12.5, fontWeight: 700 }}>{trader}</span>
+                          <span
+                            style={{
+                              color: '#93A9C0',
+                              fontSize: 9,
+                              fontWeight: 700,
+                              letterSpacing: '0.07em',
+                              textTransform: 'uppercase',
+                            }}
+                          >
+                            {AXES[groupBy].band}
+                          </span>
+                          <span style={{ color: '#fff', fontSize: 12.5, fontWeight: 700 }}>{groupName}</span>
                           <span style={{ color: '#93A9C0', fontSize: 11 }}>
                             {list.length} open order{list.length === 1 ? '' : 's'}
                           </span>
@@ -531,6 +723,10 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
 
                     {list.map((o, i) => {
                       const isOpen = !!expanded[o.soNo];
+                      /* '' on a fixture order, where internalId is null by
+                         construction. No link is offered then, rather than one
+                         that lands on a NetSuite 404. */
+                      const soUrl = salesOrderUrl(o.internalId, accountId);
                       // "Une fois qu'il est ready to build... on peut plus edit."
                       // And never on a fixture order: internalId is null there by
                       // construction, so the write path could not append to it, and
@@ -567,29 +763,59 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                               </button>
                             </td>
                             <td style={td}>
-                              {/* The SO number was styled like a link but did
-                                  nothing. It cannot open a NetSuite record —
-                                  these are fixtures — so it toggles the row,
-                                  which is what a trader expects from clicking an
-                                  order anyway. */}
-                              <button
-                                type="button"
-                                onClick={() => setExpanded((e) => ({ ...e, [o.soNo]: !e[o.soNo] }))}
-                                className="font-mono"
-                                title={isOpen ? 'Hide line items' : 'Show line items'}
-                                style={{
-                                  border: 'none',
-                                  background: 'none',
-                                  padding: 0,
-                                  cursor: 'pointer',
-                                  fontWeight: 700,
-                                  color: '#1A6FE0',
-                                  fontSize: 11.5,
-                                  fontFamily: 'inherit',
-                                }}
-                              >
-                                {o.soNo}
-                              </button>
+                              {/*
+                                THE SO NUMBER OPENS THE ORDER IN NETSUITE, in a new
+                                tab. "Est-ce que lorsqu'on clique sur le numéro du
+                                SO ça nous redirige vers le form dans Netsuite?"
+                                (Marc-Antoine, 2026-09-08) — the answer was no: it
+                                was a button that toggled the row, because the
+                                earlier version of this tab had only fixtures and no
+                                internal ids to link to.
+
+                                Expanding is still one click away and always was:
+                                the caret in the first column of every row, and
+                                Expand all in the header. Neither moved.
+
+                                A fixture order keeps the button, because it has no
+                                internal id and a link would go nowhere. See
+                                lib/nsRecordUrl for the sandbox host handling.
+                              */}
+                              {soUrl ? (
+                                <a
+                                  href={soUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="font-mono"
+                                  title={`Open ${o.soNo} in NetSuite (new tab)`}
+                                  style={{
+                                    fontWeight: 700,
+                                    color: '#1A6FE0',
+                                    fontSize: 11.5,
+                                    textDecoration: 'none',
+                                  }}
+                                >
+                                  {o.soNo}
+                                </a>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setExpanded((e) => ({ ...e, [o.soNo]: !e[o.soNo] }))}
+                                  className="font-mono"
+                                  title={isOpen ? 'Hide line items' : 'Show line items'}
+                                  style={{
+                                    border: 'none',
+                                    background: 'none',
+                                    padding: 0,
+                                    cursor: 'pointer',
+                                    fontWeight: 700,
+                                    color: '#1A6FE0',
+                                    fontSize: 11.5,
+                                    fontFamily: 'inherit',
+                                  }}
+                                >
+                                  {o.soNo}
+                                </button>
+                              )}
                               {/* Hidden entirely on a fixture order, where internalId is
                                   null and the append could not resolve a target. That also
                                   means a RESTlet failure, which falls the whole tab back to
@@ -631,6 +857,62 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                             </td>
                             <td style={{ ...td, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {o.customer}
+                            </td>
+                            {/* BOTH people, on every row, whichever axis is banded.
+                                The client asked for the creator; the rep is who the
+                                commission follows. Substituting either for the other
+                                is the mistake this column pair exists to prevent. */}
+                            <td
+                              style={{
+                                ...td,
+                                color: ARCH_SURFACE.textMid,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                              title={
+                                repOf(o) === UNASSIGNED
+                                  ? 'No rep on this order’s Sales Team sublist and none on its header.'
+                                  : `Sales rep${o.traderId ? ` (employee ${o.traderId})` : ''}`
+                              }
+                            >
+                              <PersonCell
+                                name={repOf(o)}
+                                placeholder={UNASSIGNED}
+                                title="No rep on this order’s Sales Team sublist and none on its header."
+                              />
+                              {/* A 50/50 split with no primary is a coin toss, and the
+                                  service flags it precisely so the tab need not pretend
+                                  otherwise. Only the TIED case is marked; an unequal
+                                  split has a defensible winner. */}
+                              {o.traderTied && (
+                                <span
+                                  title="This order's Sales Team splits evenly with no primary, so one of them was picked by lowest employee id."
+                                  style={{ marginLeft: 5, fontSize: 9.5, color: ARCH_SURFACE.textLight }}
+                                >
+                                  tied
+                                </span>
+                              )}
+                            </td>
+                            <td
+                              style={{
+                                ...td,
+                                color: ARCH_SURFACE.textMid,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                              title={
+                                creatorOf(o) === CREATOR_UNKNOWN
+                                  ? 'NetSuite returned no creator for this order.'
+                                  : `Saved this order${o.createdById ? ` (employee ${o.createdById})` : ''}`
+                              }
+                            >
+                              <PersonCell
+                                name={creatorOf(o)}
+                                placeholder={CREATOR_UNKNOWN}
+                                title="NetSuite returned no creator for this order."
+                              />
                             </td>
                             <td style={{ ...td, color: ARCH_SURFACE.textMid, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {locationLabel(o)}
@@ -702,6 +984,11 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                                 >
                                   {l.description}
                                 </td>
+                                {/* Sales rep and Created by are ORDER-level facts, so
+                                    the breakdown rows leave those two columns empty
+                                    rather than repeating the header's answer per lot. */}
+                                <td style={{ ...td, padding: '6px 12px' }} />
+                                <td style={{ ...td, padding: '6px 12px' }} />
                                 <td
                                   style={{
                                     ...td,
@@ -755,7 +1042,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                     <tr style={{ background: '#EFF3F8', borderTop: '1.5px solid #D8DFE8' }}>
                       <td style={{ ...td, padding: '8px 0 8px 14px' }} />
                       <td
-                        colSpan={5}
+                        colSpan={7}
                         style={{
                           ...td,
                           fontSize: 9.5,
@@ -765,7 +1052,7 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                           color: ARCH_SURFACE.textMid,
                         }}
                       >
-                        Subtotal · {trader}
+                        Subtotal · {AXES[groupBy].band} · {groupName}
                       </td>
                       <td style={{ ...num, fontWeight: 700 }} className="font-mono">
                         {formatUnitTotals(subQtys)}

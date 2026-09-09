@@ -90,13 +90,36 @@ const buildRow = (index: number): ArchSummaryRow => {
     const qty = lotInt(6, 48) * 50;
     const bucket = ['onHand', 'onHand', 'onHand', 'inTransit', 'onOrder'][lotInt(0, 4)];
 
-    const onHand = bucket === 'onHand' ? qty : 0;
+    /*
+     * 🔴 OUTBOUND IS WOOD THAT HAS ALREADY LEFT, so it is NOT part of onHand.
+     *
+     * This ordering changed 2026-09-08 to match live semantics, and the reason is
+     * worth keeping. Live, `onHand` is NetSuite's `quantityonhand`, which an Item
+     * Fulfillment has ALREADY reduced, while `outbound` is `quantityshiprecv` on the
+     * order line. Subtracting outbound from available therefore double-counted the
+     * shipment: measured across the 13 live rows it understated Available by 1,166 BF,
+     * and it grew without bound because nothing closes a shipped-and-billed line.
+     * The cache stopped subtracting it the same day.
+     *
+     * This generator used to carve `outbound` out of a full-size `onHand` and then
+     * subtract it again, which was self-consistent but modelled the opposite of
+     * reality. Now the shipped quantity is removed from onHand at source, so ONE
+     * formula is correct in both demo and live. Keeping two would guarantee the demo
+     * disagrees with the account on any row carrying a shipment.
+     */
+    const shipped = bucket === 'onHand' && lotInt(1, 10) <= 2 ? lotInt(1, Math.floor(qty * 0.4)) : 0;
+    const outbound = shipped;
+    // What is physically still on the floor, i.e. already net of the shipment.
+    const onHand = bucket === 'onHand' ? qty - shipped : 0;
     // ~30% of on-hand bundles carry a reservation. Roughly a third of those are
     // partial — that is the bundle-split case, where the whole bundle still locks.
-    const hasReserve = bucket === 'onHand' && lotInt(1, 10) <= 3;
+    // Claims are taken against what REMAINS, so a claim can never exceed the wood.
+    const hasReserve = bucket === 'onHand' && onHand > 0 && lotInt(1, 10) <= 3;
     const reserve = hasReserve ? (lotInt(1, 3) === 1 ? lotInt(1, Math.max(1, Math.floor(onHand * 0.6))) : onHand) : 0;
-    const readyToBuild = bucket === 'onHand' && !hasReserve && lotInt(1, 10) <= 2 ? lotInt(1, Math.floor(onHand * 0.5)) : 0;
-    const outbound = bucket === 'onHand' && !hasReserve && !readyToBuild && lotInt(1, 10) <= 2 ? lotInt(1, Math.floor(onHand * 0.4)) : 0;
+    const readyToBuild =
+      bucket === 'onHand' && onHand > 0 && !hasReserve && lotInt(1, 10) <= 2
+        ? lotInt(1, Math.max(1, Math.floor(onHand * 0.5)))
+        : 0;
 
     return {
       lotNo: `${itemCode}-${String(i + 1).padStart(3, '0')}`,
@@ -147,18 +170,13 @@ const buildRow = (index: number): ArchSummaryRow => {
     outbound,
     onOrder,
     inTransit,
-    // 🔴 readyToBuild IS subtracted, and a 2026-09-08 change that removed it was
-    // REVERTED the same day. The reasoning for removing it was that Ready to Build is
-    // a status on reserved stock, so its quantity sits inside `reserve` already. That
-    // is false for this generator BY CONSTRUCTION: `readyToBuild` above is nonzero only
-    // when `hasReserve` is false, so the two are disjoint, and dropping the term
-    // overstated Available on 5 of the demo rows (by up to 975 BF) and made rows read
-    // positive whose every on-hand bundle was locked. It also contradicted
-    // `commitmentOn` in archLots.ts, which counts readyToBuild as a commitment that
-    // LOCKS a bundle - and that is the rule the selection path enforces, so the grid
-    // has to agree with it. The live cache subtracting a literal 0 is not evidence
-    // either way: the value is 0 there only because no field sources it.
-    available: Math.max(0, onHand + onOrder + inTransit - reserve - readyToBuild - outbound),
+    // readyToBuild IS subtracted (a 2026-09-08 change that removed it was reverted the
+    // same day: this generator makes readyToBuild and reserve DISJOINT, so its
+    // quantity is NOT already inside reserve, and dropping the term overstated
+    // Available by up to 975 BF on 5 rows). OUTBOUND is NOT subtracted, because it is
+    // no longer part of onHand: see the note in the lot generator above. This is the
+    // same formula the ARCH cache uses, deliberately.
+    available: Math.max(0, onHand + onOrder + inTransit - reserve - readyToBuild),
     // Hardwood lot cost per unit — roughly $2.40 to $9.80. Same band across all
     // four categories: the fixtures exist to exercise layout, not to model
     // veneer pricing, and inventing a per-category band would read as real.

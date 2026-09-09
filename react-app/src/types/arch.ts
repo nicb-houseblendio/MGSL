@@ -173,14 +173,27 @@ export interface ArchSummaryRow {
   /** How many of this row's lots are held. */
   heldLotCount?: number;
   /**
-   * onHand + onOrder + inTransit − reserve − readyToBuild − outbound − held,
-   * floored at 0. Held stock is excluded here and ONLY here.
+   * onHand + onOrder + inTransit − reserve − readyToBuild − held, floored at 0.
+   * Held stock is excluded here and ONLY here.
    *
-   * All three of reserve, readyToBuild and outbound are subtracted because they are
-   * successive stages of one pipeline, which is the same reason `commitmentOn` in
-   * archLots.ts adds all three to decide whether a bundle is locked. Keep this
-   * formula and that function in agreement: a row reporting Available while every
-   * one of its bundles is locked shows unsellable stock as sellable.
+   * ⚠️ CORRECTED 2026-09-08. This used to read "… − outbound − held" and to say
+   * that all three of reserve, readyToBuild and outbound are subtracted as
+   * "successive stages of one pipeline". `outbound` is not a stage of that
+   * pipeline — it is `quantityshiprecv`, wood that has already left on an Item
+   * Fulfillment, so `onHand` is already net of it and subtracting it removed the
+   * same stock twice. Measured on lot 315643-7 of PUR44KD @ Ramsey Xpress:
+   * 511 BF received, 300 shipped, quantityonhand 0.211 — and the row reported
+   * Available 1,454 against 1,754 BF of free, uncommitted hardwood. The full
+   * measurement is in the cache MR beside the formula.
+   *
+   * reserve and readyToBuild ARE subtracted, and that half still has to agree
+   * with `commitmentOn` in archLots.ts: a row reporting Available while every one
+   * of its bundles is locked shows unsellable stock as sellable. `commitmentOn`
+   * also counts `outbound`, which is now dead weight for live rows — the cache no
+   * longer attributes a shipped quantity to any lot — but stays true for
+   * lib/archFixtures.ts, whose generator models outbound as a claim on on-hand
+   * stock and still subtracts it. That generator is the one place left carrying
+   * the old reading.
    */
   available: number;
 

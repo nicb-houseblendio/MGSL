@@ -37,20 +37,29 @@ const PAYMENT_TERMS = [
 ];
 
 /**
- * Offline-only options for the sales-rep dropdown, shown when NetSuite gave us no
- * reps (disconnected, or a role that cannot read employees). Names and nothing
- * else: the prototype attached commission percentages to these and drew them as
- * bars on the Customer step and on Review, which no NetSuite field feeds. Removed
- * 2026-09-08 rather than shown as if it were configuration. No order can be
- * created on this path anyway; the write refuses without a real rep id.
- */
-export const SALES_TEAM_NAMES = ['Hardwood — East', 'Hardwood — West', 'Architectural Specialties'];
-
-/**
  * The individuals who sell. Open orders group by trader, not by sales team, which
  * is how the prototype presents them.
  */
 export const TRADERS = ['Alec Wolf', 'Christopher Pajot', 'Léo Dupuis', 'Melissa De Castro', 'Antoine Quimper'];
+
+/**
+ * Offline-only options for the sales-rep dropdown, shown when NetSuite gave us no
+ * reps (disconnected, or a role that cannot read employees).
+ *
+ * 🔴 PEOPLE, NOT TEAM NAMES. The list this replaced held three invented TEAM names
+ * ("Hardwood — East" and so on) offered as the options of a field labelled "Sales
+ * rep" — so the placeholder disagreed with its own label about what the field even
+ * holds. The field identifies ONE employee who owns the order, so the placeholder
+ * has to be an employee.
+ *
+ * `TRADERS` is reused deliberately: four of its five names are real sandbox
+ * employees (Alec Wolf 3297, Léo Dupuis 3296, Melissa De Castro 3298, Christopher
+ * Pajot 3268), and the same list already stands in for the trader on fixture open
+ * orders, so the demo screen tells one story throughout. No order can be created
+ * on this path in any case: the write refuses without a real employee id, and the
+ * step says so.
+ */
+export const FIXTURE_SALES_REPS = TRADERS;
 
 const ORDER_STATUSES: ArchOrderStatus[] = ['Reserved', 'Ready to Build', 'In Transit'];
 
@@ -92,12 +101,6 @@ export const paymentTermsFor = (customer: string): string => {
   if (!customer) return '';
   const rng = seededRandom(`${customer}|terms`);
   return PAYMENT_TERMS[Math.floor(rng() * PAYMENT_TERMS.length)];
-};
-
-export const salesTeamFor = (customer: string): string => {
-  if (!customer) return '';
-  const rng = seededRandom(`${customer}|team`);
-  return SALES_TEAM_NAMES[Math.floor(rng() * SALES_TEAM_NAMES.length)];
 };
 
 /* ── Open orders ────────────────────────────────────────────────────────────*/
@@ -172,7 +175,14 @@ export const getOpenOrders = (): ArchOpenOrder[] => {
       incoterms: INCOTERMS[randInt(0, INCOTERMS.length - 1)],
       created: created.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
       shipDate: ship.toISOString().slice(0, 10),
-      salesTeam: salesTeamFor(customer),
+      /*
+       * Blank, matching what the live endpoint sends. A seeded per-customer helper
+       * used to put an invented team name here; a demo order carrying a split that
+       * exists nowhere is the fabrication this screen keeps being corrected for.
+       * The real split is read per order from `transactionsalesteam`, and a fixture
+       * order has no transaction.
+       */
+      salesTeam: '',
       // "Ready to Build" is MGSL's internal status meaning the warehouse can start
       // preparing it — and the point at which the order stops being editable.
       trader,

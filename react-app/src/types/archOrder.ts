@@ -270,7 +270,20 @@ export type ArchOrderStatus = 'Reserved' | 'Ready to Build' | 'In Transit';
 export interface ArchOpenOrder {
   soNo: string;
   customer: string;
-  /** The individual who sold it. Open orders are grouped by this. */
+  /**
+   * The rep credited with SELLING it, from the order's Sales Team sublist.
+   *
+   * ⚠️ NOT the person who created the sales order, and no longer the only thing
+   * Open Orders can be grouped by. Marc-Antoine asked for the creator on
+   * 2026-09-08 and they differ on real data (our integration account saved two of
+   * the four real orders), so the tab shows both as labelled columns and the
+   * grouping axis is a control. `ArchLiveOpenOrder.createdBy` carries the other
+   * one; this field must never be filled from it.
+   *
+   * 'Unassigned' when neither the sublist nor the header names anybody, which is
+   * also what an unreadable sublist looks like. `ArchLiveOpenOrder.traderSource`
+   * is what separates those two.
+   */
   trader: string;
   shipTo: string;
   currency: string;

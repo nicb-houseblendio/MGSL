@@ -1,6 +1,7 @@
 import { TALLY_DETAIL_PL, DETAIL_PL_TOTALS } from './archTallyDetailPL.ts';
 import { toLengthDistribution, siblingsOf, sameItem, toWidthDistribution, checkPayload } from './archTally.ts';
 import { demoTallyForLot, TALLY_314307, TALLY_CHECHEN, demoWidthTallyForLot, demoTallyProps } from './archTallyFixtures.ts';
+import { lengthDisplayFt } from './archTallyLength.ts';
 
 let fail = 0;
 const ok = (name, cond, got) => {
@@ -83,20 +84,44 @@ const ok = (name, cond, got) => {
   ok('sameItem holds across the document', sameItem(TALLY_DETAIL_PL.bundles[0], TALLY_DETAIL_PL.bundles[13]), null);
 }
 
-// ---- REGRESSION GUARD. This document must NOT reach the demo rotation: its
-// lengths are metric and would render as 7.874' on whichever lots the hash picked.
+/* ---- ⚠️ THIS GUARD WAS INVERTED ON 2026-09-08, DELIBERATELY. It used to read:
+ *
+ *   // REGRESSION GUARD. This document must NOT reach the demo rotation: its
+ *   // lengths are metric and would render as 7.874' on whichever lots the hash picked.
+ *   ok('detail-pl is NOT served by demoTallyForLot', leaked.length === 0, leaked);
+ *   ok('no demo lot renders a fractional length', metric.length === 0, metric);
+ *
+ * The guard was protecting the length column, and it worked. What it also did was keep
+ * the only multi-width document out of reach of the screen, and with it the WIDTH
+ * MATRIX - measured over the 67 ARCH lots holding stock, 0 of them could draw one.
+ * That is the complaint Marc-Antoine put first on 2026-09-08: "La matrice pour
+ * présenter le tally qui sera feedé par le custom record n'est pas présent."
+ *
+ * So the intent moves rather than disappears. The concern was never "detail-pl is
+ * forbidden", it was "a trader must not read 7.874'". That is now enforced where it
+ * belongs, at the display layer: archTallyLength.ts recovers the millimetre figure the
+ * document printed, and the assertion below pins the OUTCOME the old one was proxying
+ * for. Deleting it would have thrown away the requirement along with the mechanism. */
 {
   const sampled = ['316027-1', '315970-7', '315604-13', '315411-16A', '1535', 'ZEB84KD-2'];
-  const leaked = sampled.filter((lot) => {
+
+  ok('detail-pl IS now served by demoTallyForLot, which is what makes the matrix visible',
+    sampled.every((lot) => demoTallyForLot(lot).sample.sourceFile === 'detail pl inv 2026_00031.xlsx'),
+    sampled.map((l) => demoTallyForLot(l).sample.sourceFile));
+
+  // THE ORIGINAL REQUIREMENT, still enforced: no trader reads a fractional foot.
+  const unreadable = sampled.filter((lot) => {
     const d = demoTallyForLot(lot);
-    return d && d.sample && d.sample.sourceFile === 'detail pl inv 2026_00031.xlsx';
+    return /\.\d+'/.test(lengthDisplayFt(d.bundle.lengthFt).text);
   });
-  ok('detail-pl is NOT served by demoTallyForLot', leaked.length === 0, leaked);
-  const metric = sampled.filter((lot) => {
-    const d = demoTallyForLot(lot);
-    return d && d.bundle && d.bundle.lengthFt != null && !Number.isInteger(d.bundle.lengthFt);
-  });
-  ok('no demo lot renders a fractional length', metric.length === 0, metric);
+  ok('no demo lot renders a fractional foot in its length cell', unreadable.length === 0, unreadable);
+  ok('  ...because the metric ones render as whole millimetres instead',
+    sampled.every((lot) => /^\d+mm$/.test(lengthDisplayFt(demoTallyForLot(lot).bundle.lengthFt).text)),
+    sampled.map((l) => lengthDisplayFt(demoTallyForLot(l).bundle.lengthFt).text));
+
+  // And the whole point of serving it: every lot gets a width breakdown that draws.
+  ok('every sampled lot now draws a width grid',
+    sampled.every((lot) => toWidthDistribution(demoTallyForLot(lot).bundle).degenerate === false), null);
 }
 
 
@@ -242,12 +267,41 @@ const ok = (name, cond, got) => {
     got.every((d) => d.siblings.indexOf(d.bundle) >= 0), null);
   ok('an empty lot number gets nothing', demoWidthTallyForLot('') === null, null);
 
-  // 🔴 THE POINT OF THE SEPARATE ACCESSOR. Adding detail-pl to DEMO_DOCS would have
-  // been one line; it would also have put 7.874' lengths on a third of ARCH lots.
-  ok('the default rotation is UNCHANGED by the new accessor',
-    sampled.every((l) => demoTallyForLot(l).sample.sourceFile !== 'detail pl inv 2026_00031.xlsx'), null);
-  ok('  ...and still renders whole-foot lengths',
-    sampled.every((l) => Number.isInteger(demoTallyForLot(l).bundle.lengthFt)), null);
+  /* ⚠️ ALSO INVERTED 2026-09-08, and for the same reason as the guard further up. This
+   * pair used to read:
+   *
+   *   // 🔴 THE POINT OF THE SEPARATE ACCESSOR. Adding detail-pl to DEMO_DOCS would have
+   *   // been one line; it would also have put 7.874' lengths on a third of ARCH lots.
+   *   ok('the default rotation is UNCHANGED by the new accessor', …)
+   *   ok('  ...and still renders whole-foot lengths', …)
+   *
+   * "A third of ARCH lots" was the argument against a three-document rotation, and it
+   * was right - which is why the pool is not a rotation. DEMO_PICKS selects BUNDLES
+   * that can draw a width breakdown, so it is all of them or none, never a third. The
+   * accessor kept below is now the same document by name, and what has to be pinned is
+   * that the by-name route and the default route agree. */
+  ok('the default route and the named accessor now serve the same document',
+    sampled.every((l) => demoTallyForLot(l).sample.sourceFile === demoWidthTallyForLot(l).sample.sourceFile), null);
+  ok('  ...and every length it renders is a whole millimetre, not a fractional foot',
+    sampled.every((l) => /^\d+mm$/.test(lengthDisplayFt(demoTallyForLot(l).bundle.lengthFt).text)), null);
+
+  /* THE IMPERIAL AND RANDOM-WIDTH DOCUMENTS MUST STAY REACHABLE. They are off the
+   * default screen now, which is a real cost, so the escape hatch is pinned rather
+   * than left to a comment. */
+  const g2 = globalThis;
+  const had2 = Object.prototype.hasOwnProperty.call(g2, 'window');
+  if (!had2) g2.window = {};
+  g2.window.MCGI_CONFIG = { tallyDemoDoc: '314307' };
+  ok("tallyDemoDoc = '314307' brings back the imperial document",
+    sampled.every((l) => demoTallyProps(l).sample.sourceFile === TALLY_314307.provenance.sourceFile), null);
+  ok('  ...with whole-foot lengths', sampled.every((l) => Number.isInteger(demoTallyProps(l).bundle.lengthFt)), null);
+  g2.window.MCGI_CONFIG = { tallyDemoDoc: 'chechen' };
+  ok("tallyDemoDoc = 'chechen' brings back the random-width document, which is what shows the RW caveat",
+    sampled.every((l) => demoTallyProps(l).bundle.widthPolicy === 'randomWidth'), null);
+  g2.window.MCGI_CONFIG = { tallyDemoDoc: 'not-a-document' };
+  ok('an unknown key falls back to the default pool rather than emptying the dialog',
+    sampled.every((l) => demoTallyProps(l).bundle === demoTallyForLot(l).bundle), null);
+  if (!had2) delete g2.window; else delete g2.window.MCGI_CONFIG;
 }
 
 // ---- demoTallyProps: ONE selection, so the two call sites cannot diverge again.

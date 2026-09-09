@@ -27,12 +27,23 @@ import {
 } from '@/lib/archOrderPricing';
 import {
   INCOTERMS,
-  SALES_TEAM_NAMES,
+  FIXTURE_SALES_REPS,
   addressesFor,
   currenciesFor,
   paymentTermsFor,
-  salesTeamFor,
 } from '@/lib/archOrderFixtures';
+import { filterTypeahead, moveHighlight, resolveTyped } from '@/lib/archTypeahead';
+import {
+  emptyRepTeam,
+  repPicked,
+  orderOpened,
+  customerPicked,
+  salesRepOk,
+  describeOrderSalesTeam,
+  NEW_ORDER_SPLIT_HEADLINE,
+  NEW_ORDER_SPLIT_DETAIL,
+  type ArchRepTeamState,
+} from '@/lib/archSalesTeamSplit';
 import { useArchOpenOrders } from '@/hooks/useArchOpenOrders';
 import { orderGate } from '@/lib/archOrderGate';
 import type {
@@ -275,6 +286,283 @@ const LotCell = ({ line }: { line: ArchCartLine }) => (
   </td>
 );
 
+/* ── Type-ahead picker ─────────────────────────────────────────────────────*/
+
+export interface ArchComboOption {
+  /** What the caller identifies the option by. For a live customer, its internal id. */
+  id: string;
+  label: string;
+  /** Rendered after the label, greyed. NOT searched — see archTypeahead. */
+  hint?: string;
+}
+
+/**
+ * A picker you can type into and SEE what you typed.
+ *
+ * 🔴 THIS REPLACES A NATIVE `<select>`, and the defect it fixes is Marc-Antoine's,
+ * 2026-09-08: "Est-ce que ça pourrait être un field où on type ahead (en gardant
+ * la flèche comme possibilité pour la recherche globale). Quand je tape certains
+ * caractères, je ne vois pas ce que j'ai tappé."
+ *
+ * A native select already type-aheads — typing walks the highlighted option — and
+ * that is precisely the trap: the buffer belongs to the browser and is NEVER
+ * rendered, so the trader is typing into something they cannot read. There is no
+ * styling fix for that. The control has to own the text.
+ *
+ * Two further things this buys, both of them real:
+ *   - A native select fires `onChange` per keystroke of its own type-ahead, so
+ *     typing "County Line" SELECTED Cofer Bros on the "C" and fired an address
+ *     fetch for it. `loadAddressesFor` carries a last-request-wins guard written
+ *     after exactly that showed one customer above another customer's addresses.
+ *     An input commits ONCE.
+ *   - A typed string that is not an option resolves to NOTHING (see resolveTyped),
+ *     so the field reverts rather than guessing a near match onto a real account.
+ *
+ * ⚠️ The caret is kept because he asked for it kept. Pressing it clears the query,
+ * which `filterTypeahead` answers with the whole list in the server's order: the
+ * "recherche globale" is the blank-query case, not a separate mode.
+ */
+const ArchCombobox = ({
+  value,
+  options,
+  onPick,
+  ok,
+  disabled,
+  placeholder,
+  emptyText,
+  footer,
+  ariaLabel,
+}: {
+  /** The COMMITTED label. Shown whenever the trader is not mid-edit. */
+  value: string;
+  options: ArchComboOption[];
+  onPick: (option: ArchComboOption) => void;
+  ok: boolean;
+  disabled?: boolean;
+  placeholder: string;
+  /** Shown in place of the list when a query matches nothing. */
+  emptyText: string;
+  /** Pinned under the list, e.g. "Add new ship-to address". */
+  footer?: React.ReactNode;
+  ariaLabel: string;
+}) => {
+  /**
+   * The typed query, or null when not editing.
+   *
+   * Null rather than '' on purpose: '' is a real query (it means "show me
+   * everything"), so the two states have to be distinguishable or the field would
+   * blank itself the moment the caret was pressed.
+   */
+  const [query, setQuery] = React.useState<string | null>(null);
+  const [open, setOpen] = React.useState(false);
+  const [active, setActive] = React.useState(-1);
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
+  const listRef = React.useRef<HTMLDivElement | null>(null);
+
+  const editing = query !== null;
+  const shown = React.useMemo(
+    () => filterTypeahead(options, query || '', (o) => o.label),
+    [options, query]
+  );
+
+  /** Abandon the edit. The committed value comes back; nothing is inferred. */
+  const revert = () => {
+    setOpen(false);
+    setQuery(null);
+    setActive(-1);
+  };
+
+  const commit = (o: ArchComboOption) => {
+    onPick(o);
+    setOpen(false);
+    setQuery(null);
+    setActive(-1);
+  };
+
+  /* Keep the highlighted row in view. With 807 customers, arrowing past the
+     bottom of a 240px list with nothing moving reads as a dead keyboard. */
+  React.useEffect(() => {
+    if (!open || active < 0 || !listRef.current) return;
+    const el = listRef.current.children[active] as HTMLElement | undefined;
+    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
+  }, [open, active]);
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!open) {
+        setOpen(true);
+        if (query === null) setQuery('');
+        setActive(e.key === 'ArrowDown' ? 0 : shown.length - 1);
+        return;
+      }
+      setActive((i) => moveHighlight(i, e.key === 'ArrowDown' ? 1 : -1, shown.length));
+      return;
+    }
+    if (e.key === 'Enter') {
+      if (open && active >= 0 && shown[active]) {
+        e.preventDefault();
+        commit(shown[active]);
+        return;
+      }
+      // No highlight: accept the typed text only if it IS an option, exactly.
+      if (editing) {
+        const hit = resolveTyped(options, query || '', (o) => o.label);
+        e.preventDefault();
+        if (hit) commit(hit);
+        else revert();
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (open || editing) {
+        e.preventDefault();
+        revert();
+      }
+      return;
+    }
+    if (e.key === 'Tab' && (open || editing)) revert();
+  };
+
+  return (
+    <div
+      ref={wrapRef}
+      style={{ position: 'relative' }}
+      onBlur={(e) => {
+        // Only when focus actually left the control. Without the containment
+        // check, clicking the caret would close the list it just opened.
+        const next = e.relatedTarget as Node | null;
+        if (!next || !wrapRef.current || !wrapRef.current.contains(next)) revert();
+      }}
+    >
+      <div style={{ position: 'relative' }}>
+        <input
+          ref={inputRef}
+          type="text"
+          role="combobox"
+          aria-expanded={open}
+          aria-autocomplete="list"
+          aria-label={ariaLabel}
+          autoComplete="off"
+          spellCheck={false}
+          disabled={disabled}
+          /* 🔴 THE WHOLE POINT: the value is the typed text while typing. */
+          value={editing ? (query as string) : value}
+          placeholder={placeholder}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setOpen(true);
+            setActive(e.target.value ? 0 : -1);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKeyDown}
+          style={{
+            ...field(ok),
+            paddingRight: 34,
+            cursor: disabled ? 'not-allowed' : 'text',
+            opacity: disabled ? 0.6 : 1,
+          }}
+        />
+        {/*
+          The arrow he asked to keep. Clearing the query is what makes it the
+          "recherche globale": a blank query is the entire list.
+        */}
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label={open ? 'Close the list' : 'Show the whole list'}
+          disabled={disabled}
+          onMouseDown={(e) => {
+            // preventDefault so the input keeps focus and the wrapper's onBlur
+            // does not fire between the mousedown and the click.
+            e.preventDefault();
+            if (open) {
+              revert();
+              return;
+            }
+            setQuery('');
+            setActive(-1);
+            setOpen(true);
+            if (inputRef.current) inputRef.current.focus();
+          }}
+          style={{
+            position: 'absolute',
+            right: 1,
+            top: 1,
+            bottom: 1,
+            width: 30,
+            border: 'none',
+            background: 'transparent',
+            color: disabled ? '#CBD5E1' : ARCH_SURFACE.textMid,
+            fontSize: 11,
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            borderRadius: 8,
+          }}
+        >
+          {open ? '▲' : '▼'}
+        </button>
+      </div>
+
+      {open && !disabled && (
+        <div
+          style={{
+            position: 'absolute',
+            zIndex: 30,
+            left: 0,
+            right: 0,
+            marginTop: 3,
+            background: '#fff',
+            border: '1.5px solid #CBD5E1',
+            borderRadius: 9,
+            boxShadow: '0 8px 22px rgba(15,38,65,0.16)',
+            overflow: 'hidden',
+          }}
+        >
+          {shown.length > 0 ? (
+            <div ref={listRef} role="listbox" style={{ maxHeight: 240, overflowY: 'auto' }}>
+              {shown.map((o, i) => (
+                <div
+                  key={o.id || o.label}
+                  role="option"
+                  aria-selected={i === active}
+                  onMouseEnter={() => setActive(i)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    commit(o);
+                  }}
+                  style={{
+                    padding: '8px 11px',
+                    fontSize: 13,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: 7,
+                    background: i === active ? '#E8F5EF' : '#fff',
+                    color: ARCH_SURFACE.text,
+                    borderBottom: i < shown.length - 1 ? '1px solid #F1F5FA' : 'none',
+                    fontWeight: o.label === value ? 700 : 500,
+                  }}
+                >
+                  <span>{o.label}</span>
+                  {o.hint && (
+                    <span style={{ fontSize: 11, color: ARCH_SURFACE.textMid }}>{o.hint}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ padding: '9px 11px', fontSize: 12, color: ARCH_SURFACE.textMid }}>
+              {emptyText}
+            </div>
+          )}
+          {footer}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const SOWizard = ({
   open,
   cart,
@@ -307,6 +595,24 @@ export const SOWizard = ({
     useArchCustomers(true);
   const customerOptions: ArchCustomer[] = liveCustomers;
   const customersAreLive = customerSource === 'netsuite';
+  /**
+   * The customer picker's options.
+   *
+   * `id` is the NetSuite internal id when the list is live and the NAME when it is
+   * fixtures, which is exactly what the two pick paths take — `pickCustomerById`
+   * looks the id up, `pickCustomerByName` takes the label. A fixture row has no id
+   * at all, so falling back to the name is what keeps the option addressable
+   * without ever letting a fixture reach `customerId`.
+   */
+  const comboCustomers = React.useMemo<ArchComboOption[]>(
+    () =>
+      customerOptions.map((c) => ({
+        id: c.id || c.name,
+        label: c.name,
+        hint: c.currencyName || undefined,
+      })),
+    [customerOptions]
+  );
 
   /**
    * Real ship-to addresses for the selected customer. Empty until one is picked.
@@ -322,7 +628,19 @@ export const SOWizard = ({
    * is being sold to.
    */
   const [liveReps, setLiveReps] = React.useState<ArchSalesRep[]>([]);
-  const [salesRepId, setSalesRepId] = React.useState('');
+  /**
+   * Sales rep and Sales Team, as TWO things.
+   *
+   * 🔴 THEY USED TO BE ONE STRING, and that is the whole of Marc-Antoine's "Quand
+   * je change de rep, le split disparaît" (2026-09-08). `salesTeam` held a rep
+   * INTERNAL ID on the live path and a fixture TEAM NAME offline, and the
+   * commission panel was drawn from a lookup keyed on that same string — so
+   * picking a rep overwrote the team name, the lookup missed, and the panel
+   * vanished. See archSalesTeamSplit for the model and the tests.
+   */
+  const [repTeam, setRepTeam] = React.useState<ArchRepTeamState>(emptyRepTeam);
+  /** The OWNER's employee id. This, and only this, reaches the write path. */
+  const salesRepId = repTeam.salesRepId;
   const [repsLoaded, setRepsLoaded] = React.useState(false);
   React.useEffect(() => {
     fetchSalesReps().then((r) => { setLiveReps(r); setRepsLoaded(true); });
@@ -332,7 +650,6 @@ export const SOWizard = ({
   const [currency, setCurrency] = React.useState('');
   const [shipDate, setShipDate] = React.useState('');
   const [incoterms, setIncoterms] = React.useState('');
-  const [salesTeam, setSalesTeam] = React.useState('');
 
   const [split, setSplit] = React.useState<Record<string, ArchSplitIntent>>({});
   const [reman, setReman] = React.useState<Record<string, ArchRemanIntent>>({});
@@ -474,6 +791,21 @@ export const SOWizard = ({
     [customer, extraAddresses]
   );
 
+  /**
+   * The ship-to picker's options: real addresses for a live customer, fixtures
+   * only when the customer list itself is fixtures. Keyed by LABEL because the
+   * rest of the wizard renders `shipTo` as text; the id travels separately in
+   * `shipAddressId`, which is what the write path needs.
+   */
+  const comboAddresses = React.useMemo<ArchComboOption[]>(
+    () =>
+      (customersAreLive ? liveAddresses.map((a) => a.label) : allAddresses).map((a) => ({
+        id: a,
+        label: a,
+      })),
+    [customersAreLive, liveAddresses, allAddresses]
+  );
+
   const newAddressComplete =
     !!newAddress.name.trim() && !!newAddress.street.trim() && !!newAddress.city.trim();
 
@@ -532,13 +864,27 @@ export const SOWizard = ({
     loadAddressesFor(o.customerId || '', o.shipTo || undefined);
     setCurrency(o.currency);
     setIncoterms(o.incoterms);
-    // The rep already on the order, by ID, because that is what the live dropdown
-    // is keyed on and what the write path needs. Falling straight through to
-    // `salesTeamFor()` put a fixture TEAM NAME in here, which matched no option in
-    // the live list: the field looked empty while validation thought it was filled.
-    const orderRepId = o.traderId || '';
-    setSalesRepId(orderRepId);
-    setSalesTeam(orderRepId || o.salesTeam || salesTeamFor(o.customer));
+    /*
+     * The rep already on the order, by ID, because that is what the live dropdown
+     * is keyed on and what the write path needs. Falling straight through to
+     * `salesTeamFor()` put a fixture TEAM NAME in here, which matched no option in
+     * the live list: the field looked empty while validation thought it was filled.
+     *
+     * The SPLIT comes with it, and it is real: `traderShared` and `traderTied` are
+     * computed by shared/archSalesTeam.js from `transactionsalesteam.contribution`
+     * — the same rows that make SO-CWP-001352 a Samuel Nadon / Justin Loveland
+     * 50/50. It is stored in its OWN field, so changing the rep below cannot wipe
+     * it. That was the bug.
+     */
+    setRepTeam(
+      orderOpened(o.traderId || '', {
+        soNo: o.soNo,
+        leadRep: o.trader || '',
+        leadRepId: o.traderId || '',
+        shared: !!o.traderShared,
+        tied: !!o.traderTied,
+      })
+    );
     setShipDate(o.shipDate || '');
     // Carry the agreed price across so Pricing is already satisfied for lines
     // that are already sold. The trader only has to price what they just added.
@@ -567,7 +913,10 @@ export const SOWizard = ({
     setCustomerId(hit && hit.id ? hit.id : '');
     setCustomer(name);
     setShipTo('');
-    setSalesTeam(salesTeamFor(name));
+    // A rep chosen for one customer is not a choice for another, and a new order
+    // has no Sales Team until NetSuite gives it one. Both are cleared rather than
+    // seeded from a fixture: `salesTeamFor()` invented a team name per customer.
+    setRepTeam(customerPicked());
     // 🔴 currencyCode (ISO), NEVER currencyName. `currency` is fed to
     // toLocaleString({ style: 'currency' }), so "US Dollar" throws
     // `RangeError: Invalid currency code` and takes the entire wizard down —
@@ -630,7 +979,7 @@ export const SOWizard = ({
     setCustomerId('');
     setCustomer(c);
     setShipTo('');
-    setSalesTeam(salesTeamFor(c));
+    setRepTeam(customerPicked());
     setCurrency(currenciesFor(c)[0]);
   };
 
@@ -739,23 +1088,36 @@ export const SOWizard = ({
    */
   /**
    * 🔴 When the rep list is LIVE, the ID is what has to be set — not the display
-   * string. `salesTeam` holds the select's value, and on the live path that value
-   * is a rep id while on the fixture path it is a team name. Checking only
-   * `salesTeam` let a fixture team name left over from `salesTeamFor()` satisfy a
-   * required field whose dropdown was visibly showing "Select sales rep": the
-   * value matched no option, so nothing appeared chosen, yet Continue enabled and
-   * the draft went on carrying no rep id at all. Found by opening an existing
-   * order and looking at the step.
+   * string. The wizard used to check `salesTeam`, one field holding a rep id on
+   * the live path and a fixture TEAM NAME offline, so a leftover team name
+   * satisfied a required field whose dropdown was visibly showing "Select sales
+   * rep": the value matched no option, so nothing appeared chosen, yet Continue
+   * enabled and the draft went on carrying no rep id at all. `salesRepOk` is the
+   * same rule over two fields that cannot be confused, and it is tested.
    */
   const headerOk = !!(
-    customer && customerPO.trim() && shipTo && currency && shipDate && incoterms && salesTeam &&
-    (liveReps.length === 0 || !!salesRepId)
+    customer && customerPO.trim() && shipTo && currency && shipDate && incoterms &&
+    salesRepOk(repTeam, liveReps.length > 0)
   );
   /** The chosen rep's NAME, for anywhere a person reads it rather than the server. */
   const salesRepName = React.useMemo(() => {
     const hit = liveReps.find((r) => r.id === salesRepId);
     return hit ? hit.name : '';
   }, [liveReps, salesRepId]);
+  /**
+   * The rep as a person reads it: the live name, else the offline placeholder.
+   * This is what the header's `custbody_sales_rep` text carries and what the
+   * confirmation dialog prints under "Sales rep".
+   */
+  const salesRepLabel = salesRepName || repTeam.offlineRep;
+  /**
+   * The commission split to show. Real for an order being edited; an honest
+   * statement of the mechanism for a new one. Never a fixture.
+   */
+  const orderSplit = React.useMemo(
+    () => describeOrderSalesTeam(repTeam.team),
+    [repTeam.team]
+  );
   const splitOk = lines.every((l) => {
     const s = sp(l.key);
     if (!s.on) return true;
@@ -801,7 +1163,18 @@ export const SOWizard = ({
       currency,
       shipDate,
       incoterms,
-      salesTeam,
+      /*
+       * 🔴 THE REP'S NAME, not a team name.
+       *
+       * `ArchOrderHeader.salesTeam` is the field's historical name and its only
+       * consumer is the confirmation dialog, which prints it under "Sales rep".
+       * The endpoint writes `custbody_sales_rep` — "Sales Rep (PDF)", a FREE-FORM
+       * TEXT field, verified in the sandbox `customfield` table — from the name it
+       * is given, so a name is the correct payload and a team name was a wrong one.
+       * The commission split is not sent at all: `toRequest` carries `salesRepId`
+       * and NetSuite builds the Sales Team sublist from it.
+       */
+      salesTeam: salesRepLabel,
       paymentTerms: paymentTermsFor(customer),
     },
     // Totals for what is BEING WRITTEN, so the confirm dialog does not quote the
@@ -857,7 +1230,9 @@ export const SOWizard = ({
                     setShipTo('');
                     setCurrency('');
                     setIncoterms('');
-                    setSalesTeam('');
+                    // Rep AND split. Switching away from an order must not leave
+                    // that order's commission split on a blank new one.
+                    setRepTeam(emptyRepTeam());
                   }
                 }}
                 style={{
@@ -1295,27 +1670,31 @@ export const SOWizard = ({
             </div>
           ) : (
             <>
-              <select
-                value={customersAreLive ? customerId : customer}
-                onChange={(e) =>
-                  customersAreLive
-                    ? pickCustomerById(e.target.value)
-                    : pickCustomerByName(e.target.value)
-                }
-                style={field(!!customer)}
-              >
-                <option value="">
-                  {customerSource === 'loading'
+              {/*
+                Type-ahead, and the arrow kept for the whole list. See ArchCombobox
+                for why a native select could not be made to work here: it swallows
+                the characters the trader types, which is what Marc-Antoine
+                reported, and it fired an address fetch per keystroke.
+              */}
+              <ArchCombobox
+                ariaLabel="Customer"
+                value={customer}
+                ok={!!customer}
+                placeholder={
+                  customerSource === 'loading'
                     ? 'Loading customers…'
-                    : `— Select customer${customersAreLive ? ` (${customerOptions.length})` : ''} —`}
-                </option>
-                {customerOptions.map((c) => (
-                  <option key={c.id || c.name} value={customersAreLive ? c.id || '' : c.name}>
-                    {c.name}
-                    {c.currencyName ? ` · ${c.currencyName}` : ''}
-                  </option>
-                ))}
-              </select>
+                    : `Type to search${customersAreLive ? ` ${customerOptions.length} customers` : ' customers'}, or use the arrow`
+                }
+                emptyText={
+                  customerSource === 'loading'
+                    ? 'Still loading customers from NetSuite…'
+                    : 'No customer matches that.'
+                }
+                options={comboCustomers}
+                onPick={(o) =>
+                  customersAreLive ? pickCustomerById(o.id) : pickCustomerByName(o.label)
+                }
+              />
               {/*
                 Says outright when the list is not real. Without this the picker
                 looks identical either way, and a trader would fill in a whole
@@ -1347,17 +1726,32 @@ export const SOWizard = ({
       <div>
         <label style={label}>Ship-to address *</label>
         {!addingAddress ? (
-          <select
+          /*
+            Same treatment as the customer field, on the same instruction: "Ship-to
+            address : même commentaire que A" (Marc-Antoine, 2026-09-08).
+
+            🔴 A LIVE CUSTOMER NEVER FALLS BACK TO FIXTURES. `comboAddresses` used
+            to fall back whenever `liveAddresses` was empty — which includes the
+            window before the fetch resolves — so a real customer briefly offered
+            invented addresses, and one could be selected. Observed on County Line
+            Materials LLC, whose only real address is in Rockingham VA, showing
+            "Cofer Bros Inc., Tucker GA". An address that cannot be sent must not
+            be offered; an empty list says so instead.
+          */
+          <ArchCombobox
+            ariaLabel="Ship-to address"
             value={shipTo}
+            ok={!!shipTo}
             disabled={!customer}
-            onChange={(e) => {
-              if (e.target.value === '__new__') {
-                setAddingAddress(true);
-                setShipTo('');
-                setShipAddressId('');
-                return;
-              }
-              setShipTo(e.target.value);
+            placeholder={customer ? 'Type to search addresses, or use the arrow' : 'Select a customer first'}
+            emptyText={
+              customersAreLive && liveAddresses.length === 0
+                ? 'This customer has no address on file in NetSuite.'
+                : 'No address matches that.'
+            }
+            options={comboAddresses}
+            onPick={(o) => {
+              setShipTo(o.label);
               /* 🔴 THE ID HAS TO MOVE WITH THE LABEL.
                *
                * This used to set `shipTo` only. `shipAddressId` kept whatever
@@ -1369,33 +1763,37 @@ export const SOWizard = ({
                *
                * Cleared when the label matches no live address, so a fixture or a
                * stale entry cannot inherit a real address's id. */
-              const hit = liveAddresses.find((a) => a.label === e.target.value);
+              const hit = liveAddresses.find((a) => a.label === o.label);
               setShipAddressId(hit ? hit.id : '');
             }}
-            style={{ ...field(!!shipTo), cursor: customer ? 'pointer' : 'not-allowed', opacity: customer ? 1 : 0.6 }}
-          >
-            <option value="">{customer ? '— Select address —' : 'Select a customer first'}</option>
-            {/*
-              Real addresses when the customer came from NetSuite, fixtures only
-              when it did not. Keyed by LABEL for the value because the rest of the
-              wizard renders `shipTo` as text; the id travels separately in
-              `shipAddressId`, which is what the write path needs.
-
-              🔴 A LIVE CUSTOMER NEVER FALLS BACK TO FIXTURES. It used to fall back
-              whenever `liveAddresses` was empty — which includes the window before
-              the fetch resolves — so a real customer briefly offered invented
-              addresses, and one could be selected. Observed on County Line
-              Materials LLC, whose only real address is in Rockingham VA, showing
-              "Cofer Bros Inc., Tucker GA". An address that cannot be sent must not
-              be offered; an empty list says so instead.
-            */}
-            {(customersAreLive ? liveAddresses.map((a) => a.label) : allAddresses).map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-            {customer && <option value="__new__">＋ Add new ship-to address…</option>}
-          </select>
+            footer={
+              customer ? (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setAddingAddress(true);
+                    setShipTo('');
+                    setShipAddressId('');
+                  }}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '8px 11px',
+                    border: 'none',
+                    borderTop: '1px solid #E2E8F0',
+                    background: '#F8FAFC',
+                    color: ARCH_SURFACE.green,
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ＋ Add new ship-to address…
+                </button>
+              ) : undefined
+            }
+          />
         ) : (
           <div
             style={{
@@ -1572,59 +1970,146 @@ export const SOWizard = ({
         </div>
       </div>
 
-      <div>
-        <label style={label}>Sales rep *</label>
-        <select
-          value={salesTeam}
-          disabled={!customer}
-          onChange={(e) => {
-            setSalesTeam(e.target.value);
-            // When the list is live the value IS the rep id; the fixture path
-            // has none, which is why it cannot submit.
-            setSalesRepId(liveReps.some((r) => r.id === e.target.value) ? e.target.value : '');
-          }}
-          style={{ ...field(!!salesTeam), cursor: customer ? 'pointer' : 'not-allowed', opacity: customer ? 1 : 0.6 }}
-        >
-          <option value="">
-            {customer
-              ? liveReps.length
-                ? `— Select sales rep (${liveReps.length}) —`
-                : '— Select sales rep —'
-              : 'Select a customer first'}
-          </option>
-          {/*
-            🔴 Real sales reps when NetSuite gave us any, because the write path
-            REFUSES without a rep id: NetSuite rejects the save outright if the
-            sales-team employee is not a real sales rep, so there is nothing to
-            fall back on. The fixture team names remain only for the disconnected
-            case, where no order can be created anyway.
-          */}
-          {liveReps.length
-            ? liveReps.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                  {r.subsidiaryName ? ` · ${r.subsidiaryName}` : ''}
-                </option>
-              ))
-            : SALES_TEAM_NAMES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-        </select>
-        {/*
-          Says outright when the names are cosmetic. Verified 2026-08-20 that the
-          ARCH trader role cannot read the employee table at all, so this is the
-          state a real trader lands in — and without saying so, the pick looks
-          real and the order is refused several steps later for a reason that
-          points nowhere.
-        */}
-        {repsLoaded && liveReps.length === 0 && customer && (
-          <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
-            ⚠️ These names are placeholders. Your role cannot read the employee list, so the
-            rep on the order is decided by NetSuite configuration, not by this choice.
+      {/*
+        TWO FIELDS, because the client's model is two things and ours was one.
+        Marc-Antoine, 2026-09-08: "Je crois qu'on devrait ajouter le field 'sales
+        rep'. Qui permet d'identifier qui est le owner du SO. Le sales team définit
+        le split commission."
+
+        Sales rep is the OWNER, one employee, and the only half this screen sends.
+        Sales team is the COMMISSION SPLIT, and it lives on the order's Sales Team
+        sublist. See lib/archSalesTeamSplit for what each source actually holds.
+      */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 300px' }}>
+          <label style={label}>Sales rep *</label>
+          <select
+            value={liveReps.length ? salesRepId : repTeam.offlineRep}
+            disabled={!customer}
+            onChange={(e) =>
+              /*
+               * 🔴 ONE CALL, AND IT KEEPS THE SPLIT. This used to be two setters
+               * over two overlapping fields, one of which also held the team — so
+               * changing the rep wiped the commission panel, which is exactly what
+               * Marc-Antoine reported. `repPicked` carries `team` through and the
+               * test in archSalesTeamSplit.test.mjs pins it.
+               */
+              setRepTeam((s) =>
+                repPicked(s, e.target.value, liveReps.some((r) => r.id === e.target.value))
+              )
+            }
+            style={{
+              ...field(!!(liveReps.length ? salesRepId : repTeam.offlineRep)),
+              cursor: customer ? 'pointer' : 'not-allowed',
+              opacity: customer ? 1 : 0.6,
+            }}
+          >
+            <option value="">
+              {customer
+                ? liveReps.length
+                  ? `— Select the rep who owns this order (${liveReps.length}) —`
+                  : repsLoaded
+                    ? '— Select sales rep —'
+                    : 'Loading sales reps…'
+                : 'Select a customer first'}
+            </option>
+            {/*
+              🔴 Real sales reps when NetSuite gave us any, because the write path
+              REFUSES without a rep id: NetSuite rejects the save outright if the
+              sales-team employee is not a real sales rep, so there is nothing to
+              fall back on.
+
+              The offline options are PEOPLE. They were the three fixture TEAM
+              names, under a label reading "Sales rep", which made the placeholder
+              wrong in a second way: it offered a team where the field holds one
+              employee. Gated on `repsLoaded` so nothing is offered while the real
+              list is still in flight.
+            */}
+            {liveReps.length
+              ? liveReps.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                    {r.subsidiaryName ? ` · ${r.subsidiaryName}` : ''}
+                  </option>
+                ))
+              : repsLoaded
+                ? FIXTURE_SALES_REPS.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))
+                : null}
+          </select>
+          <div style={{ fontSize: 10, color: ARCH_SURFACE.textLight, marginTop: 3 }}>
+            Owns the sales order. NetSuite credits them on its Sales Team.
           </div>
-        )}
+          {/*
+            🔴 SAYS SO, because on this path the field cannot do what it looks
+            like it does. The create endpoint wraps the ENTIRE header block in
+            `if (!appending)` — `custbody_sales_rep` and the Sales Team sublist
+            included — so an append sends `salesRepId` and the server ignores it.
+            A rep dropdown that silently discards the change is the same class of
+            defect as the ship-to that moved the label and not the address.
+          */}
+          {mode === 'existing' && (
+            <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
+              ⚠️ Shown from {existingSO || 'the order'}. Adding lines does not change who owns it:
+              change the rep on the order in NetSuite.
+            </div>
+          )}
+          {/*
+            Says outright when the names are cosmetic. Verified 2026-08-20 that the
+            ARCH trader role cannot read the employee table at all, so this is the
+            state a real trader lands in — and without saying so, the pick looks
+            real and the order is refused several steps later for a reason that
+            points nowhere.
+          */}
+          {repsLoaded && liveReps.length === 0 && customer && (
+            <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
+              ⚠️ These names are placeholders. Your role cannot read the employee list, so no
+              order can be created from this screen until it can.
+            </div>
+          )}
+        </div>
+
+        <div style={{ flex: '1 1 300px' }}>
+          <label style={label}>Sales team (commission split)</label>
+          {/*
+            🔴 REAL DATA OR NOTHING, and the previous correction here went the wrong
+            way. 11d1007 deleted this panel on the grounds that "no NetSuite field
+            carries a split". It does: `transactionsalesteam` holds 10,170 rows with
+            a `contribution` per rep, SO-CWP-001352 really is a Samuel Nadon /
+            Justin Loveland 50/50, and the named teams he means by "Setup > sales
+            team" are the 44 active `entitygroup` rows with `issalesrep = 'T'`, whose
+            percentages are `entitygroupmember.contribution`.
+
+            What is shown depends on what is reachable:
+              editing  the order's own split, from `traderShared`/`traderTied`,
+                       which the openOrders endpoint already computes from those
+                       contribution values
+              new      the mechanism, stated plainly. The ARCH service serves no
+                       sales-team action and the create endpoint takes no team, so
+                       there is nothing to read and nothing to send. Saying so beats
+                       both a fixture and a blank.
+          */}
+          <div
+            style={{
+              ...field(false),
+              background: '#F8FAFC',
+              borderStyle: orderSplit ? 'solid' : 'dashed',
+              display: 'flex',
+              alignItems: 'center',
+              minHeight: 44,
+              color: orderSplit ? ARCH_SURFACE.text : ARCH_SURFACE.textMid,
+              fontWeight: orderSplit ? 600 : 500,
+            }}
+          >
+            {orderSplit ? orderSplit.headline : NEW_ORDER_SPLIT_HEADLINE}
+          </div>
+          <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textMid, marginTop: 5, lineHeight: 1.5 }}>
+            {orderSplit ? orderSplit.detail : NEW_ORDER_SPLIT_DETAIL}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -2311,11 +2796,16 @@ export const SOWizard = ({
           ['Incoterms', incoterms || '—'],
           ['Currency', currency || '—'],
           ['Payment terms', paymentTermsFor(customer) || '—'],
-          // `salesTeam` holds the SELECT's value, which on the live path is a rep
-          // internal id — so printing it raw showed the trader "120" where a name
-          // belongs. Resolve it back to the name, and fall through to the value
-          // itself on the fixture path, where it already IS a team name.
-          ['Sales rep', salesRepName || salesTeam || '—'],
+          // The rep's NAME. The select's value is an internal id on the live path,
+          // so printing it raw showed the trader "120" where a name belongs.
+          ['Sales rep', salesRepLabel || '—'],
+          /*
+            The commission split, restated on the last screen before the order is
+            committed. 11d1007 removed it from here as well, so the one place a
+            trader could check the split before creating went quiet; it is back,
+            fed by the order's own Sales Team rather than by a fixture map.
+          */
+          ['Sales team', orderSplit ? orderSplit.headline : NEW_ORDER_SPLIT_HEADLINE],
         ].map(([k, v]) => (
           <div key={k}>
             <div
@@ -2420,10 +2910,26 @@ export const SOWizard = ({
         </tbody>
       </table>
 
+      {/*
+        `justifyContent: 'space-between'`, not the default flex-start.
+
+        Lucas circled the empty right-hand half of this bar on 2026-09-08: "Can we
+        move these to the right side of the pane?" Six figures at their natural
+        width clumped against the left edge of an 1,180px dialog and left roughly
+        half the bar blank, so the eye had to travel back and forth across dead
+        space to read a total against its label. Spreading them fills the bar to
+        both edges, which answers the arrow without pushing everything into a
+        right-hand huddle and leaving the same hole on the other side.
+
+        Every figure, its order and its colour are unchanged. `rowGap` keeps the
+        two rows apart when the dialog is narrow enough to wrap.
+      */}
       <div
         style={{
           display: 'flex',
+          justifyContent: 'space-between',
           gap: 24,
+          rowGap: 14,
           flexWrap: 'wrap',
           padding: '14px 18px',
           borderRadius: 10,

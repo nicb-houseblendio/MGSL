@@ -1106,12 +1106,57 @@ define([
                 }
             }
 
-            // ── Lot attribution, only where an assignment exists ──
-            const assigned = Math.abs(num(r.assignedqty));
-            if (r.lotno && assigned > 0) {
+            /* ── Lot attribution, only where an assignment exists ─────────────
+             *
+             * 🔴 ONLY THE OPEN SHARE OF THE LINE REACHES THE LOT.
+             *
+             * An inventoryassignment row lives on the ORDER and never moves: it
+             * still says "300 BF of lot 315643-7" long after that 300 BF has
+             * shipped. The line-level split above already knows the difference —
+             * `open` is still in the building, `moved` has gone — and until
+             * 2026-09-08 this block threw that away and booked the WHOLE
+             * assignment as the lot's `reserve`.
+             *
+             * Measured in sandbox on 2026-09-08. SO-CWP-001346 ordered 300 BF of
+             * PUR44KD from lot 315643-7, fulfilled it on IF1208 and billed it on
+             * INV-CWP-1236 (status G). The row was correct — reserve 0, outbound
+             * 300 — while the LOT carried reserve 300, and the same 300 BF was
+             * simultaneously reported as `unattributed.outbound`. Downstream that
+             * one number:
+             *   · put a "Res. 300 BF" note and a Rsvd badge on a bundle no order
+             *     holds, on a row whose Reserved column correctly read 0;
+             *   · listed the bundle a second time in the Reserved panel;
+             *   · locked all 211 remaining BF out of selling (`isLotLocked`),
+             *     which NetSuite itself reports as 211 available.
+             * That is Lucas's report, and it cannot be fixed in the browser: the
+             * front end has no way to tell a real reservation from this one.
+             *
+             * The shipped share is deliberately booked to NO lot rather than to
+             * `lots[..].outbound`. It is not on the lot any more — IA-CWP-362 put
+             * 511 BF into 315643-7, IF1208 took 300 out, and `storedQty` reads
+             * the resulting 211 — so recording it against the bundle would count
+             * the same wood twice and, because `commitmentOn` treats outbound as a
+             * commitment, would keep the bundle locked under a different label.
+             * The row still reports it in `outbound`, which is where shipment
+             * history belongs.
+             *
+             * The purchase-order branch is split the same way for the same
+             * reason: a received PO line's assignment describes stock that is now
+             * ON HAND, so leaving it whole would report received wood as still on
+             * order. No hardwood PO is part-received today (every open line reads
+             * quantityshiprecv 0), so this is the latent half of one defect, not
+             * a second one.
+             */
+            const assigned  = Math.abs(num(r.assignedqty));
+            // Proportional, because an assignment carries no ship state of its
+            // own. A fully shipped line gives 0, an untouched line gives 1, and a
+            // half-shipped line splits — the only reading available from what
+            // NetSuite exposes here.
+            const openShare = ordered > 0 ? open / ordered : 0;
+            if (r.lotno && assigned > 0 && openShare > 0) {
                 if (!bucket.lots[r.lotno]) bucket.lots[r.lotno] = blank();
-                if (isSale) bucket.lots[r.lotno].reserve += assigned;
-                else        bucket.lots[r.lotno].onOrder += assigned;
+                if (isSale) bucket.lots[r.lotno].reserve += assigned * openShare;
+                else        bucket.lots[r.lotno].onOrder += assigned * openShare;
             }
         });
 
@@ -1653,10 +1698,50 @@ define([
                 // sellable while a correction is pending.
                 held:         held,
                 heldLotCount: lots.filter((l) => l.onHold).length,
-                // The full formula, floored. readyToBuild stays a literal 0 so it
-                // is obvious it contributes nothing yet.
+                /* The full formula, floored. readyToBuild stays a literal 0 so it
+                 * is obvious it contributes nothing yet.
+                 *
+                 * 🔴 `outbound` IS NOT SUBTRACTED, and removing it on 2026-09-08
+                 * was a CORRECTION, not a simplification. Do not put it back
+                 * without re-measuring the two facts below.
+                 *
+                 * `outbound` is `quantityshiprecv` on sales-order lines that are
+                 * still open (isclosed='F'). That quantity has left inventory: it
+                 * requires an Item Fulfillment, and the fulfillment relieves the
+                 * stock. So `onHand` — read from quantityonhand, per lot — is
+                 * ALREADY net of it, and subtracting it again removed the same
+                 * wood twice.
+                 *
+                 * Measured in sandbox 2026-09-08, lot 315643-7 of PUR44KD at
+                 * Ramsey Xpress. IA-CWP-362 put 511 BF in on 08-14; IF1208 took
+                 * 300 out on 09-08; inventorynumberlocation reports
+                 * quantityonhand 0.211 and quantityavailable 0.211. The row read
+                 * On Hand 1,754, Reserved 0, Available 1,454 — 300 BF of
+                 * uncommitted hardwood that NetSuite says is on the floor and
+                 * free, reported as unsellable. Three more rows carried the same
+                 * error (SAP54FCKD @ USL 225, ZEB44KD 141, ZEB84KD @ Prevost 500;
+                 * 1,166 BF across 13 rows), and it GROWS WITHOUT BOUND: nothing
+                 * closes a shipped-and-billed line, so every future shipment adds
+                 * to a permanent deduction.
+                 *
+                 * That is the arithmetic half of Marc-Antoine's report — the
+                 * stock left On Hand, left Reserved, was deducted a second time
+                 * here, and appeared in no column, because the grid rendered no
+                 * Outbound column either. The column is back (InventoryTableARCH)
+                 * and it reports shipment history, which is what it is.
+                 *
+                 * With this line as it stands, every one of the 13 live rows
+                 * reconciles exactly: available equals the free volume of its own
+                 * bundles plus whatever is on order or in transit and has no
+                 * bundle yet. With `- outbound` it did not on 4 of 13.
+                 *
+                 * ⚠️ lib/archFixtures.ts still models outbound as a claim on
+                 * on-hand stock and subtracts it, which is self-consistent for a
+                 * generator but no longer matches live. Bring it in step when it
+                 * is next touched.
+                 */
                 available:    Math.max(0, onHand + onOrder + inTransit
-                                          - reserve - 0 /*readyToBuild*/ - outbound
+                                          - reserve - 0 /*readyToBuild*/
                                           - held),
                 // NULL, NOT ZERO, when nothing could be costed. 0 renders as
                 // "$0.00/BF" — indistinguishable from stock that genuinely cost

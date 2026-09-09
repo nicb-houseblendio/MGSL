@@ -10,13 +10,15 @@ import type { ArchSummaryRow, ArchDetailKey } from '@/types/arch';
  * ARCH detail modal.
  *
  * Structure follows the POC: a bucket switcher across the top so a trader can
- * move between On Hand / Ready to Build / In Transit / On Order without closing,
- * and a lot table underneath.
+ * move between Available / On Hand / Ready to Build / In Transit / On Order
+ * without closing, and a lot table underneath.
  *
- * Every grid column has a tab except Reserved, which is a subset of On Hand and
- * is surfaced by the "Show reserved" toggle there instead of as a separate pile.
- * That rule matters: a click on any quantity must land on a view that actually
- * contains the number that was clicked.
+ * THE RULE: a click on any quantity must land on a view that actually contains
+ * the number that was clicked. Every clickable grid column now has a tab whose
+ * header total is the figure that was clicked. The two exceptions are both
+ * deliberate and neither is a redirect the trader can trip over — Reserved is a
+ * subset of On Hand and opens it with the reserved panel expanded, and Outbound
+ * is not clickable on the grid at all.
  */
 
 interface DetailDrawerARCHProps {
@@ -33,11 +35,28 @@ interface DetailDrawerARCHProps {
 }
 
 /**
- * Four tabs, matching the client prototype exactly. It carried Available and
- * Outbound tabs at one point and dropped both, leaving the note "Available tab
- * removed — On Hand is the primary view; Reserved folds into it via a toggle".
+ * AVAILABLE HAS ITS OWN TAB, restored 2026-09-08.
+ *
+ * It had none, and `resolveTab` sent it to On Hand instead. Lucas reported the
+ * consequence: clicking AVAILABLE opened a table headed with the row's full
+ * ON-HAND figure, listing every bundle at its full on-hand quantity — reserved
+ * bundles included, each carrying a "Res." note — and toggling "Show reserved"
+ * then listed those same bundles a second time underneath.
+ *
+ * The comment that used to sit here defended the redirect by claiming the figure
+ * a trader clicks is the sum of the per-lot Available column. That was
+ * measurably false. On PUR44KD @ Ramsey Xpress on 2026-09-08 the grid read
+ * AVAILABLE 1,454 while the per-lot Available column summed to 1,543 and the
+ * header above it said 1,754. Three different numbers on one click.
+ *
+ * Reserved still has no tab, and that stays deliberate: reserved stock is a
+ * SUBSET of on-hand rather than a separate pile, so it lands on On Hand with its
+ * detail panel expanded. Outbound has no tab either — see the grid, where the
+ * column is deliberately not clickable because no bundle carries a shipped
+ * quantity to list.
  */
 const TABS: { key: ArchDetailKey; label: string }[] = [
+  { key: 'available', label: 'Available' },
   { key: 'onHand', label: 'On Hand' },
   { key: 'readyToBuild', label: 'Ready to Build' },
   { key: 'inTransit', label: 'In Transit' },
@@ -47,14 +66,11 @@ const TABS: { key: ArchDetailKey; label: string }[] = [
 const TAB_KEYS = new Set<ArchDetailKey>(TABS.map((t) => t.key));
 
 /**
- * Buckets without a tab of their own all land on On Hand, as the prototype does:
- * Reserved and Available are both views OF the on-hand pile rather than separate
- * piles. Reserved additionally opens with its section expanded (see below).
+ * The two buckets with no tab land on On Hand.
  *
- * Available lands on a tab whose header total is LARGER than the number clicked,
- * which is only honest because the On Hand table carries a per-lot Available
- * column — the clicked figure is the sum of that column. Do not remove it
- * without giving Available its tab back.
+ * Reserved, because it is a view OF the on-hand pile and opens with its own
+ * panel expanded (see below). Outbound, only defensively: the grid does not
+ * offer it as a click, so this arm is unreachable from the UI.
  */
 const resolveTab = (bucket: ArchDetailKey): ArchDetailKey =>
   TAB_KEYS.has(bucket) ? bucket : 'onHand';

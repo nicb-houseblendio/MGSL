@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import { toLengthDistribution, toWidthDistribution, widthLabel, widthNote, checkPayload } from '@/lib/archTally';
+import { lengthDisplayFt, lengthDisplayRow } from '@/lib/archTallyLength';
 import type { TallyBundle } from '@/lib/archTally';
 
 /**
@@ -122,6 +123,16 @@ const TallyMatrixPanel = ({
   const anyPartial =
     rows.some((r) => r.volumePartial || r.boardFeetPartial) || totals.volumePartial || totals.boardFeetPartial;
 
+  /* An EMPTY BF column needs a sentence, because BF is the unit this trade quotes in.
+   *
+   * It was never visible before: both documents in the old demo rotation state board
+   * feet. The metric one states volume in m3 and no BF at all, so every cell in that
+   * column renders as the `·` placeholder, and a column of dots where a trader
+   * expects board feet reads as a broken screen rather than as a silent document. */
+  const noBoardFeet = totals.boardFeet == null && rows.every((r) => r.boardFeet == null);
+
+  const selfLen = lengthDisplayFt(bundle.lengthFt);
+
   /** A partial sum carries a dagger so it never reads as the whole. */
   const cellVal = (v: number | null, partial: boolean, dp = 0) => (
     <>
@@ -195,7 +206,9 @@ const TallyMatrixPanel = ({
       </div>
       <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textLight, marginBottom: 8 }}>
         Lengths held at this thickness. This bundle is <span className="font-mono">{bundle.bundleNo}</span>
-        {bundle.lengthFt != null ? <> at <b>{bundle.lengthFt}&apos;</b></> : null}.
+        {bundle.lengthFt != null ? (
+          <> at <b>{selfLen.text}</b>{selfLen.gloss ? ` (${selfLen.gloss})` : ''}</>
+        ) : null}.
       </div>
 
       <div style={{ background: '#fff', border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'auto', maxHeight: '52vh' }}>
@@ -212,10 +225,28 @@ const TallyMatrixPanel = ({
           <tbody>
             {rows.map((r) => {
               const isThis = selfIdx >= 0 && r.bundleIdx.includes(selfIdx);
+              /* 🔴 THE LENGTH CELL IS NOT `r.label` ANY MORE, AND `r.label` IS STILL THE KEY.
+               *
+               * A metric packing list stores its lengths as feet, so rowLabel() prints
+               * 2400mm as 7.874'. Measured 2026-09-08 across the one metric document we
+               * hold: 7.874' 8.858' 9.843' 10.827' 11.811' 12.795' 13.78' 14.764'. Correct,
+               * and it reads as noise - which is the whole reason that document had been
+               * kept out of the demo rotation, and therefore the reason no lot on this
+               * screen could draw the width table below. See archTallyLength.ts.
+               *
+               * The grouping key stays the reducer's own string. This changes what a human
+               * reads and nothing that is summed or compared. */
+              const len = lengthDisplayRow(r);
               return (
                 <tr key={r.label} style={isThis ? { background: '#EFF6FF' } : undefined}>
                   <td style={{ ...cell, textAlign: 'left', fontWeight: isThis ? 800 : 600 }} className="font-mono">
-                    {r.label}{isThis ? ' \u25C4' : ''}
+                    {len.text}
+                    {len.gloss ? (
+                      <span style={{ fontWeight: 400, color: ARCH_SURFACE.textLight, fontSize: 10.5 }}>
+                        {' '}{'\u2248'}{len.gloss}
+                      </span>
+                    ) : null}
+                    {isThis ? ' \u25C4' : ''}
                   </td>
                   <td style={cell} className="font-mono">{num(r.bundles)}</td>
                   <td style={cell} className="font-mono">{num(r.pieces)}</td>
@@ -261,9 +292,17 @@ const TallyMatrixPanel = ({
         * bundle we hold carries 22 widths; at this cell padding that wants ~1,210px.
         * A vertical table fits the same data in 250-510px of height.
         *
-        * Renders NOTHING when the breakdown is degenerate (one width or none), which
-        * is every bundle in the current demo rotation - the scalar widthLabel in the
-        * heading above already says everything a single-width bundle has to say. */}
+        * Renders NOTHING when the breakdown is degenerate (one width or none) - the
+        * scalar widthLabel in the heading above already says everything a single-width
+        * bundle has to say.
+        *
+        * ⚠️ THAT SILENCE IS WHAT THE CLIENT SAW, AND IT WAS NOT THIS PANEL'S FAULT.
+        * Until 2026-09-08 every bundle the demo could serve was degenerate, so this
+        * block never rendered on any lot and Marc-Antoine reported the matrix as
+        * absent. The fix is in the demo pool (DEMO_PICKS in archTallyFixtures.ts) and
+        * in the length label (archTallyLength.ts), not here. archTallyReach.test.mjs
+        * pins 67 of 67 real ARCH lots drawing this table; if that count ever falls back
+        * to 0 this panel will again be perfect and invisible. */}
       {!w.degenerate && (
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textLight, marginBottom: 4 }}>
@@ -361,6 +400,12 @@ const TallyMatrixPanel = ({
         {anyPartial && (
           <div style={{ color: '#B45309', marginBottom: 3 }}>
             &dagger; Only some bundles at that length state the figure, so the sum covers part of the row.
+          </div>
+        )}
+        {noBoardFeet && (
+          <div style={{ marginBottom: 3 }}>
+            This document states volume in m&sup3; and no board feet, so the BF column is empty.
+            Nothing is derived from the volume: a BF figure computed here would disagree with the paper.
           </div>
         )}
         {/* Only the width CAVEATS render here. Provenance lives in the dialog footer -
