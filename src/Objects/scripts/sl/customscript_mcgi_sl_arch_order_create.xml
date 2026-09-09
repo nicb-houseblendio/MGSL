@@ -106,13 +106,13 @@
       <defaultchecked>F</defaultchecked>
       <defaultselection></defaultselection>
       <defaultvalue></defaultvalue>
-      <description>Where the order confirmation PDF is emailed. EMPTY MEANS NO EMAIL IS SENT, and that is the default on purpose: this sends real mail, and in the sandbox employee 3293 "Trader Hardwood" carries ma.poirier+arc@mcgillstlaurent.com, which is Marc-Antoine's own address. He is actively testing in this account, so a feature that silently mails him from a sandbox he did not know had one is not acceptable. Set it to a specific address to route every confirmation there while testing. Set it to the literal word CREATOR to send to the person who created the order, which is the actual feature - production only, and only once MGSL have asked for it. Failure to render or send is never fatal: the order is already saved and verified before this runs, and the trader must not be told the order failed because an email did.</description>
+      <description>Where the order confirmation PDF is emailed. EMPTY MEANS NO EMAIL IS SENT, and that is the default on purpose: this sends real mail, and in the sandbox employee 3293 "Trader Hardwood" carries ma.poirier+arc@mcgillstlaurent.com, which is Marc-Antoine's own address. He is actively testing in this account, so a feature that silently mails him from a sandbox he did not know had one is not acceptable. Set it to a specific address to route every confirmation there while testing. The value is a COMMA-SEPARATED list and each entry is one of three things. CREATOR sends to the person who created the order, which is Marc-Antoine's item 3.b. SALESREP sends to the sales rep or reps actually credited on the saved order, which is the third clause of his item 9, "Le courriel pourrait s'envoyer au sales rep"; it reads the sales team sublist of the saved order rather than re-deriving a rep, because an append carries no rep in its request yet the order still has one, and because the rep that matters is the one that landed. A team member who is inactive, not flagged Sales Rep, or has no address is skipped and named in the log rather than substituted. Anything else is treated as a literal address. CREATOR,SALESREP does both. Production only, and only once MGSL have asked for it. Failure to render or send is never fatal: the order is already saved and verified before this runs, and the trader must not be told the order failed because an email did.</description>
       <displayheight></displayheight>
       <displaytype>NORMAL</displaytype>
       <displaywidth></displaywidth>
       <dynamicdefault></dynamicdefault>
       <fieldtype>TEXT</fieldtype>
-      <help>Empty = off. An email address = send there. The word CREATOR = send to the creating user.</help>
+      <help>Empty = off. A COMMA-SEPARATED list. CREATOR = the creating user. SALESREP = the sales rep(s) credited on the saved order. Anything else = a literal email address. Example: CREATOR,SALESREP</help>
       <isformula>F</isformula>
       <ismandatory>F</ismandatory>
       <label>Order PDF Email To</label>

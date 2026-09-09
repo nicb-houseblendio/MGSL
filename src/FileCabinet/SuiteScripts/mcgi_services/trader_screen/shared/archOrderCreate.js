@@ -2464,15 +2464,37 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * silently mails him from a sandbox he did not know had one is exactly the kind
      * of surprise that costs trust.
      *
-     * `custscript_arch_pdf_email_to` therefore has three states:
+     * `custscript_arch_pdf_email_to` holds a COMMA-SEPARATED list of recipients.
+     * Empty is the default and means no email at all. Each entry is one of:
      *
-     *   empty            no email at all. The default.
-     *   an address       send there, whoever created the order. Use this in the
-     *                    sandbox so nothing reaches MGSL until they have asked for it.
-     *   the word CREATOR send to the person who created the order, which is the
-     *                    actual feature. Prod only, once MGSL want it.
+     *   CREATOR   the person who created the order. Resolved from getCurrentUser,
+     *             which survives the runasrole switch.
+     *   SALESREP  the sales rep or reps credited ON THE SAVED ORDER. This is the
+     *             third clause of Marc-Antoine's 2026-09-08 item 9, which we had
+     *             marked done on the strength of the first two: "Je crois qu'on
+     *             devrait ajouter le field sales rep [...] Le courriel pourrait
+     *             s'envoyer au sales rep."
+     *   anything  treated as a literal email address, sent to as-is. Use this in
+     *   else      the sandbox so nothing reaches MGSL until they have asked for it.
+     *
+     * So `CREATOR` alone is his item 3.b, `SALESREP` alone is his item 9, and
+     * `CREATOR,SALESREP` is both. One parameter, because the two asks are the same
+     * mechanism pointed at different people, and a second parameter would let the
+     * two drift.
      *
      * Same shape as the split fee: config, default off, until confirmed.
+     *
+     * ── Why SALESREP reads the SAVED order instead of re-deriving ───────────
+     * `resolveSalesRep` answers "who SHOULD be credited" from the request. That is
+     * the wrong question here, for two reasons. On an APPEND the request carries no
+     * rep at all and deliberately ignores one if sent, yet the order still has a
+     * rep from when it was created. And the rep that matters is the one that
+     * actually landed, not the one we asked for. Reading it back is both simpler
+     * and truthful.
+     *
+     * The rep lives on the sales team SUBLIST, not the header: `transaction.salesrep`
+     * is empty on every ARCH order in this account, which is the same fact that made
+     * the Open Sales Orders tab show "Unassigned" for all of them.
      *
      * ── Why failure here is swallowed ───────────────────────────────────────
      * The order is already saved and verified by the time this runs. If rendering
@@ -2481,6 +2503,92 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * AUDIT for a config problem, ERROR only when it actually broke.
      */
     const PDF_EMAIL_PARAM = 'custscript_arch_pdf_email_to';
+
+    /**
+     * The employees credited as sales reps on a SAVED order, for SALESREP.
+     *
+     * Returns { ids, skipped, readable }. `readable: false` means the sublist could
+     * not be read at all, which is NOT the same as "no reps" and must never be
+     * reported as one.
+     *
+     * ⚠️ Two queries, not one join, and that is deliberate. Both shapes are already
+     * proven under `N/query` in this file at this role: the first is the same shape
+     * as `verifySalesTeam`, the second the same as `resolveSalesRep`. REST SuiteQL
+     * and N/query are different dialects and a join that works in `sql.mjs` can fail
+     * only once deployed, which has already cost this project a live defect. Reusing
+     * proven shapes is cheaper than discovering that again in a mail path.
+     *
+     * ⚠️ Whether `customrole2184` can read `transactionsalesteam` is NOT established
+     * (see the note on `verifySalesTeam`), so an unreadable sublist degrades to "do
+     * not send" with an AUDIT line, never to a fallback recipient. Mailing the wrong
+     * person a customer's order confirmation is worse than mailing nobody.
+     */
+    const resolveRepRecipients = (soId) => {
+        let rows;
+        try {
+            rows = query.runSuiteQL({
+                query: 'SELECT employee, contribution FROM transactionsalesteam ' +
+                       'WHERE transaction = ?',
+                params: [soId],
+            }).asMappedResults();
+        } catch (e) {
+            log.audit('ARCH Order PDF',
+                'Could not read the sales team on order ' + soId + ', so SALESREP ' +
+                'resolved to nobody: ' + (e.message || String(e)));
+            return { ids: [], skipped: [], readable: false };
+        }
+
+        // Contribution orders the log usefully (the majority holder first) and is
+        // stored as a FRACTION, not a percentage. Ordering only, never arithmetic.
+        const ranked = (rows || [])
+            .map((r) => ({ id: int(r.employee), share: parseFloat(r.contribution) || 0 }))
+            .filter((r) => r.id)
+            .sort((a, b) => b.share - a.share);
+
+        const seen = {};
+        const candidates = [];
+        for (let i = 0; i < ranked.length; i++) {
+            if (seen[ranked[i].id]) continue;
+            seen[ranked[i].id] = true;
+            candidates.push(ranked[i].id);
+        }
+        if (!candidates.length) return { ids: [], skipped: [], readable: true };
+
+        /* A team member who is inactive, not flagged Sales Rep, or has no address
+         * cannot receive this. Each is a real state in this account rather than a
+         * hypothetical: James Bradley sits on 33 saved sales-team rows and reads
+         * `issalesrep = 'F'` today. */
+        let ok;
+        try {
+            ok = query.runSuiteQL({
+                query:
+                    'SELECT id, email FROM employee ' +
+                    'WHERE id IN (' + candidates.join(',') + ') ' +
+                    "  AND issalesrep = 'T' AND isinactive = 'F'",
+            }).asMappedResults();
+        } catch (e) {
+            log.audit('ARCH Order PDF',
+                'Could not check the sales team members of order ' + soId + ', so ' +
+                'SALESREP resolved to nobody: ' + (e.message || String(e)));
+            return { ids: [], skipped: [], readable: false };
+        }
+
+        const mailable = {};
+        for (let i = 0; i < (ok || []).length; i++) {
+            const id = int(ok[i].id);
+            // NULL columns are OMITTED from a SuiteQL row, so an absent key is an
+            // absent address. Checking truthiness covers both that and ''.
+            if (id && ok[i].email) mailable[id] = true;
+        }
+
+        const ids = [];
+        const skipped = [];
+        for (let i = 0; i < candidates.length; i++) {
+            if (mailable[candidates[i]]) ids.push(candidates[i]);
+            else skipped.push(candidates[i]);
+        }
+        return { ids: ids, skipped: skipped, readable: true };
+    };
 
     const sendOrderPdf = (soId, tranId, creatorId, appending) => {
         /* READ DEFENSIVELY. `param()` already swallows a throwing getParameter and
@@ -2500,6 +2608,63 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         if (!target) return { sent: false, reason: 'not configured' };
 
         try {
+            /* Recipients are assembled BEFORE the PDF is rendered. Rendering is the
+             * expensive half, and a configuration that resolves to nobody should not
+             * pay for it. */
+            const tokens = target.split(',')
+                .map((t) => String(t).trim())
+                .filter((t) => t);
+
+            const recipients = [];
+            const to = [];          // what actually got mailed, for the log
+            const notes = [];       // why anything was left out
+            const seen = {};
+            const add = (value, label) => {
+                const key = String(value);
+                if (seen[key]) return;
+                seen[key] = true;
+                recipients.push(value);
+                to.push(label);
+            };
+
+            for (let i = 0; i < tokens.length; i++) {
+                const token = tokens[i];
+                const upper = token.toUpperCase();
+
+                if (upper === 'CREATOR') {
+                    // Resolved to the real person, not the runasrole. See the note on
+                    // resolveSalesRep: getCurrentUser survives the role switch.
+                    if (creatorId) add(creatorId, 'creator (' + creatorId + ')');
+                    else notes.push('CREATOR resolved to nobody');
+                    continue;
+                }
+
+                if (upper === 'SALESREP') {
+                    const reps = resolveRepRecipients(soId);
+                    for (let k = 0; k < reps.ids.length; k++) {
+                        add(reps.ids[k], 'sales rep (' + reps.ids[k] + ')');
+                    }
+                    if (reps.skipped.length) {
+                        notes.push('sales team member(s) ' + reps.skipped.join(', ') +
+                                   ' skipped: inactive, not flagged Sales Rep, or no address');
+                    }
+                    if (!reps.readable) notes.push('the sales team could not be read');
+                    else if (!reps.ids.length) notes.push('no mailable sales rep on the order');
+                    continue;
+                }
+
+                // Anything else is a literal address.
+                add(token, token);
+            }
+
+            if (!recipients.length) {
+                log.audit('ARCH Order PDF',
+                    'Configured as "' + target + '" but that resolved to no recipient, so ' +
+                    'SO ' + tranId + ' was not mailed. The order is unaffected.' +
+                    (notes.length ? ' ' + notes.join('; ') + '.' : ''));
+                return { sent: false, reason: notes.length ? notes.join('; ') : 'no recipient resolved' };
+            }
+
             // The PDF comes from the transaction's own form, so it is whatever
             // NetSuite would print — no layout invented here. render.transaction
             // does not take a form id: the record already knows its form, which is
@@ -2510,21 +2675,11 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             });
             pdf.name = tranId + '.pdf';
 
-            // CREATOR is resolved to the real person, not the runasrole. See the
-            // note on resolveSalesRep: getCurrentUser survives the role switch.
-            const toCreator = target.toUpperCase() === 'CREATOR';
-            if (toCreator && !creatorId) {
-                log.audit('ARCH Order PDF',
-                    'Configured to mail the creator but no creator id was resolved, so ' +
-                    'SO ' + tranId + ' was not mailed. The order is unaffected.');
-                return { sent: false, reason: 'no creator' };
-            }
-
             email.send({
                 // Author must be an employee with an email address. The creating
                 // user is one by definition — they just saved a transaction.
                 author: creatorId,
-                recipients: toCreator ? creatorId : target,
+                recipients: recipients,
                 subject: 'Sales order ' + tranId,
                 body:
                     // Appends reach this too, and used to be told the order 'has been
@@ -2538,8 +2693,9 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             });
 
             log.audit('ARCH Order PDF',
-                'Mailed ' + tranId + ' to ' + (toCreator ? 'its creator (' + creatorId + ')' : target));
-            return { sent: true, to: toCreator ? 'creator' : target };
+                'Mailed ' + tranId + ' to ' + to.join(', ') +
+                (notes.length ? ' | ' + notes.join('; ') : ''));
+            return { sent: true, to: to, skipped: notes };
         } catch (e) {
             // Never fatal. The order exists and is correct.
             log.error('ARCH Order PDF — NOT SENT for ' + tranId,
@@ -3491,6 +3647,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         resolveLines: resolveLines,
         verifyAssignments: verifyAssignments,
         sendOrderPdf: sendOrderPdf,
+        resolveRepRecipients: resolveRepRecipients,
         resolveSalesTeam: resolveSalesTeam,
         writeSalesTeam: writeSalesTeam,
         verifySalesTeam: verifySalesTeam,
