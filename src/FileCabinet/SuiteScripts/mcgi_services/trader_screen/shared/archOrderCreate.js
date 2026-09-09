@@ -2590,6 +2590,37 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         return { ids: ids, skipped: skipped, readable: true };
     };
 
+    /**
+     * What the PDF-email parameter is set to, for the GET health payload.
+     *
+     * Reports the KINDS of recipient configured, never the address itself: a health
+     * endpoint should not hand out a mailbox. This is the read-only way to tell an
+     * absent parameter from an empty one, which the runtime log cannot do.
+     */
+    const pdfEmailReadiness = () => {
+        let raw = null;
+        let threw = false;
+        try {
+            raw = param(PDF_EMAIL_PARAM);
+        } catch (e) {
+            threw = true;
+        }
+        const target = String(raw === null || raw === undefined ? '' : raw).trim();
+        const tokens = target.split(',').map((t) => String(t).trim()).filter((t) => t)
+            .map((t) => {
+                const u = t.toUpperCase();
+                if (u === 'CREATOR' || u === 'SALESREP') return u;
+                return 'ADDRESS';
+            });
+        return {
+            // `present: false` means the field is not on the deployment at all, as
+            // distinct from present-and-empty, which is the intended default.
+            present: !threw && raw !== null && raw !== undefined,
+            configured: tokens.length > 0,
+            tokens: tokens,
+        };
+    };
+
     const sendOrderPdf = (soId, tranId, creatorId, appending) => {
         /* READ DEFENSIVELY. `param()` already swallows a throwing getParameter and
          * returns null (a parameter missing from the DEPLOYED script object can
@@ -2605,7 +2636,17 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 'confirmation was sent. The order is unaffected.');
             return { sent: false, reason: 'parameter not deployed' };
         }
-        if (!target) return { sent: false, reason: 'not configured' };
+        if (!target) {
+            /* Was silent until 2026-09-09, and that cost a debugging session: an
+             * ABSENT parameter and an EMPTY one both produced no log line at all,
+             * so a run that mailed nothing looked identical to a run that never
+             * reached here. The audit above this that was meant to tell them apart
+             * is unreachable, because param() catches the throw and returns null. */
+            log.audit('ARCH Order PDF',
+                'No recipient is configured on ' + PDF_EMAIL_PARAM + ', so ' + tranId +
+                ' was not mailed. This is the default state and the order is unaffected.');
+            return { sent: false, reason: 'not configured' };
+        }
 
         try {
             /* Recipients are assembled BEFORE the PDF is rendered. Rendering is the
@@ -3648,6 +3689,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         verifyAssignments: verifyAssignments,
         sendOrderPdf: sendOrderPdf,
         resolveRepRecipients: resolveRepRecipients,
+        pdfEmailReadiness: pdfEmailReadiness,
         resolveSalesTeam: resolveSalesTeam,
         writeSalesTeam: writeSalesTeam,
         verifySalesTeam: verifySalesTeam,

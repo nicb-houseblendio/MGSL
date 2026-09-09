@@ -191,6 +191,12 @@ define(['N/runtime', 'N/log', './../../shared/archOrderCreate'],
                 // refused, so check it here after any deploy rather than
                 // inferring it from stored data.
                 lineFields: orderLib.fieldReadiness(),
+                /* Whether the order-confirmation email has a recipient, and of
+                 * what kind. Reports the KINDS only, never the address. This is
+                 * the only read-only way to tell an ABSENT parameter from an
+                 * empty one: the runtime cannot, because param() turns a missing
+                 * parameter into null. Check it here after any object deploy. */
+                pdfEmail: orderLib.pdfEmailReadiness(),
             });
         }
 
