@@ -116,8 +116,36 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record', 'N/log'
                 'create orders: ' + e.message);
         }
 
+        /*
+         * 🔴 THE COMMISSION LATCH, and it has to be emitted here or it can never be
+         * opened. Added 2026-09-09.
+         *
+         * The screen refuses to send a Sales Team unless this reads exactly true, and
+         * the order endpoint refuses to write one unless its own parameter is enabled.
+         * Both fail OFF, which is deliberate: writing a multi-member team ATTRIBUTES
+         * COMMISSION ON A REAL SALES DOCUMENT and MGSL have not asked for it. But an
+         * adversarial pass found the client-side latch unopenable, because this object
+         * never carried the key, so a "go" from MGSL could not have been honoured
+         * without a code change. A switch you cannot flip is not a switch.
+         *
+         * Same shape as the split fee above: a deployment parameter, unset, meaning
+         * off. Turning it on takes BOTH this and the endpoint's own parameter.
+         */
+        let salesTeamWriteEnabled = false;
+        try {
+            var stRaw = runtime.getCurrentScript().getParameter({
+                name: 'custscript_ts_salesteam_write_on',
+            });
+            salesTeamWriteEnabled = stRaw === true || String(stRaw || '').trim().toUpperCase() === 'T';
+        } catch (e) {
+            // A parameter absent from the deployed object can throw rather than read
+            // null. That is still OFF, which is the safe direction.
+            salesTeamWriteEnabled = false;
+        }
+
         const configObj = {
             orderEndpointUrl: orderEndpointUrl,
+            salesTeamWriteEnabled: salesTeamWriteEnabled,
             splitFeeEnabled: feeEnabled,
             splitFeeAmount: feeAmount,
             restletUrl: restletUrl,

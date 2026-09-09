@@ -155,6 +155,35 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
             // lines here filters it: the cache builder's buckets, the order
             // endpoint's commitment guards, the open-orders service.
             "  AND tl.isclosed = 'F' " +
+            /*
+             * 🔴 AND `isclosed` IS NOT ENOUGH, because it never flips on this account.
+             *
+             * Measured 2026-09-09: all 19 split-flagged lines read isclosed 'F',
+             * including 3 sitting on BILLED (status G) sales orders. So the filter
+             * above, which was added to keep finished work out of the queue, does not
+             * actually do it, and the live queue was serving exactly one job and it
+             * was entirely stale: SO-CWP-001346 asked the warehouse to cut 300 BF off
+             * lot 315643-7, which holds 211 BF, because that wood shipped on IF1208
+             * and was billed on INV-CWP-1236.
+             *
+             * That is not a cosmetic stale row. `archSplitExecute` would have posted
+             * an inventory adjustment of +89 BF against the parent lot to reach a
+             * quantity that had already left the building, INVENTING Purpleheart. The
+             * negative-remainder guard does not catch it: it only fires when the
+             * REMAINDER exceeds on-hand.
+             *
+             * Two independent conditions, because either alone leaves a hole:
+             *  - the ORDER must still be open. Same exclusion list as the open-orders
+             *    service, and for the same reason it excludes rather than lists: a
+             *    status nobody anticipated shows up as work instead of vanishing.
+             *    Both spellings, because `transaction.status` is 'G' through the REST
+             *    query endpoint and 'SalesOrd:G' inside N/query, and this file runs in
+             *    N/query.
+             *  - the LINE must not have shipped. A partially shipped line has no
+             *    business being cut either: the bundle it names is already broken up.
+             */
+            "  AND t.status NOT IN ('G','H','C','SalesOrd:G','SalesOrd:H','SalesOrd:C') " +
+            '  AND ABS(NVL(tl.quantityshiprecv, 0)) = 0 ' +
             'ORDER BY t.tranid, tl.linesequencenumber',
     }).asMappedResults();
 

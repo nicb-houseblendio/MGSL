@@ -39,6 +39,8 @@ import {
   teamWarning,
   sendableTeamId,
   findTeam,
+  salesTeamWriteEnabled,
+  teamWriteNotice,
   type ArchSalesTeam,
   type ArchSalesTeamsResult,
 } from '@/lib/archSalesTeams';
@@ -2246,13 +2248,27 @@ export const SOWizard = ({
                 }
               />
               <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textMid, marginTop: 5, lineHeight: 1.5 }}>
+                {/* 🔴 "Sent with the order" was UNCONDITIONAL and, with the commission
+                    latch off, simply false: sendableTeamId returns undefined and
+                    toRequest drops the key, so nothing is sent. Corrected 2026-09-09.
+                    We told MGSL twice in writing that a picked team is shown and not
+                    written, and this line told the trader the opposite on the panel
+                    before they commit an order. It now follows the latch. */}
                 {pickedTeam
                   ? teamSplitLabel(pickedTeam) +
-                    '. Sent with the order as the commission split. The rep above stays its owner.'
+                    (salesTeamWriteEnabled()
+                      ? '. Sent with the order as the commission split. The rep above stays its owner.'
+                      : '. Shown for reference only: it is NOT written to the order yet, so the rep above stays its sole owner.')
                   : 'Optional. Leave it empty and NetSuite credits the rep above on the order’s Sales Team. Typing matches the team name or any rep on it.'}
               </div>
               {/* Never silently: a team we cannot fully read, or one whose
                   percentages do not total 100, says so on the field. */}
+              {/* The notice written for exactly this and imported nowhere until now. */}
+              {teamWriteNotice() && (
+                <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
+                  ⚠️ {teamWriteNotice()}
+                </div>
+              )}
               {teamWarning(pickedTeam) && (
                 <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
                   ⚠️ {teamWarning(pickedTeam)}
@@ -3027,8 +3043,13 @@ export const SOWizard = ({
           */
           [
             'Sales team',
+            /* Qualified while the latch is off. This row used to print the picked team
+               bare, under a comment calling it "the only one of the three that this
+               order is about to send" - exactly inverted, since a picked team is the
+               one thing that is NOT sent today. Corrected 2026-09-09. */
             pickedTeam
-              ? pickedTeam.name + ' (' + teamSplitLabel(pickedTeam) + ')'
+              ? pickedTeam.name + ' (' + teamSplitLabel(pickedTeam) + ')' +
+                (salesTeamWriteEnabled() ? '' : ' - not written yet')
               : orderSplit
                 ? orderSplit.headline
                 : NEW_ORDER_SPLIT_HEADLINE,

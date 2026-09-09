@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const srcAbs = (rel) => readFileSync(join(here, '..', '..', '..', rel), 'utf8');
 const src = (rel) => readFileSync(join(here, '..', rel), 'utf8');
 
 let fail = 0;
@@ -289,12 +290,15 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /shared: !!o\.traderShared,/.test(w) && /tied: !!o\.traderTied,/.test(w));
   ok('wizard: the split is described by the tested module, not inline',
     /describeOrderSalesTeam\(repTeam\.team\)/.test(w));
-  /* Updated 2026-09-09 when the panel became a PICKER over the 44 real teams.
-     The guard's point is unchanged - Review must restate the split before the
-     order is committed - but a picked team now outranks both older sources,
-     because it is the only one of the three this order actually sends. */
+  /* Updated 2026-09-09 TWICE. First when the panel became a PICKER over the 44 real
+     teams; then to strike the sentence that followed, which said a picked team is
+     "the only one of the three this order actually sends". That was exactly INVERTED:
+     with the commission latch off, a picked team is the one thing that is NOT sent.
+     The guard's point is unchanged - Review must restate the split before the order
+     is committed - and it now also pins the qualification. */
   ok('wizard: Review restates the split, which 11d1007 also removed',
-    /'Sales team',\s*pickedTeam\s*\?\s*pickedTeam\.name \+ ' \(' \+ teamSplitLabel\(pickedTeam\) \+ '\)'/.test(w) &&
+    /'Sales team',/.test(w) &&
+    /pickedTeam\.name \+ ' \(' \+ teamSplitLabel\(pickedTeam\) \+ '\)'/.test(w) &&
     /: orderSplit\s*\?\s*orderSplit\.headline\s*: NEW_ORDER_SPLIT_HEADLINE/.test(w));
   /* And the id it sends can only be one the live list holds. A team picked before
      a reload that no longer offers it must not post an entitygroup id. */
@@ -366,6 +370,33 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('orders view: Edit is gated on a real order only', /const editable = !!o\.internalId;/.test(v));
   ok('orders view: the header note no longer says the contradiction is open',
     !/the contradiction is open with him/.test(v));
+}
+
+// 🔴 THE SCREEN MUST NOT SAY A TEAM WAS SENT WHILE THE LATCH IS OFF. Two surfaces said
+// exactly that, unconditionally, on the panels before an order is committed, and the
+// honesty helper written for it was dead code imported nowhere. We had told MGSL in
+// writing, twice, that a picked team is shown and not written.
+{
+  const w = src('components/arch/SOWizard.tsx');
+  ok('wizard: the field description follows the latch, it does not assert "Sent"',
+    /salesTeamWriteEnabled\(\)\s*\?\s*'\. Sent with the order as the commission split/.test(w));
+  ok('wizard: and says plainly it is NOT written when the latch is off',
+    /NOT written to the order yet/.test(w));
+  ok('wizard: Review qualifies a picked team while the latch is off',
+    /salesTeamWriteEnabled\(\) \? '' : ' - not written yet'/.test(w));
+  ok('wizard: the honesty notice is actually rendered, not dead code',
+    /teamWriteNotice\(\) && \(/.test(w) && /\{teamWriteNotice\(\)\}/.test(w));
+  ok('wizard: imports both latch helpers', /salesTeamWriteEnabled,/.test(w) && /teamWriteNotice,/.test(w));
+  // The sentence may now appear ONLY inside the latch ternary, never on its own.
+  ok('wizard: no unconditional "Sent with the order" survives',
+    (w.match(/Sent with the order as the commission split/g) || []).length === 1 &&
+    /salesTeamWriteEnabled\(\)\s*\?[^:]*Sent with the order/.test(w));
+  // The latch has to be OPENABLE, or a go-ahead from MGSL cannot be honoured.
+  const sl = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/sl/mcgi_sl_trader_screen_react.js');
+  ok('suitelet: MCGI_CONFIG carries salesTeamWriteEnabled, so the latch can be opened',
+    /salesTeamWriteEnabled: salesTeamWriteEnabled/.test(sl));
+  ok('suitelet: and it defaults to OFF, from a parameter, failing off when it throws',
+    /let salesTeamWriteEnabled = false;/.test(sl) && /custscript_ts_salesteam_write_on/.test(sl));
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');

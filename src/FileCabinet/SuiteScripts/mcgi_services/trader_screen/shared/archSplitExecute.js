@@ -227,6 +227,44 @@ define(['N/record', 'N/query', 'N/runtime', 'N/log'], (record, query, runtime, l
             throw new Error('That Sales Order line is no longer flagged as a split.');
         }
 
+        /*
+         * 🔴 THE ORDER MUST STILL BE OPEN AND THE LINE MUST NOT HAVE SHIPPED.
+         *
+         * Added 2026-09-09 after an adversarial pass drove this function with real
+         * sandbox values and got an inventory adjustment of +89 BF against lot
+         * 315643-7, INVENTING Purpleheart to raise a parent lot to a quantity that had
+         * already left the building. SO-CWP-001346 was Billed (status G) and fully
+         * shipped on IF1208, and nothing here noticed.
+         *
+         * Why the existing guards did not catch it. `isclosed` never flips on this
+         * account: all 19 split-flagged lines read 'F', 3 of them on Billed orders. And
+         * the negative-remainder check only fires when the REMAINDER exceeds on-hand,
+         * so customer 300 / remainder 0 against a 211 BF lot sailed straight through.
+         *
+         * The queue query now excludes these too, but that is not sufficient on its
+         * own: this endpoint takes a job id, and a stale browser tab, a retry or any
+         * other caller can still submit one. The refusal belongs at the write.
+         */
+        const soStatus = String(so.getValue({ fieldId: 'status' }) || '');
+        const shipped = Math.abs(parseFloat(
+            so.getSublistValue({ sublistId: 'item', fieldId: 'quantityshiprecv', line: lineIndex })
+        ) || 0);
+        if (shipped > 0) {
+            throw new Error(
+                'That bundle has already shipped (' + shipped + ' on the line), so it cannot be ' +
+                'split any more. Nothing was adjusted. The order is ' + (soStatus || 'in an unknown status') + '.'
+            );
+        }
+        /* Status comes back as a DISPLAY string from getValue on a loaded record
+         * ("Billed", "Closed"), not the letter SuiteQL returns, so match on text and
+         * keep it permissive: an unexpected status refuses rather than proceeding. */
+        if (/billed|closed|cancel/i.test(soStatus)) {
+            throw new Error(
+                'That sales order is ' + soStatus + ', so its bundles are no longer warehouse work ' +
+                'and nothing was adjusted. If a split really is still needed, raise it on an open order.'
+            );
+        }
+
         const statusText = so.getSublistText({ sublistId: 'item', fieldId: F_SPLIT_STATUS, line: lineIndex });
         if (statusText === STATUS_DONE) {
             const existing = so.getSublistValue({ sublistId: 'item', fieldId: F_SPLIT_INVADJ, line: lineIndex });
