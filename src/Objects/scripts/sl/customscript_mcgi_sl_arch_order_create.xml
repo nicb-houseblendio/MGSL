@@ -203,7 +203,13 @@
            still what governs WHO may call this. -->
       <runasrole>[scriptid=customrole2184]</runasrole>
       <status>RELEASED</status>
-      <title>MCGI SL ARCH Order Create</title>
+      <!-- Carries the in-UI warning that was hand-typed on the live deployment.
+           Tracked here so an object deploy PRESERVES it instead of silently
+           wiping it, which is what would have happened before 2026-09-09.
+           Byte-identical to live, missing closing bracket included: a tidier
+           version would just reappear as drift on the next import. It points at
+           the runasrole comment below, which is the thing that must be read. -->
+      <title>MCGI SL ARCH Order Create [runasrole 2184 LOAD-BEARING - read script description before changing</title>
     </scriptdeployment>
   </scriptdeployments>
 </suitelet>
