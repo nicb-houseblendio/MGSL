@@ -21,7 +21,7 @@
 
 import * as React from 'react';
 import { apiGet } from '@/lib/api';
-import { fetchSalesRepsFromEndpoint } from '@/lib/archOrderApi';
+import { fetchSalesRepsFromEndpoint, fetchCustomersFromEndpoint } from '@/lib/archOrderApi';
 import { CUSTOMERS as FIXTURE_CUSTOMERS } from '@/lib/archOrderFixtures';
 
 export interface ArchCustomer {
@@ -189,7 +189,21 @@ export const useArchCustomers = (enabled: boolean): ArchCustomersState => {
     // handles the request from it, so omitting it routes `customers` to the IND
     // service, which has no such action and answers "Unknown action". Must match
     // the value useArchSummaryData sends.
-    apiGet('customers', { subsidiaryId: ARCH_SUBSIDIARY_ID })
+    /*
+     * The ORDER ENDPOINT first, the RESTlet second.
+     *
+     * 🔴 A RESTlet ignores runasrole and runs as the CALLER, and the real ARCH trader
+     * role sees 24 of 465 customers -- measured 2026-09-09, role 2181, with no error
+     * and no empty list to give it away. The order Suitelet runs as customrole2184
+     * and offers 397. Same failure and same remedy as the sales-rep list, which was
+     * moved for exactly this reason; this one was left behind.
+     *
+     * Falling back keeps the deploy order forgiving, and the fixture path below still
+     * catches the case where neither answers.
+     */
+    fetchCustomersFromEndpoint(ARCH_SUBSIDIARY_ID)
+      .then((viaEndpoint) =>
+        viaEndpoint || apiGet('customers', { subsidiaryId: ARCH_SUBSIDIARY_ID }))
       .then((res: unknown) => {
         if (cancelled) return;
         const body = res as CustomersResponse;

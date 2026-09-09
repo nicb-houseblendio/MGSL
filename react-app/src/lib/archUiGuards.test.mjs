@@ -474,5 +474,49 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /Nothing was written\./.test(dlg), false);
 }
 
+
+/* Lists a trader needs must not be read as the trader.
+ *
+ * A RESTlet ignores runasrole and runs as the CALLER. Measured 2026-09-09, the same
+ * service call under three roles:
+ *
+ *                        customers visible   offered
+ *   Administrator               806            465
+ *   role 2181 (the trader)       25             24
+ *   role 2184 (order endpoint)  416            397
+ *
+ * Role 2181 holds LIST_CUSTJOB, so nothing errored and the list was not empty. It is
+ * a SALESCENTER sales role, so NetSuite narrowed it to its own customers in silence.
+ * The sales-rep list was moved to the Suitelet for exactly this reason; customers and
+ * sales teams were left behind.
+ */
+{
+  const hook = src('hooks/useArchCustomers.ts');
+  const api = src('lib/archOrderApi.ts');
+  const sl = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/sl/mcgi_sl_arch_order_create.js');
+
+  ok('customers: the endpoint is tried BEFORE the RESTlet',
+    /fetchCustomersFromEndpoint\(ARCH_SUBSIDIARY_ID\)[\s\S]{0,200}apiGet\('customers'/.test(hook), false);
+  ok('customers: and the RESTlet remains the fallback, so an old Suitelet still works',
+    /viaEndpoint \|\| apiGet\('customers'/.test(hook), false);
+  ok('customers: the endpoint helper returns null on failure rather than an empty list',
+    /export const fetchCustomersFromEndpoint[\s\S]{0,1600}return null;/.test(api), false);
+  ok('customers: the Suitelet proxies the action', /action === 'customers'/.test(sl), false);
+  ok('customers: and calls the SAME service code rather than a copy',
+    /archService\.getRouter\(\{/.test(sl), false);
+
+  /*
+   * 🔴 salesTeams must NOT be proxied. Under role 2184 the call fails outright with
+   * `Record 'entitygroup' was not found` -- that role holds no group permission at
+   * all, while 2181 holds LIST_CRMGROUP. Proxying turns partial data (44 teams, 0
+   * members) into total failure. It was proxied for about ten minutes until the
+   * measurement was taken.
+   */
+  ok('salesTeams: NOT proxied through the endpoint, because 2184 cannot read entitygroup',
+    !/action === 'salesTeams'/.test(sl), false);
+  ok('salesTeams: and the reason is written down where it would be re-added',
+    /entitygroup.*was not found|no group permission/i.test(sl), false);
+}
+
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');
 process.exit(fail ? 1 : 0);

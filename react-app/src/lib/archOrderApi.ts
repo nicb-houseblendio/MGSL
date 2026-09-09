@@ -267,6 +267,49 @@ export interface ArchIncotermsResult {
  * sales-rep list: a RESTlet runs as the caller, and the list must be read under the
  * role that validates the write.
  */
+/**
+ * The customer list, read under the ORDER ENDPOINT's role instead of the caller's.
+ *
+ * MEASURED 2026-09-09, the same service call under three roles:
+ *
+ *                        visible   offered to the picker
+ *   Administrator          806            465
+ *   role 2181 (trader)      25             24
+ *   role 2184 (endpoint)   416            397
+ *
+ * Role 2181 is a SALESCENTER sales role. It holds LIST_CUSTJOB, so nothing errors
+ * and the list is not empty -- NetSuite just narrows it to the role's own customers,
+ * silently. A trader offered 24 of 806 cannot work.
+ *
+ * ⚠️ 397 is not 465. Role 2184 is scoped too, so this is a 16x improvement and NOT
+ * a fix; do not describe it as one.
+ *
+ * Returns null on any failure so the caller falls back to the RESTlet, which keeps
+ * the deploy order forgiving: a new bundle against an old Suitelet degrades to
+ * exactly today's behaviour rather than breaking.
+ */
+export const fetchCustomersFromEndpoint = async (
+  // Numeric in every caller (ARCH_SUBSIDIARY_ID = 9); accepted as either so the
+  // call site does not have to stringify a constant.
+  subsidiaryId: string | number,
+): Promise<{ success?: boolean; customers?: unknown[]; error?: string } | null> => {
+  const url = endpointUrl();
+  if (!url) return null;
+  try {
+    const sep = url.indexOf('?') === -1 ? '?' : '&';
+    const r = await fetch(
+      url + sep + 'action=customers&subsidiaryId=' + encodeURIComponent(subsidiaryId),
+      { method: 'GET', credentials: 'include' },
+    );
+    // A Suitelet answers 200 to everything, so branch on the payload.
+    const body = (await r.json()) as { success?: boolean; customers?: unknown[]; error?: string };
+    if (!body || body.success !== true || !Array.isArray(body.customers)) return null;
+    return body;
+  } catch {
+    return null;
+  }
+};
+
 export const fetchIncoterms = async (): Promise<ArchIncotermsResult> => {
   const url = endpointUrl();
   if (!url) return { status: 'offline', incoterms: [], error: 'No order endpoint is configured.' };

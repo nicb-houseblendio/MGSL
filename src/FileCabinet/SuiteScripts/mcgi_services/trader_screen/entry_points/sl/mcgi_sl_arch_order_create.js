@@ -81,8 +81,19 @@
  * confirming the deployment, the role allowlist and the executing user without
  * creating an order.
  */
-define(['N/runtime', 'N/log', './../../shared/archOrderCreate'],
-(runtime, log, orderLib) => {
+define([
+    'N/runtime', 'N/log',
+    './../../shared/archOrderCreate',
+    /*
+     * The ARCH service, required as a plain module so `action=customers` and
+     * `action=salesTeams` can be answered from HERE, under this deployment's
+     * runasrole, instead of from the RESTlet which runs as the caller.
+     *
+     * The same code runs either way. Nothing is moved and nothing is copied;
+     * only the role executing it changes, and that is the entire defect.
+     */
+    './../../service/trader_screen_service_arch',
+], (runtime, log, orderLib, archService) => {
 
     const ROLE_ADMINISTRATOR = 3;
 
@@ -149,6 +160,67 @@ define(['N/runtime', 'N/log', './../../shared/archOrderCreate'],
              * read line-field readiness. Do not fold the two together.
              */
             const action = String(context.request.parameters.action || '');
+
+            /*
+             * `customers`, proxied so the read happens under customrole2184 instead
+             * of as the caller.
+             *
+             * MEASURED 2026-09-09, the same service call under three roles:
+             *
+             *                        visible   offered to the picker
+             *   Administrator          806            465
+             *   role 2181 (trader)      25             24
+             *   role 2184 (here)       416            397
+             *
+             * Role 2181 is SALESCENTER with issalesrole=T. It holds LIST_CUSTJOB, so
+             * nothing errors and the list is not empty -- NetSuite just narrows it to
+             * the role's own customers. A trader who can sell to 24 of 806 cannot
+             * work, and nothing on screen says why.
+             *
+             * ⚠️ 397 is NOT 465. Role 2184 is itself scoped, so this endpoint still
+             * hides 68 of the customers an administrator sees. That is a 16x
+             * improvement, not a fix, and it should not be described as one.
+             *
+             * 🔴 `salesTeams` is DELIBERATELY NOT PROXIED HERE. It was, until the
+             * same measurement was taken: under 2184 the call fails outright with
+             * `Record 'entitygroup' was not found`, because role 2184 holds NO group
+             * permission at all, while 2181 does hold LIST_CRMGROUP. So proxying it
+             * turns partial data (44 teams, 0 members) into total failure. It stays on
+             * the RESTlet until 2184 is granted View on CRM Groups -- the same missing
+             * permission that will refuse every team on the commission WRITE the
+             * moment that latch is opened.
+             *
+             * `subsidiaryId` is passed straight through. The service decides what to
+             * do with it; second-guessing it here is how the customers list once got
+             * scoped to one subsidiary and hid 420 of them.
+             */
+            if (action === 'customers') {
+                let out;
+                try {
+                    out = archService.getRouter({
+                        action: action,
+                        subsidiaryId: context.request.parameters.subsidiaryId,
+                    });
+                } catch (e) {
+                    return respond(context, 200, {
+                        ok: false,
+                        service: 'arch-order-create',
+                        action: action,
+                        callerRole: user.role,
+                        error: 'The ARCH service could not answer ' + action + ': ' +
+                               (e.message || String(e)),
+                    });
+                }
+                /* The service answers with `success`, this endpoint with `ok`. Both are
+                 * carried so a client can branch on either and neither contract has to
+                 * change. */
+                return respond(context, 200, Object.assign({}, out, {
+                    ok: out && out.success !== false,
+                    service: 'arch-order-create',
+                    action: action,
+                    callerRole: user.role,
+                }));
+            }
 
             if (action === 'incoterms') {
                 /* The wizard's Incoterms picker. Served from here rather than
