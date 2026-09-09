@@ -197,6 +197,21 @@ define(['N/runtime', 'N/log', './../../shared/archOrderCreate'],
                  * empty one: the runtime cannot, because param() turns a missing
                  * parameter into null. Check it here after any object deploy. */
                 pdfEmail: orderLib.pdfEmailReadiness(),
+                /* Read-only probe: which sales reps SALESREP would mail for a given
+                 * saved order. `?probeSo=<id>`, and it returns employee IDS only,
+                 * never addresses.
+                 *
+                 * It exists because the send and the RESOLUTION cannot be tested
+                 * together here. Sending is already proven live (SO-CWP-001360). But
+                 * every active sales rep in this account has an MGSL or CWP mailbox,
+                 * so actually exercising SALESREP would email a real MGSL employee
+                 * from a sandbox, which is the exact harm the empty default guards
+                 * against. This verifies the untested half and posts nothing. */
+                repProbe: (function () {
+                    const so = parseInt(context.request.parameters.probeSo, 10);
+                    if (!so) return undefined;
+                    return orderLib.resolveRepRecipients(so);
+                }()),
             });
         }
 
