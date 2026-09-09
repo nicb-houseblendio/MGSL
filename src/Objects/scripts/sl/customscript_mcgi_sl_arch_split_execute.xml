@@ -52,14 +52,14 @@
       <checkspelling>F</checkspelling>
       <defaultchecked>F</defaultchecked>
       <defaultselection></defaultselection>
-      <defaultvalue>612</defaultvalue>
-      <description>Internal id of the GL account bundle-split Inventory Adjustments post to. 612 is "9999997 Temp Inventory", which is what every existing inventory adjustment in this account already uses. Configured here rather than accepted from the browser: the screen must not be able to choose where a write posts. Splits refuse to complete if this is empty.</description>
+      <defaultvalue>228</defaultvalue>
+      <description>Internal id of the GL account bundle-split Inventory Adjustments post to. 228 is "8900000 Rounding Gain/Loss", which Marc-Antoine named on 2026-09-09 and which is already the adjustment account on 140 existing inventory adjustments in this account. It was 612 "9999997 Temp Inventory" until then; that was chosen before the split conserved value, and it is an other-current-asset account, so the $526.62 the old two-line shape invented sat in a hidden asset rather than showing up. A conserved split posts only its rounding here, which is what this account is for. Configured here rather than accepted from the browser: the screen must not be able to choose where a write posts. Splits refuse to complete if this is empty.</description>
       <displayheight></displayheight>
       <displaytype>NORMAL</displaytype>
       <displaywidth></displaywidth>
       <dynamicdefault></dynamicdefault>
       <fieldtype>INTEGER</fieldtype>
-      <help>Defaults to 612, matching existing inventory adjustments.</help>
+      <help>Defaults to 228, 8900000 Rounding Gain/Loss. Change this only with the client: it is where a split's rounding lands.</help>
       <isformula>F</isformula>
       <ismandatory>F</ismandatory>
       <label>Split Adjustment Account</label>
@@ -76,7 +76,7 @@
   </scriptcustomfields>
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploy_mcgi_sl_arch_split_execute">
-      <custscript_arch_split_adj_account>612</custscript_arch_split_adj_account>
+      <custscript_arch_split_adj_account>228</custscript_arch_split_adj_account>
       <allemployees>F</allemployees>
       <allpartners>F</allpartners>
       <allroles>F</allroles>
