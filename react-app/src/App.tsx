@@ -224,9 +224,44 @@ function TraderScreenContent() {
    * useCallback from a child is not something App should depend on. Nothing reads
    * this during render, only the click handler.
    */
-  const archReloadRef = React.useRef<(() => void) | null>(null);
-  const handleArchReloadReady = React.useCallback((fn: () => void) => {
+  const archReloadRef = React.useRef<(() => void | Promise<unknown>) | null>(null);
+  const handleArchReloadReady = React.useCallback((fn: () => void | Promise<unknown>) => {
     archReloadRef.current = fn;
+  }, []);
+
+  /*
+   * ARCH's own in-flight flag, because `refreshState` cannot serve here.
+   *
+   * `refreshState` lives in useRefreshState and is advanced only by `doRefresh`,
+   * which drives the IND/MTL fetch. The ARCH branch calls the child's `reload`
+   * directly, so before 2026-09-09 the icon could never spin and the button could
+   * never disable on ARCH: the refetch worked and the screen said nothing, which
+   * reads as a dead button. Reported exactly that way.
+   *
+   * ArchScreen's own `loading` is no help either: it is `inFlight && !allRows`, so
+   * it is FALSE for every refresh after the first load, which is precisely when the
+   * feedback is wanted.
+   *
+   * The floor matters as much as the flag. A warm cache answers in well under a
+   * tenth of a second, and a spinner that appears and vanishes inside one frame is
+   * indistinguishable from the bug being fixed badly. 450ms is long enough to read
+   * as "it did something" and short enough not to feel throttled.
+   */
+  const [archRefreshing, setArchRefreshing] = React.useState(false);
+  const ARCH_SPIN_FLOOR_MS = 450;
+
+  const runArchRefresh = React.useCallback(() => {
+    const fn = archReloadRef.current;
+    if (!fn) return;
+    setArchRefreshing(true);
+    const settled = Promise.all([
+      // Promise.resolve so a void return is handled identically to a promise, and
+      // .catch here rather than a rejection escaping: a failed refetch must still
+      // clear the spinner. The error itself surfaces through the grid's own banner.
+      Promise.resolve(fn()).catch(() => undefined),
+      new Promise((r) => setTimeout(r, ARCH_SPIN_FLOOR_MS)),
+    ]);
+    void settled.finally(() => setArchRefreshing(false));
   }, []);
 
   const handleCellFilter = React.useCallback((filterKey: string, value: string) => {
@@ -275,6 +310,13 @@ function TraderScreenContent() {
   }, [filteredRows, totals, getTotals, uom, isMTL]);
 
   const displayError = error || refreshError;
+
+  /* One flag for the refresh control, derived per screen. Declared once so the
+   * spin and the disabled state cannot disagree, which is how ARCH ended up
+   * able to do neither. */
+  const refreshBusy = isARCH
+    ? archRefreshing
+    : (refreshState === 'checking' || refreshState === 'fetching');
 
   const today = typeof window !== 'undefined' ? new Date().toLocaleDateString('en-CA', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }) : '';
   const uomOptions = uomOptionsFor(activeView);
@@ -449,16 +491,16 @@ function TraderScreenContent() {
             // tab reload and an SO appeared to make stock vanish. ArchScreen now hands
             // its `reload` up through onReloadReady.
             onClick={() => {
-              if (isARCH) archReloadRef.current?.();
+              if (isARCH) runArchRefresh();
               else void doRefresh();
             }}
-            disabled={isARCH
-              ? false
-              : (refreshState === 'checking' || refreshState === 'fetching')}
+            /* Disabled while in flight on BOTH screens now. It was hard-false for
+             * ARCH, so a second click fired a second refetch over the first. */
+            disabled={refreshBusy}
             title={isARCH ? 'Refresh the ARCH grid from the cache' : 'Refresh'}
             className="h-8 w-8 text-white hover:bg-white/10 disabled:opacity-40"
           >
-            <RefreshCw className={`h-4 w-4 ${(refreshState === 'checking' || refreshState === 'fetching') ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`h-4 w-4 ${refreshBusy ? 'animate-spin' : ''}`} />
           </Button>
           <Button
             variant="ghost"

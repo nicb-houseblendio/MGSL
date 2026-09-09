@@ -45,7 +45,10 @@ interface ArchScreenProps {
    * fetched here but the control lives there, and calling the hook twice would give
    * two copies that can disagree.
    */
-  onReloadReady?: (reload: () => void) => void;
+  /* `reload` is async. The type said `() => void`, which erased that and left
+   * App unable to await it -- the reason the refresh button could not show an
+   * in-flight state on ARCH. */
+  onReloadReady?: (reload: () => void | Promise<unknown>) => void;
 }
 
 export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadReady }: ArchScreenProps) => {

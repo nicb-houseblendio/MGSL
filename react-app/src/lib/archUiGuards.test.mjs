@@ -399,5 +399,57 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /let salesTeamWriteEnabled = false;/.test(sl) && /custscript_ts_salesteam_write_on/.test(sl));
 }
 
+
+/* The refresh button must be able to SAY it is working, on both screens.
+ *
+ * Andrei, 2026-09-09: "i did click it nothing happend, the animation of the circle
+ * turning isnt working." Structural, not a CSS slip: the spin and the disabled state
+ * both read `refreshState`, which only `doRefresh` advances -- the IND/MTL path. The
+ * ARCH branch called the child's reload directly and never touched it, so on ARCH the
+ * icon could never spin and the button was `disabled={isARCH ? false : ...}`, i.e.
+ * never disabled either. The refetch worked; the screen said nothing.
+ *
+ * These pin the shape rather than the pixels, because the defect WAS the shape: two
+ * separate expressions that could disagree, and one of them hard-coded per screen.
+ */
+{
+  const app = src('App.tsx');
+  const arch = src('components/ArchScreen.tsx');
+
+  ok('refresh: a single derived flag exists for the control',
+    /const refreshBusy = isARCH/.test(app), false);
+  ok('refresh: it uses ARCH\'s own in-flight state on ARCH',
+    /const refreshBusy = isARCH\s*\n?\s*\?\s*archRefreshing/.test(app), false);
+  ok('refresh: and the shared refreshState elsewhere',
+    /refreshBusy = isARCH[\s\S]{0,120}refreshState === 'checking'/.test(app), false);
+
+  // The two that drifted apart. They must now be the SAME expression.
+  ok('refresh: the disabled state reads that one flag',
+    /disabled=\{refreshBusy\}/.test(app), false);
+  ok('refresh: the spinner reads that same one flag',
+    /animate-spin[\s\S]{0,40}/.test(app) && /refreshBusy \? 'animate-spin'/.test(app), false);
+
+  ok('refresh: ARCH is no longer hard-coded as never-disabled',
+    !/disabled=\{isARCH\s*\n?\s*\?\s*false/.test(app), false);
+
+  // Without awaiting the reload there is nothing to turn the flag off.
+  ok('refresh: the ARCH reload is awaited rather than fired and forgotten',
+    /Promise\.resolve\(fn\(\)\)/.test(app), false);
+  ok('refresh: a failed refetch still clears the spinner',
+    /Promise\.resolve\(fn\(\)\)\.catch/.test(app), false);
+  ok('refresh: a second click cannot stack a second refetch',
+    /disabled=\{refreshBusy\}/.test(app), false);
+
+  // A warm cache answers in under a frame; without a floor the fix is invisible and
+  // the original complaint stands.
+  ok('refresh: there is a minimum visible spin duration',
+    /ARCH_SPIN_FLOOR_MS/.test(app) && /setTimeout\(r, ARCH_SPIN_FLOOR_MS\)/.test(app), false);
+
+  ok('refresh: the reload prop type admits the promise it actually returns',
+    /onReloadReady\?: \(reload: \(\) => void \| Promise<unknown>\) => void;/.test(arch), false);
+  ok('refresh: and ArchScreen still hands its reload up at all',
+    /onReloadReady\?\.\(reload\)/.test(arch), false);
+}
+
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');
 process.exit(fail ? 1 : 0);
