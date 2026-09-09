@@ -60,7 +60,11 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('wizard: no inline writableLines.length > 0 gate survives', !/itemsOk = writableLines\.length > 0/.test(w));
   ok('wizard: editing an order prefills its Customer PO', /setCustomerPO\(o\.customerPO \|\| ''\)/.test(w));
   const v = src('components/arch/ArchOpenOrdersView.tsx');
-  ok('orders view: Edit is hidden on fixture orders (no internalId)', /editable = o\.status !== 'Ready to Build' && !!o\.internalId/.test(v));
+  // Updated 2026-09-09: the Ready to Build clause was REMOVED from this gate, because
+  // the client asked in writing for a warning rather than a block. The fixture rule
+  // is the part that must survive, and it does.
+  ok('orders view: Edit is hidden on fixture orders (no internalId)', /const editable = !!o\.internalId;/.test(v));
+  ok('orders view: and Ready to Build no longer appears in that gate', !/editable = o\.status !== 'Ready to Build'/.test(v));
 }
 
 // Order confirmation: every dismissal route is guarded while submitting, and the
@@ -285,8 +289,17 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /shared: !!o\.traderShared,/.test(w) && /tied: !!o\.traderTied,/.test(w));
   ok('wizard: the split is described by the tested module, not inline',
     /describeOrderSalesTeam\(repTeam\.team\)/.test(w));
+  /* Updated 2026-09-09 when the panel became a PICKER over the 44 real teams.
+     The guard's point is unchanged - Review must restate the split before the
+     order is committed - but a picked team now outranks both older sources,
+     because it is the only one of the three this order actually sends. */
   ok('wizard: Review restates the split, which 11d1007 also removed',
-    /\['Sales team', orderSplit \? orderSplit\.headline : NEW_ORDER_SPLIT_HEADLINE\]/.test(w));
+    /'Sales team',\s*pickedTeam\s*\?\s*pickedTeam\.name \+ ' \(' \+ teamSplitLabel\(pickedTeam\) \+ '\)'/.test(w) &&
+    /: orderSplit\s*\?\s*orderSplit\.headline\s*: NEW_ORDER_SPLIT_HEADLINE/.test(w));
+  /* And the id it sends can only be one the live list holds. A team picked before
+     a reload that no longer offers it must not post an entitygroup id. */
+  ok('wizard: the team id is sent only when the live list still holds it, and only on a NEW order',
+    /salesTeamId: mode === 'new' \? sendableTeamId\(liveTeams, salesTeamId\) : undefined,/.test(w));
   ok('wizard: the required-field gate is salesRepOk over the two fields',
     /salesRepOk\(repTeam, liveReps\.length > 0\)/.test(w) &&
     !/liveReps\.length === 0 \|\| !!salesRepId/.test(w));
@@ -335,6 +348,24 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('app: the shared badge stays gated off for ARCH, whose interval it misreads', /\{!isARCH && meta\?\.lastUpdated/.test(a));
   ok('app: the badge carries a tooltip explaining the age', /title=\{f\.title\}/.test(a));
   ok('app: all three states get a colour, so overdue does not read as fresh', /f\.state === 'fresh'/.test(a) && /f\.state === 'due'/.test(a));
+}
+
+// 🔴 READY TO BUILD WARNS, IT NEVER BLOCKS. The client superseded his own call remark
+// in writing on 2026-08-14 11:33: a warning « qui n'empeche pas le Edit ». The code had
+// implemented the call and ignored the written answer, which is the reverse of this
+// project's own rule that Marc-Antoine's word beats a stale note. Source guards: this
+// repo cannot render a component.
+{
+  const w = src('components/arch/SOWizard.tsx');
+  const v = src('components/arch/ArchOpenOrdersView.tsx');
+  ok('wizard: only a fixture order is locked, never Ready to Build', /const locked = demo;/.test(w));
+  ok('wizard: no "can no longer be edited" claim survives', !/no longer be edited/.test(w));
+  ok('wizard: Ready to Build says the warehouse MAY be preparing it, and lets you continue',
+    /may already be preparing this order\. You can still add lines/.test(w));
+  ok('wizard: cites the written answer that superseded the call', /2026-08-14/.test(w));
+  ok('orders view: Edit is gated on a real order only', /const editable = !!o\.internalId;/.test(v));
+  ok('orders view: the header note no longer says the contradiction is open',
+    !/the contradiction is open with him/.test(v));
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');

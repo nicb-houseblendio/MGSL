@@ -3,11 +3,20 @@ import { formatQty, formatCostPerUnit, displaySuffix, unitLabel } from '@/lib/ar
 import { isLotLocked, lockReason, lotQuantity, commitmentOn } from '@/lib/archLots';
 import { bucketLots, bucketGap, bucketGapReason, notSourcedNote } from '@/lib/archBuckets';
 import { lotAllocation, lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
+import {
+  orderSource,
+  ordersFor,
+  oldestAge,
+  joinValues,
+  formatOrderDate,
+  traderName,
+  NO_VALUE,
+} from '@/lib/archLotOrders';
 import { ARCH_BUCKET_META, ARCH_RESERVE_INK, ARCH_SURFACE } from '@/components/arch/archColors';
 import { TallyButton, TallyImageDialog } from '@/components/arch/TallyImageDialog';
 import { demoTallyProps } from '@/lib/archTallyFixtures';
 import { ArchReservedSection } from '@/components/arch/ArchReservedSection';
-import type { ArchSummaryRow, ArchDetailKey, ArchLot } from '@/types/arch';
+import type { ArchSummaryRow, ArchDetailKey, ArchLot, ArchLotOrder } from '@/types/arch';
 
 /**
  * Lot-level table behind every quantity cell on the ARCH grid.
@@ -38,6 +47,15 @@ interface LeadColumn {
   render: (lot: ArchLot) => React.ReactNode;
   mono?: boolean;
   color?: (lot: ArchLot) => string | undefined;
+  /**
+   * Hover text for the cell.
+   *
+   * Added 2026-09-08 for the SO columns: this table is one row per BUNDLE, and a
+   * bundle held by several sales orders cannot show them all in one cell. It
+   * shows the first plus `+N` and names the rest here, so the extra claims are
+   * disclosed rather than dropped.
+   */
+  title?: (lot: ArchLot) => string | undefined;
 }
 
 const cellStyle: React.CSSProperties = {
@@ -160,23 +178,95 @@ export const ArchLotTable = ({
       // beside it is elapsed time since the shipment.
       const durationLabel =
         bucket === 'readyToBuild' ? 'Building For' : bucket === 'outbound' ? 'Shipped' : 'Reserved For';
+      /* ── REAL ORDERS WHERE THERE ARE ANY ─────────────────────────────────
+       *
+       * These six columns came entirely from `lotAllocation()`, a seeded
+       * generator, until 2026-09-08. The cache now carries the sales orders
+       * behind a bundle's reserve, so `lib/archLotOrders.ts` decides per bundle:
+       *
+       *   real orders  → render them
+       *   live payload → em dash, never a generated value
+       *   no `orders`  → the generator, which is what the Reserved panel's
+       *                  placeholder banner is warning about
+       *
+       * ⚠️ ONE ROW PER BUNDLE IS STRUCTURAL HERE, unlike the Reserved panel.
+       * The quantity block to the right of these cells describes the BUNDLE, so
+       * this table cannot split a bundle into one row per order. A bundle with
+       * two claims therefore reads `SO-CWP-001344 +1` with both named in the
+       * tooltip: disclosed, not silently narrowed to one. The panel below the On
+       * Hand table is the place that lists every claim on its own line.
+       *
+       * ⚠️ `readyToBuild` and `outbound` can never resolve to a real order and
+       * that is correct, not a gap to close. readyToBuild is a literal 0 in the
+       * cache, so no live bundle is ever listed under it; outbound is
+       * deliberately attributed to no bundle, because the wood has shipped and
+       * the bundle's on-hand is already net of it.
+       */
+      const claims = (l: ArchLot) => ordersFor(l, bucket);
+      const fixture = (l: ArchLot) =>
+        orderSource(l, bucket) === 'unsourced' ? lotAllocation(l.lotNo, bucket) : null;
+      /** The generated value where nothing can be sourced, else an em dash. */
+      const fallback = (l: ArchLot, pick: (f: ReturnType<typeof lotAllocation>) => string): string => {
+        const f = fixture(l);
+        return f ? pick(f) : NO_VALUE;
+      };
+      const joined = (l: ArchLot, pick: (o: ArchLotOrder) => string) => joinValues(claims(l).map(pick));
+
       return [
         {
           label: 'SO #',
           mono: true,
           color: () => ARCH_BUCKET_META[bucket].color,
-          render: (l) => lotAllocation(l.lotNo, bucket).soNumber,
+          render: (l) =>
+            claims(l).length ? joined(l, (o) => o.soNumber).text : fallback(l, (f) => f.soNumber),
+          title: (l) =>
+            claims(l).length > 1
+              ? `${l.lotNo} is held by ${claims(l).length} sales orders: ${joined(l, (o) => o.soNumber).title}`
+              : undefined,
         },
-        { label: 'SO Creation Date', render: (l) => formatShortDate(lotAllocation(l.lotNo, bucket).createdDate) },
+        {
+          label: 'SO Creation Date',
+          render: (l) =>
+            claims(l).length
+              ? joinValues(claims(l).map((o) => formatOrderDate(o.created))).text
+              : fallback(l, (f) => formatShortDate(f.createdDate)),
+        },
         {
           label: durationLabel,
           mono: true,
-          color: (l) => ageColor(lotAllocation(l.lotNo, bucket).ageDays),
-          render: (l) => `${lotAllocation(l.lotNo, bucket).ageDays} d`,
+          // The OLDEST claim on the bundle, which is the one worth chasing.
+          color: (l) => {
+            const a = claims(l).length ? oldestAge(claims(l)) : fixture(l)?.ageDays ?? null;
+            return a === null ? ARCH_SURFACE.textLight : ageColor(a);
+          },
+          render: (l) => {
+            const a = claims(l).length ? oldestAge(claims(l)) : fixture(l)?.ageDays ?? null;
+            return a === null ? NO_VALUE : `${a} d`;
+          },
+          title: (l) =>
+            claims(l).length > 1 ? 'The oldest of this bundle’s reservations' : undefined,
         },
-        { label: 'Ship Week', render: (l) => formatShortDate(lotAllocation(l.lotNo, bucket).shipWeek) },
-        { label: 'Customer', render: (l) => lotAllocation(l.lotNo, bucket).customer },
-        { label: 'Trader', render: (l) => lotAllocation(l.lotNo, bucket).trader },
+        {
+          label: 'Ship Week',
+          render: (l) =>
+            claims(l).length
+              ? joinValues(claims(l).map((o) => formatOrderDate(o.shipDate))).text
+              : fallback(l, (f) => formatShortDate(f.shipWeek)),
+        },
+        {
+          label: 'Customer',
+          render: (l) => (claims(l).length ? joined(l, (o) => o.customer).text : fallback(l, (f) => f.customer)),
+          title: (l) => joined(l, (o) => o.customer).title,
+        },
+        {
+          // The Sales Team rep. Never the record's creator: Marc-Antoine treats
+          // those as two different things, and on 2 of the 4 real ARCH orders the
+          // creator is a developer account. The Open Orders tab shows both in
+          // labelled columns; this cell must not conflate them.
+          label: 'Trader',
+          render: (l) => (claims(l).length ? joined(l, traderName).text : fallback(l, (f) => f.trader)),
+          title: (l) => joined(l, traderName).title,
+        },
       ];
     }
     if (bucket === 'inTransit') {
@@ -579,6 +669,7 @@ export const ArchLotTable = ({
                         <td
                           key={c.label}
                           className={c.mono ? 'font-mono' : undefined}
+                          title={c.title?.(lot)}
                           style={{
                             ...cellStyle,
                             fontWeight: c.mono ? 700 : 500,

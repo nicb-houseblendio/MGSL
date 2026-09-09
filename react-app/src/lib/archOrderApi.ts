@@ -6,16 +6,22 @@
  * traps are identical.
  *
  * ── What is NOT sent, and why ───────────────────────────────────────────────
- * No subsidiary, no department, no form, no insurance rate, no sales rep. Every
- * one of those is resolved server-side from configuration or from the customer.
- * A screen choosing where a transaction posts, or what rate it books at, would
- * be a hole rather than a feature — the same reasoning that removed the GL
- * account from the split endpoint.
+ * No subsidiary, no department, no form, no insurance rate. Every one of those
+ * is resolved server-side from configuration or from the customer. A screen
+ * choosing where a transaction posts, or what rate it books at, would be a hole
+ * rather than a feature — the same reasoning that removed the GL account from
+ * the split endpoint.
+ *
+ * ⚠️ "No sales rep" used to be in that list and had stopped being true: the rep
+ * IS sent (`header.salesRepId`), because the endpoint refuses an order it cannot
+ * credit, and the Sales Team is sent beside it (`header.salesTeamId`). Both are
+ * PEOPLE decisions the trader owns, not posting decisions.
  *
  * Quantities go up in DISPLAY units, board feet for Lumber. The server converts.
  */
 
 import type { ArchOrderDraft } from '@/types/archOrder';
+import { salesTeamWriteEnabled } from '@/lib/archSalesTeams';
 
 /**
  * Where the order Suitelet lives. Injected by the trader Suitelet alongside the
@@ -122,6 +128,34 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
     customerId: draft.header.customerId || undefined,
     shipAddressId: draft.header.shipAddressId || undefined,
     salesRepId: draft.header.salesRepId || undefined,
+    /*
+     * The Sales Team (commission split), as the `entitygroup` internal id in a
+     * string. Marc-Antoine's model, 2026-09-08: "Le sales team définit le split
+     * commission" — so this is the OTHER half of the rep field above, not a
+     * rename of it, and the two are sent side by side.
+     *
+     * Absent rather than '' when nothing is picked, so the server cannot read an
+     * empty string as an instruction to clear a team. The wizard only ever sets
+     * it from `sendableTeamId`, which refuses any id the live list does not
+     * currently hold: a stale or invented `entitygroup` id would attribute
+     * somebody's commission, which is the same class of error as resolving a
+     * typed customer name onto the wrong account.
+     *
+     * ⚠️ IGNORED ON AN APPEND. `archOrderCreate.js` wraps the entire header
+     * block in `if (!appending)`, the sales-team sublist included, so this key
+     * only does anything on a new order. The wizard says so on the field rather
+     * than letting the trader believe otherwise.
+     */
+    /*
+     * 🔴 GATED AGAIN HERE, not only in the wizard. `sendableTeamId` already refuses
+     * unless the switch is on, but that runs while BUILDING a draft; this is the
+     * transport boundary, and a draft can reach it from anywhere (a retry of a draft
+     * built earlier, a future caller, a test). The latch belongs at the last point
+     * before the bytes leave, because what it prevents is attributing commission on a
+     * real sales document. Proved by test: a draft carrying a team id sends nothing
+     * while the switch is off.
+     */
+    salesTeamId: salesTeamWriteEnabled() ? draft.header.salesTeamId || undefined : undefined,
     customerPO: draft.header.customerPO || undefined,
     incoterms: draft.header.incoterms || undefined,
     shipDate: draft.header.shipDate || undefined,

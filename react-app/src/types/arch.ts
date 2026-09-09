@@ -32,6 +32,71 @@ export type ArchQtyKey =
 /** Buckets a detail modal can open on. `available` is derived, not stored. */
 export type ArchDetailKey = ArchQtyKey | 'available';
 
+/**
+ * One sales order holding part of a bundle's `reserve`.
+ *
+ * ── WHERE IT COMES FROM ─────────────────────────────────────────────────────
+ * The ARCH cache MR, from the SAME `inventoryassignment` join that produces the
+ * per-lot reserve quantity: the assignment names the order LINE, the line names
+ * the order. No extra query, so it costs nothing to carry.
+ *
+ * Before 2026-09-08 the Reserved panel filled its SO #, SO Creation Date,
+ * Reserved For, Ship Week, Customer and Trader columns from `lotAllocation()` in
+ * lib/archFixtures.ts — a seeded generator — and a trader reading an SO number
+ * off that panel would have believed it. This is that link, real.
+ *
+ * ── A BUNDLE CAN BE HELD BY SEVERAL ORDERS ──────────────────────────────────
+ * Measured in the sandbox on 2026-09-08: 31 inventory numbers sit on an open,
+ * unshipped line of two or more sales orders at once, the worst at 17 orders on
+ * one lot. So `ArchLot.orders` is a LIST and the panel renders one row per
+ * (bundle, order) rather than choosing a winner.
+ */
+export interface ArchLotOrder {
+  /** NetSuite internal id of the sales order. The link target, and the identity. */
+  tranId: string;
+  /** The document number, e.g. "SO-CWP-001344". `t.tranid`, not `t.id`. */
+  soNumber: string;
+  customerId: string;
+  /** `BUILTIN.DF(t.entity)`. Empty when the caller's role cannot read the name. */
+  customer: string;
+  /** `t.trandate` as `YYYY-MM-DD`. Empty when absent. Parse as LOCAL midnight. */
+  created: string;
+  /**
+   * `t.shipdate` as `YYYY-MM-DD`, which feeds the Ship Week column.
+   *
+   * The NATIVE field, and it is populated: 6 of 6 open ARCH sales-order lines
+   * carry one. `custbody_mgsl_expectedshipdate` does NOT exist on the record even
+   * though SuiteQL will let you select the column.
+   */
+  shipDate: string;
+  repId: string;
+  /**
+   * The trader, from the order's Sales Team SUBLIST.
+   *
+   * `transaction.employee` (the header Sales Rep) is NULL on every ARCH order
+   * because Team Selling puts the rep on the sublist — reading the header alone
+   * is what once grouped every real order under "Unassigned". Resolved by
+   * `shared/archSalesTeam.js`, the same module the Open Orders tab uses, so the
+   * two views cannot name two different people for one order.
+   */
+  rep: string;
+  /** Which rung of the fallback answered. 'none' means nobody is named. */
+  repSource?: 'salesTeam' | 'header' | 'none';
+  /** More than one rep on the order's Sales Team; `repTied` when they split evenly. */
+  repShared?: boolean;
+  repTied?: boolean;
+  /** The rep's id resolved but their NAME did not, so `rep` reads "Employee <id>". */
+  repNameUnreadable?: boolean;
+  /**
+   * THIS order's share of the bundle's reserve, in the parent row's `unit`.
+   *
+   * Scaled by the line's open share, exactly like `ArchLot.reserve`, so a
+   * shipped-and-billed line contributes 0 and never appears. The shares across a
+   * bundle's orders sum to its `reserve` by construction.
+   */
+  qty: number;
+}
+
 export interface ArchLot {
   lotNo: string;
   /**
@@ -73,6 +138,26 @@ export interface ArchLot {
    * disabling selection on `reserve > 0`, not by comparing reserve to onHand.
    */
   reserve: number;
+  /**
+   * The sales orders holding `reserve`, newest last. See `ArchLotOrder`.
+   *
+   * 🔴 `undefined` AND `[]` MEAN DIFFERENT THINGS, and the distinction is the
+   * whole point of the field:
+   *
+   *   an array (including empty) → the payload came from a cache that knows
+   *                                about order attribution. Trust it, and render
+   *                                NOTHING where a value is absent.
+   *   `undefined`                → lib/archFixtures.ts, or a cache written before
+   *                                2026-09-08. The SO columns fall back to the
+   *                                generator and the placeholder banner shows.
+   *
+   * The MR therefore emits the key on EVERY lot, `[]` included. Do not "tidy" it
+   * away on unreserved bundles: that saves under a kilobyte and makes a fixture
+   * indistinguishable from real data on every lot that has no reservation.
+   *
+   * `lib/archLotOrders.ts` is the single place that reads this distinction.
+   */
+  orders?: ArchLotOrder[];
   /** Reserved AND released to the warehouse to be prepared. No longer editable. */
   readyToBuild: number;
   outbound: number;

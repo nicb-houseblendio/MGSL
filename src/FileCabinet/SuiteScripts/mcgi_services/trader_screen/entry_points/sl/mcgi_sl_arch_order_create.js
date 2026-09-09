@@ -37,10 +37,34 @@
  *   { mode: 'new' | 'existing',
  *     existingSO,                       // internal id, when mode is 'existing'
  *     header: { customerId, currencyId, termsId, customerPO, incoterms,
- *               salesRep, shipDate },
+ *               salesRep, salesRepId, salesTeamId?, shipDate },
  *     lines: [ { itemId, locationId, lotId, qty, pricePerUnit,
  *                isSplit, splitTargetQty } ],
  *     insuranceRate?, dryRun? }
+ *
+ * ── 🔴 `header.salesTeamId` ATTRIBUTES COMMISSION, so read this first ───────
+ * OPTIONAL and with no default. It is an `entitygroup` internal id as a string
+ * (Setup > Sales Team, 44 active in this account), and sending one expands that
+ * team's members and percentages onto the order's Sales Team sublist. OMIT IT
+ * and the endpoint behaves exactly as before: one sublist line, resolved from
+ * `salesRepId` / the caller / the customer's rep. There is no configured team
+ * and no fallback team, for the same reason `custscript_arch_default_sales_rep`
+ * is deliberately empty. Every member is validated first and a team with one
+ * bad member is REFUSED WHOLE rather than posted in part -- 6 of the 44 teams
+ * hold somebody who is not flagged Sales Rep, which NetSuite answers with an
+ * opaque UNEXPECTED_ERROR out of `save`. See `resolveSalesTeam`.
+ *
+ * ⚠️ MGSL were told in writing that picking a team does not write yet ("on
+ * attend ton feu vert avant de brancher l'ecriture", 2026-09-08). The endpoint
+ * being able to honour a team is not permission for the screen to offer the
+ * control.
+ *
+ * ── On an APPEND (`mode: 'existing'`) ──────────────────────────────────────
+ * `salesRepId` and `salesRep` are IGNORED, deliberately and with the wizard
+ * saying so. `salesTeamId` is honoured, because a template id cannot be
+ * pre-filled from a saved order and is therefore a deliberate choice. Both
+ * decisions are argued from measured data in `archOrderCreate.js`, in the
+ * append branch.
  *
  * Quantities are DISPLAY units — board feet for Lumber, including the lot
  * assignment. NETSUITE does the converting, not the library; nothing here does
@@ -159,6 +183,13 @@ define(['N/runtime', 'N/log', './../../shared/archOrderCreate'],
                 rolesConfigured: allowed.length > 1,
                 // Which line fields the writer can actually reach. `split` is a
                 // control that must read true; see fieldReadiness.
+                //
+                // It also carries `salesTeam`, the Sales Team sublist's own
+                // fields, which is the ONLY way to establish read-only whether
+                // `contribution` can be written on a commission line. That
+                // question decides whether a multi-member team is posted or
+                // refused, so check it here after any deploy rather than
+                // inferring it from stored data.
                 lineFields: orderLib.fieldReadiness(),
             });
         }

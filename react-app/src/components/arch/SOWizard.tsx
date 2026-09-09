@@ -34,6 +34,23 @@ import {
 } from '@/lib/archOrderFixtures';
 import { filterTypeahead, moveHighlight, resolveTyped } from '@/lib/archTypeahead';
 import {
+  teamOptionLabel,
+  teamSplitLabel,
+  teamWarning,
+  sendableTeamId,
+  findTeam,
+  type ArchSalesTeam,
+  type ArchSalesTeamsResult,
+} from '@/lib/archSalesTeams';
+import { fetchArchSalesTeams } from '@/lib/archSalesTeamsApi';
+import {
+  splitFeeState,
+  splitFeeMarginSentence,
+  splitFeeStepSentence,
+  splitFeeBadge,
+  splitFeeFormulaAmount,
+} from '@/lib/archSplitFeeCopy';
+import {
   emptyRepTeam,
   repPicked,
   orderOpened,
@@ -645,6 +662,42 @@ export const SOWizard = ({
   React.useEffect(() => {
     fetchSalesReps().then((r) => { setLiveReps(r); setRepsLoaded(true); });
   }, []);
+
+  /**
+   * The REAL Sales Teams, and the id of the one picked.
+   *
+   * 🔴 Real or nothing. This panel used to be a sentence saying the split could
+   * not be read, which was true when it was written and is not now: the ARCH
+   * service serves `action=salesTeams`, verified live 2026-09-09 — 44 teams, 82
+   * member rows, no degradation, percentages from
+   * `entitygroupmember.contribution`. What is NOT offered is a fixture: the
+   * predecessor of this field invented a team name per customer, which is how a
+   * rep change came to wipe the commission panel.
+   *
+   * `teamsResult.status` distinguishes 'empty' from 'failed' because a RESTlet
+   * runs as the CALLER: all 44 teams sit in subsidiary 1 while role 2181 is
+   * scoped to its own, so a trader may legitimately be served none. See
+   * lib/archSalesTeams.
+   */
+  const [teamsResult, setTeamsResult] = React.useState<ArchSalesTeamsResult>({
+    status: 'loading',
+    teams: [],
+    notice: null,
+  });
+  const [salesTeamId, setSalesTeamId] = React.useState('');
+  React.useEffect(() => {
+    fetchArchSalesTeams().then(setTeamsResult);
+  }, []);
+  const liveTeams: ArchSalesTeam[] = teamsResult.teams;
+  /** The picked team, resolved against the CURRENT list rather than remembered. */
+  const pickedTeam = React.useMemo(
+    () => findTeam(liveTeams, salesTeamId),
+    [liveTeams, salesTeamId]
+  );
+  const comboTeams = React.useMemo<ArchComboOption[]>(
+    () => liveTeams.map((t) => ({ id: t.id, label: teamOptionLabel(t) })),
+    [liveTeams]
+  );
   const [customerPO, setCustomerPO] = React.useState('');
   const [shipTo, setShipTo] = React.useState('');
   const [currency, setCurrency] = React.useState('');
@@ -885,6 +938,10 @@ export const SOWizard = ({
         tied: !!o.traderTied,
       })
     );
+    // The order's own split is what is shown from here on, so any team picked
+    // for a new order is dropped rather than left in state behind a panel that
+    // is no longer a picker.
+    setSalesTeamId('');
     setShipDate(o.shipDate || '');
     // Carry the agreed price across so Pricing is already satisfied for lines
     // that are already sold. The trader only has to price what they just added.
@@ -917,6 +974,10 @@ export const SOWizard = ({
     // has no Sales Team until NetSuite gives it one. Both are cleared rather than
     // seeded from a fixture: `salesTeamFor()` invented a team name per customer.
     setRepTeam(customerPicked());
+    // The commission split too: a team chosen for one customer is not a choice
+    // for another. `pickedTeam` re-resolves against the live list, so a stale id
+    // could not be sent anyway; this is so the FIELD does not keep showing it.
+    setSalesTeamId('');
     // 🔴 currencyCode (ISO), NEVER currencyName. `currency` is fed to
     // toLocaleString({ style: 'currency' }), so "US Dollar" throws
     // `RangeError: Invalid currency code` and takes the entire wizard down —
@@ -980,6 +1041,10 @@ export const SOWizard = ({
     setCustomer(c);
     setShipTo('');
     setRepTeam(customerPicked());
+    // The commission split too: a team chosen for one customer is not a choice
+    // for another. `pickedTeam` re-resolves against the live list, so a stale id
+    // could not be sent anyway; this is so the FIELD does not keep showing it.
+    setSalesTeamId('');
     setCurrency(currenciesFor(c)[0]);
   };
 
@@ -991,6 +1056,19 @@ export const SOWizard = ({
     [lines, split, reman, price]
   );
   const totals = React.useMemo(() => sumEconomics(economics), [economics]);
+
+  /**
+   * Which of the three split-fee states this screen is in, read fresh each
+   * render because `MCGI_CONFIG` is injected by the Suitelet and is not present
+   * when the module is first evaluated.
+   *
+   * 🔴 EVERY sentence about the fee comes off this, so the copy and the
+   * arithmetic cannot drift apart. `lineEconomics` deducts `splitFee()`; these
+   * strings describe exactly that number. The third state is the one the old
+   * two-way branch got wrong: the switch and the amount are separate script
+   * parameters, so ON with a blank amount charges nothing.
+   */
+  const feeState = splitFeeState(splitFeeEnabled(), splitFee());
 
   /**
    * Lines carrying remanufacturing intent, and what that intent costs.
@@ -1175,6 +1253,20 @@ export const SOWizard = ({
        * and NetSuite builds the Sales Team sublist from it.
        */
       salesTeam: salesRepLabel,
+      /*
+       * 🔴 THE TEAM'S INTERNAL ID, and only when it is a real option right now.
+       * `sendableTeamId` refuses anything the live list does not hold, so a team
+       * that vanished on a reload, or a customer change that cleared the field,
+       * cannot post an `entitygroup` id at somebody's commission. Undefined
+       * leaves the key out of the request entirely, see toRequest.
+       *
+       * ⚠️ NEW ORDERS ONLY, and the gate is here rather than only in the state
+       * so it cannot be forgotten. The picker is not rendered on an append (the
+       * endpoint skips the whole header block there), so sending a team picked
+       * before the trader switched modes would post a value they can no longer
+       * see, on a request that ignores it. Both halves of that are wrong.
+       */
+      salesTeamId: mode === 'new' ? sendableTeamId(liveTeams, salesTeamId) : undefined,
       paymentTerms: paymentTermsFor(customer),
     },
     // Totals for what is BEING WRITTEN, so the confirm dialog does not quote the
@@ -1234,6 +1326,9 @@ export const SOWizard = ({
                     // that order's commission split on a blank new one.
                     setRepTeam(emptyRepTeam());
                   }
+                  // Either direction. Switching to an append hides the picker,
+                  // so a pick left behind it would be invisible.
+                  setSalesTeamId('');
                 }}
                 style={{
                   flex: '1 1 0',
@@ -1327,13 +1422,27 @@ export const SOWizard = ({
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {matches.map((o) => {
                   const sel = o.soNo === existingSO;
-                  // Ready to Build means the warehouse has started — no more edits.
+                  /*
+                   * 🔴 READY TO BUILD WARNS, IT DOES NOT BLOCK. Corrected 2026-09-09.
+                   *
+                   * This used to disable the order entirely, on the strength of the
+                   * 2026-08-11 call ("une fois qu'il est ready to build, on peut plus
+                   * edit"). Marc-Antoine SUPERSEDED that in writing on 2026-08-14 at
+                   * 11:33, quoted verbatim in Questions for Marc-Antoine -
+                   * 2026-08-13.md: « pour la V1 on peut y aller avec un statut sur le
+                   * SO au complet [...] on pourrait afficher un warning qui n'empeche
+                   * pas le Edit, mais qui le mentionne au trader que la commande est
+                   * peut-etre en cours de preparation. »
+                   *
+                   * So the trader is told and decides. Blocking was us implementing
+                   * the call and ignoring the written answer that replaced it.
+                   */
                   const readyToBuild = o.status === 'Ready to Build';
                   // A demo order has no internal id, so nothing can be written to
-                  // it. Disabling it here is what keeps the refusal off the last
-                  // step of the wizard.
+                  // it. THAT still disables: it is not a judgement call, the write
+                  // would have no target and the refusal would land on the last step.
                   const demo = !o.internalId;
-                  const locked = readyToBuild || demo;
+                  const locked = demo;
                   return (
                     <button
                       key={o.soNo}
@@ -1341,10 +1450,10 @@ export const SOWizard = ({
                       disabled={locked}
                       onClick={() => applyExistingOrder(o.soNo)}
                       title={
-                        readyToBuild
-                          ? 'Ready to Build — the warehouse is preparing this order, it can no longer be edited'
-                          : demo
-                            ? 'Demo order — not a real sales order, so nothing can be added to it'
+                        demo
+                          ? 'Demo order — not a real sales order, so nothing can be added to it'
+                          : readyToBuild
+                            ? 'Ready to Build — the warehouse may already be preparing this order. You can still add lines; check with them first.'
                             : undefined
                       }
                       style={{
@@ -2083,32 +2192,120 @@ export const SOWizard = ({
             team" are the 44 active `entitygroup` rows with `issalesrep = 'T'`, whose
             percentages are `entitygroupmember.contribution`.
 
-            What is shown depends on what is reachable:
+            What is shown depends on what is reachable, and the third case is new:
               editing  the order's own split, from `traderShared`/`traderTied`,
                        which the openOrders endpoint already computes from those
-                       contribution values
-              new      the mechanism, stated plainly. The ARCH service serves no
-                       sales-team action and the create endpoint takes no team, so
-                       there is nothing to read and nothing to send. Saying so beats
-                       both a fixture and a blank.
+                       contribution values. NOT a picker: the create endpoint
+                       skips the whole header block on an append, so a chooser
+                       there would discard the choice silently.
+              new      a PICKER over the 44 real teams when the role can read
+                       them (`action=salesTeams`, live), so the trader sets the
+                       commission split rather than being told about it.
+              neither  the mechanism, stated plainly, and WHY the list is absent.
+                       A RESTlet runs as the caller and every team sits in
+                       subsidiary 1, so an empty list is expected for a trader
+                       and is not the same as a failure. Never a fixture.
           */}
-          <div
-            style={{
-              ...field(false),
-              background: '#F8FAFC',
-              borderStyle: orderSplit ? 'solid' : 'dashed',
-              display: 'flex',
-              alignItems: 'center',
-              minHeight: 44,
-              color: orderSplit ? ARCH_SURFACE.text : ARCH_SURFACE.textMid,
-              fontWeight: orderSplit ? 600 : 500,
-            }}
-          >
-            {orderSplit ? orderSplit.headline : NEW_ORDER_SPLIT_HEADLINE}
-          </div>
-          <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textMid, marginTop: 5, lineHeight: 1.5 }}>
-            {orderSplit ? orderSplit.detail : NEW_ORDER_SPLIT_DETAIL}
-          </div>
+          {mode === 'new' && teamsResult.status === 'ok' ? (
+            <>
+              <ArchCombobox
+                value={pickedTeam ? pickedTeam.name : ''}
+                options={comboTeams}
+                onPick={(o) => setSalesTeamId(o.id)}
+                ok={!!pickedTeam}
+                disabled={!customer}
+                placeholder={
+                  customer
+                    ? `Type a team or a rep (${liveTeams.length}), optional`
+                    : 'Select a customer first'
+                }
+                emptyText="No team matches. Clear the box to see all of them."
+                ariaLabel="Sales team, commission split"
+                footer={
+                  pickedTeam ? (
+                    <button
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setSalesTeamId('');
+                      }}
+                      style={{
+                        width: '100%',
+                        textAlign: 'left',
+                        padding: '8px 11px',
+                        border: 'none',
+                        background: '#F8FAFC',
+                        color: ARCH_SURFACE.textMid,
+                        fontSize: 12,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Clear the team, let NetSuite decide the split
+                    </button>
+                  ) : undefined
+                }
+              />
+              <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textMid, marginTop: 5, lineHeight: 1.5 }}>
+                {pickedTeam
+                  ? teamSplitLabel(pickedTeam) +
+                    '. Sent with the order as the commission split. The rep above stays its owner.'
+                  : 'Optional. Leave it empty and NetSuite credits the rep above on the order’s Sales Team. Typing matches the team name or any rep on it.'}
+              </div>
+              {/* Never silently: a team we cannot fully read, or one whose
+                  percentages do not total 100, says so on the field. */}
+              {teamWarning(pickedTeam) && (
+                <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
+                  ⚠️ {teamWarning(pickedTeam)}
+                </div>
+              )}
+              {teamsResult.notice && (
+                <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
+                  ⚠️ {teamsResult.notice}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div
+                style={{
+                  ...field(false),
+                  background: '#F8FAFC',
+                  borderStyle: orderSplit ? 'solid' : 'dashed',
+                  display: 'flex',
+                  alignItems: 'center',
+                  minHeight: 44,
+                  color: orderSplit ? ARCH_SURFACE.text : ARCH_SURFACE.textMid,
+                  fontWeight: orderSplit ? 600 : 500,
+                }}
+              >
+                {orderSplit
+                  ? orderSplit.headline
+                  : teamsResult.status === 'loading'
+                    ? 'Loading sales teams…'
+                    : NEW_ORDER_SPLIT_HEADLINE}
+              </div>
+              <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textMid, marginTop: 5, lineHeight: 1.5 }}>
+                {orderSplit ? orderSplit.detail : NEW_ORDER_SPLIT_DETAIL}
+              </div>
+              {/*
+                Says WHY there is no picker, in the trader's terms, and keeps
+                "the service answered with none" apart from "we could not ask".
+                Only on a new order: on an append the panel is showing the
+                order's own split and the absence of a picker is deliberate.
+              */}
+              {mode === 'new' && teamsResult.notice && (
+                <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
+                  ⚠️ {teamsResult.notice}
+                </div>
+              )}
+              {mode === 'existing' && (
+                <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
+                  ⚠️ Adding lines does not change the commission split: change the Sales Team on the
+                  order in NetSuite.
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -2120,9 +2317,16 @@ export const SOWizard = ({
         How a split line is marked on the sales order is <strong>not decided yet</strong> — custom record or
         checkbox. The wizard records the intent and the target quantity; it does not commit to a NetSuite
         representation.{' '}
-        {splitFeeEnabled()
-          ? <strong>The ${splitFee()} split fee comes from configuration.</strong>
-          : <strong>No split fee is charged yet. MGSL quote ${SPLIT_FEE_PLACEHOLDER} per split, but it stays off until they ask for it to be applied.</strong>}
+        {/*
+          🔴 ONE SOURCE FOR EVERY SPLIT-FEE SENTENCE, and THREE states rather than
+          two. The two script parameters are independent: ticking
+          `custscript_arch_split_fee_on` without setting
+          `custscript_arch_split_fee_amt` — which is exactly how the sandbox
+          deployment stands, measured read-only 2026-09-09: `F` and blank — gives
+          `splitFee() === 0`, and the old two-way branch would then have printed
+          "The $0 split fee comes from configuration". See lib/archSplitFeeCopy.
+        */}
+        <strong>{splitFeeStepSentence(feeState, splitFee(), SPLIT_FEE_PLACEHOLDER)}</strong>
       </ProvisionalNote>
       <div style={{ fontSize: 12.5, color: ARCH_SURFACE.textMid, lineHeight: 1.5, marginBottom: 14 }}>
         The quantity you enter is a <strong>placeholder</strong>. The warehouse measures each plank and
@@ -2206,7 +2410,7 @@ export const SOWizard = ({
                     </span>
                   ) : (
                     <span style={{ color: AMBER_TEXT, fontWeight: 600 }}>
-                      Split{splitFeeEnabled() ? ' · +' + fmtMoney(splitFee(), currency || 'USD', 0) : ''} · bundle held
+                      Split{splitFeeBadge(feeState, splitFee()) ? ' · ' + splitFeeBadge(feeState, splitFee()) : ''} · bundle held
                     </span>
                   )}
                 </td>
@@ -2496,9 +2700,20 @@ export const SOWizard = ({
         from the customer, not from this screen, and applies it to revenue rather than to lot cost.
         For every ARCH customer today that makes the real charge larger than shown, so this margin
         is optimistic. The reman rates are confirmed at $0.20/BF
-        per service. The one rate not applied here is the <strong>split fee</strong>:
-        MGSL quote ${SPLIT_FEE_PLACEHOLDER} per split, but it stays switched off until they ask for
-        it, so a split line currently costs nothing in this margin. <strong>Do not quote a customer from these margins.</strong>
+        per service.{' '}
+        {/*
+          🔴 THIS SENTENCE USED TO BE UNCONDITIONAL, and it is a claim about a
+          SCRIPT PARAMETER rather than about this code: it read "it stays switched
+          off ... so a split line currently costs nothing in this margin" whatever
+          `MCGI_CONFIG.splitFeeEnabled` said. The day MGSL tick that box the margin
+          below starts deducting $200 a split while the note over it denies there is
+          a fee — a fee silently in the margin is the one outcome this copy exists
+          to prevent. The amount IS the client's (his checklist: "Presentment
+          200$/split"); the instruction to charge it has been asked twice and never
+          answered, so the switch stays off and the copy follows the switch.
+        */}
+        {splitFeeMarginSentence(feeState, splitFee(), SPLIT_FEE_PLACEHOLDER)}{' '}
+        <strong>Do not quote a customer from these margins.</strong>
       </ProvisionalNote>
       {lowPricedLines.length > 0 && (
         <div
@@ -2767,7 +2982,7 @@ export const SOWizard = ({
         </div>
         Profit = Revenue − Lot cost − Services − Operations &amp; insurance.
         <br />
-        Revenue = BF × price/BF · Lot cost = BF × cost/BF · Services = ${splitFeeEnabled() ? splitFee() : 0} per split lot + $
+        Revenue = BF × price/BF · Lot cost = BF × cost/BF · Services = ${splitFeeFormulaAmount(feeState, splitFee())} per split lot + $
         {PLANING_RATE.toFixed(2)}/BF planing + ${CUT_RATE.toFixed(2)}/BF cutting ·
         Operations &amp; insurance = {(opsInsuranceRate() * 100).toFixed(2)}% of lot cost ·
         Margin % = Profit ÷ Revenue
@@ -2805,7 +3020,19 @@ export const SOWizard = ({
             trader could check the split before creating went quiet; it is back,
             fed by the order's own Sales Team rather than by a fixture map.
           */
-          ['Sales team', orderSplit ? orderSplit.headline : NEW_ORDER_SPLIT_HEADLINE],
+          /*
+            A PICKED team wins over both, because it is the only one of the three
+            that this order is about to send. Then the order's own split on an
+            append, then the mechanism. Never a fixture.
+          */
+          [
+            'Sales team',
+            pickedTeam
+              ? pickedTeam.name + ' (' + teamSplitLabel(pickedTeam) + ')'
+              : orderSplit
+                ? orderSplit.headline
+                : NEW_ORDER_SPLIT_HEADLINE,
+          ],
         ].map(([k, v]) => (
           <div key={k}>
             <div

@@ -59,6 +59,17 @@
  * `bucketsBuilt` / `bucketsEmpty` in META carry this to the browser, so the
  * screen states which columns are real rather than showing five confident zeros.
  *
+ * ═══ WHO HOLDS A BUNDLE, added 2026-09-08 ═══════════════════════════════════
+ * `reserve` said HOW MUCH of a bundle was sold and nothing about WHO bought it,
+ * so the Reserved panel's SO #, SO Creation Date, Reserved For, Ship Week,
+ * Customer and Trader columns all came from a seeded generator. Each lot now
+ * carries `orders: []` — one entry per sales order holding it, with the order's
+ * document number, customer, dates, rep and its own share of the reserve. See
+ * `loadBuckets` for why it is keyed by transaction (a bundle can be held by
+ * several orders: 31 lots in this sandbox are, one of them by 17) and why the
+ * key is present even when empty (it is what tells the browser the payload knows
+ * about attribution at all, rather than leaving a fixture to look real).
+ *
  * ── The honest gap: lot attribution ─────────────────────────────────────────
  * ARCH is lot-centric, so each bucket is wanted PER LOT. That needs the order
  * line to carry an inventory-detail assignment. Real ARCH orders do; the seeded
@@ -120,13 +131,35 @@ define([
     'N/query', 'N/search', 'N/log', 'N/runtime', 'N/task',
     '../../shared/cacheKeys_arch',
     '../../shared/cacheClient',
+    // WHO the sales order belongs to, read from the Sales Team SUBLIST. Added
+    // 2026-09-08 so the Reserved panel can name a real trader instead of a
+    // generated one. `transaction.employee` (the header Sales Rep) is NULL on
+    // every ARCH order because Team Selling puts the rep on the sublist, so the
+    // header alone cannot answer it — see archSalesTeam.js for the measurement.
+    //
+    // It is the SAME module the open-orders service already uses, deliberately:
+    // the pick rule (primary, else highest contribution, else lowest employee id)
+    // must not exist twice, or the Reserved panel and the Open Orders tab will
+    // eventually name two different people for one order.
+    //
+    // ⚠️ DEPLOY DEPENDENCY. It is file 123861 in the sandbox File Cabinet
+    // (trader_screen/shared, 9,016 bytes, byte-identical to this repo's copy as of
+    // 2026-09-08). If it were ever absent, THIS MODULE WOULD NOT LOAD AT ALL and
+    // the cache would stop rebuilding, so confirm it exists before uploading this
+    // file into an environment that has never had it.
+    //
+    // Appended at the END of the array rather than beside the other two shared
+    // modules, so that not one existing positional binding moves. The comment
+    // above about positional binding is the reason: a new id in the middle
+    // silently reassigns every parameter after it.
     // Shared FIFO lot-cost engine, validated to the cent against production GL
     // (2026-06-11). MTL already depends on it, so it exists in both sandbox and
     // production — but it is NOT tracked in this repo and drifts per
     // environment, so treat its output as data to be checked, not as a given.
     // Every call here is wrapped: costing must never take down the cache build.
     '/SuiteScripts/MCGI_LIB_LotCost',
-], (query, search, log, runtime, task, CacheKeys, CacheClient, LotCostLib) => {
+    '../../shared/archSalesTeam',
+], (query, search, log, runtime, task, CacheKeys, CacheClient, LotCostLib, ArchSalesTeam) => {
 
     /**
      * ⚠️ ARCH STOCK IS **NOT** SCOPED BY SUBSIDIARY OR LOCATION. Do not "fix"
@@ -653,6 +686,38 @@ define([
         return isFinite(n) ? n : 0;
     };
 
+    /**
+     * A NetSuite date column as `YYYY-MM-DD`, or '' when there is none.
+     *
+     * 🔴 THE PAYLOAD MUST CARRY ISO, NOT WHAT NETSUITE HANDS BACK. N/query returns
+     * a date in the ACCOUNT'S display format, which here is M/D/YYYY, and
+     * `new Date('8/20/2026')` in a browser is parser-dependent while
+     * `new Date('2026-08-20')` is not. The front end also has to compare two of
+     * these (an order's age is today minus its creation date), and string
+     * comparison only sorts correctly in ISO.
+     *
+     * Byte for byte the same function as `isoDate` in trader_screen_service_arch.js,
+     * and deliberately so: both feed a date into the same React screen, and the
+     * open-orders tab and the Reserved panel must not disagree about a day.
+     * Duplicated rather than shared because the service is not a module this one
+     * may depend on (it is the RESTlet's own file), and a two-branch regex is a
+     * smaller risk than a new cross-entry-point dependency.
+     *
+     * ⚠️ The browser must parse these as LOCAL, i.e. `new Date(iso + 'T00:00:00')`.
+     * `new Date('2026-08-20')` alone is UTC midnight, which is the 19th anywhere
+     * west of Greenwich — Montreal included.
+     */
+    const isoDate = (v) => {
+        if (!v) return '';
+        const s = String(v).trim();
+        const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+        if (mdy) {
+            return mdy[3] + '-' + ('0' + mdy[1]).slice(-2) + '-' + ('0' + mdy[2]).slice(-2);
+        }
+        const ymd = s.match(/^(\d{4}-\d{2}-\d{2})/);
+        return ymd ? ymd[1] : '';
+    };
+
     /* ══ PO from the lot number ════════════════════════════════════════════════
      *
      * The lot-number prefix is the PURCHASE ORDER number. Marc-Antoine, asked
@@ -1019,6 +1084,35 @@ define([
         '  tl.quantity            AS qty, ' +
         '  tl.quantityshiprecv    AS shiprecv, ' +
         '  tl.quantitybilled      AS billed, ' +
+        /* ── WHICH ORDER, added 2026-09-08 ────────────────────────────────────
+         * Five header columns on a query that was ALREADY reading this exact row
+         * for its quantity. They cost no extra query, no extra join and no extra
+         * row: the fan-out is unchanged and the line-level dedupe below is
+         * unchanged. That is the whole reason the order attribution lives here
+         * rather than in a second read.
+         *
+         * ⚠️ `docno`, NOT `tranid`. `t.id` is already aliased `tranid` above (it
+         * is the join key for inventoryassignment and half the dedupe key), so
+         * the DOCUMENT number — "SO-CWP-001344" — has to take a different name.
+         * Selecting `t.tranid AS tranid` here would silently overwrite the
+         * internal id with a string and break the assignment attribution.
+         *
+         * `t.shipdate` is the NATIVE field and it IS populated: 6 of 6 open ARCH
+         * sales-order lines carry one (2026-09-08). custbody_mgsl_expectedshipdate
+         * does NOT exist on the record despite being selectable, so do not reach
+         * for it — see the same note in trader_screen_service_arch.js.
+         *
+         * `t.employee` is the HEADER Sales Rep and is NULL on every ARCH order,
+         * measured. It is read anyway, as the second rung of the same fallback the
+         * open-orders service uses, so that the two cannot disagree if MGSL ever
+         * turn Team Selling off. */
+        '  t.tranid               AS docno, ' +
+        '  t.trandate             AS trandate, ' +
+        '  t.shipdate             AS shipdate, ' +
+        '  t.entity               AS custid, ' +
+        '  BUILTIN.DF(t.entity)   AS customer, ' +
+        '  t.employee             AS hdrrepid, ' +
+        '  BUILTIN.DF(t.employee) AS hdrrep, ' +
         '  inv.inventorynumber    AS lotno, ' +
         '  ia.quantity            AS assignedqty ' +
         'FROM transactionline tl ' +
@@ -1049,8 +1143,41 @@ define([
      *
      * Returns, keyed `itemId__locationId`:
      *   { reserve, outbound, onOrder, inTransit,       // row totals, BASE units
-     *     lots: { lotNo: {reserve, outbound, onOrder, inTransit} },
+     *     lots: { lotNo: {reserve, outbound, onOrder, inTransit,
+     *                     orders: { tranId: {...} } } },
      *     unattributed: { ...same four... } }          // no lot assignment
+     *
+     * ── `orders`: WHICH sales order holds the bundle ──────────────────────────
+     * Added 2026-09-08. Until then the per-lot figure was a committed QUANTITY
+     * with nothing about the order behind it, and the Reserved panel filled its
+     * SO #, date, customer and trader columns from a SEEDED GENERATOR
+     * (`lotAllocation` in lib/archFixtures.ts). A trader would read an SO number
+     * and a customer name off that panel and believe them.
+     *
+     * The link is not new information: BUCKET_SQL has always joined
+     * `inventoryassignment` to the order LINE that names the lot — that join is
+     * what tied SO-CWP-001346 to lot 315643-7 during the phantom-reservation fix
+     * on the same day. All that was missing was carrying the order's identity
+     * through instead of discarding it.
+     *
+     * 🔴 KEYED BY TRANSACTION, BECAUSE A BUNDLE CAN BE HELD BY MORE THAN ONE
+     * ORDER, and this is measured, not defensive. Right now, in this sandbox,
+     * 31 inventory numbers sit on an open unshipped line of TWO OR MORE sales
+     * orders at once, the worst at 17 orders on one lot ("CWP ANTE - 813-4"), and
+     * 199 lots have been assigned across more than one sales order over their
+     * lifetime. None of those are hardwood TODAY, so ARCH has not met the case
+     * yet — but the shape is real in this account and picking one order would
+     * eventually print one customer's name over another's reservation.
+     *
+     * So every order that contributes reserve to a bundle is recorded, with the
+     * quantity IT contributes, and the front end lists them all. The shares sum
+     * to the bundle's `reserve` by construction: they are accumulated from the
+     * same expression, under the same guard.
+     *
+     * Only SALES orders. A purchase order's assignment feeds `onOrder`, and there
+     * is no panel column asking who the supplier is on it (the PO number already
+     * comes from the lot-number prefix), so recording it would be shape without a
+     * consumer.
      *
      * `unattributed` is not a rounding detail — it is the honest half of the
      * answer. A sales order line with no inventory detail contributes real,
@@ -1157,8 +1284,113 @@ define([
                 if (!bucket.lots[r.lotno]) bucket.lots[r.lotno] = blank();
                 if (isSale) bucket.lots[r.lotno].reserve += assigned * openShare;
                 else        bucket.lots[r.lotno].onOrder += assigned * openShare;
+
+                /* ── WHICH order, under the SAME guard as the quantity ────────
+                 *
+                 * Inside this `if`, deliberately. A bundle must never name an
+                 * order that contributes nothing to its reserve: that is exactly
+                 * the phantom SO-CWP-001346 / lot 315643-7 defect one field
+                 * along. A fully shipped line has openShare 0, so it reaches
+                 * neither the quantity nor the attribution.
+                 *
+                 * Accumulated per TRANSACTION, not per line: one order can carry
+                 * two lines that both assign the same bundle, and the panel wants
+                 * one row per order with the combined share, not two rows for one
+                 * SO number.
+                 */
+                if (isSale) {
+                    const lotRec = bucket.lots[r.lotno];
+                    if (!lotRec.orders) lotRec.orders = {};
+                    const oid = String(r.tranid);
+                    if (!lotRec.orders[oid]) {
+                        lotRec.orders[oid] = {
+                            tranId:     oid,
+                            soNumber:   String(r.docno || ''),
+                            customerId: r.custid ? String(r.custid) : '',
+                            customer:   String(r.customer || ''),
+                            created:    isoDate(r.trandate),
+                            shipDate:   isoDate(r.shipdate),
+                            // The HEADER Sales Rep, which is null on every ARCH
+                            // order. The sublist read below overwrites it where
+                            // it resolves; this is the second rung, not the first.
+                            repId:      r.hdrrepid ? String(r.hdrrepid) : '',
+                            rep:        String(r.hdrrep || ''),
+                            repSource:  r.hdrrepid ? 'header' : 'none',
+                            // BASE units, converted in reduce with the same
+                            // `/ rate` every other quantity goes through.
+                            qty:        0,
+                        };
+                    }
+                    lotRec.orders[oid].qty += assigned * openShare;
+                }
             }
         });
+
+        /* ── WHO the order belongs to: ONE query for the whole run ────────────
+         *
+         * After the fold, not inside it. `repByTransaction` chunks an IN list at
+         * 500 ids and exactly ONE open hardwood order holds a bundle today, so
+         * this is a single cheap read — but it must never become one read per
+         * row, which is what calling it from `reduce` would do.
+         *
+         * It is NOT joined into BUCKET_SQL, and that is the same trap
+         * archSalesTeam.js documents: BUCKET_SQL already fans out per lot
+         * assignment, so joining a two-rep order's sublist would multiply its
+         * lines by two and DOUBLE the row totals. Measured on SO-CWP-001352
+         * during the 2026-09-08 audit. A separate read is the fix, not a
+         * preference.
+         *
+         * A failure here costs the trader NAME and nothing else: the panel still
+         * shows a real SO number, customer and date, and the trader cell renders
+         * as unresolved rather than as a guess.
+         */
+        const soIds = {};
+        Object.keys(byPair).forEach((k) => {
+            const lots = byPair[k].lots;
+            Object.keys(lots).forEach((lotNo) => {
+                const ords = lots[lotNo].orders;
+                if (ords) Object.keys(ords).forEach((oid) => { soIds[oid] = true; });
+            });
+        });
+        const orderIds = Object.keys(soIds);
+        if (orderIds.length) {
+            let reps = {};
+            try {
+                reps = ArchSalesTeam.repByTransaction(orderIds) || {};
+            } catch (e) {
+                // ERROR, not audit: the Reserved panel silently loses every
+                // trader name, and an hourly audit line once hid a four-day
+                // outage on this exact screen.
+                log.error('ARCH cache — SALES TEAM UNREADABLE, the Reserved panel will name no trader',
+                    orderIds.length + ' order(s): ' + (e.name || '') + ': ' + (e.message || String(e)));
+            }
+            let resolved = 0;
+            Object.keys(byPair).forEach((k) => {
+                const lots = byPair[k].lots;
+                Object.keys(lots).forEach((lotNo) => {
+                    const ords = lots[lotNo].orders;
+                    if (!ords) return;
+                    Object.keys(ords).forEach((oid) => {
+                        const pick = reps[oid];
+                        if (!pick || !pick.repId) return;
+                        const o = ords[oid];
+                        o.repId           = String(pick.repId);
+                        o.rep             = String(pick.rep || '');
+                        o.repSource       = 'salesTeam';
+                        // Carried, not resolved away. A 50/50 order really has two
+                        // owners; the panel says so rather than printing one name
+                        // as if it were the whole answer.
+                        o.repShared       = !!pick.shared;
+                        o.repTied         = !!pick.tied;
+                        o.repNameUnreadable = !!pick.nameUnreadable;
+                        resolved++;
+                    });
+                });
+            });
+            log.audit('ARCH cache reserved-order attribution',
+                orderIds.length + ' open sales order(s) hold hardwood bundles; ' +
+                resolved + ' bundle-order pair(s) carry a Sales Team rep.');
+        }
 
         // Whatever the row carries but no lot claims.
         Object.keys(byPair).forEach((k) => {
@@ -1518,6 +1750,60 @@ define([
                     outbound:      lb ? lb.outbound  / rate : 0,
                     onOrder:       lb ? lb.onOrder   / rate : 0,
                     inTransit:     lb ? lb.inTransit / rate : 0,
+                    /* ── THE SALES ORDERS THAT HOLD THIS BUNDLE ───────────────
+                     *
+                     * One entry per order, quantities converted to display units
+                     * by the same `/ rate` as `reserve` above, so the entries sum
+                     * to `reserve` in the unit the panel prints.
+                     *
+                     * 🔴 THE KEY IS ALWAYS PRESENT, `[]` INCLUDED, and that is
+                     * load-bearing rather than tidy. It is the ONLY signal the
+                     * browser has that a payload came from a source that knows
+                     * about order attribution at all:
+                     *
+                     *   `orders` is an array  → this cache built it. Render it,
+                     *                           and render nothing where a value
+                     *                           is genuinely absent.
+                     *   `orders` is undefined → fixtures, or a cache written
+                     *                           before 2026-09-08. Fall back to
+                     *                           the generator AND show the
+                     *                           placeholder banner.
+                     *
+                     * Omitting it on unreserved bundles would save about 830
+                     * bytes across the 69 live hardwood lots and would make the
+                     * two cases indistinguishable on every one of them, which is
+                     * how a fixture ends up on screen labelled as real.
+                     *
+                     * Sorted oldest order first, then by document number, so two
+                     * reads of the same data list them in the same order —
+                     * `Object.keys` order is insertion order here and insertion
+                     * order follows whatever sequence SuiteQL returned the rows
+                     * in, which is not guaranteed stable.
+                     */
+                    orders: lb && lb.orders
+                        ? Object.keys(lb.orders)
+                            .map((oid) => {
+                                const o = lb.orders[oid];
+                                return {
+                                    tranId:     o.tranId,
+                                    soNumber:   o.soNumber,
+                                    customerId: o.customerId,
+                                    customer:   o.customer,
+                                    created:    o.created,
+                                    shipDate:   o.shipDate,
+                                    repId:      o.repId,
+                                    rep:        o.rep,
+                                    repSource:  o.repSource,
+                                    repShared:  !!o.repShared,
+                                    repTied:    !!o.repTied,
+                                    repNameUnreadable: !!o.repNameUnreadable,
+                                    qty:        o.qty / rate,
+                                };
+                            })
+                            .sort((a, b) => (a.created === b.created
+                                ? String(a.soNumber).localeCompare(String(b.soNumber))
+                                : String(a.created).localeCompare(String(b.created))))
+                        : [],
                     // ⛔ readyToBuild has NO SOURCE. Marc-Antoine described it as a
                     // header status a trader ticks by hand, and no such field
                     // exists on the transaction — every candidate custbody name

@@ -31,13 +31,15 @@
  *
  * Two behaviours come from the client prototype because they encode stated rules:
  *
- *  - Edit is offered on Reserved and In Transit but NOT on Ready to Build.
- *    "Une fois qu'il est ready to build... on peut plus edit."
- *  - Lines carry their own status. ⚠️ Marc-Antoine answered on 2026-08-13 that
- *    Ready to Build is a HEADER status, which conflicts with both this prototype
- *    and his diagram's note that "sometimes we have some lines on the SO ready to
- *    build, but not the full order". We render the prototype so he has something
- *    concrete to react to; the contradiction is open with him.
+ *  - Edit is offered on EVERY real order, Ready to Build included, with a
+ *    warning rather than a block. His call remark ("une fois qu'il est ready
+ *    to build... on peut plus edit") was superseded by his written answer of
+ *    2026-08-14: a warning « qui n'empeche pas le Edit ».
+ *  - Lines carry their own status. ✅ THE CONTRADICTION IS CLOSED, not open: on
+ *    2026-08-14 he confirmed the line origin AND chose a HEADER status for V1
+ *    ("je pense que pour la V1 on peut y aller avec un statut sur le SO au
+ *    complet"), because mixing the two would be confusing. No such field
+ *    exists yet, so the status is still unreachable on real orders.
  *
  * ⚠️ LIVE, read-only. Orders come from the `openOrders` service action, which reads
  * open hardwood SO lines straight from NetSuite — no saved search involved. Edit
@@ -732,7 +734,13 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                       // construction, so the write path could not append to it, and
                       // offering Edit walked the trader into a wizard that ends in a
                       // refusal.
-                      const editable = o.status !== 'Ready to Build' && !!o.internalId;
+                      /* 🔴 READY TO BUILD NO LONGER BLOCKS. Corrected 2026-09-09.
+                       * Marc-Antoine, in writing 2026-08-14 11:33, superseding his own
+                       * call remark: « on pourrait afficher un warning qui n'empeche pas
+                       * le Edit, mais qui le mentionne au trader ». Only a fixture order
+                       * (no internalId, so no write target) is genuinely uneditable. */
+                      const editable = !!o.internalId;
+                      const buildWarning = o.status === 'Ready to Build';
                       return (
                         <React.Fragment key={o.soNo}>
                           <tr
@@ -833,7 +841,15 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                                 <button
                                   type="button"
                                   onClick={() => onEditOrder?.(o.soNo)}
-                                  title={`Add items to ${o.soNo}`}
+                                  /* The warning he asked for instead of a block, 2026-08-14:
+                                     « un warning qui n'empeche pas le Edit, mais qui le
+                                     mentionne au trader que la commande est peut-etre en
+                                     cours de preparation. » */
+                                  title={
+                                    buildWarning
+                                      ? `Add items to ${o.soNo}. Ready to Build: the warehouse may already be preparing it, so check with them first.`
+                                      : `Add items to ${o.soNo}`
+                                  }
                                   style={{
                                     marginLeft: 6,
                                     padding: '2px 7px',

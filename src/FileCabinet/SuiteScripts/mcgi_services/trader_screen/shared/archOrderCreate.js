@@ -74,6 +74,15 @@
  * account: a screen must not choose where a transaction posts. Every item is
  * checked against the hardwood segment, so this endpoint cannot be used to write
  * IND or MTL orders even by someone crafting their own payload.
+ *
+ * ── ⚠️ The one thing the caller MUST name, or it does not happen ────────────
+ * `header.salesTeamId` is the exception that proves the rule above. Commission
+ * attribution is not derived, defaulted or configured: no team id means the old
+ * single sublist line, and a team id means THAT team, validated member by member
+ * and refused whole if any member is unusable. Subsidiary and department are
+ * refused from the caller because a screen must not choose where money POSTS;
+ * a sales team is required FROM the caller because nothing else may choose who
+ * money goes TO. See `resolveSalesTeam`.
  */
 define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/email',
         './archSplitExecute'],
@@ -709,6 +718,533 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 (e.name || '') + ': ' + (e.message || String(e)));
             return { salesReps: [], error: (e.name || '') + ': ' + (e.message || String(e)) };
         }
+    };
+
+    /**
+     * Hard cap on how many members one Sales Team may post onto an order.
+     *
+     * The largest real team in this account holds FOUR (measured 2026-09-08:
+     * 9 teams of 1, 33 of 2, 1 of 3, 1 of 4), so this is a sanity ceiling and
+     * not a business rule. It exists because every member is a sublist line on
+     * a commission-bearing document and a malformed group should refuse rather
+     * than write twenty of them.
+     */
+    const MAX_TEAM_MEMBERS = 20;
+
+    /**
+     * The Sales Team to post, expanded from a team the caller NAMED.
+     *
+     * ── 🔴 IT REFUSES INSTEAD OF COPING, AND THERE IS NO DEFAULT ─────────────
+     * This writes COMMISSION ATTRIBUTION onto a real sales document. With no
+     * `header.salesTeamId` the endpoint keeps posting exactly one line from
+     * `resolveSalesRep`, byte for byte as before, so a caller can never get a
+     * team it did not name. The reasoning that keeps
+     * `custscript_arch_default_sales_rep` deliberately empty ("filling it in
+     * attributes commission on real sales documents to somebody nobody chose")
+     * applies with more force here, because a team names several people AND a
+     * percentage each.
+     *
+     * ⚠️ AND MGSL HAVE BEEN TOLD IN WRITING THAT SELECTING A TEAM DOES NOT WRITE
+     * YET: "Choisir une equipe ne l'ecrit pas encore sur le SO: ca attribue de la
+     * commission sur un document reel, donc on attend ton feu vert avant de
+     * brancher l'ecriture" (status note to Marc-Antoine, 2026-09-08,
+     * docs todo-list). This function makes the ENDPOINT able to honour a team
+     * when they say go; it is not a licence for the screen to start offering the
+     * control before then.
+     *
+     * ── What the account actually holds, measured 2026-09-08 (sandbox) ───────
+     *   44 active teams   `entitygroup`, issalesrep 'T', isinactive 'F'
+     *   82 member rows    `entitygroupmember`, none inactive, no null contribution
+     *   sizes             9 of 1, 33 of 2, 1 of 3, 1 of 4
+     *   contributions     sum to EXACTLY 1 on all 44; values 0.25 to 1, and 14
+     *                     teams are a 0.67/0.33 weighting rather than a 50/50
+     *   isprimary 'T'     on 8 of the 82 rows, never twice in one team
+     *
+     * 🔴 SIX OF THE 44 HOLD A MEMBER WHO IS NOT FLAGGED SALES REP. Chris/Alec
+     * (3307), Chris/Melissa (3300), Chris/Tom (3302), Leo/Chris (3301) and
+     * Rettenmeier/James (3165) each carry Christopher Pajot (3268) or James
+     * Bradley (3163) at `issalesrep = 'F'`, and "James Bradley" (3283) has no
+     * other member at all. Those are refused here BY NAME, because a Sales Team
+     * line for an employee who is not an active rep takes the whole save down
+     * with an opaque `UNEXPECTED_ERROR` -- the same failure the integration user
+     * (3136, `issalesrep = 'F'`) produced and that `resolveSalesRep` exists to
+     * prevent. Note the flag is not a proxy for "never been on a sales team":
+     * James Bradley sits on 33 saved `transactionsalesteam` rows, one of them on
+     * ARCH's own form 386, so the flag was evidently ticked once and untucked
+     * later. What the API accepts TODAY is what matters, and today he is 'F'.
+     *
+     * ── The SUM is the integrity check, and it replaces `g.size` ─────────────
+     * All 8,665 transactions in this account that carry a sales team carry one
+     * whose contributions sum to exactly 1 (10,170 rows, zero exceptions), and so
+     * does every one of the 44 templates, with no member below 0.25. So a team
+     * whose READABLE members do not sum to 1 is a team with a member missing --
+     * most likely one this role cannot see -- and saying that is more useful than
+     * comparing counts. `g.size` is deliberately NOT read: it would be a second
+     * unproven identifier inside N/query for a strictly weaker check.
+     *
+     * ── ⚠️ THREE SMALL QUERIES, NOT ONE JOIN, AND THAT IS THE DIALECT TRAP ──
+     * REST SuiteQL and N/query are different dialects. `entitygroup.grouptype`
+     * filters cleanly through REST and is a missing RECORD JOIN inside N/query,
+     * which is how the service's own team list failed live after passing every
+     * shim assertion. A shim test cannot catch that class of defect, so the
+     * unproven surface is kept to ONE identifier: `entitygroupmember."group"`.
+     * `group` is a reserved word and the read is a hard 400 without the quotes.
+     *
+     * Everything else here is already proven inside N/query: `employee` by id
+     * with `entityid`, `issalesrep` and `isinactive` is what `listSalesReps` and
+     * `diagnoseSalesRep` run, and `entitygroup`'s own plain columns resolved even
+     * in the failure above, whose error named the join and not the record.
+     *
+     * A query failure is reported VERBATIM rather than swallowed, because that
+     * message is the only thing that will identify a dialect problem on the first
+     * live call. It is a refusal, not a fallback: falling back to the requesting
+     * user would credit the wrong person.
+     */
+    /**
+     * 🔴 THE COMMISSION WRITE IS OFF UNTIL MGSL SAY OTHERWISE, AND THIS IS THE LATCH.
+     *
+     * Writing a multi-member sales team ATTRIBUTES COMMISSION ON A REAL SALES DOCUMENT.
+     * Marc-Antoine asked for the teams to be fed from Setup > Sales Teams and we have
+     * told him in writing, twice, that we would not write one until he says go. The
+     * read side (the picker, the `salesTeams` action) is deliberately live so he can
+     * see the right data; the WRITE has to stay inert until asked for.
+     *
+     * The screen already refuses to send `header.salesTeamId` unless its own switch is
+     * on, but the screen is not the only thing that can POST here. This is the
+     * server-side half, and it is deliberately the SAME shape as the PDF email switch:
+     * an unset parameter reads null, `param()` swallows a parameter that is not even
+     * deployed, and both cases mean OFF. So the failure mode of shipping this file, or
+     * this whole tree, is "no team is written", never "commission was attributed
+     * because two halves happened to deploy on the same day".
+     *
+     * ⚠️ DO NOT tick this box to make a test pass. Turning it on starts writing
+     * commission to real orders, and `custscript_arch_default_sales_rep` exists,
+     * empty, for exactly this reason: a refusal is recoverable, a wrong attribution
+     * on somebody's paycheque is not.
+     */
+    const SALES_TEAM_WRITE_PARAM = 'custscript_arch_salesteam_write_on';
+    const salesTeamWriteEnabled = () => {
+        try {
+            const raw = param(SALES_TEAM_WRITE_PARAM);
+            return raw === true || String(raw || '').trim().toUpperCase() === 'T';
+        } catch (e) {
+            // A parameter that is not on the deployed script object can throw rather
+            // than read null. That is still OFF.
+            return false;
+        }
+    };
+
+    const resolveSalesTeam = (requestedId) => {
+        if (!salesTeamWriteEnabled()) {
+            // Not a refusal: a refusal would fail the whole order, and the order is
+            // fine. The caller asked for something this deployment is not authorised
+            // to do, so it is ignored and SAID SO in the response and the log.
+            log.audit('ARCH Order Create — sales team NOT written (switch off)',
+                'A team (' + String(requestedId) + ') was requested but ' +
+                SALES_TEAM_WRITE_PARAM + ' is not enabled, so no commission was ' +
+                'attributed and the order keeps the single rep. This is the default and ' +
+                'it stays until MGSL ask for the team write to be turned on.');
+            return null;
+        }
+        const teamId = int(requestedId);
+        if (!teamId) {
+            throw refusal('"' + String(requestedId) + '" is not a NetSuite internal id for a ' +
+                          'sales team, so no team was written. Pick one from the Sales team ' +
+                          'list on the order.');
+        }
+
+        const read = (label, sql, params) => {
+            try {
+                return query.runSuiteQL(
+                    params ? { query: sql, params: params } : { query: sql }
+                ).asMappedResults();
+            } catch (e) {
+                const msg = (e.name || '') + ': ' + (e.message || String(e));
+                log.error('ARCH Order Create — sales team read failed (' + label + ')',
+                    msg + ' | query: ' + sql +
+                    ' | FIRST THING TO SUSPECT: this runs inside N/query, not the REST query ' +
+                    'endpoint, and the two are different dialects. The member read quotes ' +
+                    '"group" because it is a reserved word, and that exact statement has never ' +
+                    'run through N/query before this feature shipped. The service\'s own team ' +
+                    'list failed live on `entitygroup.grouptype` for the same class of reason ' +
+                    'after passing every shim assertion. SECOND: the executing role, since ' +
+                    'every read here is scoped to this deployment\'s runasrole.');
+                throw refusal('The sales team could not be read from NetSuite (' + label + '), ' +
+                              'so nothing was written and no commission was attributed. ' +
+                              'NetSuite said: ' + msg);
+            }
+        };
+
+        const groups = read('team',
+            'SELECT groupname, issalesrep, isinactive FROM entitygroup WHERE id = ?', [teamId]);
+        if (!groups.length) {
+            throw refusal('Sales team ' + teamId + ' does not exist, or is outside the ' +
+                          'subsidiaries this endpoint can read, so nothing was written. Pick ' +
+                          'one from the Sales team list on the order.');
+        }
+        const teamName = String(groups[0].groupname || ('Team ' + teamId));
+        if (String(groups[0].isinactive) === 'T') {
+            throw refusal('Sales team "' + teamName + '" is inactive, so it was not written. ' +
+                          'Pick an active team.');
+        }
+        /* An employee group that is not a sales team carries no commission split.
+         * 45 employee groups exist in this account and the 45th is exactly that,
+         * so this is a real distinction rather than a defensive one. */
+        if (String(groups[0].issalesrep) !== 'T') {
+            throw refusal('"' + teamName + '" is an employee group but not a sales team, so it ' +
+                          'carries no commission split and was not written. Setup > Sales Team ' +
+                          'lists the ones that do.');
+        }
+
+        const rows = read('team members',
+            'SELECT employeemember AS repid, name AS repname, contribution AS contribution ' +
+            'FROM entitygroupmember ' +
+            'WHERE "group" = ? AND isinactive = \'F\'', [teamId]);
+
+        /* One person twice in a group would post two sublist lines crediting
+         * them, and `verifySalesTeam` compares by employee id so it would read
+         * back as correct. It is refused by NAME rather than deduplicated: two
+         * rows at 0.5 each mean the group intends that person 100%, and quietly
+         * keeping one of them would credit them 50% instead. Neither guess is
+         * ours to make. No team in this account has one today. */
+        const members = [];
+        const seen = {};
+        const doubled = [];
+        rows.forEach((r) => {
+            const id = int(r.repid);
+            if (!id) return;
+            const name = String(r.repname || '').trim() || ('employee ' + id);
+            if (seen[String(id)]) {
+                /* The name of the row already ACCEPTED, not this one's. Two rows
+                 * for one person can carry different member names and reporting
+                 * the second would name somebody who is not in the team list. */
+                const first = seen[String(id)];
+                if (doubled.indexOf(first) === -1) doubled.push(first);
+                return;
+            }
+            seen[String(id)] = name;
+            members.push({
+                id: id,
+                name: name,
+                fraction: numOr(r.contribution, NaN),
+            });
+        });
+        if (doubled.length) {
+            throw refusal('Sales team "' + teamName + '" lists ' + doubled.join(', ') +
+                          ' more than once, so their share of the commission is ambiguous ' +
+                          'and nothing was written. Fix the team under Setup > Sales Team.');
+        }
+        /* Sorted, so "the last member absorbs the rounding remainder" below is
+         * deterministic rather than dependent on the order the engine returns. */
+        members.sort((a, b) => a.id - b.id);
+
+        if (!members.length) {
+            throw refusal('Sales team "' + teamName + '" has no active members this endpoint ' +
+                          'can read, so there is nobody to credit and nothing was written.');
+        }
+        if (members.length > MAX_TEAM_MEMBERS) {
+            throw refusal('Sales team "' + teamName + '" has ' + members.length + ' members. ' +
+                          'The largest team in this account has four, so this looks wrong and ' +
+                          'nothing was written.');
+        }
+
+        const unusableShare = members.filter((m) => !isFinite(m.fraction) || m.fraction <= 0);
+        if (unusableShare.length) {
+            throw refusal('Sales team "' + teamName + '" gives no usable percentage to ' +
+                          unusableShare.map((m) => m.name).join(', ') +
+                          ', so the split cannot be recorded and nothing was written.');
+        }
+
+        const total = members.reduce((s, m) => s + m.fraction, 0);
+        if (Math.abs(total - 1) > 1e-6) {
+            throw refusal('Sales team "' + teamName + '" adds up to ' +
+                          (Math.round(total * 10000) / 100) + '% across the ' + members.length +
+                          ' member(s) this endpoint can read, not 100%. Every one of the 44 ' +
+                          'teams in this account totals 100%, so a member is missing rather ' +
+                          'than the team being wrong, most likely one outside the subsidiaries ' +
+                          'this endpoint can read. Nothing was written.');
+        }
+
+        /* The employee records, read as FLAGS rather than filtered on, so the
+         * refusal can say which of the three things is wrong about which person.
+         * `resolveSalesRep` filters instead and its refusal needed a whole second
+         * function (`diagnoseSalesRep`) to recover the same information. */
+        const emps = read('members’ employee records',
+            'SELECT id, entityid, issalesrep, isinactive FROM employee ' +
+            'WHERE id IN (' + members.map((m) => m.id).join(',') + ')');
+        const byId = {};
+        emps.forEach((r) => { byId[String(int(r.id))] = r; });
+
+        const problems = [];
+        members.forEach((m) => {
+            const e = byId[String(m.id)];
+            if (e && e.entityid) m.name = String(e.entityid);
+            if (!e) {
+                problems.push(m.name + ' is outside the subsidiaries this endpoint can write for');
+            } else if (String(e.issalesrep) !== 'T') {
+                problems.push(m.name + ' is not flagged Sales Rep on their employee record');
+            } else if (String(e.isinactive) === 'T') {
+                problems.push(m.name + ' is inactive');
+            }
+        });
+        if (problems.length) {
+            throw refusal('Sales team "' + teamName + '" cannot be written: ' +
+                          problems.join('; ') + '. NetSuite refuses the WHOLE order when a ' +
+                          'Sales Team line names somebody who is not an active sales rep, so ' +
+                          'no part of this team was written and no commission was attributed. ' +
+                          'Either have Sales Rep ticked on that employee record, or pick a ' +
+                          'team whose members all have it.');
+        }
+
+        /* ── The Percent trap, and why the LAST member absorbs the remainder ──
+         *
+         * 🔴 SuiteQL returns a Percent as the stored FRACTION (0.5) while
+         * `setValue` takes the number a person would type (50). That has already
+         * cost this project a real bug on `custbody_mgsl_insurancerate`, where
+         * the fraction went in and stored a hundredth of the intended rate on
+         * three real orders. Same trap, same fix: multiply once, here.
+         *
+         * ── And the last member takes the remainder, which is a GUARANTEE ────
+         * Every member but the last is rounded to four decimals and the last
+         * takes 100 minus the rest, so the percentages always total exactly 100.
+         *
+         * ⚠️ BE HONEST ABOUT WHY: on TODAY's data this is a no-op, and claiming
+         * otherwise would be the sort of confident wrong note this file has had
+         * to correct before. The account stores at most five decimals on the
+         * fraction, the widest case being one real 0.33333/0.33333/0.33334 team,
+         * and rounding those naively already comes to exactly 100. Checked by
+         * brute force over every five-decimal two- and three-way split with no
+         * member below 5%: not one of them loses a hundredth.
+         *
+         * It is here for the case that WOULD lose one. A fraction with more than
+         * six decimals rounds short three times over: a true one third at
+         * 0.3333333333 gives 33.3333 + 33.3333 + 33.3333 = 99.9999, and Team
+         * Selling wants 100. The remainder rule turns that into
+         * 33.3333/33.3333/33.3334 and cannot drift whatever precision NetSuite
+         * hands back, which is worth having when the alternative is an opaque
+         * save failure on a commission document. It also reproduces the stored
+         * 33.333/33.333/33.334 on the team that does exist, so nothing about
+         * today's behaviour changes.
+         */
+        let running = 0;
+        members.forEach((m, i) => {
+            if (i < members.length - 1) {
+                m.pct = Math.round(m.fraction * 1000000) / 10000;
+                running += m.pct;
+            } else {
+                m.pct = Math.round((100 - running) * 10000) / 10000;
+            }
+        });
+
+        return {
+            teamId: teamId,
+            teamName: teamName,
+            members: members,
+            memberCount: members.length,
+        };
+    };
+
+    /**
+     * Which fields the Sales Team sublist actually exposes on THIS record.
+     *
+     * Same question, and the same reasoning, as `remanFieldsPresent`: the record
+     * is the thing that will accept or refuse the write, so ask it rather than
+     * keep a flag somewhere. Not memoised, for the reason those two give.
+     *
+     * ⚠️ The answer differs by PATH. A new record takes the form the executing
+     * role prefers; an append inherits the form stored on the order it is adding
+     * to. So this is probed per order rather than once.
+     */
+    const salesTeamSublistFields = (so) => {
+        try {
+            return so.getSublistFields({ sublistId: 'salesteam' }) || [];
+        } catch (e) {
+            log.audit('ARCH Order Create',
+                'The sales team sublist could not be inspected on this record: ' +
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return [];
+        }
+    };
+
+    /**
+     * Posts the named team onto the order, replacing whatever is there.
+     *
+     * ── Nothing is committed until `save()`, which is what makes this safe ──
+     * The lines are removed and rebuilt on the IN-MEMORY record, so a refusal
+     * part-way through leaves the order in NetSuite exactly as it was. That is
+     * why every check in here can throw rather than having to unwind.
+     *
+     * ── What is set, and what is deliberately NOT ───────────────────────────
+     *   employee       always. The only field the six orders this endpoint has
+     *                  already created ever set, and all six saved.
+     *   contribution   ONLY when the team has more than one member. With a
+     *                  single line NetSuite fills in 1 (100%) itself -- proven
+     *                  on those same six orders, which all read back
+     *                  contribution 1 and salesrole -2 without either being
+     *                  passed -- so a one-member team keeps the byte-for-byte
+     *                  proven path and nothing unproven is written. With two or
+     *                  more it MUST be set: 14 of the 44 teams are a 0.67/0.33
+     *                  weighting and one is 0.7/0.3, so letting NetSuite guess
+     *                  would silently misattribute commission on exactly the
+     *                  teams whose split is the point.
+     *   salesrole      NEVER. -2 is what every stored row holds, but setting it
+     *                  turned a clear USER_ERROR into an opaque UNEXPECTED_ERROR
+     *                  at save. NetSuite fills it in itself.
+     *   isprimary      NEVER, and this is a decision rather than an omission.
+     *                  8 of the 82 template member rows carry it, but 8,611 of
+     *                  the 8,665 transactions in this account that have a sales
+     *                  team have NO primary at all and only 54 have one, so not
+     *                  setting it is the overwhelming majority behaviour. It
+     *                  carries no money either: `contribution` is what splits
+     *                  the commission. So it is one more unproven write on a
+     *                  commission-bearing document for no benefit, and the
+     *                  `salesrole` precedent is that a value read out of a saved
+     *                  record is not necessarily a value the API accepts.
+     *
+     * 🔴 `contribution` HAS NOT BEEN PROVEN AT SAVE TIME, and it cannot be from
+     * here: proving it means creating a real sales order. So the write is guarded
+     * two ways instead. `getSublistFields` must list the field, and a
+     * multi-member team is REFUSED when it does not rather than posted without
+     * its split -- the opposite of `splitFieldsPresent`, which skips the write
+     * and saves the order, because a missing split marker loses a note while a
+     * missing contribution misattributes money. And `verifySalesTeam` re-reads
+     * what NetSuite actually stored after the save.
+     */
+    const writeSalesTeam = (so, team) => {
+        const fields = salesTeamSublistFields(so);
+        const canSetContribution = fields.indexOf('contribution') !== -1;
+        const needsContribution = team.members.length > 1;
+
+        if (needsContribution && !canSetContribution) {
+            throw refusal('Sales team "' + team.teamName + '" splits commission between ' +
+                          team.members.length + ' people, and the Sales Team sublist on this ' +
+                          'order does not expose a contribution field, so the split cannot be ' +
+                          'recorded. Nothing was written: posting the members without their ' +
+                          'percentages would let NetSuite invent the split.');
+        }
+
+        /* What the order carried before, for the audit line and the response. An
+         * append can legitimately be replacing a real team, and "replaced X with
+         * Y" is the only record of that anybody will have. */
+        const previous = [];
+        let count = 0;
+        try {
+            count = so.getLineCount({ sublistId: 'salesteam' });
+        } catch (e) {
+            count = 0;
+        }
+        if (!(count > 0)) count = 0;
+        /* Reading and clearing are one try/catch on purpose. If either fails
+         * part-way the record is left half-cleared, and the right answer is to
+         * abandon the request rather than save it: nothing is committed until
+         * `save()`, so a refusal here leaves the order in NetSuite untouched.
+         * Note `count` is 0 on a new order in standard mode -- measured on the
+         * six orders this endpoint has created, each of which carries exactly
+         * one member and none of which inherited a customer default. */
+        try {
+            for (let i = 0; i < count; i++) {
+                previous.push(String(so.getSublistValue({
+                    sublistId: 'salesteam', fieldId: 'employee', line: i,
+                })));
+            }
+            // Backwards, so removing a line cannot renumber one still to be removed.
+            for (let i = count - 1; i >= 0; i--) {
+                so.removeLine({ sublistId: 'salesteam', line: i });
+            }
+        } catch (e) {
+            const msg = (e.name || '') + ': ' + (e.message || String(e));
+            log.error('ARCH Order Create — sales team could not be cleared',
+                'Read ' + previous.length + ' of ' + count + ' existing line(s) before failing: ' +
+                msg);
+            throw refusal('The Sales Team already on this order could not be replaced, so ' +
+                          'nothing was written and no commission was reattributed. NetSuite ' +
+                          'said: ' + msg);
+        }
+
+        team.members.forEach((m, i) => {
+            so.setSublistValue({
+                sublistId: 'salesteam', fieldId: 'employee', line: i, value: m.id,
+            });
+            if (needsContribution) {
+                so.setSublistValue({
+                    sublistId: 'salesteam', fieldId: 'contribution', line: i, value: m.pct,
+                });
+            }
+        });
+
+        return {
+            previousEmployees: previous,
+            contributionWritten: needsContribution,
+        };
+    };
+
+    /**
+     * What the SAVED order's Sales Team actually holds, compared with what was
+     * asked for.
+     *
+     * The `verifyAssignments` pattern: re-read rather than trust, because this is
+     * the only automated check that would notice NetSuite reinterpreting a
+     * contribution. Reports, never throws -- the order exists by the time this
+     * runs, so a failure here is a diagnostic and not an outcome.
+     *
+     * ⚠️ `verified: false` means COULD NOT TELL, not "wrong". This deployment
+     * runs as `customrole2184` and whether that role can read
+     * `transactionsalesteam` is not established; the ARCH trader role 2181
+     * demonstrably cannot in some contexts, which is a documented cause of the
+     * open-orders tab falling back to "Unassigned". An unreadable sublist must
+     * not be reported as a mismatch.
+     *
+     * 🔴 The comparison is in FRACTIONS. SuiteQL hands a Percent back as the
+     * stored fraction while the write took the typed number, so 50 goes in and
+     * 0.5 comes out. Tolerance is 5e-5, i.e. half of the smallest difference the
+     * account actually stores (0.33333 against 0.33334).
+     */
+    const verifySalesTeam = (soId, team) => {
+        let rows;
+        try {
+            rows = query.runSuiteQL({
+                query: 'SELECT employee, contribution FROM transactionsalesteam ' +
+                       'WHERE transaction = ?',
+                params: [soId],
+            }).asMappedResults();
+        } catch (e) {
+            log.audit('ARCH Order Create',
+                'The sales team on SO ' + soId + ' could not be read back, so the team that ' +
+                'was written is unverified: ' + (e.name || '') + ': ' + (e.message || String(e)));
+            return { verified: false, mismatches: [], stored: [] };
+        }
+
+        const stored = {};
+        rows.forEach((r) => {
+            const id = int(r.employee);
+            if (!id) return;
+            stored[String(id)] = numOr(r.contribution, NaN);
+        });
+
+        const mismatches = [];
+        team.members.forEach((m) => {
+            const got = stored[String(m.id)];
+            if (got === undefined) {
+                mismatches.push(m.name + ' is not on the saved order');
+                return;
+            }
+            const want = m.pct / 100;
+            if (!isFinite(got) || Math.abs(got - want) > 5e-5) {
+                mismatches.push(m.name + ' stored ' + got + ' where ' + want + ' was intended');
+            }
+        });
+        Object.keys(stored).forEach((k) => {
+            if (!team.members.some((m) => String(m.id) === k)) {
+                mismatches.push('employee ' + k + ' is credited on the saved order but is not ' +
+                                'in team "' + team.teamName + '"');
+            }
+        });
+
+        return {
+            verified: true,
+            mismatches: mismatches,
+            stored: Object.keys(stored).map((k) => k + '=' + stored[k]),
+        };
     };
 
     /**
@@ -2030,6 +2566,23 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             throw refusal(resolved.problems.join(' '));
         }
 
+        /* ── The Sales Team the caller NAMED, or null ─────────────────────────
+         *
+         * Resolved BEFORE the record is touched, so a refusal costs nothing and
+         * cannot leave a half-built order behind. `null` is the default and the
+         * whole safety property: with no `header.salesTeamId` the paths below run
+         * exactly as they did, one line from `resolveSalesRep` on create and
+         * nothing at all on an append. There is no fallback team and no
+         * configured one -- see `resolveSalesTeam`. */
+        const teamRequest = (input.header || {}).salesTeamId;
+        const namedTeam = (teamRequest === undefined || teamRequest === null ||
+                           String(teamRequest).trim() === '')
+            ? null
+            : resolveSalesTeam(teamRequest);
+        /* Filled by whichever branch writes the team, so the response can say
+         * what it replaced. Stays null when no team was named. */
+        let teamWrite = null;
+
         // ── STANDARD mode, not dynamic, and the reason is `customform` ──────
         //
         // Setting `customform` in DYNAMIC mode throws
@@ -2155,9 +2708,29 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             //
             // See `resolveSalesRep` for the fallbacks and why a rep that is not a
             // real sales rep breaks the save outright.
-            const repId = resolveSalesRep(
+            //
+            // ── A NAMED TEAM REPLACES ALL OF THAT, and only a named one ──────
+            //
+            // When the caller named a team, the sublist comes ENTIRELY from that
+            // team and the rep resolution below is skipped: the mandatory sublist
+            // is satisfied by the team's own members, every one of them validated
+            // by `resolveSalesTeam`, so there is nothing left for a fallback to
+            // do. That also means a trader who is not themselves a sales rep can
+            // raise an order by naming a team, which is the correct outcome and
+            // not a bypass: the team is an explicit choice, whereas the three
+            // fallbacks below are guesses ranked by plausibility.
+            //
+            // ⚠️ `header.salesRepId` is NOT required to be a member of the team,
+            // and is not cross-checked against it. Marc-Antoine keeps the two
+            // apart on purpose -- "Je crois qu'on devrait ajouter le field 'sales
+            // rep'. Qui permet d'identifier qui est le owner du SO. Le sales team
+            // définit le split commission" (2026-09-08) -- so the rep is the
+            // OWNER, written to `custbody_sales_rep` above, and the team is the
+            // SPLIT. An owner outside the team is a legitimate combination and
+            // refusing it would block it.
+            const repId = namedTeam ? null : resolveSalesRep(
                 int(h.salesRepId), currentUserId(), customerId);
-            if (!repId) {
+            if (!namedTeam && !repId) {
                 /*
                  * Names the CAUSE, not just the symptom. The single generic
                  * message this replaced was read as "not flagged as a sales rep"
@@ -2203,7 +2776,16 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 log.error('ARCH Order Create — sales rep unresolved', 'cause=' + why);
                 throw refusal(detail);
             }
-            {
+            if (namedTeam) {
+                teamWrite = writeSalesTeam(so, namedTeam);
+                log.audit('ARCH Order Create',
+                    'Sales team "' + namedTeam.teamName + '" (' + namedTeam.teamId + ') written ' +
+                    'to a new order: ' +
+                    namedTeam.members.map((m) => m.name + ' ' + m.pct + '%').join(', ') +
+                    (teamWrite.contributionWritten
+                        ? '. Contributions were set explicitly.'
+                        : '. Single member, so NetSuite fills the 100% in itself.'));
+            } else {
                 so.setSublistValue({ sublistId: 'salesteam', fieldId: 'employee', line: 0, value: repId });
                 // `salesrole` is deliberately NOT set. -2 is what the stored data
                 // shows, but a value read out of a saved record is not necessarily
@@ -2215,6 +2797,13 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 // FRACTION rather than a percentage, so passing 100 would mean
                 // 10,000%. With a single line NetSuite fills it in itself, and
                 // both real lines carry isprimary=F, so asserting it is wrong too.
+                //
+                // ⚠️ The branch above DOES set contribution, and that is not a
+                // contradiction: it only does so for a team with MORE than one
+                // member, where NetSuite has nothing to infer from, and it sends
+                // the TYPED number (50) rather than the stored fraction. This
+                // single-line path is the one the six orders this endpoint has
+                // created already prove, so it is left exactly as it was.
             }
 
             applyIncoterms(so, h);
@@ -2339,6 +2928,63 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
              */
             const h = input.header || {};
             const entityId = int(so.getValue({ fieldId: 'entity' }));
+
+            /* ── The rep and the team on an APPEND, decided separately ────────
+             *
+             * 🔴 `header.salesRepId` AND `custbody_sales_rep` STAY IGNORED HERE,
+             * and that is the answer rather than an omission. The wizard already
+             * says so on the append path ("Adding lines does not change who owns
+             * it: change the rep on the order in NetSuite"), and the measurements
+             * behind that warning are decisive:
+             *
+             *  1. THE ROUND TRIP IS LOSSY BY CONSTRUCTION. On an append the
+             *     wizard PRE-FILLS its rep dropdown from the order's own lead
+             *     rep, which `shared/archSalesTeam.js:pickRep` computes by
+             *     collapsing the whole Sales Team down to ONE employee -- for a
+             *     tie, the lowest id. SO-CWP-001352 in this sandbox is Justin
+             *     Loveland 0.5 / Samuel Nadon 0.5, so its prefill is Justin
+             *     alone. An append that wrote the sublist from that prefill would
+             *     turn a 50/50 into Justin at 100% while the trader changed
+             *     NOTHING, silently moving half the commission. That is not a
+             *     hypothesis about a future order; it is what this account holds
+             *     today.
+             *  2. THE TEXT FIELD IS WORSE, NOT BETTER. `custbody_sales_rep`
+             *     ("Sales Rep (PDF)", id 9186) is FREE-FORM TEXT and holds
+             *     hand-typed content: SO-CWP-001352 reads "Samuel Nadon / Justin
+             *     Loveland", typed by a person to match that split. The wizard
+             *     can only ever send ONE name, so writing it would truncate a
+             *     value nobody asked to change. Same lost-update shape already
+             *     noted for `otherrefnum`, with a concrete instance.
+             *  3. NOBODY ASKED FOR IT. Marc-Antoine asked for a Sales Rep field
+             *     to identify the OWNER of an order (2026-09-08). No client note
+             *     asks for the owner of an EXISTING order to be reassignable from
+             *     this screen, and reassigning an order somebody else owns is a
+             *     real-world consequence, not a UI nicety.
+             *
+             * ✅ A NAMED TEAM IS DIFFERENT, AND IS HONOURED. `header.salesTeamId`
+             * is an `entitygroup` id, and no such id can be pre-filled: a saved
+             * order's sublist carries employees and percentages, not the template
+             * it came from, and there is no reverse mapping. So a team id on an
+             * append can only have come from a trader actively picking one out of
+             * the 44, which makes it deliberate BY CONSTRUCTION rather than by
+             * hoping. It is also lossless where the rep is not, because the team
+             * carries every member and every percentage.
+             *
+             * This is the append rule this block already follows, applied
+             * honestly: apply what the trader could SEE and CHANGE, and the team
+             * picker is the only one of the two that a change can be distinguished
+             * from a prefill. */
+            if (namedTeam) {
+                teamWrite = writeSalesTeam(so, namedTeam);
+                log.audit('ARCH Order Create',
+                    'Sales team on SO ' + existingId + ' REPLACED by an explicit request: ' +
+                    (teamWrite.previousEmployees.length
+                        ? 'employee(s) ' + teamWrite.previousEmployees.join(', ')
+                        : 'no team') +
+                    ' -> "' + namedTeam.teamName + '" (' + namedTeam.teamId + ') = ' +
+                    namedTeam.members.map((m) => m.name + ' ' + m.pct + '%').join(', ') +
+                    '. Commission on this order has been reattributed.');
+            }
 
             // Shown on the wizard's header step, so applied. Sending the value
             // back unchanged is a no-op; where the trader edited it, the edit is
@@ -2506,6 +3152,26 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
 
         const check = verifyAssignments(soId, resolved.lines, priorAssignments);
 
+        /* What the order's Sales Team actually holds, read back off the saved
+         * record. Only when a team was named -- the single-rep path is what the
+         * six orders this endpoint has already created prove, and re-reading it
+         * would be a query per order for a question already answered.
+         *
+         * 🔴 ERROR level deliberately, on the same bar the assignment mismatch
+         * sets: a commission split that did not land as intended on a trading
+         * document is not routine noise. `verified: false` is NOT logged here --
+         * `verifySalesTeam` already audits the unreadable case, and reporting
+         * "could not tell" at error level is how a log fills up with lines nobody
+         * can act on. */
+        const teamCheck = namedTeam ? verifySalesTeam(soId, namedTeam) : null;
+        if (teamCheck && teamCheck.mismatches.length) {
+            log.error('ARCH Order Create — SALES TEAM MISMATCH on SO ' + soId,
+                'The order was saved but its Sales Team is not the team that was requested ' +
+                '("' + namedTeam.teamName + '"), so commission may be attributed to the wrong ' +
+                'people: ' + teamCheck.mismatches.join('; ') +
+                ' | stored: ' + teamCheck.stored.join(', '));
+        }
+
         // Only report a mismatch when at least one lot actually landed. When
         // NOTHING was placed, every line is trivially a "mismatch" and the
         // LOTS NOT ATTRIBUTED line above has already said so at error level.
@@ -2613,6 +3279,38 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             splitStored: wantsSplit && splitOk && lineWrites.every((w) => w.split),
             assignmentRows: check.assignmentRows,
             assignmentMismatches: check.mismatches,
+            /* ── The Sales Team, reported rather than assumed ─────────────────
+             *
+             * Same contract as `remanStored` and `splitStored`, and for the same
+             * reason: six separate notices in this app told traders a path did
+             * not write to NetSuite long after it did, all because the claim was
+             * hardcoded in the copy. Here the server says what happened.
+             *
+             * `salesTeamSource` is the one to branch on. 'rep' means the single
+             * line from `resolveSalesRep`, which is the default and unchanged
+             * behaviour; 'team' means the named team below was expanded onto the
+             * sublist.
+             *
+             * ⚠️ `salesTeamVerified: false` means COULD NOT TELL, not "wrong".
+             * See `verifySalesTeam`: this deployment's role may not be able to
+             * read `transactionsalesteam` at all. A non-empty
+             * `salesTeamMismatches` is the only statement that something IS
+             * wrong. */
+            salesTeamSource: namedTeam ? 'team' : 'rep',
+            salesTeamId: namedTeam ? String(namedTeam.teamId) : null,
+            salesTeamName: namedTeam ? namedTeam.teamName : null,
+            salesTeamMembers: namedTeam
+                ? namedTeam.members.map((m) => ({
+                    id: String(m.id), name: m.name, contributionPct: m.pct,
+                }))
+                : [],
+            /* Non-empty means an append reattributed commission that was already
+             * on the order. The employee ids the order carried BEFORE this call,
+             * so the change is recoverable from the response alone. */
+            salesTeamPrevious: teamWrite ? teamWrite.previousEmployees : [],
+            salesTeamReplaced: !!(teamWrite && teamWrite.previousEmployees.length),
+            salesTeamVerified: !!(teamCheck && teamCheck.verified),
+            salesTeamMismatches: teamCheck ? teamCheck.mismatches : [],
             // Reported, not asserted — this is how the sign convention for a
             // sales order's assignments gets established on the first real write.
             storedSigns: check.storedSigns,
@@ -2660,10 +3358,37 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             return { ok: false, problems: [e.message], lines: [] };
         }
 
+        /* The named team, validated on the dry run too.
+         *
+         * 🔴 THIS IS THE ONLY PRE-FLIGHT A TEAM GETS, and it matters more than
+         * the line checks around it: 6 of the 44 teams in this account hold a
+         * member who is not flagged Sales Rep, and NetSuite answers that with an
+         * opaque UNEXPECTED_ERROR out of `save` rather than a message. Without
+         * this, a trader picking Chris/Tom would price the whole cart and then be
+         * refused by a validation they could have been told about on the step that
+         * owns the field.
+         *
+         * Reported as a problem rather than thrown, because a dry run's job is to
+         * report. Note it is also the ONLY way to exercise
+         * `entitygroupmember."group"` against the live N/query dialect without
+         * creating an order -- see the trap note on `resolveSalesTeam`. */
+        const teamProblems = [];
+        const teamRequest = ((input && input.header) || {}).salesTeamId;
+        if (!(teamRequest === undefined || teamRequest === null ||
+              String(teamRequest).trim() === '')) {
+            try {
+                resolveSalesTeam(teamRequest);
+            } catch (e) {
+                if (e.name !== 'ARCH_ORDER_REFUSED') throw e;
+                teamProblems.push(e.message);
+            }
+        }
+
         const resolved = resolveLines(input.lines);
+        const problems = teamProblems.concat(resolved.problems);
         return {
-            ok: resolved.problems.length === 0,
-            problems: resolved.problems,
+            ok: problems.length === 0,
+            problems: problems,
             lines: resolved.lines.map((l) => ({
                 itemCode:         l.itemCode,
                 lotName:          l.lotName,
@@ -2718,6 +3443,39 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 remanMissing: [F_REMAN_PLANE, F_REMAN_PLANE_TGT, F_REMAN_CUT, F_REMAN_CUT_LEN]
                     .filter((id) => !has(id)),
                 itemFieldCount: fields.length,
+                /* ── What the Sales Team sublist will actually accept ─────────
+                 *
+                 * 🔴 THIS IS HERE TO SETTLE A QUESTION THAT COULD NOT BE
+                 * SETTLED ANY OTHER WAY. Whether `contribution` can be written
+                 * on a Sales Team line cannot be established read-only: SuiteQL
+                 * shows what is STORED, and the `salesrole` precedent in this
+                 * file is that a value read out of a saved record is not
+                 * necessarily a value the API accepts. Proving it otherwise
+                 * means creating a real sales order and attributing commission
+                 * on it, which this task was not allowed to do.
+                 *
+                 * `record.create` writes NOTHING -- only `save` does -- so this
+                 * asks the live account, under this deployment's own runasrole,
+                 * on a plain GET. Call `suitelet.mjs script=6505 deploy=1` after
+                 * deploying and read the answer instead of guessing at it.
+                 *
+                 * `contribution: false` means a multi-member team will be
+                 * REFUSED rather than posted without its split, and that refusal
+                 * is deliberate: see `writeSalesTeam`. */
+                salesTeam: (function () {
+                    try {
+                        const st = so.getSublistFields({ sublistId: 'salesteam' }) || [];
+                        return {
+                            fields:       st,
+                            employee:     st.indexOf('employee') !== -1,
+                            contribution: st.indexOf('contribution') !== -1,
+                            isprimary:    st.indexOf('isprimary') !== -1,
+                            salesrole:    st.indexOf('salesrole') !== -1,
+                        };
+                    } catch (e) {
+                        return { error: (e.name || '') + ': ' + (e.message || String(e)) };
+                    }
+                }()),
             };
         } catch (e) {
             return { error: (e.name || '') + ': ' + (e.message || String(e)) };
@@ -2733,5 +3491,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         resolveLines: resolveLines,
         verifyAssignments: verifyAssignments,
         sendOrderPdf: sendOrderPdf,
+        resolveSalesTeam: resolveSalesTeam,
+        writeSalesTeam: writeSalesTeam,
+        verifySalesTeam: verifySalesTeam,
     };
 });
