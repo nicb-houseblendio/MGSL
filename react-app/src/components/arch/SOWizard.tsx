@@ -1485,12 +1485,29 @@ export const SOWizard = ({
                       type="button"
                       disabled={locked}
                       onClick={() => applyExistingOrder(o.soNo)}
+                      /*
+                       * 🔴 SAY BOTH, DO NOT CHOOSE. Corrected 2026-09-10.
+                       *
+                       * This was a ternary that tested `demo` first, so a demo order
+                       * swallowed the Ready to Build text. That looked harmless and was
+                       * not: a fixture order is the ONLY thing in the running app that
+                       * carries 'Ready to Build' status, because no NetSuite field feeds
+                       * it on real orders yet. Choosing `demo` therefore hid the warning
+                       * in every state it could occur in, so the behaviour the client
+                       * asked for on 2026-08-14 rendered nowhere at all.
+                       *
+                       * The two facts are independent and both matter, so compose them.
+                       * Pinned by archUiGuards.test.mjs.
+                       */
                       title={
-                        demo
-                          ? 'Demo order — not a real sales order, so nothing can be added to it'
-                          : readyToBuild
-                            ? 'Ready to Build — the warehouse may already be preparing this order. You can still add lines; check with them first.'
-                            : undefined
+                        [
+                          demo ? 'Demo order, not a real sales order, so nothing can be added to it.' : '',
+                          readyToBuild
+                            ? 'Ready to Build: the warehouse may already be preparing this order. You can still add lines, but check with them first.'
+                            : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' ') || undefined
                       }
                       style={{
                         textAlign: 'left',

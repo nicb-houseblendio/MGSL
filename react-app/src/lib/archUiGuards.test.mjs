@@ -656,5 +656,41 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /source === 'netsuite' && !!meta\?\.untaggedItemCount/.test(s), null);
 }
 
+// Ready to Build warns instead of blocking (Marc-Antoine, in writing, 2026-08-14 11:33:
+// « un warning qui n'empeche pas le Edit, mais qui le mentionne au trader »). The trap
+// is that no NetSuite field feeds this status on real orders yet, so a FIXTURE order is
+// the only thing that can carry it. Both warn sites originally hid behind a
+// "is this a real order" test, which made the behaviour render nowhere at all. On
+// 2026-09-09 a branch reorder in the wizard removed the last state where it had ever
+// appeared, and nothing caught it. These pin reachability, not wording.
+{
+  const w = src('components/arch/SOWizard.tsx').replace(/\s+/g, ' ');
+  const v = src('components/arch/ArchOpenOrdersView.tsx').replace(/\s+/g, ' ');
+
+  // The status must never disable the control. That is the client's actual instruction.
+  ok('wizard: Ready to Build does not lock the order button',
+    /const locked = demo;/.test(w) && !/locked = readyToBuild/.test(w), null);
+  ok('orders view: Ready to Build does not gate editability',
+    /const editable = !!o\.internalId;/.test(v) && !/editable =[^;]*buildWarning/.test(v), null);
+
+  // ...and it must still be SAID. A ternary that picks one fact drops the other, and
+  // since demo is true on every order that can carry the status, demo always won.
+  ok('wizard: the demo and Ready to Build texts compose rather than exclude',
+    /\.filter\(Boolean\) \.join\(' '\)/.test(w) || /\.filter\(Boolean\)\.join\(' '\)/.test(w), null);
+  ok('  ...so a demo order that is Ready to Build says both things',
+    /demo \? 'Demo order/.test(w) && /readyToBuild \? 'Ready to Build/.test(w), null);
+
+  // The orders view attached the warning only to Edit, which renders only when editable,
+  // i.e. never on the fixture orders that are the only ones carrying the status.
+  ok('orders view: the warning is reachable on a non-editable row too',
+    /buildWarning \? 'These are demo orders/.test(v), null);
+
+  // Both sites must warn about preparation, which is the substance he asked for.
+  for (const [label, s] of [['wizard', w], ['orders view', v]]) {
+    ok(`${label}: the warning says the warehouse may already be preparing it`,
+      /may already be preparing/.test(s), null);
+  }
+}
+
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');
 process.exit(fail ? 1 : 0);

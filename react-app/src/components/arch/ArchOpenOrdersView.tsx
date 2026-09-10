@@ -988,7 +988,17 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                                   than leaving the affordance silently absent. */}
                               {!editable && !o.internalId && (
                                 <span
-                                  title="These are demo orders because the live list could not be loaded, so they cannot be edited."
+                                  /* The build warning has to ride along here too, not only
+                                     on the Edit button below. Edit renders only when
+                                     editable, and a fixture order is the only thing that
+                                     currently carries 'Ready to Build', so attaching the
+                                     warning solely to Edit made it unreachable. Corrected
+                                     2026-09-10, pinned by archUiGuards.test.mjs. */
+                                  title={
+                                    buildWarning
+                                      ? 'These are demo orders because the live list could not be loaded, so they cannot be edited. Ready to Build: the warehouse may already be preparing it, so check with them first.'
+                                      : 'These are demo orders because the live list could not be loaded, so they cannot be edited.'
+                                  }
                                   style={{ marginLeft: 6, fontSize: 10, color: ARCH_SURFACE.textLight }}
                                 >
                                   demo
