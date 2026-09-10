@@ -518,5 +518,114 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /entitygroup.*was not found|no group permission/i.test(sl), false);
 }
 
+/* Item 5.b: the Open Sales Orders tab returned NO orders under the trader's role.
+ *
+ * Same silent-narrowing class as the customer list above, with a sharper cause.
+ * MEASURED 2026-09-09/10:
+ *
+ *   role 2181 is SALESCENTER, issalesrole=T, subsidiaryoption=OWN, so NetSuite
+ *   narrows a transaction search to that role's OWN records. Its only holder,
+ *   employee 3293, sits on ZERO transactionsalesteam rows account-wide, reads
+ *   issalesrep='F', and no customer on any open ARCH order carries a salesrep.
+ *   The role's "own" set is empty by construction: the query succeeds, returns
+ *   nothing, nothing errors.
+ *
+ * Unlike salesTeams this was measured BEFORE it shipped. handleGetOpenOrders
+ * touches no entitygroup; the rep column reads transactionsalesteam, and
+ * ADMI_TEAMSELLINGCONTRIBUTION is level 4 on BOTH roles. On the deployed endpoint,
+ * 2184 against Administrator came back identical on all sixteen axes checked.
+ *
+ * 🔴 These are SOURCE-TEXT GREPS and they prove a string is in a file. They cannot
+ * observe role narrowing at all -- archOpenOrders.test.mjs fakes N/query and returns
+ * canned rows whatever role is faked -- so no test here can fail on the bug or prove
+ * the fix. The live measurement is the proof; these only stop it being undone.
+ */
+{
+  const hook = src('hooks/useArchOpenOrders.ts');
+  const api = src('lib/archOrderApi.ts');
+  const view = src('components/arch/ArchOpenOrdersView.tsx');
+  const att = src('lib/archTraderAttribution.ts');
+  const sl = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/sl/mcgi_sl_arch_order_create.js');
+
+  ok('openOrders: the endpoint is tried BEFORE the RESTlet',
+    /fetchOpenOrdersFromEndpoint\(ARCH_SUBSIDIARY_ID\)[\s\S]{0,400}apiGet\('openOrders'/.test(hook), false);
+  ok('openOrders: and the RESTlet remains the fallback, so an old Suitelet still works',
+    /leg\.outcome === 'ok'\) return leg\.body;[\s\S]{0,200}apiGet\('openOrders'/.test(hook), false);
+  ok('openOrders: the Suitelet proxies the action', /action === 'openOrders'/.test(sl), false);
+  ok('openOrders: and calls the SAME service code rather than a copy',
+    /if \(action === 'openOrders'\)[\s\S]{0,400}archService\.getRouter\(\{/.test(sl), false);
+
+  /* 🔴 `ok` is NOT enough and this is the guard that says why. An older Suitelet
+   * falls through to its health payload, which is `{ok: true, service: ...}` with
+   * no `success` and no `orders`. Branching on `ok` would read that as an order
+   * list of length zero and render an empty tab -- the defect, in a new costume. */
+  ok('openOrders: the helper demands success AND an orders array, never bare ok',
+    /fetchOpenOrdersFromEndpoint[\s\S]{0,2600}body\.success !== true \|\| !Array\.isArray\(body\.orders\)/.test(api), false);
+
+  /* The honesty half of 5.b. A data fix alone leaves the screen asserting a cause
+   * that is false for whichever leg it did not come from. */
+  ok('openOrders: the hook reports WHICH leg answered',
+    /transport: ArchOpenOrdersTransport \| null/.test(hook), false);
+  ok('openOrders: and derives it from the Suitelet own service key, which the RESTlet never sends',
+    /body\.service === 'arch-order-create' \? 'endpoint' : 'restlet'/.test(hook), false);
+
+  /* 🔴 A TWO-FILE STRING CONTRACT, so guard BOTH ends. The client above matches on
+   * the literal 'arch-order-create'; if the Suitelet ever stops emitting it, every
+   * endpoint response silently reclassifies as the RESTlet leg and the screen
+   * starts naming the wrong cause -- with the whole suite green, because only one
+   * side was pinned. */
+  ok('openOrders: and the Suitelet actually EMITS that key on this action',
+    /if \(action === 'openOrders'\)[\s\S]{0,900}service: 'arch-order-create'/.test(sl), false);
+
+  ok('honesty: the RESTlet sentence is no longer printed unconditionally',
+    /transport === 'endpoint'/.test(att) && /A RESTlet ignores runasrole/.test(att), false);
+  ok('honesty: and the empty-state banner names a cause per leg rather than one for both',
+    /transport === 'restlet'[\s\S]{0,900}transport === 'endpoint'/.test(view), false);
+
+  /* 🔴 PIN THE CORRECTION ITSELF, not the mechanism that made it possible. The
+   * false claim was "Only N items in the account carry the Hardwood segment",
+   * presented as an account fact when HARDWOOD_ITEM_COUNT_SQL runs under whichever
+   * role served the request. Guarding only for the word `transport` would let the
+   * old sentence come straight back. */
+  ok('honesty: the tagged count is no longer presented as an account fact',
+    /This request could see \{taggedItemCount\} item/.test(view) &&
+    !/item\{taggedItemCount === 1 \? '' : 's'\} in the account/.test(view), false);
+  ok('honesty: and the tagging advice is inside the per-leg branches, not promised to everyone',
+    !/\}\{' '\}\s*\n\s*Tagging the remaining hardwood items will populate this tab\./.test(view), false);
+
+  /* 🔴 The endpoint-first chain falls back only on TOTAL failure, and the service is
+   * built never to total-fail: three catch blocks swallow a failed cost lookup, a
+   * failed sales-team read and a failed tagged-item count, each still returning
+   * success:true with a full order list. Without these the screen prints a confident
+   * count over data that quietly lost a column. */
+  ok('degradation: a POPULATED tab can still say it is incomplete',
+    /degraded: string\[\]/.test(hook) && /degradationsIn\(/.test(hook), false);
+  ok('degradation: uncosted lines are counted, since costSource reaches the client and nothing rendered it',
+    /costSource === 'unknown'/.test(hook), false);
+  ok('degradation: and the view renders it on a live populated tab, not only on an empty one',
+    /orders\.length > 0 &&\s*\n?\s*\(visibleDegradations\.length > 0 \|\| transport === 'restlet'\)/.test(view), false);
+  ok('degradation: row-level narrowing is recorded as undetectable rather than papered over',
+    /Row-level narrowing is NOT in here and cannot be|ROW-LEVEL narrowing is NOT in here/.test(hook), false);
+
+  /* 🔴 THREE STATES, NOT ONE. `null` from the helper used to mean "unconfigured",
+   * "refused" and "failed" all at once, and the banner named the third for all of
+   * them. Refusal is the MAJORITY case -- the screen is deployed to all employees
+   * while this endpoint permits [2181, 3] -- so the commonest reading was the
+   * wrong one, and it named a cause the reader could not act on. */
+  ok('fallback: the helper distinguishes unconfigured, refused and failed',
+    /outcome: 'unconfigured'/.test(api) && /outcome: 'refused'/.test(api) && /outcome: 'failed'/.test(api), false);
+  ok('fallback: refusal is read off the body code, because the Suitelet answers 200 to a 403',
+    /body\.code === 'FORBIDDEN'/.test(api), false);
+  ok('fallback: and the banner words each reason differently',
+    /fallbackReason === 'refused'/.test(view) && /fallbackReason === 'unconfigured'/.test(view), false);
+
+  /* A live fetch in flight is not demo data, and this change made that window
+   * longer by putting a slower leg in front of the RESTlet. */
+  ok('loading: is its own state, so the tab stops calling live data placeholders',
+    /const isLoading = source === 'loading'/.test(view) && /const isDemo = source === 'fixtures'/.test(view), false);
+  ok('loading: and does not fall through to the live-and-empty banner either',
+    /\{isLoading && orders\.length === 0 \? \(/.test(view), false);
+}
+
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');
 process.exit(fail ? 1 : 0);

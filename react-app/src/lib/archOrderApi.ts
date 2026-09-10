@@ -310,6 +310,93 @@ export const fetchCustomersFromEndpoint = async (
   }
 };
 
+/**
+ * The open sales orders, read under the ORDER ENDPOINT's role instead of the caller's.
+ *
+ * Marc-Antoine's item 5.b: under his own role the Open Sales Orders tab returned
+ * NO orders at all.
+ *
+ * MEASURED 2026-09-09/10. Role 2181 is SALESCENTER with issalesrole=T, so NetSuite
+ * narrows a transaction search to that role's OWN records. Its only holder, employee
+ * 3293, sits on ZERO `transactionsalesteam` rows account-wide and reads
+ * issalesrep='F', and every customer on the open ARCH orders has `salesrep` NULL.
+ * That role's "own" set is EMPTY BY CONSTRUCTION: the query succeeds, returns
+ * nothing, and nothing errors. Same silent-narrowing class as the customer list.
+ *
+ * Proven on the deployed endpoint 2026-09-10, 2184 against Administrator, identical
+ * on all sixteen axes checked: 8 orders, 9 lines, 9 of 9 carrying a lot, thickness
+ * ["4/4","8/4"], taggedItemCount 6, and traderAttribution byte-identical
+ * (fromSalesTeam 8, unattributed 0, namesUnreadable 0, salesTeamRead "ok").
+ *
+ * ⚠️ This TRADES one scope for another rather than removing scope. 2184 is
+ * subsidiaryoption=SELECTED and cannot see subsidiary 1 or 7 transactions, where
+ * 2181 was OWN. It is also deliberately WIDER than the trader's own role: the tab
+ * shows every ARCH order in 2184's subsidiaries, not only the trader's. Same trade
+ * already accepted for the customer list.
+ *
+ * 🔴 `success === true` AND an `orders` array are BOTH required, and the second half
+ * is load-bearing. An older Suitelet falls through to its health payload, which is
+ * `{ok: true, service: 'arch-order-create', ...}` with no `success` and no `orders`;
+ * branching on `ok` would read that as an order list of length zero and render an
+ * empty tab. That is the defect being fixed, in a new costume.
+ *
+ * Returns null on any failure so the caller falls back to the RESTlet: a new bundle
+ * against an old Suitelet degrades to exactly today's behaviour rather than breaking.
+ */
+/**
+ * WHY THIS IS NOT A BARE `| null`.
+ *
+ * Three quite different things send the tab to the RESTlet, and the screen has to
+ * name them differently or it asserts something false:
+ *
+ *   'unconfigured'  no order endpoint on this page. NOTHING was sent. Saying "the
+ *                   order endpoint did not answer" about a request that never left
+ *                   the browser is a claim about an event that did not happen.
+ *   'refused'       the endpoint answered, at once, with FORBIDDEN. 🔴 This is the
+ *                   COMMON case, not the exotic one: the React screen is deployed
+ *                   to all employees while this endpoint permits only [2181, 3], so
+ *                   most viewers land here. "Did not answer" is false for them and,
+ *                   worse, unactionable -- the actionable fact is that their role is
+ *                   not on the allowlist.
+ *   'failed'        it was asked and did not come back usable.
+ *
+ * The first version of this returned bare null and the banner named the third cause
+ * for all three.
+ */
+export type ArchOpenOrdersLeg =
+  | { outcome: 'ok'; body: Record<string, unknown> }
+  | { outcome: 'unconfigured' | 'refused' | 'failed' };
+
+export const fetchOpenOrdersFromEndpoint = async (
+  subsidiaryId: string | number,
+): Promise<ArchOpenOrdersLeg> => {
+  const url = endpointUrl();
+  if (!url) return { outcome: 'unconfigured' };
+  try {
+    const sep = url.indexOf('?') === -1 ? '?' : '&';
+    const r = await fetch(
+      url + sep + 'action=openOrders&subsidiaryId=' + encodeURIComponent(subsidiaryId),
+      { method: 'GET', credentials: 'include' },
+    );
+    // A Suitelet answers 200 to everything, so branch on the payload, never r.status.
+    const body = (await r.json()) as Record<string, unknown>;
+    /* The allowlist gate runs BEFORE the action dispatch, so a refusal never
+     * reaches the openOrders branch at all.
+     *
+     * ⚠️ And it arrives as HTTP 200. `respond()` in the Suitelet takes a status
+     * argument and never applies it: it writes `payload.status = 403` into the JSON
+     * body and returns 200 regardless. So `r.status` cannot detect a refusal and
+     * `r.ok` is true for one. The body's own `code` is the only signal. */
+    if (body && body.code === 'FORBIDDEN') return { outcome: 'refused' };
+    if (!body || body.success !== true || !Array.isArray(body.orders)) {
+      return { outcome: 'failed' };
+    }
+    return { outcome: 'ok', body };
+  } catch {
+    return { outcome: 'failed' };
+  }
+};
+
 export const fetchIncoterms = async (): Promise<ArchIncotermsResult> => {
   const url = endpointUrl();
   if (!url) return { status: 'offline', incoterms: [], error: 'No order endpoint is configured.' };

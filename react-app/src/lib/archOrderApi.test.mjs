@@ -6,7 +6,7 @@
 // a request that never returns would leave them with NO exit. The timeout below is
 // what makes the guard safe to ship; the two are one change.
 import { readFileSync } from 'node:fs';
-import { orderOutcome, createArchOrder, SUBMIT_TIMEOUT_MS, fetchIncoterms } from './archOrderApi.ts';
+import { orderOutcome, createArchOrder, SUBMIT_TIMEOUT_MS, fetchIncoterms, fetchOpenOrdersFromEndpoint } from './archOrderApi.ts';
 
 let fail = 0;
 const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (cond ? '' : '   got: ' + JSON.stringify(got))); if (!cond) fail++; };
@@ -192,6 +192,76 @@ ok('incoterms: and renders the fetched options on the live branch',
   /status === 'ok'[\s\S]{0,80}incotermsOpts\.incoterms/.test(wizard), false);
 ok('incoterms: the wizard sends the ID, not just the text',
   /incotermsId: incotermsId \|\| undefined/.test(wizard), false);
+
+/* ── fetchOpenOrdersFromEndpoint: the item 5.b endpoint leg ───────────────────
+ *
+ * 🔴 BEHAVIOURAL, not a source grep. The guards in archUiGuards.test.mjs prove a
+ * string is in a file; they cannot tell a health payload from an order list. This
+ * helper decides whether the tab trusts the endpoint or falls back to the RESTlet,
+ * and getting that wrong reintroduces the very defect it was written to fix: the
+ * Suitelet health fall-through is `{ok: true, ...}` with no orders, so a helper
+ * that branched on `ok` would render an empty tab and call it live.
+ */
+{
+  const url = 'https://example.invalid/order';
+  const reply = (payload) => {
+    globalThis.fetch = () => Promise.resolve({ json: () => Promise.resolve(payload) });
+  };
+  globalThis.window = { MCGI_CONFIG: { orderEndpointUrl: url } };
+
+  const good = { success: true, orders: [{ soNo: 'SO-1' }], service: 'arch-order-create' };
+  reply(good);
+  let r = await fetchOpenOrdersFromEndpoint(9);
+  ok('openOrders leg: a real order list is accepted', r.outcome === 'ok' && r.body === good, r);
+
+  /* THE ONE THAT MATTERS. This is what an older Suitelet, with no openOrders
+   * branch, actually returns: it falls through to the health payload. */
+  reply({ ok: true, service: 'arch-order-create', user: 3136, role: 3, status: 200 });
+  r = await fetchOpenOrdersFromEndpoint(9);
+  ok('openOrders leg: the HEALTH fall-through is not mistaken for an empty order list',
+    r.outcome === 'failed', r);
+
+  /* And this is what EVERY viewer outside roles [2181, 3] gets. The Suitelet
+   * answers HTTP 200 and puts 403 in the body, so only `code` distinguishes it. */
+  reply({ ok: false, code: 'FORBIDDEN', error: 'Your role is not permitted...', status: 403 });
+  r = await fetchOpenOrdersFromEndpoint(9);
+  ok('openOrders leg: a role refusal is REFUSED, not "did not answer"',
+    r.outcome === 'refused', r);
+
+  reply({ success: false, error: 'Open sales orders could not be loaded' });
+  r = await fetchOpenOrdersFromEndpoint(9);
+  ok('openOrders leg: an explicit service failure falls back', r.outcome === 'failed', r);
+
+  reply({ success: true });
+  r = await fetchOpenOrdersFromEndpoint(9);
+  ok('openOrders leg: success with NO orders array falls back, rather than showing nothing',
+    r.outcome === 'failed', r);
+
+  reply({ success: true, orders: [] });
+  r = await fetchOpenOrdersFromEndpoint(9);
+  ok('openOrders leg: but an honestly EMPTY list is accepted, not retried as a failure',
+    r.outcome === 'ok', r);
+
+  globalThis.fetch = () => Promise.reject(new Error('Failed to fetch'));
+  r = await fetchOpenOrdersFromEndpoint(9);
+  ok('openOrders leg: a thrown fetch falls back rather than propagating', r.outcome === 'failed', r);
+
+  /* Nothing was SENT here, so the banner must not claim the endpoint stayed
+   * silent. That distinction is the whole reason this returns an outcome. */
+  globalThis.window = { MCGI_CONFIG: {} };
+  r = await fetchOpenOrdersFromEndpoint(9);
+  ok('openOrders leg: no endpoint configured is UNCONFIGURED, not a non-answer',
+    r.outcome === 'unconfigured', r);
+
+  let seen = '';
+  globalThis.window = { MCGI_CONFIG: { orderEndpointUrl: url + '?script=6505&deploy=1' } };
+  globalThis.fetch = (u) => { seen = String(u); return Promise.resolve({ json: () => Promise.resolve(good) }); };
+  await fetchOpenOrdersFromEndpoint(9);
+  ok('openOrders leg: the action and subsidiary are on the query string',
+    /action=openOrders/.test(seen) && /subsidiaryId=9/.test(seen), seen);
+  ok('openOrders leg: and the separator is & when the url already carries a query',
+    /deploy=1&action=openOrders/.test(seen), seen);
+}
 
 console.log(fail ? ('# FAIL ' + fail) : '# archOrderApi ok');
 process.exit(fail ? 1 : 0);

@@ -233,7 +233,13 @@ ok('F: a thrown sublist read is reported as FAILED, not as "no reps found"',
   att2 && att2.salesTeamRead === 'failed', att2);
 ok('F: and carries what NetSuite said, which is the only way to tell a permission problem from a timeout',
   att2 && /SSS_MISSING_REQD_ARGUMENT/.test(att2.salesTeamError), att2);
-ok('F: and NAMES the role the RESTlet ran as, because that is the first thing to check',
+/* The field is unchanged and so is this assertion; only its DESCRIPTION was wrong.
+ * `currentRoleLabel` resolves from `runtime.getCurrentUser()`, which reports the
+ * CALLER on either transport, never the `runasrole` a Suitelet reads under. Since
+ * 2026-09-10 openOrders is served by the order Suitelet first, so on that leg this
+ * names who ASKED, not who read, and the client says so per leg. Calling it "the
+ * role the RESTlet ran as" would keep a false claim alive in a passing test. */
+ok('F: and NAMES the CALLER role, which is the first thing to check on the RESTlet leg',
   att2 && att2.roleLabel === 'MGSL - CWP ARC - Trader (2181)', att2 && att2.roleLabel);
 ok('F: a total failure is logged at ERROR, not buried in an audit line',
   rec2.errors.some((e) => /sales team/i.test(e)) && !rec2.audits.some((a) => /sales team/i.test(a)),

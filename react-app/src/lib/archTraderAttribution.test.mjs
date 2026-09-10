@@ -35,7 +35,23 @@ ok('no orders -> no notice (the tagging banner already says why it is empty)',
   traderAttributionNotice({ ...base, orderCount: 0, unattributedCount: 0 }) === null);
 
 // ── the reported symptom: nobody attributed anywhere ──────────────────────────
-let n = traderAttributionNotice({ ...base, unattributedCount: 4 });
+/*
+ * `transport: 'restlet'` is stated explicitly so this case SAYS which leg it is
+ * about. Be honest about what that annotation does: nothing, mechanically. An
+ * unstated transport already falls through to the RESTlet wording, so deleting it
+ * leaves every assertion below passing. It is documentation, not a fixture.
+ *
+ * The default it makes explicit is pinned separately, at the end of this block,
+ * because it IS load-bearing: every caller in the codebase that has not been
+ * taught about transports depends on it.
+ *
+ * 🔴 What is not cosmetic is the endpoint case further down. This one asserts the
+ * sentence "a RESTlet ignores runasrole and runs as the caller", and now that
+ * openOrders is served by the order Suitelet first, that sentence is false on the
+ * leg that usually answers. Without a counterweight this assertion would go on
+ * holding a false claim in place, passing the whole time.
+ */
+let n = traderAttributionNotice({ ...base, transport: 'restlet', unattributedCount: 4 });
 ok('every order unattributed -> a notice at ERROR level', n && n.level === 'error', n);
 ok('and it counts them', n && n.lines.join(' ').includes('4 orders'), n);
 ok('and it says the column is UNREAD, not empty', n && /unread/i.test(n.lines.join(' ')), n);
@@ -45,6 +61,54 @@ ok('and it says Created by is unaffected, so the trader knows what IS trustworth
   n && /Created by/.test(n.lines.join(' ')), n);
 ok('no em dashes in anything shown to the client', n && !n.lines.join(' ').includes('—'), n);
 ok('nothing prints null or undefined', n && !/null|undefined/.test(n.lines.join(' ')), n);
+
+/* ── the SAME failure, served by the order endpoint instead ───────────────────
+ *
+ * 🔴 The whole notice exists to tell someone WHICH ROLE to go and audit. On the
+ * endpoint leg `roleLabel` is the wrong answer to that question: the service
+ * resolves it from `runtime.getCurrentUser()`, which reports the CALLER even under
+ * `runasrole`. Measured on this exact Suitelet, it reported callerRole 3 while
+ * returning data scoped to 2184.
+ *
+ * This has already misled once for real. scriptnote for scripttype 6505 logged
+ * "A RESTlet runs as the caller, so check that role first: administrator (3)" for
+ * a failure that occurred under 2184. Sending someone to audit the wrong role is
+ * worse than sending them nowhere.
+ */
+{
+  const e = traderAttributionNotice({ ...base, transport: 'endpoint', unattributedCount: 4 });
+  const t = e ? e.lines.join(' ') : '';
+  ok('endpoint leg: still an ERROR notice, the severity does not depend on the leg',
+    e && e.level === 'error', e);
+  ok('endpoint leg: does NOT claim a RESTlet ran', e && !/A RESTlet ignores runasrole/.test(t), e);
+  ok('endpoint leg: does NOT present the caller as the role that read',
+    e && !/This request ran as/.test(t), e);
+  ok('endpoint leg: says the read ran under a DIFFERENT role than the caller',
+    e && /reads under its own role/.test(t), e);
+  ok('endpoint leg: still names the caller, so the reader knows who asked',
+    e && t.includes('MGSL - CWP ARC - Trader (2181)'), e);
+  ok('endpoint leg: no em dashes', e && !t.includes('—'), e);
+  ok('endpoint leg: nothing prints null or undefined', e && !/null|undefined/.test(t), e);
+
+  const nm = traderAttributionNotice({ ...base, transport: 'endpoint', namesUnreadable: 2 });
+  ok('endpoint leg: "this role" gets a real referent, since the named role is not the reading one',
+    nm && /the order endpoint role cannot read/.test(nm.lines.join(' ')), nm);
+  const nmR = traderAttributionNotice({ ...base, transport: 'restlet', namesUnreadable: 2 });
+  ok('restlet leg: keeps "this role", which IS the reading role there',
+    nmR && /this role cannot read/.test(nmR.lines.join(' ')), nmR);
+}
+
+/* The default that the explicit annotation above documents. Every existing caller
+ * passes no transport, so this is the behaviour they actually get, and it must not
+ * drift when a new leg is added. */
+{
+  const u = traderAttributionNotice({ ...base, unattributedCount: 4 });
+  const r = traderAttributionNotice({ ...base, transport: 'restlet', unattributedCount: 4 });
+  ok('an UNSTATED transport still gets the RESTlet wording, which is what every old caller relies on',
+    u && r && u.lines.join(' ') === r.lines.join(' '), { u, r });
+  ok('and it is genuinely the RESTlet wording, not merely equal to itself',
+    u && /A RESTlet ignores runasrole/.test(u.lines.join(' ')), u);
+}
 
 // A single order is still the same failure, and reads as one.
 n = traderAttributionNotice({ ...base, orderCount: 1, unattributedCount: 1 });

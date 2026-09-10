@@ -38,7 +38,16 @@ export interface ArchTraderAttribution {
   namesUnreadable: number;
   salesTeamRead: 'ok' | 'failed' | 'unknown';
   salesTeamError: string;
-  /** The role the RESTlet ran as. Only filled when there is something to diagnose. */
+  /**
+   * The role the request was made BY. Only filled when there is something to
+   * diagnose.
+   *
+   * 🔴 NOT necessarily the role the read ran UNDER. The service resolves this from
+   * `runtime.getCurrentUser()`, which reports the CALLER even under `runasrole` --
+   * measured on the order Suitelet, which reported callerRole 3 while returning
+   * data scoped to 2184. On the endpoint leg this names who asked, not who read.
+   * See `transport` on ArchAttributionInput.
+   */
   roleLabel: string;
 }
 
@@ -102,8 +111,23 @@ export interface ArchAttributionInput {
    */
   salesTeamRead?: 'ok' | 'failed' | 'unknown';
   salesTeamError?: string;
-  /** The role the RESTlet actually ran as, e.g. "MGSL - CWP ARC - Trader (2181)". */
+  /** The role the request was made BY, e.g. "MGSL - CWP ARC - Trader (2181)". */
   roleLabel?: string;
+  /**
+   * WHICH LEG served the list, because the diagnosis differs by leg and the old
+   * wording was only ever true of one of them.
+   *
+   * On 'restlet' the caller's own role IS the reading role, so naming it is the
+   * right first thing to inspect. On 'endpoint' the read ran under the Suitelet's
+   * `runasrole`, so `roleLabel` names the wrong role to go and look at, and the
+   * sentence "a RESTlet ignores runasrole" is simply false.
+   *
+   * This has already misled once for real: scriptnote for scripttype 6505 logged
+   * "A RESTlet runs as the caller, so check that role first: administrator (3)"
+   * for a failure that occurred under 2184. Undefined keeps the old wording, which
+   * is correct for every caller that has not been taught the difference.
+   */
+  transport?: 'endpoint' | 'restlet';
 }
 
 const count = (n: unknown): number => {
@@ -114,27 +138,48 @@ const count = (n: unknown): number => {
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
 /**
- * Why a RESTlet's role is the thing to look at first. Only emitted when we know
- * which role it was; a sentence ending in "ran as ." is worse than no sentence.
+ * Which role to go and inspect first. Only emitted when we know which role it was;
+ * a sentence ending in "ran as ." is worse than no sentence.
+ *
+ * 🔴 The two legs need DIFFERENT sentences, and this used to print the RESTlet one
+ * unconditionally. On the order endpoint the read runs under that deployment's
+ * `runasrole`, not under the caller, so "a RESTlet ignores runasrole" is false and
+ * `roleLabel` names a role whose permissions are not the ones that mattered.
+ * Sending someone to audit the wrong role is worse than sending them nowhere.
  */
-const roleLine = (roleLabel?: string): string[] =>
-  roleLabel && String(roleLabel).trim()
-    ? [
-        'This request ran as ' + String(roleLabel).trim() +
-          '. A RESTlet ignores runasrole and runs as the caller, so a role that cannot read the ' +
-          'Sales Team sublist reads Unassigned on every order.',
-      ]
-    : [];
+const roleLine = (roleLabel?: string, transport?: 'endpoint' | 'restlet'): string[] => {
+  const label = roleLabel && String(roleLabel).trim();
+  if (!label) return [];
+  if (transport === 'endpoint') {
+    return [
+      'This request was made as ' + label +
+        ', but it was served by the order endpoint, which reads under its own role ' +
+        'rather than yours. So the role to audit is the one on that deployment, not this one.',
+    ];
+  }
+  return [
+    'This request ran as ' + label +
+      '. A RESTlet ignores runasrole and runs as the caller, so a role that cannot read the ' +
+      'Sales Team sublist reads Unassigned on every order.',
+  ];
+};
 
 /** What is still trustworthy while the rep is not. */
 const CREATOR_LINE =
   'Created by is read from the transaction itself and is unaffected, so group by that until this is resolved.';
 
-const namesLine = (n: number): string[] =>
+/*
+ * "this role" needs a referent, and on the endpoint leg roleLine has just told the
+ * reader that the only role named on screen is NOT the one that read. So name the
+ * reading role by its function instead of leaving a dangling "this".
+ */
+const namesLine = (n: number, transport?: 'endpoint' | 'restlet'): string[] =>
   n > 0
     ? [
         n + ' ' + plural(n, 'rep resolves', 'reps resolve') +
-          ' to an employee id whose name this role cannot read, and ' +
+          ' to an employee id whose name ' +
+          (transport === 'endpoint' ? 'the order endpoint role' : 'this role') +
+          ' cannot read, and ' +
           plural(n, 'shows', 'show') + ' as "Employee <id>".',
       ]
     : [];
@@ -165,8 +210,8 @@ export const traderAttributionNotice = (
       lines: [
         'The sales-rep read failed, so the Sales rep column is unread rather than empty.',
         ...(err ? ['NetSuite said: ' + err] : []),
-        ...roleLine(input.roleLabel),
-        ...namesLine(unreadable),
+        ...roleLine(input.roleLabel, input.transport),
+        ...namesLine(unreadable, input.transport),
         CREATOR_LINE,
       ],
     };
@@ -178,8 +223,8 @@ export const traderAttributionNotice = (
       lines: [
         'Not one of these ' + orders + ' ' + plural(orders, 'order', 'orders') +
           ' has a readable sales rep, so the Sales rep column is unread rather than genuinely blank.',
-        ...roleLine(input.roleLabel),
-        ...namesLine(unreadable),
+        ...roleLine(input.roleLabel, input.transport),
+        ...namesLine(unreadable, input.transport),
         CREATOR_LINE,
       ],
     };
@@ -191,12 +236,12 @@ export const traderAttributionNotice = (
       lines: [
         missing + ' of ' + orders + ' orders carry no sales rep on either the Sales Team sublist ' +
           'or the header, and read Unassigned.',
-        ...namesLine(unreadable),
+        ...namesLine(unreadable, input.transport),
       ],
     };
   }
 
-  if (unreadable > 0) return { level: 'warn', lines: namesLine(unreadable) };
+  if (unreadable > 0) return { level: 'warn', lines: namesLine(unreadable, input.transport) };
 
   return null;
 };

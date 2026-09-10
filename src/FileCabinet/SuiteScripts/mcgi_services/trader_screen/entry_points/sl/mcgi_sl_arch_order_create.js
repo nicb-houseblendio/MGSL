@@ -264,6 +264,69 @@ define([
                 });
             }
 
+            /*
+             * `openOrders`, proxied for the SAME reason as `customers` and with a
+             * sharper cause. Marc-Antoine's item 5.b: under his own role the Open
+             * Sales Orders tab returns NO orders at all.
+             *
+             * MEASURED 2026-09-09/10. Role 2181 is SALESCENTER with issalesrole=T,
+             * so NetSuite narrows a transaction search to the role's OWN records.
+             * Its only holder, employee 3293 `Trader Hardwood`, sits on ZERO
+             * `transactionsalesteam` rows account-wide and reads issalesrep='F', and
+             * all three customers on the open ARCH orders have `salesrep` NULL. So
+             * that role's "own" set is EMPTY BY CONSTRUCTION -- the query succeeds,
+             * returns nothing, and nothing anywhere errors. That silence is the
+             * defect; the permissions all looked fine when they were checked.
+             *
+             * 2181 and 2184 hold the SAME TRAN_SALESORD (3) and TRAN_FIND (4). The
+             * difference is not permission, it is centertype: 2184 is ACCOUNTCENTER
+             * with issalesrole=F, so it is not narrowed to its own book.
+             *
+             * It is narrowed a DIFFERENT way. 2184 is subsidiaryoption=SELECTED and
+             * demonstrably cannot see subsidiary 1 or 7 transactions, where 2181 was
+             * subsidiaryoption=OWN. This trades one scope for another rather than
+             * removing scope, and it is deliberately WIDER than the trader's own
+             * role: the tab now shows every ARCH order in 2184's subsidiaries, not
+             * only the trader's own. Same trade already accepted for the customer
+             * list. `OPEN_ORDERS_SQL` carries no subsidiary predicate of its own, so
+             * the tab's completeness IS the executing role's scope and nothing else.
+             *
+             * Unlike `salesTeams`, this one was checked BEFORE it shipped rather than
+             * after. `handleGetOpenOrders` touches no `entitygroup`: the rep column
+             * reads `transactionsalesteam`, and ADMI_TEAMSELLINGCONTRIBUTION is
+             * level 4 on BOTH roles. That is why this is proxied and salesTeams,
+             * twenty lines up, is not.
+             */
+            if (action === 'openOrders') {
+                let out;
+                try {
+                    out = archService.getRouter({
+                        action: action,
+                        subsidiaryId: context.request.parameters.subsidiaryId,
+                    });
+                } catch (e) {
+                    return respond(context, 200, {
+                        ok: false,
+                        service: 'arch-order-create',
+                        action: action,
+                        callerRole: user.role,
+                        error: 'The ARCH service could not answer ' + action + ': ' +
+                               (e.message || String(e)),
+                    });
+                }
+                /* Same envelope as `customers`: the service answers with `success`,
+                 * this endpoint with `ok`, and both are carried. The client REQUIRES
+                 * `success === true` AND an `orders` array before it trusts this leg,
+                 * because the health fall-through below is also `ok: true` and would
+                 * otherwise read as an empty order list. */
+                return respond(context, 200, Object.assign({}, out, {
+                    ok: out && out.success !== false,
+                    service: 'arch-order-create',
+                    action: action,
+                    callerRole: user.role,
+                }));
+            }
+
             return respond(context, 200, {
                 ok: true,
                 service: 'arch-order-create',

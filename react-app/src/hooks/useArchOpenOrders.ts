@@ -18,6 +18,7 @@
 
 import * as React from 'react';
 import { apiGet } from '@/lib/api';
+import { fetchOpenOrdersFromEndpoint } from '@/lib/archOrderApi';
 import { normalizeUnit } from '@/lib/archUom';
 import { getOpenOrders as getFixtureOrders } from '@/lib/archOrderFixtures';
 import { deriveTraderAttribution } from '@/lib/archTraderAttribution';
@@ -28,6 +29,31 @@ import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archO
 const ARCH_SUBSIDIARY_ID = 9;
 
 export type ArchOpenOrdersSource = 'loading' | 'netsuite' | 'fixtures';
+
+/**
+ * WHICH LEG answered, which is a different question from whether the data loaded.
+ *
+ * 'endpoint' is the order Suitelet, running under its own `runasrole` (customrole2184).
+ * 'restlet' is the shared RESTlet, which ignores `runasrole` and runs as the CALLER --
+ * so on that leg the list is scoped to whatever the viewer's own role can see.
+ *
+ * 🔴 This exists because two sentences on screen are only true of ONE of the legs.
+ * The attribution notice says "a RESTlet ignores runasrole and runs as the caller",
+ * which is false on a Suitelet, and the empty-state banner blames a role scoped to
+ * its own transactions, which role 2184 is not (it is ACCOUNTCENTER, issalesrole=F).
+ * Without knowing the leg, the screen cannot avoid asserting one of them wrongly.
+ */
+export type ArchOpenOrdersTransport = 'endpoint' | 'restlet';
+
+/**
+ * WHY the RESTlet leg was used, when it was. Null on the endpoint leg.
+ *
+ * The screen has to name this, not guess it: 'unconfigured' means no request was
+ * ever sent, and 'refused' means the endpoint answered instantly because the
+ * viewer's role is not on its allowlist. Only 'failed' means it was asked and did
+ * not come back. Saying "the order endpoint did not answer" covers one of three.
+ */
+export type ArchOpenOrdersFallbackReason = 'unconfigured' | 'refused' | 'failed';
 
 /**
  * An open order with the fields the live endpoint adds on top of the fixture
@@ -105,6 +131,12 @@ interface RawOrder extends Omit<ArchLiveOpenOrder, 'lines'> {
 interface OpenOrdersResponse {
   success?: boolean;
   error?: string;
+  /**
+   * The order Suitelet merges this into every response and the RESTlet never
+   * sends it, so it is how the hook knows which leg answered. MEASURED
+   * 2026-09-10: the two bodies' top-level key sets are disjoint on this field.
+   */
+  service?: string;
   orders?: RawOrder[];
   /** How many items carry the Hardwood segment. Explains an empty tab. */
   taggedItemCount?: number | null;
@@ -134,6 +166,34 @@ export interface ArchOpenOrdersState {
    * does not. See `deriveTraderAttribution` for why that fallback exists.
    */
   traderAttribution: ArchTraderAttribution | null;
+  /**
+   * Which leg served this list. Null while loading and on fixtures.
+   *
+   * The discriminator is the Suitelet's own `service` key, which it merges into
+   * every response and the RESTlet never sends. MEASURED 2026-09-10: the two
+   * bodies' top-level key sets are disjoint on exactly that field.
+   */
+  transport: ArchOpenOrdersTransport | null;
+  /** Why the RESTlet served it. Null on the endpoint leg and while loading. */
+  fallbackReason: ArchOpenOrdersFallbackReason | null;
+  /**
+   * Ways this answer is known to be incomplete, in words, for a tab that IS
+   * populated. Empty when nothing is known to be wrong.
+   *
+   * 🔴 Why this is not just `success`. `handleGetOpenOrders` carries ONE
+   * `success: false` against three swallowed catches: a failed cost lookup, a
+   * failed sales-team read and a failed tagged-item count all return
+   * `success: true` with a populated `orders` array. So the endpoint-first chain,
+   * which falls back only when the endpoint TOTAL-fails, would accept every one of
+   * them and suppress the RESTlet leg with nothing on screen saying so.
+   *
+   * ⚠️ ROW-LEVEL narrowing is NOT in here and cannot be. `OPEN_ORDERS_SQL` has no
+   * subsidiary predicate of its own, the order DTO carries no subsidiary, and
+   * nothing counts orders scoped away, so an order the executing role cannot see is
+   * indistinguishable from an order that does not exist. Recorded rather than
+   * papered over; detecting it needs a field on the server DTO.
+   */
+  degraded: string[];
   reload: () => void;
 }
 
@@ -193,6 +253,76 @@ const attributionFrom = (
   };
 };
 
+/**
+ * The ways a POPULATED answer is known to be incomplete, in words.
+ *
+ * 🔴 THE GAP THIS CLOSES. The endpoint-first chain falls back to the RESTlet only
+ * when the endpoint TOTAL-fails, and `handleGetOpenOrders` is built never to
+ * total-fail: it carries ONE `success: false` against three swallowed catches. A
+ * failed cost lookup, a failed sales-team read and a failed tagged-item count each
+ * log and carry on, returning `success: true` with a full `orders` array. So the
+ * guard accepts all three, the RESTlet leg is suppressed, and the trader reads a
+ * confident order count over data that quietly lost a column.
+ *
+ * That is the same shape as item 5.b itself, which is why it is surfaced rather
+ * than left to the deploy-day diff: "nothing errored and nothing said so" is the
+ * defect, not the symptom.
+ *
+ * Every field read here is ALREADY on the wire. This needs no server change, which
+ * is deliberate: the alternative was a new `complete` flag on the service DTO, and
+ * a flag nobody sets correctly is worse than a measurement taken here.
+ *
+ * ⚠️ Row-level narrowing is absent from this list and cannot be added from here.
+ * See the `degraded` field's own note.
+ */
+export const degradationsIn = (
+  /* The RAW orders, not the mapped ones: `costSource` is carried on `RawLine` and
+   * deliberately not on `ArchCartLine`, which is the cart's own shape. */
+  orders: RawOrder[],
+  body: OpenOrdersResponse
+): string[] => {
+  const out: string[] = [];
+
+  /* The rep column. The service already reports this one, and the attribution
+   * notice already renders it, so it is listed for completeness of the reason set
+   * rather than to be shown twice; the view suppresses whichever it duplicates. */
+  if (body.traderAttribution && body.traderAttribution.salesTeamRead === 'failed') {
+    out.push('the sales-team read failed, so every rep would read Unassigned');
+  }
+
+  /* The cost column.
+   *
+   * 🔴 SAY WHAT THE SCREEN DOES, not what sounds bad. An earlier version of this
+   * line read "so est. profit is understated", and it was wrong twice over:
+   *   - the screen does not print an understated figure, it prints nothing.
+   *     `costKnown` blanks Est. profit to a dash on the line, the order, the group
+   *     subtotal and the header stat the moment any line lacks a cost, and it has
+   *     done since before this change.
+   *   - the direction was backwards anyway. `lineProfit` computes
+   *     `revenue - qty * (costPerBF ?? 0)`, so an unknown cost would OVERstate
+   *     profit, which is precisely why the cell is blanked. `types/archOrder.ts`
+   *     says so in as many words.
+   * A notice inside the honesty mechanism that contradicts the cells beside it is
+   * the exact defect this file exists to stop.
+   *
+   * What is genuinely missing is not the figure but the REASON: a reader sees a
+   * dash and cannot tell a zero-margin order from an unreadable cost. That is what
+   * this says, and `costSource` is what makes it sayable -- it reaches the client
+   * on every line and nothing renders it. */
+  const noCost = orders.reduce(
+    (n, o) => n + (o.lines || []).filter((l) => l.costSource === 'unknown').length,
+    0
+  );
+  if (noCost > 0) {
+    out.push(
+      `${noCost} line${noCost === 1 ? '' : 's'} could not be costed, so est. profit is shown ` +
+        `as a dash rather than a number`
+    );
+  }
+
+  return out;
+};
+
 export const useArchOpenOrders = (enabled = true): ArchOpenOrdersState => {
   const [orders, setOrders] = React.useState<ArchLiveOpenOrder[]>([]);
   const [source, setSource] = React.useState<ArchOpenOrdersSource>('loading');
@@ -200,6 +330,10 @@ export const useArchOpenOrders = (enabled = true): ArchOpenOrdersState => {
   const [taggedItemCount, setTaggedItemCount] = React.useState<number | null>(null);
   const [traderAttribution, setTraderAttribution] =
     React.useState<ArchTraderAttribution | null>(null);
+  const [transport, setTransport] = React.useState<ArchOpenOrdersTransport | null>(null);
+  const [fallbackReason, setFallbackReason] =
+    React.useState<ArchOpenOrdersFallbackReason | null>(null);
+  const [degraded, setDegraded] = React.useState<string[]>([]);
   const [nonce, setNonce] = React.useState(0);
 
   const reload = React.useCallback(() => setNonce((n) => n + 1), []);
@@ -209,10 +343,34 @@ export const useArchOpenOrders = (enabled = true): ArchOpenOrdersState => {
     let cancelled = false;
     setSource('loading');
 
-    // 🔴 subsidiaryId is REQUIRED. The RESTlet picks which service handles the
-    // request from it, so omitting it routes `openOrders` to the IND service,
-    // which answers "Unknown action".
-    apiGet('openOrders', { subsidiaryId: ARCH_SUBSIDIARY_ID })
+    // 🔴 subsidiaryId is REQUIRED on BOTH legs. The RESTlet picks which service
+    // handles the request from it, so omitting it routes `openOrders` to the IND
+    // service, which answers "Unknown action".
+    /*
+     * The ORDER ENDPOINT first, the RESTlet second.
+     *
+     * 🔴 A RESTlet ignores runasrole and runs as the CALLER, and under the real ARCH
+     * trader role this tab returned NO orders at all -- Marc-Antoine's item 5.b.
+     * Role 2181 is SALESCENTER with issalesrole=T, so NetSuite narrows a transaction
+     * search to that role's OWN records, and employee 3293 owns none: zero
+     * `transactionsalesteam` rows account-wide, issalesrep='F', and no customer on
+     * any open ARCH order carries a salesrep. The query succeeded, returned nothing,
+     * and nothing errored. Same silent-narrowing class as the customer list.
+     *
+     * The order Suitelet runs as customrole2184 (ACCOUNTCENTER, issalesrole=F) and
+     * returned, measured against Administrator on the deployed endpoint 2026-09-10,
+     * an IDENTICAL body on all sixteen axes checked.
+     *
+     * Falling back keeps the deploy order forgiving, and the fixture path below still
+     * catches the case where neither answers.
+     */
+    let legReason: ArchOpenOrdersFallbackReason | null = null;
+    fetchOpenOrdersFromEndpoint(ARCH_SUBSIDIARY_ID)
+      .then((leg) => {
+        if (leg.outcome === 'ok') return leg.body;
+        legReason = leg.outcome;
+        return apiGet('openOrders', { subsidiaryId: ARCH_SUBSIDIARY_ID });
+      })
       .then((res: unknown) => {
         if (cancelled) return;
         const body = res as OpenOrdersResponse;
@@ -220,6 +378,9 @@ export const useArchOpenOrders = (enabled = true): ArchOpenOrdersState => {
           setOrders(asFixtures());
           setSource('fixtures');
           setTraderAttribution(null);
+          setTransport(null);
+          setFallbackReason(null);
+          setDegraded([]);
           setError(
             (body && body.error) ||
               'Open orders could not be loaded, so these are demo orders.'
@@ -234,11 +395,15 @@ export const useArchOpenOrders = (enabled = true): ArchOpenOrdersState => {
         setOrders(live);
         setTraderAttribution(attributionFrom(live, body.traderAttribution));
         setSource('netsuite');
-        setTaggedItemCount(
+        const tagged =
           body.taggedItemCount === null || body.taggedItemCount === undefined
             ? null
-            : Number(body.taggedItemCount)
-        );
+            : Number(body.taggedItemCount);
+        setTaggedItemCount(tagged);
+        const leg = body.service === 'arch-order-create' ? 'endpoint' : 'restlet';
+        setTransport(leg);
+        setFallbackReason(leg === 'restlet' ? legReason : null);
+        setDegraded(degradationsIn(body.orders, body));
         setError(null);
       })
       .catch((e: unknown) => {
@@ -246,6 +411,9 @@ export const useArchOpenOrders = (enabled = true): ArchOpenOrdersState => {
         setOrders(asFixtures());
         setSource('fixtures');
         setTraderAttribution(null);
+        setTransport(null);
+        setFallbackReason(null);
+        setDegraded([]);
         setError(
           e instanceof Error
             ? `${e.message}. These are demo orders.`
@@ -258,5 +426,8 @@ export const useArchOpenOrders = (enabled = true): ArchOpenOrdersState => {
     };
   }, [enabled, nonce]);
 
-  return { orders, source, error, taggedItemCount, traderAttribution, reload };
+  return {
+    orders, source, error, taggedItemCount, traderAttribution,
+    transport, fallbackReason, degraded, reload,
+  };
 };

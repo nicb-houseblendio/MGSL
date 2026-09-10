@@ -257,9 +257,21 @@ interface ArchOpenOrdersViewProps {
 }
 
 export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => {
-  const { orders, source, error, taggedItemCount, traderAttribution } = useArchOpenOrders();
+  const { orders, source, error, taggedItemCount, traderAttribution, transport, fallbackReason, degraded } =
+    useArchOpenOrders();
   const { accountId } = useNetSuite();
-  const isDemo = source !== 'netsuite';
+  /*
+   * 🔴 'loading' is NOT demo. `isDemo` used to be `source !== 'netsuite'`, so the
+   * whole in-flight window rendered "Demo data. These orders are placeholders, not
+   * real sales orders ... this one is not connected" over an empty table -- a
+   * confident false claim about live data that simply had not arrived.
+   *
+   * This change made that window materially longer, which is what surfaced it: the
+   * order Suitelet is measurably slower than the RESTlet it now goes in front of,
+   * and on the fallback legs the tab pays both round trips before anything renders.
+   */
+  const isLoading = source === 'loading';
+  const isDemo = source === 'fixtures';
 
   /**
    * 🔴 GROUPED BY THE CREATOR BY DEFAULT, which is what the client asked for.
@@ -352,8 +364,20 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
         salesTeamRead: traderAttribution ? traderAttribution.salesTeamRead : 'unknown',
         salesTeamError: traderAttribution ? traderAttribution.salesTeamError : '',
         roleLabel: traderAttribution ? traderAttribution.roleLabel : '',
+        transport: transport || undefined,
       }),
-    [source, orders.length, traderAttribution]
+    [source, orders.length, traderAttribution, transport]
+  );
+
+  /*
+   * The degradation reasons WORTH SHOWING here, which is not all of them: the
+   * sales-team failure already has its own banner via `attNotice` (the fourth
+   * state below), and saying it twice reads as two problems. Everything else has
+   * no other home.
+   */
+  const visibleDegradations = React.useMemo(
+    () => degraded.filter((d) => !(attNotice && d.indexOf('sales-team') !== -1)),
+    [degraded, attNotice]
   );
 
   const allExpanded = visible.length > 0 && visible.every((o) => expanded[o.soNo]);
@@ -427,7 +451,27 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
         exist and this query cannot see them. A blank table would read as "no open
         orders", which is the wrong conclusion to hand somebody.
       */}
-      {isDemo ? (
+      {isLoading && orders.length === 0 ? (
+        /*
+          🔴 THE FIRST STATE, and it did not exist. `isDemo` was
+          `source !== 'netsuite'`, which is TRUE while loading, so the whole
+          in-flight window asserted "Demo data. These orders are placeholders, not
+          real sales orders" over live data that had simply not arrived yet, and
+          told the trader "this one is not connected" about a tab that was.
+
+          Splitting demo from loading moved the problem rather than fixing it: with
+          `isDemo` false and no orders yet, the chain fell through to "Live, and
+          nothing to show", which is the same false confidence in a calmer voice.
+          Both are claims about an answer nobody has.
+
+          Gated on `orders.length === 0` so a RELOAD keeps the previous list on
+          screen instead of blanking it, which is what the Refresh button wants.
+        */
+        <div style={{ ...notice, background: '#F8FAFC', borderBottom: '1px solid #CBD5E1', color: '#475569' }}>
+          <span style={{ fontSize: 13, lineHeight: 1 }}>⏳</span>
+          <span>Reading open sales orders from NetSuite.</span>
+        </div>
+      ) : isDemo ? (
         <div style={{ ...notice, background: '#FFF8E1', borderBottom: '1px solid #E6B800', color: '#7A4100' }}>
           <span style={{ fontSize: 13, lineHeight: 1 }}>⚠️</span>
           <span>
@@ -437,16 +481,61 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
           </span>
         </div>
       ) : orders.length === 0 ? (
+        /*
+          LIVE AND EMPTY, and the reason depends on WHICH LEG answered.
+
+          🔴 This banner used to assert one cause unconditionally: "No open sales
+          order carries a hardwood-tagged item", then advise tagging more SKUs.
+          Under the real trader role that was affirmatively FALSE and it sent the
+          client off to do the wrong work -- 8 open orders DID carry tagged items
+          (measured 2026-09-10, taggedItemCount 6), and role 2181 simply could not
+          see any of them because SALESCENTER narrows a transaction search to the
+          role's own records. That is item 5.b, and the banner was the half of it
+          that no data fix touches.
+
+          So: name the cause that can actually apply to the leg that answered, and
+          never both at once.
+
+          ⚠️ `taggedItemCount` is itself read by whichever role served the request
+          (HARDWOOD_ITEM_COUNT_SQL runs in the same execution), so it is not an
+          account fact and the copy no longer calls it one.
+        */
         <div style={{ ...notice, background: '#EFF6FF', borderBottom: '1px solid #93C5FD', color: '#1E40AF' }}>
           <span style={{ fontSize: 13, lineHeight: 1 }}>ℹ️</span>
           <span>
-            <strong>Live, and nothing to show.</strong> No open sales order carries a
-            hardwood-tagged item.
-            {taggedItemCount !== null && (
-              <> Only {taggedItemCount} item{taggedItemCount === 1 ? '' : 's'} in the account
-                carry the Hardwood segment, so orders on untagged SKUs cannot appear here.</>
+            <strong>Live, and nothing to show.</strong> No open sales order that this
+            request could read carries a hardwood-tagged item.
+            {taggedItemCount !== null ? (
+              <> This request could see {taggedItemCount} item
+                {taggedItemCount === 1 ? '' : 's'} carrying the Hardwood segment, so orders
+                on untagged SKUs cannot appear here.</>
+            ) : (
+              <> The hardwood-tagged item count could not be read, so this banner cannot say
+                how many items are tagged.</>
             )}{' '}
-            Tagging the remaining hardwood items will populate this tab.
+            {/*
+              🔴 THE TAGGING ADVICE IS NOT UNCONDITIONAL, and it used to be. On the
+              RESTlet leg the banner says in the next breath that the orders may
+              exist and be unreadable -- so promising that tagging "will populate
+              this tab" both overstates a remedy and sends the client off to do
+              work that would not fix it. That is the exact error this banner was
+              rewritten to remove, left standing one sentence below the removal.
+            */}
+            {transport === 'restlet' ? (
+              <> This list was read under <strong>your own role</strong>, and a role scoped
+                to its own transactions returns nothing here even when the orders exist.
+                So there are two possible causes and this banner cannot tell them apart:
+                tagging the remaining hardwood items may populate the tab, and so would
+                reading it under a role that is not scoped that way.</>
+            ) : transport === 'endpoint' ? (
+              <> Tagging the remaining hardwood items will populate this tab. This list was
+                read by the order endpoint rather than under your own role, so being scoped
+                to your own transactions is <em>not</em> the cause. The endpoint is scoped
+                to selected subsidiaries, so an order booked outside them would also not
+                appear.</>
+            ) : (
+              <> Tagging the remaining hardwood items will populate this tab.</>
+            )}
           </span>
         </div>
       ) : attNotice ? (
@@ -479,6 +568,74 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
               {attNotice.level === 'error' ? 'Sales rep unread.' : 'Sales rep incomplete.'}
             </strong>{' '}
             {attNotice.lines.join(' ')}
+          </span>
+        </div>
+      ) : null}
+      {/*
+        THE FIFTH STATE: live, POPULATED, and the answer is known to be less than
+        whole. Rendered outside the chain above on purpose, because it is not
+        mutually exclusive with the rep banner: a tab can have both an unread rep
+        column and an uncosted line.
+
+        🔴 WHY A POPULATED TAB NEEDS A BANNER AT ALL. The endpoint-first chain
+        falls back to the RESTlet only when the endpoint TOTAL-fails, and the
+        service is built never to total-fail: three catch blocks swallow a failed
+        cost lookup, a failed sales-team read and a failed tagged-item count, and
+        each still returns `success: true` with a full order list. Without this the
+        screen prints a confident "N open orders" and a totals row over data that
+        quietly lost a column -- which is item 5.b's own failure shape, relocated.
+
+        And the RESTlet leg keeps the original bug by definition. Any role outside
+        the endpoint deployment's allowlist [2181, 3] is refused by the Suitelet,
+        falls back, and reads the list under its own role. If that role narrows,
+        the tab is a subset and nothing else on screen would say so.
+
+        ⚠️ What this CANNOT see: an order scoped away at row level.
+        `OPEN_ORDERS_SQL` carries no subsidiary predicate, the DTO carries no
+        subsidiary, and nothing counts what the executing role could not read, so a
+        hidden order is indistinguishable from an order that does not exist.
+        Detecting that needs a field on the server DTO and is not invented here.
+      */}
+      {!isDemo && !isLoading && orders.length > 0 &&
+       (visibleDegradations.length > 0 || transport === 'restlet') ? (
+        <div style={{ ...notice, background: '#FFF8E1', borderBottom: '1px solid #E6B800', color: '#7A4100' }}>
+          <span style={{ fontSize: 13, lineHeight: 1 }}>⚠️</span>
+          <span>
+            <strong>This list may not be complete.</strong>{' '}
+            {/*
+              🔴 NAME THE REASON, do not name the commonest-sounding one. This
+              sentence used to read "The order endpoint did not answer" for all
+              three ways the RESTlet ends up serving, and that is false for two of
+              them.
+
+              'refused' is not the exotic case, it is the MAJORITY case: the React
+              screen is deployed to all employees while the order endpoint permits
+              only roles [2181, 3], so most viewers are refused instantly. Telling
+              them the endpoint "did not answer" is both untrue and unactionable --
+              what they can act on is that their role is not on its allowlist.
+
+              'unconfigured' is a claim about a request that never left the browser.
+            */}
+            {transport === 'restlet' ? (
+              fallbackReason === 'refused' ? (
+                <>Your role is not on the order endpoint allowlist, so these orders were read
+                  under your own role instead. A role scoped to its own transactions shows
+                  only a subset.{' '}</>
+              ) : fallbackReason === 'unconfigured' ? (
+                <>No order endpoint is configured here, so these orders were read under your
+                  own role. A role scoped to its own transactions shows only a subset.{' '}</>
+              ) : (
+                <>The order endpoint did not answer, so these orders were read under your own
+                  role. A role scoped to its own transactions shows only a subset.{' '}</>
+              )
+            ) : null}
+            {/* Each reason is written to start lowercase so it can follow a clause;
+                the first one here follows a full stop, so it is capitalised. */}
+            {visibleDegradations.length > 0
+              ? visibleDegradations
+                  .map((r, i) => (i === 0 ? r.charAt(0).toUpperCase() + r.slice(1) : r))
+                  .join('; ') + '.'
+              : null}
           </span>
         </div>
       ) : null}
