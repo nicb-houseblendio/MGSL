@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
-import { toLengthDistribution, toWidthDistribution, widthLabel, widthNote, checkPayload } from '@/lib/archTally';
+import { toLengthDistribution, toWidthDistribution, toLengthWidthGrid, widthLabel, widthNote, checkPayload } from '@/lib/archTally';
 import { lengthDisplayFt, lengthDisplayRow } from '@/lib/archTallyLength';
 import type { TallyBundle } from '@/lib/archTally';
 
@@ -57,10 +57,17 @@ interface TallyImageDialogProps {
  * The parsed tally, rendered.
  *
  * READ archTally.ts BEFORE CHANGING THIS. It leads with the LENGTH DISTRIBUTION
- * across bundles, not a per-bundle grid, because all 32 hand-verified bundles hold
- * exactly one thickness, one width and one length. A bundle is a single cell; the
- * distribution only exists once bundles are grouped. A grid-first view would demo
- * well and be empty on every real document.
+ * across bundles, because that is the question a trader asks first ("do I have
+ * enough 12-footers") and it only exists once bundles are grouped.
+ *
+ * ⚠️ CORRECTED 2026-09-10. This used to say a grid-first view "would demo well and
+ * be empty on every real document", reasoning from the 32 bundles hand-verified at
+ * the time, all single-length. `pl inv 01368.xlsx` / `pl inv 05513.xlsx` (Zebrano,
+ * FAS grade) are real documents where a bundle spans several lengths, each with its
+ * own widths - a genuine two-axis case, and the shape Marc-Antoine's Feedback 3
+ * mockup asks for. See `toLengthWidthGrid()` below and in archTally.ts: it is used
+ * for exactly that case and only that case, so every document held before today
+ * still renders through the two 1-D tables, unchanged.
  *
  * Two things are deliberately NOT inferred here: a missing width never prints "RW"
  * (that is a claim about the supplier, so it comes from widthPolicy), and a figure
@@ -98,6 +105,11 @@ const TallyMatrixPanel = ({
   // WIDTH is a property of the ONE opened bundle, never of the sibling set: sameItem
   // requires equal widths, so a sibling set can never itself be multi-width.
   const w = toWidthDistribution(bundle);
+
+  // The two-axis grid, only when the bundle genuinely spans more than one length.
+  // null for every single-length bundle, which is everything toWidthDistribution's
+  // table below was built for - so that table keeps rendering for those, unchanged.
+  const grid = toLengthWidthGrid(bundle);
 
   const num = (n: number | null | undefined, dp = 0) =>
     n === null || n === undefined ? '\u00B7' : n.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
@@ -303,7 +315,105 @@ const TallyMatrixPanel = ({
         * in the length label (archTallyLength.ts), not here. archTallyReach.test.mjs
         * pins 67 of 67 real ARCH lots drawing this table; if that count ever falls back
         * to 0 this panel will again be perfect and invisible. */}
-      {!w.degenerate && (
+      {grid && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textLight, marginBottom: 4 }}>
+            Length &times; width inside bundle <span className="font-mono">{bundle.bundleNo}</span>
+            {' '}&middot; {grid.rows.length} lengths &middot; {grid.widths.length} {grid.widths.length === 1 ? 'width' : 'widths'}
+            {grid.widthUnit === 'mm' ? ' (as the document prints them, in mm)' : ''}
+          </div>
+
+          {/* Deliberately NOT width: '100%'. A grid can carry up to ~39 columns
+            * (pl inv 05513.xlsx), and forcing them into a fixed width would squeeze
+            * cells unreadably instead of scrolling. The wrapper's overflow:auto gives
+            * a horizontal scrollbar once the table exceeds it - same mechanism as the
+            * length table's overflow above, just needed on the x axis here too. */}
+          <div style={{ background: '#fff', border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'auto', maxHeight: '40vh' }}>
+            <table style={{ borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  {/* The corner cell sticks on BOTH axes (top from `head`, left added
+                    * here), so it needs to out-rank the other header cells' stacking
+                    * context or it can visually lose to them at the scroll boundary -
+                    * hence the explicit zIndex on every `<th>` in this row, not just
+                    * the corner. */}
+                  <th style={{ ...head, textAlign: 'left', position: 'sticky', left: 0, zIndex: 2 }}>Length</th>
+                  {grid.widths.map((gw) => (
+                    <th key={gw} style={{ ...head, zIndex: 1 }}>{gw}{grid.widthUnit === 'mm' ? 'mm' : '"'}</th>
+                  ))}
+                  {grid.columnUnattributedTotal > 0 && <th style={{ ...head, zIndex: 1 }}>unstated</th>}
+                  <th style={{ ...head, zIndex: 1 }}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {grid.rows.map((r) => {
+                  const len = lengthDisplayRow(r);
+                  return (
+                    <tr key={r.label}>
+                      <td
+                        style={{ ...cell, textAlign: 'left', fontWeight: 600, position: 'sticky', left: 0, zIndex: 1, background: '#fff' }}
+                        className="font-mono"
+                      >
+                        {len.text}
+                        {len.gloss ? (
+                          <span style={{ fontWeight: 400, color: ARCH_SURFACE.textLight, fontSize: 10.5 }}>
+                            {' '}{'≈'}{len.gloss}
+                          </span>
+                        ) : null}
+                      </td>
+                      {grid.widths.map((gw) => (
+                        <td key={gw} style={cell} className="font-mono">{num(r.cells[String(gw)] ?? null)}</td>
+                      ))}
+                      {grid.columnUnattributedTotal > 0 && (
+                        <td style={cell} className="font-mono">{num(r.unattributed || null)}</td>
+                      )}
+                      <td style={{ ...cell, fontWeight: 700 }} className="font-mono">{num(r.pieces)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              {grid.footsToTotal ? (
+                <tfoot>
+                  <tr>
+                    <td style={{ ...cell, textAlign: 'left', fontWeight: 700, background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 1 }}>
+                      Total
+                    </td>
+                    {grid.widths.map((gw) => (
+                      <td key={gw} style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
+                        {num(grid.columnTotals[String(gw)])}
+                      </td>
+                    ))}
+                    {grid.columnUnattributedTotal > 0 && (
+                      <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
+                        {num(grid.columnUnattributedTotal)}
+                      </td>
+                    )}
+                    <td style={{ ...cell, fontWeight: 700, background: '#F8FAFC' }} className="font-mono">
+                      {num(grid.totals.pieces)}
+                    </td>
+                  </tr>
+                </tfoot>
+              ) : (
+                <tfoot>
+                  <tr>
+                    <td
+                      colSpan={grid.widths.length + 2 + (grid.columnUnattributedTotal > 0 ? 1 : 0)}
+                      style={{
+                        ...cell, textAlign: 'left', fontWeight: 600, background: '#FEF2F2',
+                        color: '#7F1D1D', whiteSpace: 'normal', lineHeight: 1.5,
+                      }}
+                    >
+                      No total is shown: the document states {num(bundle.totals.pieces)} pieces but this
+                      grid sums to {num(grid.totals.pieces)}. Read the figures off the document.
+                    </td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        </div>
+      )}
+      {!grid && !w.degenerate && (
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 10.5, color: ARCH_SURFACE.textLight, marginBottom: 4 }}>
             Widths inside bundle <span className="font-mono">{bundle.bundleNo}</span>

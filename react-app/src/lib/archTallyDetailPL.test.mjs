@@ -1,7 +1,7 @@
 import { TALLY_DETAIL_PL, DETAIL_PL_TOTALS } from './archTallyDetailPL.ts';
 import { toLengthDistribution, siblingsOf, sameItem, toWidthDistribution, checkPayload } from './archTally.ts';
 import { demoTallyForLot, TALLY_314307, TALLY_CHECHEN, demoWidthTallyForLot, demoTallyProps } from './archTallyFixtures.ts';
-import { lengthDisplayFt } from './archTallyLength.ts';
+import { lengthDisplayFt, lengthDisplayRow } from './archTallyLength.ts';
 
 let fail = 0;
 const ok = (name, cond, got) => {
@@ -105,19 +105,39 @@ const ok = (name, cond, got) => {
 {
   const sampled = ['316027-1', '315970-7', '315604-13', '315411-16A', '1535', 'ZEB84KD-2'];
 
-  ok('detail-pl IS now served by demoTallyForLot, which is what makes the matrix visible',
-    sampled.every((lot) => demoTallyForLot(lot).sample.sourceFile === 'detail pl inv 2026_00031.xlsx'),
+  /* ⚠️ UPDATED 2026-09-10, and deliberately NOT relaxed. This pair used to assert that
+   * `detail-pl` SPECIFICALLY was the served document. That was always a proxy: the
+   * comment above says so in its own words, "The concern was never 'detail-pl is
+   * forbidden', it was 'a trader must not read 7.874''". TALLY_ZEBRANO joined the pool
+   * today (`pl inv 01368.xlsx`, the first two-axis document we hold), so naming one
+   * document is now the wrong assertion. What is pinned instead is the REQUIREMENT,
+   * and it is strictly stronger than the old one: whatever document is served must be
+   * multi-width AND must render no fractional foot anywhere, checked on the matrix ROWS
+   * rather than only the bundle-level scalar. */
+  ok('a MULTI-WIDTH document is served by default, which is what makes the matrix visible',
+    sampled.every((lot) => toWidthDistribution(demoTallyForLot(lot).bundle).degenerate === false),
     sampled.map((l) => demoTallyForLot(l).sample.sourceFile));
 
   // THE ORIGINAL REQUIREMENT, still enforced: no trader reads a fractional foot.
-  const unreadable = sampled.filter((lot) => {
-    const d = demoTallyForLot(lot);
-    return /\.\d+'/.test(lengthDisplayFt(d.bundle.lengthFt).text);
-  });
-  ok('no demo lot renders a fractional foot in its length cell', unreadable.length === 0, unreadable);
+  // Checked on every LENGTH ROW, not just the bundle-level scalar, because a two-axis
+  // bundle has no single bundle-level length: its `lengthFt` is null (rendering as the
+  // em dash, by design) and its lengths live in `matrix.rows`.
+  const rowLabels = (lot) => {
+    const b = demoTallyForLot(lot).bundle;
+    const rows = b.matrix?.rows || [];
+    const out = rows.map((r) => lengthDisplayRow({
+      label: r.lengthFt != null ? `${r.lengthFt}'` : '—',
+      sortKey: r.lengthFt != null ? r.lengthFt : Number.POSITIVE_INFINITY,
+    }).text);
+    if (b.lengthFt != null) out.push(lengthDisplayFt(b.lengthFt).text);
+    return out;
+  };
+  const unreadable = sampled.filter((lot) => rowLabels(lot).some((t) => /\.\d+'/.test(t)));
+  ok('no demo lot renders a fractional foot in any length cell', unreadable.length === 0,
+    unreadable.map((l) => [l, rowLabels(l)]));
   ok('  ...because the metric ones render as whole millimetres instead',
-    sampled.every((lot) => /^\d+mm$/.test(lengthDisplayFt(demoTallyForLot(lot).bundle.lengthFt).text)),
-    sampled.map((l) => lengthDisplayFt(demoTallyForLot(l).bundle.lengthFt).text));
+    sampled.every((lot) => rowLabels(lot).every((t) => /^\d+mm$/.test(t) || /^\d+'$/.test(t))),
+    sampled.map((l) => [l, rowLabels(l)]));
 
   // And the whole point of serving it: every lot gets a width breakdown that draws.
   ok('every sampled lot now draws a width grid',
@@ -280,10 +300,23 @@ const ok = (name, cond, got) => {
    * that can draw a width breakdown, so it is all of them or none, never a third. The
    * accessor kept below is now the same document by name, and what has to be pinned is
    * that the by-name route and the default route agree. */
-  ok('the default route and the named accessor now serve the same document',
-    sampled.every((l) => demoTallyForLot(l).sample.sourceFile === demoWidthTallyForLot(l).sample.sourceFile), null);
-  ok('  ...and every length it renders is a whole millimetre, not a fractional foot',
-    sampled.every((l) => /^\d+mm$/.test(lengthDisplayFt(demoTallyForLot(l).bundle.lengthFt).text)), null);
+  /* ⚠️ UPDATED 2026-09-10. `demoWidthTallyForLot` is hard-bound to detail-pl by name,
+   * while the default route now also draws on TALLY_ZEBRANO, so "same document" is no
+   * longer true and is no longer the point. Both routes must still serve something a
+   * trader can read: multi-width, and no fractional foot on any row. */
+  ok('the named accessor still serves its own document, unaffected by the wider pool',
+    sampled.every((l) => demoWidthTallyForLot(l).sample.sourceFile === 'detail pl inv 2026_00031.xlsx'),
+    sampled.map((l) => demoWidthTallyForLot(l).sample.sourceFile));
+  ok('  ...and both routes render only whole millimetres or whole feet, never a fraction',
+    sampled.every((l) => [demoTallyForLot(l), demoWidthTallyForLot(l)].every((d) => {
+      const rows = d.bundle.matrix?.rows || [];
+      const labels = rows.map((r) => lengthDisplayRow({
+        label: r.lengthFt != null ? `${r.lengthFt}'` : '—',
+        sortKey: r.lengthFt != null ? r.lengthFt : Number.POSITIVE_INFINITY,
+      }).text);
+      if (d.bundle.lengthFt != null) labels.push(lengthDisplayFt(d.bundle.lengthFt).text);
+      return labels.every((t) => /^\d+mm$/.test(t) || /^\d+'$/.test(t));
+    })), null);
 
   /* THE IMPERIAL AND RANDOM-WIDTH DOCUMENTS MUST STAY REACHABLE. They are off the
    * default screen now, which is a real cost, so the escape hatch is pinned rather

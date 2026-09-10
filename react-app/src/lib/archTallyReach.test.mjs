@@ -43,7 +43,7 @@
  * change is the assertion - every lot a trader can click draws a width grid.
  */
 import { demoTallyProps, demoTallyForLot } from './archTallyFixtures.ts';
-import { toWidthDistribution, toLengthDistribution } from './archTally.ts';
+import { toWidthDistribution, toLengthDistribution, toLengthWidthGrid } from './archTally.ts';
 import { lengthDisplayRow } from './archTallyLength.ts';
 
 let fail = 0;
@@ -132,6 +132,50 @@ const REAL_ARCH_LOTS = [
   }
   ok('no length cell on any real lot prints a fractional foot', badLengths.length === 0,
     badLengths.slice(0, 6));
+
+  /* ── THE TWO-AXIS GRID, added 2026-09-10 with TALLY_ZEBRANO ─────────────────
+   * Feedback 3: "regarde pour le rtally detail (la matrice) si possible d'utiliser ce
+   * format?". The grid is what answers it, and this is the same reachability question
+   * the width table needed on 2026-09-08: built is not the same as visible.
+   *
+   * Before TALLY_ZEBRANO entered the rotation this was 0 of 67, because every document
+   * we held had one length per bundle and `toLengthWidthGrid` correctly returns null
+   * for those.
+   *
+   * 🔴 IT IS 32 OF 67, NOT 67 OF 67, AND THAT IS HONEST RATHER THAN BROKEN. 44 of the
+   * 67 lots hash to the Zebrano document, but 12 of those land on one of its
+   * single-length bundles (5, 6, 7, 8, 10...), which genuinely have one length and so
+   * correctly draw the 1-D width table instead. Raising the number would mean biasing
+   * DEMO_PICKS toward multi-length bundles the way it is already biased toward
+   * multi-width ones - a deliberate choice about what the client sees, recorded as an
+   * open question for Andrei rather than made here. What must NOT regress is that the
+   * count is greater than zero and every lot still draws SOMETHING. */
+  const grids = seen.filter((s) => toLengthWidthGrid(s.p.bundle));
+  ok('the two-axis grid is reachable at all, which it was not before 2026-09-10',
+    grids.length > 0, grids.length);
+  ok('  ...on 32 of the 67 real lots, the rest correctly drawing the 1-D table',
+    grids.length === 32, { grids: grids.length, of: seen.length });
+
+  /* A grid must never be drawn for a bundle that is really one length. That is the bug
+   * the adversarial review found on 2026-09-10: the gate counted raw matrix rows, so a
+   * bundle reporting one length on two lines got a spurious 1-row grid. */
+  const oneRowGrids = grids.filter((s) => toLengthWidthGrid(s.p.bundle).rows.length < 2)
+    .map((s) => s.lot);
+  ok('no lot draws a single-row grid, which would mean the old table was skipped wrongly',
+    oneRowGrids.length === 0, oneRowGrids);
+
+  /* Every grid cell must be a width the document itself declared. The same review found
+   * the grid promoting an undeclared key to its own column, which would show a stray
+   * parser artefact as a real measurement. */
+  const strayCols = [];
+  for (const s of grids) {
+    const declared = s.p.bundle.matrix?.widthsIn || [];
+    for (const w of toLengthWidthGrid(s.p.bundle).widths) {
+      if (!declared.includes(w)) strayCols.push([s.lot, w]);
+    }
+  }
+  ok('every grid column is a width the document declared', strayCols.length === 0,
+    strayCols.slice(0, 6));
 
   if (!had) delete g.window;
 }

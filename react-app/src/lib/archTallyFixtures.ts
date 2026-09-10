@@ -45,6 +45,7 @@
 import type { TallyPayload, TallyBundle } from '@/lib/archTally';
 import { siblingsOf, toWidthDistribution } from '@/lib/archTally';
 import { TALLY_DETAIL_PL } from '@/lib/archTallyDetailPL';
+import { TALLY_ZEBRANO } from '@/lib/archTallyZebrano';
 
 /** Packing List  030_2025 - PO 314307.pdf — 14 bundles, hand-verified, width printed */
 export const TALLY_314307: TallyPayload = {
@@ -1264,10 +1265,11 @@ export interface DemoTally {
  * when lots carry a real tally link.
  */
 /** Every fixture document the demo may draw on, in a fixed order so picks are stable. */
-const ALL_DEMO_DOCS: TallyPayload[] = [TALLY_DETAIL_PL, TALLY_314307, TALLY_CHECHEN];
+const ALL_DEMO_DOCS: TallyPayload[] = [TALLY_ZEBRANO, TALLY_DETAIL_PL, TALLY_314307, TALLY_CHECHEN];
 
 /** Askable by name from the browser console. See demoTallyProps. */
 const DEMO_DOC_BY_KEY: Record<string, TallyPayload> = {
+  zebrano: TALLY_ZEBRANO,
   'detail-pl': TALLY_DETAIL_PL,
   '314307': TALLY_314307,
   chechen: TALLY_CHECHEN,

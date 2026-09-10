@@ -55,8 +55,33 @@
 /** Feet to millimetres. The international foot, exactly 304.8mm. */
 const MM_PER_FT = 304.8;
 
-/** See the header: 100 and not 10, because 12.5' is exactly 3810mm. */
-const METRIC_STEP_MM = 100;
+/**
+ * See the header: NOT 10, because 12.5' is exactly 3810mm.
+ *
+ * ⚠️ WIDENED FROM 100 TO 50 on 2026-09-10, and the reason is a real document.
+ * `pl inv 01368.xlsx` and `pl inv 05513.xlsx` (Zebrano, FAS) state their lengths on a
+ * FIFTY-millimetre grid: 2250, 2300, 2350, 2400, 2450, 2500, 2550, 2600, 2650. At a
+ * 100mm step the odd ones do not round-trip, so five of those nine printed as
+ * `7.382'` / `7.71'` / `8.038'` / `8.366'` / `8.694'` - the exact unreadable
+ * fractional-foot output this whole file exists to prevent, and the thing
+ * `archTallyReach.test.mjs` asserts against.
+ *
+ * MEASURED before changing it, sweeping every 1/16-foot value from 1' to 40' for
+ * imperial lengths wrongly read as metric, and every grid length 300-12000mm for
+ * failures to round-trip:
+ *
+ *   step   false-metric imperial   grid lengths failing round-trip
+ *   100mm  1  (2.625' only)        0
+ *    50mm  1  (2.625' only)        0
+ *    25mm  7                       0
+ *    10mm  17 (incl. 12.5')        0
+ *
+ * So 50mm is FREE: identical soundness to 100mm, the same single documented exception
+ * (2.625' = 2'7 1/2" = 800.1mm, read as 800mm, 0.1mm out and not a length any packing
+ * list prints), and it covers the real 50mm grid. 25mm and 10mm are where the rule
+ * genuinely degrades, 10mm exactly as the header always said.
+ */
+const METRIC_STEP_MM = 50;
 
 /**
  * The decimal places `lengthFt` is stored to across every payload and fixture. The

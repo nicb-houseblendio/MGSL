@@ -69,8 +69,15 @@
  *     because the width equality in sameItem() is what stopped a measured bug
  *     where a Sapele lot rendered 350 pieces against a real 50.
  *
- * Multi-row bundles and length ranges are still handled below because the schema
- * permits them, though no document we hold uses either.
+ * Multi-row bundles and length ranges are handled below because the schema permits
+ * them.
+ *
+ * ⚠️ CORRECTED 2026-09-10: this used to say "though no document we hold uses either".
+ * We now hold two that use multi-row bundles for real - `pl inv 01368.xlsx` and
+ * `pl inv 05513.xlsx` (Zebrano, FAS grade) - where a single bundle number repeats
+ * across many rows, each its own length, each with its own width spread. One bundle
+ * in `05513` spans 15 distinct lengths. Length RANGES are separately confirmed in
+ * `Receiving Report 316144.xlsx` (4 of 24 bundles logged as e.g. "11 - 12").
  *
  * CHECHEN prints "Anchos: RW" (random width), so a width-less bundle is a first
  * class case and not an error. Its header also says "Largos: RL", but the ground
@@ -133,7 +140,16 @@ export interface TallyBundle {
   width?: { raw: string | null; inches: number | null } | null;
   /** Why width is absent. NEVER infer this from `width` being null. */
   widthPolicy?: WidthPolicy;
-  /** The bundle's single length, when it has one. Every real bundle so far does. */
+  /**
+   * The bundle's single length, when it has one.
+   *
+   * ⚠️ CORRECTED 2026-09-10. This used to say "every real bundle so far does".
+   * `pl inv 01368.xlsx` and `pl inv 05513.xlsx` (Zebrano, FAS grade) are real supplier
+   * documents where the SAME bundle number repeats across many rows at different
+   * lengths - one bundle in `05513` spans 15 distinct lengths. For those, this field
+   * is null and the lengths live in `matrix.rows[]` instead, which is exactly what
+   * that field exists for. See `bundleRows()` below, which already handles this.
+   */
   lengthFt?: number | null;
   /** NetSuite lot, when the document could be tied to one. Null before matching. */
   lot: string | null;
@@ -604,6 +620,179 @@ export const toWidthDistribution = (bundle: TallyBundle | null | undefined): Tal
     // only row would be `unstated`, and widthNote() already explains that in a sentence.
     degenerate: byWidth.size === 0 || (byWidth.size === 1 && unattributed === 0),
     footsToTotal: stated == null ? false : attributed + unattributed === stated,
+  };
+};
+
+/* ── THE THIRD GRAIN: length AND width, within one bundle ─────────────────────── */
+
+/** One length row of a two-axis grid. */
+export interface TallyGridRow {
+  label: string;
+  sortKey: number;
+  /** width (as a string key, matching `TallyGrid.widths`) -> piece count. Absent key = 0. */
+  cells: Record<string, number>;
+  /** Pieces this row placed under no declared width (random-width / parser-unattributed). */
+  unattributed: number;
+  /** cells + unattributed. */
+  pieces: number;
+  /** Only when the document declared board feet for this specific row. */
+  boardFeet: number | null;
+}
+
+export interface TallyGrid {
+  widths: number[];
+  widthUnit: 'in' | 'mm';
+  rows: TallyGridRow[];
+  /** width -> summed pieces down the column. */
+  columnTotals: Record<string, number>;
+  columnUnattributedTotal: number;
+  totals: { pieces: number; boardFeet: number | null; volumeM3: number | null };
+  /** False means the grid's own cells do not sum to the bundle's stated totals.pieces.
+   * Same rule as `TallyWidthDistribution.footsToTotal`: a view must not draw a Total
+   * when this is false, only "Shown". */
+  footsToTotal: boolean;
+}
+
+/**
+ * The bundle's OWN length x width matrix, pivoted for a grid render.
+ *
+ * ── WHY THIS EXISTS, ADDED 2026-09-10 ─────────────────────────────────────────
+ * `toLengthDistribution` and `toWidthDistribution` above are complementary 1-D views
+ * because, per the file header, no document we held span both axes in one bundle. That
+ * is no longer true. `pl inv 01368.xlsx` and `pl inv 05513.xlsx` (Zebrano, FAS grade)
+ * are real supplier documents where ONE bundle number repeats across many rows, each
+ * its own length, each with its own width spread - bundle 11 in `05513` alone spans 15
+ * lengths. Drawing that through `toWidthDistribution` alone is not wrong, but it sums
+ * every length's widths together and a trader can no longer tell which pieces sit at
+ * which length - exactly the fact Marc-Antoine's Feedback 3 mockup draws as a grid.
+ *
+ * ── WHY IT RETURNS NULL FOR EVERYTHING WE HAD BEFORE ─────────────────────────
+ * A single-length bundle (one length, any number of widths) already has a table tuned
+ * for it: `toWidthDistribution`, with its dagger-partial handling, RW caveats and the
+ * empty-column sentence. Reimplementing all of that here to draw a 1-row grid would
+ * either duplicate those rules or silently drop one. So this returns null below two
+ * DISTINCT lengths - checked AFTER merging same-length lines, not on the raw row
+ * count, because a bundle reporting one length across two lines (rows.length===2,
+ * merged.size===1) is still single-length and must fall through to the old table.
+ * Missing that distinction was a real bug, found in adversarial review 2026-09-10: see
+ * the comment at the `merged.size < 2` check below. With it, every document held
+ * before 2026-09-10 still resolves to null here, so nothing already shipped changes
+ * shape.
+ *
+ * ── WHAT IT DOES NOT DO, same reasons as `toWidthDistribution` ───────────────
+ * No derived volume, and no per-row board feet unless the document stated it for that
+ * row (`declaredBF`) - the grand total in `totals.boardFeet` still comes from the
+ * bundle's own printed figure, never summed from cells. A piece key absent from the
+ * bundle's own declared `widthsIn` is folded into `unattributed`, exactly like
+ * `toWidthDistribution` - it never becomes its own column, which would otherwise let a
+ * parser fault masquerade as a real width. `columnUnattributedTotal` carries it so it
+ * is never silently lost, only never treated as a measurement nobody made.
+ *
+ * ── ⚠️ WHAT THIS DOES NOT PROVE, ADDED AFTER ADVERSARIAL REVIEW 2026-09-10 ────
+ * This function and its render path are exercised end-to-end against REAL Zebrano
+ * data only by hand transcription and a throwaway script, not by anything `npm test`
+ * runs - `archTallyGrid.test.mjs`'s cases are synthetic bundles styled after the real
+ * shape, not the real shape itself. More importantly: the DEPLOYED capture pipeline
+ * (`MSL_LIB_PLSchema.js` in houseblend-clients, not this repo) cannot yet emit a
+ * multi-length `matrix.rows[]` for a real two-axis bundle at all - `buildLotMatrix`
+ * stores a bundle as `lengthBreakdown` XOR `widthBreakdown`, tests width first, and so
+ * drops the length axis before a payload like this ever reaches `mgsl.tally.v1`. See
+ * `docs/CWP ARCH/Documentation/todo-list.md`, sixteenth revision. As of 2026-09-10 the
+ * sandbox holds exactly one hand-seeded capture record and 0 of its 14 bundles match a
+ * real NetSuite lot, so no real document can exercise this grid in production yet.
+ * This function is correct against the data it was given; it is not yet proof the
+ * screen shows a real trader a real two-axis tally.
+ */
+export const toLengthWidthGrid = (bundle: TallyBundle | null | undefined): TallyGrid | null => {
+  const rows = Array.isArray(bundle?.matrix?.rows) ? (bundle!.matrix as TallyMatrix).rows : [];
+  if (rows.length < 2) return null;
+
+  const widthUnit: 'in' | 'mm' = bundle?.matrix?.widthUnit === 'mm' ? 'mm' : 'in';
+  // Same gate toWidthDistribution and checkPayload use: a key not in the document's
+  // OWN declared width list is a parser fault, never a guess. Folded into
+  // `unattributed` below rather than becoming its own column - otherwise a stray key
+  // renders as a normal, fully-totalled column here while the length table above,
+  // driven by the SAME checkPayload, correctly shows a red "cannot total" banner for
+  // the identical bundle. Measured 2026-09-10 in adversarial review: omitting this
+  // check let a key absent from widthsIn become a real grid column.
+  const declared = Array.isArray(bundle?.matrix?.widthsIn) ? (bundle!.matrix as TallyMatrix).widthsIn : [];
+
+  // Merge same-length lines first, exactly as bundleRows() does for the length view:
+  // two lines at the SAME length are one grid row, not two.
+  interface Acc {
+    label: string; sortKey: number; cells: Map<number, number>; unattributed: number;
+    declaredBF: number | null; bfLines: number; lines: number;
+  }
+  const merged = new Map<string, Acc>();
+  for (const r of rows) {
+    const label = rowLabel(r);
+    let m = merged.get(label);
+    if (!m) {
+      m = { label, sortKey: rowSortKey(r), cells: new Map(), unattributed: 0, declaredBF: null, bfLines: 0, lines: 0 };
+      merged.set(label, m);
+    }
+    m.lines += 1;
+    for (const [k, v] of Object.entries(r?.pieces || {})) {
+      const n = Number(v) || 0;
+      if (!n) continue;
+      const w = isRandomWidthKey(k) ? NaN : Number(k);
+      if (!Number.isFinite(w) || !declared.includes(w)) { m.unattributed += n; continue; }
+      m.cells.set(w, (m.cells.get(w) || 0) + n);
+    }
+    if (r.declaredBF != null) { m.declaredBF = (m.declaredBF || 0) + r.declaredBF; m.bfLines += 1; }
+  }
+
+  // 🔴 THE GATE ABOVE (rows.length < 2) IS RAW LINES, NOT DISTINCT LENGTHS. A bundle
+  // whose matrix reports the SAME length on two separate lines - the exact "length
+  // reported twice" shape bundleRows() was fixed for on 2026-09-07, see
+  // archTally.test.mjs's "duplicate length lines collapse to ONE row" - has
+  // rows.length===2 but merges to ONE grid row here. Left un-checked, that single-
+  // length bundle would render through this brand-new grid instead of the existing,
+  // proven toWidthDistribution table, breaking the "nothing that rendered before
+  // today changes" guarantee this function exists to preserve. Found in adversarial
+  // review 2026-09-10 by reproducing the exact archTally.test.mjs "dup" bundle.
+  if (merged.size < 2) return null;
+
+  const widthSet = new Set<number>();
+  for (const m of merged.values()) for (const w of m.cells.keys()) widthSet.add(w);
+  const widths = [...widthSet].sort((a, b) => a - b);
+
+  const gridRows: TallyGridRow[] = [...merged.values()]
+    .sort((a, b) => a.sortKey - b.sortKey || a.label.localeCompare(b.label))
+    .map((m) => {
+      const cells: Record<string, number> = {};
+      let pieces = m.unattributed;
+      for (const [w, n] of m.cells) { cells[String(w)] = n; pieces += n; }
+      return {
+        label: m.label, sortKey: m.sortKey, cells, unattributed: m.unattributed, pieces,
+        boardFeet: m.declaredBF != null && m.bfLines === m.lines ? m.declaredBF : null,
+      };
+    });
+
+  const columnTotals: Record<string, number> = {};
+  for (const w of widths) columnTotals[String(w)] = 0;
+  let columnUnattributedTotal = 0;
+  let pieces = 0;
+  for (const r of gridRows) {
+    pieces += r.pieces;
+    columnUnattributedTotal += r.unattributed;
+    for (const w of widths) { const k = String(w); columnTotals[k] += r.cells[k] || 0; }
+  }
+
+  const stated = bundle?.totals?.pieces ?? null;
+
+  return {
+    widths,
+    widthUnit,
+    rows: gridRows,
+    columnTotals,
+    columnUnattributedTotal,
+    totals: {
+      pieces,
+      boardFeet: bundle?.totals?.boardFeet ?? null,
+      volumeM3: bundle?.totals?.volumeM3 ?? null,
+    },
+    footsToTotal: stated == null ? true : pieces === stated,
   };
 };
 

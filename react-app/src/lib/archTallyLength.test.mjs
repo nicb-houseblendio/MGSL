@@ -52,6 +52,27 @@ const ok = (name, cond, got) => {
   }
   ok('all 118 metric lengths from 300mm to 12000mm round-trip', missed.length === 0, missed.slice(0, 8));
 
+  // ── THE 50mm GRID, added 2026-09-10 with the step change ────────────────────
+  // `pl inv 01368.xlsx` / `pl inv 05513.xlsx` (Zebrano, FAS) print lengths on a FIFTY-
+  // millimetre grid. At the old 100mm step the odd ones did not round-trip and printed
+  // as 7.382' / 7.71' / 8.038' / 8.366' / 8.694', which is exactly the unreadable
+  // output this file exists to prevent and what archTallyReach.test.mjs forbids.
+  const missed50 = [];
+  for (let mm = 300; mm <= 12000; mm += 50) {
+    const ft = Number((mm / 304.8).toFixed(3));
+    if (metricMmFromFeet(ft) !== mm) missed50.push([mm, ft, metricMmFromFeet(ft)]);
+  }
+  ok('every 50mm-grid length from 300mm to 12000mm round-trips', missed50.length === 0, missed50.slice(0, 8));
+
+  // The nine real lengths of Zebrano bundle 11, which is why the step moved.
+  const zebrano = [2250, 2300, 2350, 2400, 2450, 2500, 2550, 2600, 2650];
+  const zLeaked = zebrano.filter((mm) => {
+    const ft = Number((mm / 304.8).toFixed(3));
+    return lengthDisplayFt(ft).text !== `${mm}mm`;
+  });
+  ok('all nine real Zebrano lengths print as whole millimetres, none as a fractional foot',
+    zLeaked.length === 0, zLeaked);
+
   // 🔴 THE ALARM FOR A CHANGE OF STORED PRECISION. At 2 dp a foot figure no longer
   // pins the millimetre, and the round trip silently stops recognising anything.
   const at2dp = [];
@@ -92,9 +113,26 @@ const ok = (name, cond, got) => {
   ok('half-, quarter- and eighth-foot imperial lengths are not read as metric', fLeaked.length === 0, fLeaked);
   ok('  ...and print exactly as archTally.ts would have printed them',
     fractional.every((ft) => lengthDisplayFt(ft).text === `${ft}'` && lengthDisplayFt(ft).gloss === ''), null);
-  // 12.5' is EXACTLY 3810mm, which is why the step is 100mm and not 10mm.
-  ok("12.5' is exactly 3810mm and is still refused, by the 100mm step",
+  // 12.5' is EXACTLY 3810mm, which is why the step is not 10mm. It stays refused at
+  // 50mm too (3810/50 = 76.2, not a whole number of steps), which is what made
+  // widening the step from 100mm to 50mm free. See METRIC_STEP_MM's measured table.
+  ok("12.5' is exactly 3810mm and is still refused at the 50mm step",
     12.5 * 304.8 === 3810 && metricMmFromFeet(12.5) === null, null);
+
+  // 🔴 THE SOUNDNESS SWEEP THE STEP CHANGE RESTS ON, pinned so a future widening to
+  // 25mm or 10mm fails here rather than in front of a trader. Measured 2026-09-10:
+  // 100mm and 50mm both leak exactly ONE imperial value (2.625'); 25mm leaks 7 and
+  // 10mm leaks 17, including 12.5' above.
+  const sweepLeaked = [];
+  for (let n = 16; n <= 40 * 16; n++) {
+    const ft = Number((n / 16).toFixed(3));
+    if (Number.isInteger(ft)) continue;
+    if (metricMmFromFeet(ft) !== null) sweepLeaked.push(ft);
+  }
+  ok('sweeping every 1/16 foot from 1\' to 40\', exactly ONE is read as metric',
+    sweepLeaked.length === 1, sweepLeaked);
+  ok('  ...and it is the documented 2.625\' (2\'7 1/2" = 800.1mm), not something new',
+    sweepLeaked[0] === 2.625, sweepLeaked);
 }
 
 // ---- the guards
