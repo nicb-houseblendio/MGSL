@@ -2679,7 +2679,70 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         };
     };
 
-    const sendOrderPdf = (soId, tranId, creatorId, appending) => {
+    /**
+     * The facts for the email, read from the SAVED order.
+     *
+     * Not passed in and not recomputed. The body claims to describe what NetSuite
+     * holds, so it reads what NetSuite holds; anything assembled from the request
+     * could differ from the document by the time it is sent. `BUILTIN.DF` is used 40
+     * times in deployed SuiteScript here, so the dialect is proven.
+     *
+     * Returns null on any failure, and the caller then sends the plain body. An
+     * email that is a little bare is fine; one carrying a figure that disagrees with
+     * the order is not.
+     */
+    const orderSummary = (soId) => {
+        try {
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT BUILTIN.DF(t.entity)               AS customer, ' +
+                    '       BUILTIN.DF(t.custbody_incoterms)   AS incoterms, ' +
+                    '       t.shipdate                         AS shipdate, ' +
+                    '       t.foreigntotal                     AS total, ' +
+                    '       c.symbol                           AS iso ' +
+                    'FROM transaction t ' +
+                    '  LEFT JOIN currency c ON c.id = t.currency ' +
+                    'WHERE t.id = ?',
+                params: [soId],
+            }).asMappedResults();
+            return rows.length ? rows[0] : null;
+        } catch (e) {
+            log.audit('ARCH Order PDF',
+                'Could not read the summary for order ' + soId + ', so the email is ' +
+                'sent without it: ' + (e.message || String(e)));
+            return null;
+        }
+    };
+
+    /** A money figure with thousands separators. No currency symbol guessing. */
+    const money = (n) => {
+        const v = parseFloat(n);
+        if (!isFinite(v)) return null;
+        const fixed = v.toFixed(2);
+        const parts = fixed.split('.');
+        return parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + parts[1];
+    };
+
+    /**
+     * `label   value` rows, aligned, and a row is OMITTED when its value is unknown
+     * rather than printed as a blank or a zero. A blank line in a summary reads as
+     * "this order has none of that", which for a total would be a lie.
+     */
+    const summaryBlock = (rows) => {
+        const present = rows.filter((r) => r[1] !== null && r[1] !== undefined && r[1] !== '');
+        if (!present.length) return '';
+        let width = 0;
+        present.forEach((r) => { if (r[0].length > width) width = r[0].length; });
+        return present
+            .map((r) => {
+                let pad = r[0];
+                while (pad.length < width) pad += ' ';
+                return pad + '   ' + r[1];
+            })
+            .join('\n');
+    };
+
+    const sendOrderPdf = (soId, tranId, creatorId, appending, facts) => {
         /* READ DEFENSIVELY. `param()` already swallows a throwing getParameter and
          * returns null (a parameter missing from the DEPLOYED script object can
          * throw rather than read null). The try here is belt and braces so that
@@ -2774,20 +2837,58 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             });
             pdf.name = tranId + '.pdf';
 
+            const summary = orderSummary(soId);
+            const total = summary && money(summary.total)
+                ? (summary.iso ? summary.iso + ' ' : '') + money(summary.total)
+                : null;
+
             email.send({
                 // Author must be an employee with an email address. The creating
                 // user is one by definition — they just saved a transaction.
                 author: creatorId,
                 recipients: recipients,
-                subject: 'Sales order ' + tranId,
-                body:
-                    // Appends reach this too, and used to be told the order 'has been
-                    // created'. Say what happened.
-                    'Sales order ' + tranId + (appending ? ' has been updated' : ' has been created') +
-                    ' from the CWP ARCH trader screen.\n\n' +
-                    'The PDF is attached. Quantities and bundles on it are what NetSuite holds.\n\n' +
-                    'Reman instructions, if any were entered on the trader screen, are NOT on this ' +
-                    'order and are not in the PDF — see the note on the Review step.',
+                /* The customer is in the SUBJECT because these land in a working
+                 * inbox: two orders were otherwise indistinguishable without opening
+                 * them. Internal only, so a customer name here reaches nobody outside
+                 * MGSL. Falls back to the bare form when the summary is unreadable. */
+                subject: 'Sales order ' + tranId +
+                         (summary && summary.customer ? ' for ' + summary.customer : ''),
+                body: (function () {
+                    const lots = (facts && facts.lots ? facts.lots : [])
+                        .filter(function (x) { return x; });
+                    const block = summaryBlock([
+                        ['Customer', summary ? summary.customer : null],
+                        ['Total', total],
+                        ['Incoterms', summary ? summary.incoterms : null],
+                        ['Ship date', summary ? summary.shipdate : null],
+                        [lots.length === 1 ? 'Bundle' : 'Bundles', lots.join(', ') || null],
+                    ]);
+
+                    /* Reman is mentioned ONLY when reman was actually asked for, and
+                     * then it says which way it went. Printed unconditionally until
+                     * 2026-09-09, hedged as "if any were entered", on every order --
+                     * including the great majority that have no reman at all. The
+                     * server knows: it computes remanRequested and remanStored a few
+                     * lines from the call site. The case genuinely worth an email is
+                     * requested-but-not-stored, and that was buried under the same
+                     * sentence as everything else. */
+                    let reman = '';
+                    if (facts && facts.remanRequested) {
+                        reman = facts.remanStored
+                            ? '\n\nReman instructions were entered and are stored on the order ' +
+                              'lines. They are NOT part of the printed PDF.'
+                            : '\n\nReman instructions were entered but did NOT reach the order. ' +
+                              'They are not on the lines and not in the PDF, so they need ' +
+                              'entering by hand.';
+                    }
+
+                    return 'Sales order ' + tranId +
+                           (appending ? ' has been updated' : ' has been created') +
+                           ' from the CWP ARCH trader screen.' +
+                           (block ? '\n\n' + block : '') +
+                           '\n\nThe PDF is attached and shows what NetSuite holds.' +
+                           reman;
+                }()),
                 attachments: [pdf],
             });
 
@@ -3489,7 +3590,14 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
              * honest answer is the order itself. */
             if (appending) rateSource = 'order';
         }
-        const pdfMail = sendOrderPdf(soId, tranId, currentUserId(), appending);
+        /* The lots and the reman outcome are known HERE and nowhere else, so they
+         * are passed rather than re-derived. Everything else in the email is read
+         * back off the saved order. */
+        const pdfMail = sendOrderPdf(soId, tranId, currentUserId(), appending, {
+            lots: resolved.lines.map(function (l) { return l.lotName; }),
+            remanRequested: wantsReman,
+            remanStored: wantsReman && remanOk && lineWrites.every(function (w) { return w.reman; }),
+        });
 
         return {
             ok: true,
