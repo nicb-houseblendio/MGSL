@@ -627,5 +627,34 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /\{isLoading && orders\.length === 0 \? \(/.test(view), false);
 }
 
+// Stock the screen cannot show must be said out loud on the screen, not only in the
+// MR's audit log. Added 2026-09-10 after Marc-Antoine added bundles in sandbox, saw
+// the grid unchanged, and asked whether he had to trigger something. He did not: his
+// lots were on items with no Hardwood segment, and the only place that fact appeared
+// was an hourly execution log no trader reads.
+{
+  const s = src('components/ArchScreen.tsx');
+  const mr = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js');
+
+  ok('the MR carries the untagged count into META, or the screen can never say it',
+    /untaggedItemCount:\s*untaggedItems\.length/.test(mr), null);
+  ok('  ...at BOTH META write sites, so the shrink-guard path does not blank it',
+    (mr.match(/untaggedItemCount:/g) || []).length === 2,
+    (mr.match(/untaggedItemCount:/g) || []).length);
+
+  ok('the screen reads it', /meta\?\.untaggedItemCount/.test(s), null);
+  const flat = s.replace(/\s+/g, ' ');
+  ok('  ...and renders a VISIBLE notice, not only a tooltip title',
+    /role="status"/.test(s) && /are not on this screen/.test(flat), null);
+  ok('  ...telling him nothing needs triggering, which was his actual question',
+    /nothing needs triggering/.test(flat), null);
+  ok('  ...and naming what to do about it',
+    /confirm it is not hardwood/.test(flat), null);
+
+  // It must NOT fire on demo data, where the count would read as a live account fault.
+  ok('the notice is gated on live NetSuite data',
+    /source === 'netsuite' && !!meta\?\.untaggedItemCount/.test(s), null);
+}
+
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');
 process.exit(fail ? 1 : 0);

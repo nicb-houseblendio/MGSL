@@ -359,6 +359,45 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
         </div>
       )}
 
+      {/* 🔴 STOCK THE SCREEN CANNOT SHOW, said out loud.
+        *
+        * Added 2026-09-10 in answer to Marc-Antoine: he added bundles in sandbox the
+        * previous day, saw the grid unchanged the next morning, and asked whether he
+        * needed to trigger something manually. He did not. The cache had rebuilt on
+        * the hour and his lots were on items with no Hardwood segment, so no query in
+        * the chain could see them. The cache MR had been listing those exact item ids
+        * in its audit log hourly, which is not a place a trader looks.
+        *
+        * A tooltip on the "Live" badge would not have answered him either, because
+        * the symptom is the ABSENCE of a change - there is nothing to hover. So this
+        * is a standing notice, on the inventory tab only, whenever the count is
+        * non-zero. It is deliberately not dismissible: the condition is real until
+        * somebody tags the items or confirms they are not hardwood, and it is the
+        * difference between "the screen is broken" and "the data is not tagged".
+        *
+        * `source === 'netsuite'` gates it because on demo data the count is
+        * meaningless and would read as a live account problem. */}
+      {tab === 'inventory' && source === 'netsuite' && !!meta?.untaggedItemCount && (
+        <div className="px-4 pt-2 flex-shrink-0">
+          <p
+            className="text-[12px] px-3 py-2 rounded leading-relaxed"
+            style={{ background: 'rgba(200,160,53,0.12)', color: '#7A5B00', border: '1px solid rgba(200,160,53,0.45)' }}
+            role="status"
+          >
+            <strong>{meta.untaggedItemCount} item{meta.untaggedItemCount === 1 ? '' : 's'} with stock are not on this
+            screen</strong>, because they carry no Hardwood segment. If you have just added bundles and nothing changed
+            here, this is almost certainly why, and nothing needs triggering: the cache rebuilds hourly on its own.
+            {meta.untaggedItemSample?.length
+              ? <> For example <span className="font-mono">{meta.untaggedItemSample.join(', ')}</span>
+                {meta.untaggedItemCount > meta.untaggedItemSample.length
+                  ? ' and ' + (meta.untaggedItemCount - meta.untaggedItemSample.length) + ' more'
+                  : ''}.</>
+              : null}
+            {' '}Set <span className="font-mono">Hardwood</span> on the item, or confirm it is not hardwood.
+          </p>
+        </div>
+      )}
+
       <main className="flex-1 flex flex-col px-4 pt-3 pb-2 min-h-0 overflow-auto">
         {tab === 'orders' ? (
           <ArchOpenOrdersView onEditOrder={handleEditOrder} />

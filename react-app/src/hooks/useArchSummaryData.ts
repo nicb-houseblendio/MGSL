@@ -153,6 +153,21 @@ export interface ArchCacheMeta {
   bucketsEmpty?: string[];
   /** >0 means On Hand is LOW: lots exist that could not be converted. */
   skippedLotCount?: number;
+  /**
+   * >0 means stock EXISTS in the account that this screen cannot show, because
+   * nobody has set the Hardwood segment on its item.
+   *
+   * 🔴 THIS IS THE ANSWER TO A REAL CLIENT QUESTION, so it must stay visible on the
+   * screen rather than only in a tooltip. Marc-Antoine added bundles in sandbox on
+   * 2026-09-09 and asked the next morning why the screen had not changed and whether
+   * he needed to trigger something. He did not: the cache had rebuilt on the hour,
+   * exactly as designed, and his lots were on three items (CAN44KD, CAN84KD,
+   * SAP44FCKD) that carry no Hardwood segment. The MR had been naming those items in
+   * its own audit log every hour and nothing surfaced it where he would look.
+   */
+  untaggedItemCount?: number;
+  /** A few of those item ids, for the notice. The full list is in the MR audit log. */
+  untaggedItemSample?: string[];
   /** True means the last run REFUSED to update; these are the previous rows. */
   shrinkGuard?: boolean;
   shrinkGuardRefused?: number;
