@@ -61,6 +61,33 @@
       <setting></setting>
       <storevalue>T</storevalue>
     </scriptcustomfield>
+    <scriptcustomfield scriptid="custscript_ts_mtl_export_cache">
+      <accesslevel>2</accesslevel>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>When checked, reduce logs a timestamped per-(PO,ppp) availability audit per (item, location) (title "MTL CACHE EXPORT" / "MTL CACHE EXPORT MISMATCH") so the whole cache can be validated at large from the execution log. Turn off after grabbing the export.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>CHECKBOX</fieldtype>
+      <help>Diagnostic toggle. On each run it audits available == onHand - (committed + outbound) per PO group and flags mismatches. Export the execution log to CSV and filter the title for "MISMATCH".</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>Export Cache Audit</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
     <scriptcustomfield scriptid="custscript_ts_mtl_delta_threshold">
       <accesslevel>2</accesslevel>
       <applyformatting>T</applyformatting>
@@ -122,6 +149,7 @@
       <concurrencylimit>1</concurrencylimit>
       <custscript_ts_mtl_subsidiary_id>5</custscript_ts_mtl_subsidiary_id>
       <custscript_ts_mtl_force_full_rebuild>F</custscript_ts_mtl_force_full_rebuild>
+      <custscript_ts_mtl_export_cache>F</custscript_ts_mtl_export_cache>
       <custscript_ts_mtl_delta_threshold>500</custscript_ts_mtl_delta_threshold>
       <!-- custscript_ts_mtl_usd_book_id intentionally omitted from the
            deployment override so each environment keeps its own value
