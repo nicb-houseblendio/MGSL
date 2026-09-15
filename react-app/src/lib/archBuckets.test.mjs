@@ -164,16 +164,18 @@ const row = (o) => ({
     /sales-order line/i.test(bucketGapReason('reserve') || ''), bucketGapReason('reserve'));
 }
 
-/* ══ 9. READY TO BUILD HAS NO SOURCE, and the screen has to say so ════════════
- * `readyToBuild` is a hardcoded literal 0 in the cache (no NetSuite field feeds
- * it) and `action=meta` reports it under bucketsEmpty. A column that can never
- * be anything but 0 must not read as a measured zero.
+/* ══ 9. notSourcedNote is neutered, 2026-09-10 ════════════════════════════════
+ * `readyToBuild` stopped being permanently unsourced: it now reads from
+ * `custbody_arch_ready_to_build` where that field exists, via the cache MR's
+ * own isolated query (see archUiGuards.test.mjs for the server-side pins).
+ * This function cannot see live META from here, so it can no longer assert
+ * "no field yet" without risking a stale claim — `App.tsx` already renders
+ * that fact from `action=meta`'s `bucketsEmpty` as a standing banner, which is
+ * the one place it can actually go stale-proof. See lib/archBuckets.ts.
  */
 {
-  const note = notSourcedNote('readyToBuild');
-  ok('readyToBuild: carries a not-sourced note', typeof note === 'string' && note.length > 0, note);
-  ok('readyToBuild: the note says where sold stock actually sits',
-    /reserved/i.test(note || ''), note);
+  ok('readyToBuild: no longer carries a hardcoded not-sourced note',
+    notSourcedNote('readyToBuild') === null, notSourcedNote('readyToBuild'));
   ok('onHand: has no not-sourced note', notSourcedNote('onHand') === null, notSourcedNote('onHand'));
   ok('reserve: has no not-sourced note', notSourcedNote('reserve') === null, notSourcedNote('reserve'));
   ok('available: has no not-sourced note', notSourcedNote('available') === null, notSourcedNote('available'));

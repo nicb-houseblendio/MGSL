@@ -67,6 +67,25 @@ export interface ArchOrderResult {
   assignmentMismatches?: string[];
   /** Set when the order landed on a form that cannot carry a lot. */
   formWarning?: string | null;
+  /**
+   * Whether a Sales Team was actually written to the sublist.
+   *
+   * 🔴 THESE EXIST BECAUSE THE RESPONSE COULD NOT SAY. Until 2026-09-14 a team
+   * that was silently ignored and a team that was written cleanly gave the
+   * IDENTICAL answer: `salesTeamReplaced: false` with an empty `salesTeamPrevious`.
+   * The client latch (`MCGI_CONFIG.salesTeamWriteEnabled`) and the endpoint's own
+   * parameter sit on two DIFFERENT script deployments and can disagree, and when
+   * they do the trader is shown "the team will be written", gets a success, and no
+   * commission is attributed. A control that looks like it sets something and does
+   * not is the defect this screen keeps being corrected for.
+   */
+  salesTeamWritten?: boolean;
+  /** Non-null with `salesTeamWritten` false: understood, accepted, not written. */
+  salesTeamIgnoredReason?: string | null;
+  /** Employee ids the order carried BEFORE an append reattributed commission. */
+  salesTeamPrevious?: string[];
+  /** True when an append replaced a split that was already on the order. */
+  salesTeamReplaced?: boolean;
   /** Per-line problems from a refusal, so the wizard can show all of them. */
   problems?: string[];
   /** True when any line asked for planing or cutting. */
@@ -156,6 +175,28 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
      * while the switch is off.
      */
     salesTeamId: salesTeamWriteEnabled() ? draft.header.salesTeamId || undefined : undefined,
+    /* THE MEMBERS TRAVEL WITH THE ID, added 2026-09-14.
+     *
+     * The order endpoint runs as an ACCOUNTCENTER role that cannot read
+     * `entitygroup` at all — measured four times, `Record 'entitygroup' was not
+     * found`, unchanged by granting it LIST_CRMGROUP. So it can no longer look the
+     * team up; it validates what we send against `employee`, which it CAN read.
+     *
+     * ⚠️ `contribution`, the FRACTION (0.5), never `contributionPct` (50). The
+     * server refuses anything above 1 outright rather than guessing, because the
+     * two differ by 50x on a commission split. Both live on the same object, which
+     * is exactly why the refusal exists.
+     *
+     * Gated by the same latch as the id, and for the same reason: this is the last
+     * point before the bytes leave. */
+    salesTeamMembers: salesTeamWriteEnabled() && draft.header.salesTeamId
+      ? (draft.header.salesTeamMembers || []).map((m) => ({
+          id: m.id,
+          name: m.name,
+          contribution: m.contribution,
+        }))
+      : undefined,
+    salesTeamName: salesTeamWriteEnabled() ? draft.header.salesTeamName || undefined : undefined,
     customerPO: draft.header.customerPO || undefined,
     incoterms: draft.header.incoterms || undefined,
     // The ID is what the server prefers; the text stays for an older script.
@@ -594,4 +635,118 @@ export const orderOutcome = (result: ArchOrderResult | null | undefined, submitt
     title: 'NetSuite refused this order — nothing was written',
     cartReason: `Refused by NetSuite: ${result.error || 'no reason given'} Your selection is intact.`,
   };
+};
+
+/**
+ * Ticks or unticks Ready to Build on an EXISTING, already-saved order from the
+ * Open Sales Orders tab.
+ *
+ * Deliberately its own small result type rather than reusing `ArchOrderResult`:
+ * that type's fields (`splitStored`, `remanStored`, `lotsNotAttributed`, …) are
+ * about ORDER CREATION and every one of them would be meaningless noise on a
+ * response that only ever changes one checkbox.
+ *
+ * Same transport contract as `submit`: a Suitelet answers 200 to everything,
+ * so branch on the payload and never on `r.status`, and a dropped fetch does
+ * NOT mean the write failed — `transportFailure` says so rather than guessing.
+ */
+export interface ReadyToBuildResult {
+  ok: boolean;
+  error?: string;
+  /**
+   * `NOT_STORED` is this file's own, not the server's: NetSuite accepted the
+   * save and then read back a different value. See the check below.
+   */
+  code?: 'REFUSED' | 'FAILED' | 'NOT_STORED' | string;
+  readyToBuild?: boolean;
+  /** The server re-read the saved record rather than trusting its own write. */
+  verified?: boolean;
+  /**
+   * Whether that re-read MATCHED what was asked for.
+   *
+   * `verified: true` with this `false` is the one outcome that looks exactly
+   * like success and is not — and it was being dropped on the floor here until
+   * 2026-09-13, which made the server's whole trust-but-verify step decorative.
+   * Absent (an older Suitelet that does not send it) is NOT false: no claim.
+   */
+  verifiedMatches?: boolean;
+  transportFailure?: boolean;
+}
+
+export const setReadyToBuild = async (
+  soId: string | number,
+  value: boolean,
+): Promise<ReadyToBuildResult> => {
+  const url = endpointUrl();
+  if (!url) {
+    return { ok: false, error: 'This screen is not connected to NetSuite, so nothing was written.' };
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const ctrl = new AbortController();
+    // 30s, not SUBMIT_TIMEOUT_MS: this writes one checkbox on a record that
+    // already exists, none of the multi-minute lot-assignment work `submit`
+    // has to wait out.
+    timer = setTimeout(() => ctrl.abort(), 30_000);
+    const r = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'setReadyToBuild', soId, value }),
+      signal: ctrl.signal,
+    });
+    const body = (await r.json()) as {
+      ok?: boolean; error?: string; code?: string; readyToBuild?: boolean;
+      verified?: boolean; verifiedMatches?: boolean;
+    };
+    if (!body || body.ok !== true) {
+      return {
+        ok: false,
+        error: (body && body.error) || 'Ready to Build could not be changed.',
+        code: body && body.code,
+      };
+    }
+    /*
+     * `ok: true` from the Suitelet means the SAVE did not throw. The server then
+     * re-reads the record, and this is where that answer is acted on: a value
+     * NetSuite stored as something other than what was asked for is a failure,
+     * however cleanly the save returned.
+     *
+     * `=== false` and not `!== true` deliberately. An older deployed Suitelet
+     * that sends no `verifiedMatches` would otherwise have every successful tick
+     * reported as a failure — the bundle and the Suitelet deploy separately, so
+     * that is a real ordering, not a hypothetical.
+     */
+    if (body.verified === true && body.verifiedMatches === false) {
+      return {
+        ok: false,
+        code: 'NOT_STORED',
+        readyToBuild: body.readyToBuild,
+        verified: true,
+        verifiedMatches: false,
+        error:
+          `NetSuite accepted the save but Ready to Build did not stick — reading the order back, ` +
+          `it is still ${value ? 'unticked' : 'ticked'}. Open SO ${soId} in NetSuite before acting on it.`,
+      };
+    }
+    return {
+      ok: true,
+      readyToBuild: body.readyToBuild,
+      verified: body.verified,
+      verifiedMatches: body.verifiedMatches,
+    };
+  } catch (e) {
+    const timedOut = e instanceof Error && e.name === 'AbortError';
+    return {
+      ok: false,
+      transportFailure: true,
+      error: timedOut
+        ? 'NetSuite did not answer within 30 seconds. Reload the tab before retrying — the tick may or may not have landed.'
+        : e instanceof Error
+          ? e.message
+          : 'NetSuite could not be reached.',
+    };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 };

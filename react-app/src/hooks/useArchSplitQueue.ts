@@ -30,6 +30,25 @@ export interface ArchSplitQueueState {
   error: string | null;
   /** Split-flagged lines with no lot assigned. They cannot be worked as-is. */
   lotMissingCount: number;
+  /**
+   * Orders with a pending split that the server held back because the SO is
+   * not (yet, or verifiably) Ready to Build. Per Marc-Antoine (Feedback 5,
+   * 2026-09-10): the warehouse should not see a split until the order is
+   * actually ready, not the moment a trader ticks the split box mid-edit.
+   */
+  notReadyToBuildCount: number;
+  /**
+   * False when the server could not even evaluate the Ready to Build gate, so
+   * EVERY pending split reads as held back. Lets the screen say "Ready to Build
+   * isn't set up yet" instead of implying zero real work is waiting.
+   *
+   * 🔴 CORRECTED 2026-09-14. This used to assert the field "does not exist in
+   * this account yet". It does: `custbody_arch_ready_to_build` is id 14083 and is
+   * in use in the sandbox. The flag still earns its place, because production has
+   * never had the field and the gate fails closed, but it should no longer be read
+   * as "this feature is unbuilt".
+   */
+  readyToBuildKnown: boolean;
   reload: () => void;
   /**
    * Completes one bundle in NetSuite. Resolves to the server's own account of
@@ -83,7 +102,10 @@ interface QueueJob extends Omit<ArchSplitJob, 'bundles'> {
 interface QueueResponse {
   ok: boolean;
   jobs?: QueueJob[];
-  counts?: { orders: number; bundles: number; lotMissing: number };
+  counts?: {
+    orders: number; bundles: number; lotMissing: number;
+    notReadyToBuild?: number; readyToBuildKnown?: boolean;
+  };
   error?: string;
 }
 
@@ -102,6 +124,10 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
   const [source, setSource] = React.useState<SplitQueueSource>('loading');
   const [error, setError] = React.useState<string | null>(null);
   const [lotMissingCount, setLotMissingCount] = React.useState(0);
+  // true (not held back) while on fixtures or before the first live response —
+  // only a live answer of `false` means the field genuinely isn't set up yet.
+  const [notReadyToBuildCount, setNotReadyToBuildCount] = React.useState(0);
+  const [readyToBuildKnown, setReadyToBuildKnown] = React.useState(true);
   const [nonce, setNonce] = React.useState(0);
 
   const reload = React.useCallback(() => setNonce((n) => n + 1), []);
@@ -115,6 +141,8 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
       setSource('fixtures');
       setError(why);
       setLotMissingCount(0);
+      setNotReadyToBuildCount(0);
+      setReadyToBuildKnown(true);
     };
 
     const url = endpointUrl();
@@ -135,6 +163,8 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
         }
         setJobs((body.jobs || []) as unknown as ArchSplitJob[]);
         setLotMissingCount(body.counts?.lotMissing || 0);
+        setNotReadyToBuildCount(body.counts?.notReadyToBuild || 0);
+        setReadyToBuildKnown(body.counts?.readyToBuildKnown !== false);
         setSource('netsuite');
         setError(null);
       })
@@ -176,5 +206,8 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
     }
   }, []);
 
-  return { jobs, source, error, lotMissingCount, reload, completeBundle };
+  return {
+    jobs, source, error, lotMissingCount, notReadyToBuildCount, readyToBuildKnown,
+    reload, completeBundle,
+  };
 };

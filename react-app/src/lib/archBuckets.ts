@@ -88,17 +88,16 @@ export const bucketGapReason = (bucket: ArchDetailKey): string | null => {
 /**
  * Buckets that have no NetSuite source and therefore read 0 on every row.
  *
- * ⛔ `readyToBuild` is a hardcoded literal 0 in the ARCH cache
- * (mcgi_mr_trader_screen_cache_arch.js) because no field on the transaction
- * feeds it — every candidate `custbody_*` name was probed on 2026-08-18 and none
- * resolved. `action=meta` reports it under `bucketsEmpty`, and on 2026-09-08 the
- * live sandbox still did.
- *
- * This is the answer to Marc-Antoine's question. He expects a new order to land
- * in Ready to Build; it cannot, because the column has nothing behind it. A zero
- * that can never be anything else must not read as a measured zero.
+ * As of 2026-09-10 nothing is permanently in this state. `readyToBuild` used
+ * to be a hardcoded literal 0 with a matching note here explaining why; it is
+ * now sourced from `custbody_arch_ready_to_build` where that field exists and
+ * genuinely 0 where it does not — a zero this function can no longer tell
+ * apart from a real measured zero, because both are now possible on the same
+ * bucket. That distinction still exists, but only META knows it
+ * (`action=meta`'s `bucketsEmpty`), and `App.tsx` already renders it as a
+ * standing banner. Keeping a second, per-lot copy here risked exactly the
+ * staleness a hardcoded per-bucket claim is prone to: this file cannot see
+ * whether the field has since been created, so it would keep asserting "no
+ * field yet" long after one existed.
  */
-export const notSourcedNote = (bucket: ArchDetailKey): string | null =>
-  bucket === 'readyToBuild'
-    ? 'Ready to Build has no field in NetSuite yet, so it reads 0 on every row. Stock sold on an order sits in Reserved until it ships.'
-    : null;
+export const notSourcedNote = (_bucket: ArchDetailKey): string | null => null;

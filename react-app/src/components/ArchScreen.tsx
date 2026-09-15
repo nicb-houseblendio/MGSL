@@ -423,6 +423,7 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
               totals={totals}
               rowCount={filteredRows.length}
               uom={uom}
+              readyToBuildSourced={!!meta?.bucketsBuilt?.includes('readyToBuild')}
             />
           ) : !loading ? (
             /*
@@ -458,6 +459,10 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
           row={detailRow}
           triggerBucket={detail.bucket}
           uom={uom}
+          /* The tally panel refuses to draw a demo fixture over a real lot, so it has
+             to know which of the two this screen is showing. Same signal the demo-data
+             badge in the toolbar reads. See demoTallyProps. */
+          dataSource={source}
           onAddToCart={handleAddToCart}
           cartLotNos={cartLotNos}
         />

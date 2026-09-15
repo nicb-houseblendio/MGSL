@@ -41,23 +41,26 @@
  * ANY future change to the summary row's shape inherits this constraint. Adding
  * a field is safe in both directions; REMOVING one is not.
  *
- * ═══ STATUS: FIVE OF SIX BUCKETS BUILT ══════════════════════════════════════
- * Updated 2026-08-18. The original version of this header said "On Hand only",
- * which was true when there was not a single ARCH sales or purchase order in the
- * account. Seeded orders now exist, so four more are sourced:
+ * ═══ STATUS: SIX BUCKETS, ONE SELF-ACTIVATING ═══════════════════════════════
+ * Updated 2026-09-10. `readyToBuild` is wired end to end — `loadBuckets` reads
+ * `custbody_arch_ready_to_build` in its own isolated query (never joined into
+ * BUCKET_SQL, which five other buckets depend on and cannot afford to fail) —
+ * but the field does not exist in the account yet, so it reads exactly like
+ * before: every open line falls back to `reserve`, `readyToBuild` is 0 on
+ * every row, and META reports it under `bucketsEmpty`. No further deploy is
+ * needed once the field is created; the next hourly run picks it up on its
+ * own and META moves it to `bucketsBuilt`. See `readyToBuildSourced` and
+ * `bucketsMeta`.
  *
  *   onHand        ✅ lot balances
  *   reserve       ✅ open sales-order quantity — sold, still in the building
  *   outbound      ✅ shipped sales-order quantity
  *   onOrder       ✅ open purchase-order quantity — ordered, not received
  *   inTransit     ✅ purchase-order quantity billed but not received
- *   readyToBuild  ⛔ NO FIELD EXISTS to source it from. Marc-Antoine describes
- *                    it as a header status a trader ticks by hand; every
- *                    candidate custbody name was probed on 2026-08-18 and none
- *                    resolved. It stays a literal 0 — a proxy would invent data.
+ *   readyToBuild  ⏳ wired, self-activating; 0 until the field exists in NS
  *
  * `bucketsBuilt` / `bucketsEmpty` in META carry this to the browser, so the
- * screen states which columns are real rather than showing five confident zeros.
+ * screen states which columns are real rather than showing a confident zero.
  *
  * ═══ WHO HOLDS A BUNDLE, added 2026-09-08 ═══════════════════════════════════
  * `reserve` said HOW MUCH of a bundle was sold and nothing about WHO bought it,
@@ -225,12 +228,66 @@ define([
      * ⚠️ TWO THINGS TO KNOW.
      *   - The segment POSTS TO GL. It is present on transaction and
      *     transactionline, so it now sources onto ARCH transaction lines created
-     *     from here on. Existing lines are not retroactively tagged.
-     *   - Tagging is a DELIBERATE ACT, so an untagged hardwood SKU is invisible
-     *     to this screen. That is the cost of dropping the heuristic, which
-     *     caught things by accident. UNTAGGED_SQL below is the mitigation.
+     *     from here on. Existing lines are not retroactively tagged. THIS ROLE
+     *     IS UNCHANGED by the 2026-09-10 scoping change below — the segment
+     *     keeps doing its GL job; this file just stops using it to decide which
+     *     items to show.
+     *
+     * ── SUPERSEDED AGAIN, 2026-09-10. The segment is not the scope either. ────
+     * The segment's exact failure mode showed up twice: 54 lots on 3 items
+     * missing 2026-09-09, then 3 more items the next day. It is a manual,
+     * per-item, opt-in flag — every item anyone adds has to be remembered and
+     * tagged, and the account has already proven that does not reliably
+     * happen. Measured the same day: only 6 of the 149 items in Department 11
+     * ("Hardwood") carry the segment at all.
+     *
+     * Scoping is now `department = "Hardwood"` (by name, not id 11 — see
+     * `HARDWOOD_DEPARTMENT`'s own comment below), minus a hardcoded exclusion list
+     * (`NON_ARCH_DEPARTMENT_ITEMS` below) for the one real distinction inside
+     * that department: decking, a different product line sold by a different
+     * unit with a different tally shape, not the lumber-lot stock this screen
+     * tracks. Measured: 7 of the 149 department items are decking by name
+     * (`*DECKD*`); the other 142, including the 6 that already carried the
+     * segment, are the same species-thickness-KD shape as every known ARCH
+     * SKU.
+     *
+     * This inverts the failure mode on purpose. The segment's failure mode was
+     * silent: a real item with real stock, invisible, nothing to notice. An
+     * exclusion list's failure mode is loud: a wrongly-visible item shows up
+     * on the grid where someone can see it and tell us to add it to the list.
+     * Visible-and-wrong beats invisible-and-missing for exactly the reason the
+     * 2026-08-18 units-type note above already argued for excluding rather
+     * than allowlisting — the same logic, one scope further in.
+     *
+     * The segment field itself is untouched: still real, still posts to GL,
+     * still worth setting correctly on new items for that reason. It is only
+     * no longer what this file reads to decide what to show.
      */
-    const HARDWOOD_SEGMENT = 1;         // customrecord_cseg_subsidiary_loc: 1=Hardwood, 2=Softwood
+    /**
+     * By NAME, not internal id. Measured 2026-09-10: department id 11 is
+     * "Hardwood" in sandbox and DOES NOT EXIST AT ALL in production — same
+     * class of trap as `REVIEWED` being list value 101 in sandbox with no
+     * counterpart in prod. Hardcoding `11` would silently match nothing the
+     * day this code runs in production. Every WHERE clause below resolves it
+     * with `BUILTIN.DF(i.department) = ?` instead of comparing the raw id.
+     */
+    const HARDWOOD_DEPARTMENT = 'Hardwood';
+    /**
+     * The one real distinction inside Department 11: decking is a different
+     * product line (sold by the linear foot, not board-feet lots) that shares
+     * the trading department for accounting reasons only. Hardcoded rather
+     * than another segment/flag, deliberately — see the note above on why an
+     * opt-in per-item flag is the thing that just failed twice. A short,
+     * reviewable list beats a field someone has to remember to set.
+     */
+    const NON_ARCH_DEPARTMENT_ITEMS = [
+        'IPE44DECKD', 'IPE54DECKD', 'IPE54DECKDDNU',
+        'NRM44DECKDS4S', 'NRM44DECKDTNG',
+        'RBL44DECKD', 'RBL54DECKD',
+    ];
+    // Fixed, hardcoded item codes, never user input — safe to inline as SQL
+    // literals rather than bind as parameters.
+    const NON_ARCH_ITEMS_SQL = NON_ARCH_DEPARTMENT_ITEMS.map((id) => "'" + id + "'").join(',');
     const EXCLUDED_UNITS_TYPES = [2];   // Manual — MTL dunnage. Used ONLY by the untagged-SKU warning.
 
     /**
@@ -703,6 +760,63 @@ define([
      */
     let untaggedItems = [];
 
+    /**
+     * Whether `custbody_arch_ready_to_build` could be read this run.
+     *
+     * 🔴 THIS VARIABLE DOES NOT REACH `summarize`, AND MUST NOT BE READ THERE.
+     * It is written inside `loadBuckets()`, which runs in `getInputData`; META
+     * is written in `summarize`, a SEPARATE execution in which every module
+     * variable is re-initialised — this file says so itself where `costedRows`
+     * is computed ("module state does not reliably survive between stages").
+     *
+     * The comment here used to claim that a lost flag meant META "describes the
+     * bucket as still unsourced, which was already true before this field
+     * existed." That was exactly backwards and it is the reason this is now
+     * spelled out: the default is `true`, so a lost flag makes META claim the
+     * bucket IS sourced on a run where the read failed — a structural zero
+     * presented as a measured one, which is the single thing `archBuckets.ts`
+     * exists to prevent, and which `App.tsx` renders as "Live" with no caveat.
+     *
+     * So it travels in the DATA, the way everything else that has to cross the
+     * stage boundary travels: `getInputData` stamps `rtbSourced` on each pair,
+     * `reduce` copies it onto the summary row, and `summarize` folds the rows
+     * back into one boolean. One extra boolean per row, ~2 KB across a full
+     * ARCH payload, well inside the 500 KB per-value ceiling.
+     *
+     * The bucket TOTALS never depended on this reaching `summarize` — they are
+     * computed and embedded in each row inside `getInputData`, before the split.
+     */
+    let readyToBuildSourced = true;
+
+    /**
+     * One computation, called from BOTH `summarize` META writes, so they
+     * cannot drift the way the memory note on this file warns about ("both
+     * META writes carry it"). `bucketsBuilt`/`bucketsEmpty` name six buckets
+     * between them, never five — `readyToBuild` moves from one list to the
+     * other, it never just vanishes.
+     *
+     * Takes `sourced` as an ARGUMENT rather than closing over
+     * `readyToBuildSourced`: this is only ever called from `summarize`, where
+     * that variable is a re-initialised `true` and means nothing. See its note.
+     */
+    const bucketsMeta = (sourced) => ({
+        bucketsBuilt: sourced
+            ? ['onHand', 'reserve', 'outbound', 'onOrder', 'inTransit', 'readyToBuild']
+            : ['onHand', 'reserve', 'outbound', 'onOrder', 'inTransit'],
+        bucketsEmpty: sourced ? [] : ['readyToBuild'],
+    });
+
+    /**
+     * The run's Ready to Build sourcing, folded back out of the summary rows.
+     *
+     * ANY row that crossed with `rtbSourced: false` unsources the whole run:
+     * the flag is a property of the single query in `loadBuckets`, so it is the
+     * same answer on every row, and `every` over an empty list is `true`, which
+     * is the right reading for "no rows to disagree" (that path does not write
+     * META at all).
+     */
+    const rtbSourcedFrom = (rows) => rows.every((r) => r.rtbSourced !== false);
+
     const num = (v) => {
         const n = parseFloat(v);
         return isFinite(n) ? n : 0;
@@ -894,6 +1008,14 @@ define([
         '  c.id                                    AS captureid, ' +
         // BUILTIN.DF resolves the list VALUE to its NAME. See the status note above.
         '  BUILTIN.DF(c.custrecord_msl_plc_status) AS statusname, ' +
+        /* 🔴 TO_CHAR, NOT THE RAW COLUMN. Selected raw, `lastmodified` comes
+         * back as "9/14/2026" with the time SILENTLY DROPPED, while the same
+         * value through TO_CHAR is "2026-09-14 23:41:03". The split comparison
+         * in reduce() is a timestamp comparison, so the raw form would collapse
+         * every capture to midnight and mark a lot stale for any split that
+         * happened later the SAME DAY it was tallied. Caught before deploy
+         * 2026-09-15 by printing both forms side by side. */
+        "  TO_CHAR(c.lastmodified,'YYYY-MM-DD HH24:MI:SS') AS lastmodified, " +
         '  c.custrecord_msl_plc_container_no       AS container, ' +
         '  c.custrecord_msl_plc_intake_json        AS intake, ' +
         '  c.custrecord_msl_plc_results_json       AS payload, ' +
@@ -908,6 +1030,260 @@ define([
         // procedural until anchoring exists. Without ORDER BY, "first row wins" meant the
         // tally a trader sees could change between builds for no visible reason.
         'ORDER BY c.id DESC';
+
+    /* ── WHICH LOTS HAVE BEEN SPLIT SINCE THEIR TALLY WAS CAPTURED ──────────
+     *
+     * A split makes the parent's tally wrong: the parent no longer holds the wood
+     * the matrix describes, and the child is brand new and described by no
+     * supplier document at all. Before this existed the screen kept serving the
+     * pre-split matrix as though nothing had happened.
+     *
+     * 🔴 IDENTIFYING A SPLIT IS THE WHOLE PROBLEM, and the obvious answers are
+     * all wrong. Measured 2026-09-14:
+     *   - "any inventory adjustment" is useless: 820 of 835 ARCH lots have been
+     *     touched by one, and only 32 of 3,581 adjustments are ARCH splits.
+     *   - the assignment SHAPE does not separate them: splits are 2 lots / 2 rows
+     *     in 28 cases, and non-split adjustments are 2 lots / 2 rows in 28 cases.
+     *   - the ACCOUNT does not either: splits post to 288, 612 and 228, and
+     *     non-split adjustments use all three heavily (3,549 / 1,833 / 140).
+     *
+     * So this matches on two things WE write, not on anything inferred:
+     *
+     *   the link   `custcol_mgsl_split_invadj` (field 13634) on the SO line, set
+     *              by `archSplitExecute.js:662`. Precise: all 6 linked adjustments
+     *              carry the split memo too. But it is written by
+     *              `trueUpSalesOrderLine`, which RETHROWS on failure, so a split
+     *              whose true-up failed has moved the lots and left no link.
+     *   the memo   written by `postSplitAdjustment` BEFORE the true-up, so it
+     *              survives that case. On its own it is brittle: the wording has
+     *              already drifted once, 28 rows use an em dash and 4 a colon,
+     *              which is why it is the backstop and not the primary.
+     *
+     * Union of the two: precise where the link exists, complete where it does not.
+     *
+     * PARENT vs CHILD comes from the SIGN of the lot's net quantity on that
+     * adjustment, which is structural and needs no lot-name pattern. Verified with
+     * no exceptions across every split since 2026-09-01: the parent nets negative
+     * (wood leaving) and the child nets positive (the new lot). This survives the
+     * child-lot naming question landing either way. */
+    const SPLIT_SQL =
+        'SELECT ' +
+        '  BUILTIN.DF(ia.inventorynumber) AS lot, ' +
+        '  t.id                           AS adjid, ' +
+        /* TO_CHAR for the same reason as `lastmodified` above: the raw column
+         * drops the time. Both sides of the comparison must carry one. */
+        "  TO_CHAR(t.createddate,'YYYY-MM-DD HH24:MI:SS') AS splitat, " +
+        '  SUM(ia.quantity)               AS net ' +
+        'FROM inventoryassignment ia ' +
+        '  JOIN transaction t ON t.id = ia.transaction ' +
+        "WHERE t.type = 'InvAdjst' " +
+        "  AND ( t.memo LIKE '%ARCH bundle split%' " +
+        /* Aliased `sl`, NOT `tl`. `archLotOrders.test.mjs` B12 asserts the bucket
+         * query "FROM transactionline tl" runs exactly ONCE per run, and that is a
+         * real property worth keeping. This subquery is a different query that
+         * merely mentions the same table, so it takes a different alias rather
+         * than making a true assertion go quiet. */
+        '     OR t.id IN (SELECT sl.custcol_mgsl_split_invadj ' +
+        '                   FROM transactionline sl ' +
+        '                  WHERE sl.custcol_mgsl_split_invadj IS NOT NULL) ) ' +
+        "GROUP BY BUILTIN.DF(ia.inventorynumber), t.id, TO_CHAR(t.createddate,'YYYY-MM-DD HH24:MI:SS') " +
+        /* Ordered on the FORMATTED value, not the raw column, because the raw
+         * one is no longer in the GROUP BY and NetSuite rejects the query
+         * outright for it. Safe: 'YYYY-MM-DD HH24:MI:SS' sorts
+         * lexicographically in the same order it sorts chronologically. */
+        "ORDER BY TO_CHAR(t.createddate,'YYYY-MM-DD HH24:MI:SS') DESC";
+
+    /* The scan is newest-first and unbounded in time, which is correct — a lot split
+     * two years ago and never re-tallied is still stale — but unbounded row counts do
+     * not belong in a Map/Reduce that runs hourly forever. 67 rows today. The cap is
+     * generous enough that reaching it means something changed, and the log says so
+     * rather than letting the oldest splits fall off in silence, which is exactly the
+     * failure mode TALLY_MAX had before its status filter moved into SQL. */
+    const SPLIT_MAX = 5000;
+
+    /**
+     * When THIS bundle entry was last tallied, if the payload says so.
+     *
+     * 🔴 WHY THIS EXISTS (review finding B3). The staleness comparison below
+     * needs to know when a LOT was last tallied, and the only timestamp available
+     * is `lastmodified` on the capture RECORD. That is per document, and a document
+     * covers many lots, so any edit to a capture, even a typo fix in Status Reason,
+     * reads as "every lot in here was just re-tallied" and clears the flag for all
+     * of them. Demonstrated live on 2026-09-15: one edit to capture 401 cleared the
+     * flag for all five of its lots when only one had genuinely been re-measured.
+     *
+     * The real fix is a per-lot timestamp inside the payload. No payload written so
+     * far carries one, and the writer lives in another repo, so this reads the field
+     * if it is ever present and falls back to the record otherwise. That makes
+     * precision improve on its own the day the writer starts emitting it, with no
+     * further change here.
+     *
+     * Accepts either `tallyAt` or `parsedAt` on the bundle. Anything unparseable is
+     * treated as absent rather than as epoch zero, which would mark every lot stale.
+     */
+    const bundleStamp = (b) => {
+        const raw = b && (b.tallyAt || b.parsedAt ||
+                          (b.provenance && (b.provenance.tallyAt || b.provenance.parsedAt)));
+        if (!raw) return null;
+        const d = new Date(raw);
+        return isFinite(d.getTime()) ? d : null;
+    };
+
+    /* WHEN EACH CAPTURE'S PAYLOAD ACTUALLY CHANGED, as opposed to when the record
+     * was last touched for any reason at all.
+     *
+     * 🔴 THIS IS THE B3 NARROWING, and the divergence is real, not theoretical.
+     * Measured 2026-09-15 on capture 1: `lastmodified` reads 2026-09-03 14:01:21
+     * while the payload last changed at 13:46:36. Fifteen minutes apart, because the
+     * record was edited without the tally being touched. Comparing a split against
+     * `lastmodified` there would claim the lot had been re-tallied when it had not.
+     *
+     * `systemnote` records changes per FIELD, so filtering to the results-JSON field
+     * answers "when did this document's tally last change" exactly. Scoped to
+     * recordtypeid 3834 it reads 9 rows in this account.
+     *
+     * ⚠️ Still per RECORD, not per lot. A genuine re-tally of lot X still clears
+     * lots Y and Z in the same document. Only the per-bundle stamp in `bundleStamp`
+     * closes that, and it needs the writer to emit one. This removes the WORST case,
+     * an unrelated edit clearing everything, not the whole problem. */
+    /* 🔴 TO_CHAR, AND IT WAS MISSING UNTIL 2026-09-15. The comment three blocks up
+     * says "the raw column drops the time, both sides of the comparison must carry
+     * one" and this query did not do it. `MAX(sn.date)` returns '9/15/2026', which
+     * `new Date()` reads as MIDNIGHT, so every payload change was backdated by up to
+     * 24 hours.
+     *
+     * That made the narrowing WORSE than the fallback it replaced: `lastmodified` is
+     * TO_CHAR'd and carries a time, so on a same-day re-tally this "more precise"
+     * path was strictly less precise. Measured on the live screen: lot 315643-6 was
+     * split at 2026-09-15 00:34:14 and its capture payload was rewritten at 02:19:35,
+     * two hours AFTER, so the tally is current. Truncated to 00:00:00 the comparison
+     * flipped and the trader was told a fresh tally was stale.
+     *
+     * MAX() then TO_CHAR, not TO_CHAR then MAX(): the string form sorts the same as
+     * the date form, but taking the max on the real type is what the column is for. */
+    const PAYLOAD_CHANGE_SQL =
+        "SELECT sn.recordid AS captureid, TO_CHAR(MAX(sn.date),'YYYY-MM-DD HH24:MI:SS') AS changedat " +
+        'FROM systemnote sn ' +
+        'WHERE sn.recordtypeid = 3834 ' +
+        "  AND sn.field = 'CUSTRECORD_MSL_PLC_RESULTS_JSON' " +
+        'GROUP BY sn.recordid';
+
+    let _payloadChangeCache = null;
+    /**
+     * captureId -> Date the payload last changed, or {} when it cannot be read.
+     *
+     * Fails SOFT on purpose. `systemnote` is a search type this MR has never queried,
+     * and REST SuiteQL and N/query are different dialects here, which has already
+     * cost this project a query that passed every check and failed only once
+     * deployed. An empty map falls back to `lastmodified`, which is how this ran
+     * before: wider than it should be, never wrong in the common case.
+     */
+    const loadPayloadChanges = () => {
+        if (_payloadChangeCache) return _payloadChangeCache;
+        const byCapture = {};
+        try {
+            const rows = query.runSuiteQL({ query: PAYLOAD_CHANGE_SQL }).asMappedResults() || [];
+            for (let i = 0; i < rows.length; i++) {
+                const id = String(rows[i].captureid || '');
+                const d  = rows[i].changedat ? new Date(rows[i].changedat) : null;
+                if (id && d && isFinite(d.getTime())) byCapture[id] = d;
+            }
+        } catch (e) {
+            log.audit('ARCH tally payload-change read unavailable',
+                'Falling back to the record-level lastmodified. ' + (e.message || String(e)));
+        }
+        _payloadChangeCache = byCapture;
+        return byCapture;
+    };
+
+    let _splitCache = null;
+    /**
+     * lot (upper, trimmed) -> { at: Date, adjId, role: 'parent' | 'child' }
+     *
+     * The LATEST split per lot only. A lot split twice is stale from the most
+     * recent one, and `ORDER BY t.createddate DESC` means the first row seen wins.
+     *
+     * ⚠️ Memoized exactly like `loadTallies`, and for the same reason: reduce()
+     * runs once per item+location pair, so an unmemoized call would re-read this
+     * for every pair, every hour.
+     *
+     * Fails SOFT. An error here means no lot is marked, which is precisely
+     * today's behaviour, so a failure costs the new signal and nothing else. It
+     * must never take the cache down: an outer throw here would blank quantities
+     * that have nothing to do with tallies.
+     */
+    const loadSplitEvents = () => {
+        if (_splitCache) return _splitCache;
+        const byLot = {};
+        try {
+            const rows = query.runSuiteQL({ query: SPLIT_SQL }).asMappedResults() || [];
+            if (rows.length >= SPLIT_MAX) {
+                log.error('ARCH split scan hit its row cap',
+                    'Read ' + rows.length + ' rows, cap ' + SPLIT_MAX + '. Rows are newest-first, so ' +
+                    'the OLDEST splits are the ones dropped and those lots will stop reporting a stale ' +
+                    'tally. Raise SPLIT_MAX or bound the scan by date.');
+            }
+            for (let i = 0; i < rows.length && i < SPLIT_MAX; i++) {
+                const r = rows[i];
+                const lot = String(r.lot || '').trim().toUpperCase();
+                if (!lot || byLot[lot]) continue;   // newest wins, see ORDER BY
+                const net = Number(r.net);
+                /* 🔴 EPSILON, NOT `=== 0`. A net of zero is a REAL and correct
+                 * outcome, not a data error: a remainder-zero split issues the whole
+                 * bundle and receives it straight back onto the same lot, so the lot
+                 * ends where it started, no child is created, and the tally still
+                 * describes the wood exactly. Skipping it is right.
+                 *
+                 * Measured on IA-CWP-732 (2026-09-15): NetSuite returned exactly '0'
+                 * and `=== 0` held. But that is luck, not a guarantee. A split whose
+                 * two halves round differently would come back as 1e-16, fall past an
+                 * exact-zero test, be classified a CHILD because the sign is positive,
+                 * and then be marked stale against its own tally. An epsilon is the
+                 * difference between "correct today" and "correct". */
+                if (!isFinite(net) || Math.abs(net) < 1e-9) continue;
+                byLot[lot] = {
+                    at:    r.splitat ? new Date(r.splitat) : null,
+                    adjId: r.adjid,
+                    role:  net < 0 ? 'parent' : 'child',
+                };
+            }
+            log.audit('ARCH split events',
+                Object.keys(byLot).length + ' lot(s) carry a split. Rows: ' + rows.length + '.');
+        } catch (e) {
+            log.error('ARCH split detection failed',
+                'No lot will be marked as awaiting a re-tally this run, which is the ' +
+                'behaviour before this existed. Quantities are unaffected. ' + (e.message || String(e)));
+        }
+        _splitCache = byLot;
+        return byLot;
+    };
+
+    /* The SAME query with the status whitelist pushed into SQL.
+     *
+     * 🔴 WHY THIS EXISTS. `TALLY_MAX` caps the rows CONSUMED, and the cap is
+     * applied before the JS gates below, over a result set that is not filtered at
+     * all: PL and BOL captures share this record type, and so do rejected and
+     * in-flight ones. So the budget is spent on rows that were never going to
+     * qualify, and because the sort is newest-first the rows pushed out are the
+     * OLDEST, which are the real supplier tallies a trader is most likely to want.
+     * Filtering in SQL means the 500 are 500 CANDIDATES.
+     *
+     * ⚠️ AND WHY IT IS TRIED, NOT TRUSTED. `BUILTIN.DF` in a WHERE clause is
+     * verified working on the REST SuiteQL endpoint, which is NOT the dialect this
+     * runs in. This project has already shipped a query that passed every check and
+     * then failed only once deployed, on `entitygroup.grouptype`. The cost of being
+     * wrong here is not a degraded query, it is the outer catch below returning {}
+     * and EVERY lot on the screen losing its tally, behind one log line.
+     *
+     * So the filtered form is attempted and the unfiltered form is the fallback.
+     * A dialect that rejects it lands exactly on today's behaviour instead of on a
+     * blank screen. The JS status gate stays either way, and has to: on the
+     * fallback path it is still the only thing doing the filtering. */
+    const TALLY_SQL_FILTERED = TALLY_SQL.replace(
+        "WHERE c.isinactive = 'F' ",
+        "WHERE c.isinactive = 'F' " +
+        "  AND BUILTIN.DF(c.custrecord_msl_plc_status) IN ('PARSED', 'MATCHED', 'REVIEWED') "
+    );
 
     /**
      * lotNo (upper, trimmed) -> { status, container, sourceFile, docUrl, bundles }
@@ -927,7 +1303,21 @@ define([
         // would put the whole map in the MR key payload for every pair.
         if (_tallyCache) return _tallyCache;
         try {
-            const rows = query.runSuiteQL({ query: TALLY_SQL }).asMappedResults() || [];
+            // Narrower than lastmodified, wider than a per-bundle stamp. See B3.
+            const payloadChanges = loadPayloadChanges();
+            let rows;
+            try {
+                rows = query.runSuiteQL({ query: TALLY_SQL_FILTERED }).asMappedResults() || [];
+            } catch (filterErr) {
+                /* log.audit, not error: falling back is a supported outcome, not a
+                 * fault. It costs the cap efficiency and nothing else. */
+                log.audit('ARCH tally status filter not supported by this dialect',
+                    'Falling back to the unfiltered read, which is how this ran before ' +
+                    '2026-09-14. The JS status gate below still applies, so the RESULT is ' +
+                    'identical; only the ' + TALLY_MAX + ' cap is spent less efficiently. ' +
+                    'NetSuite said: ' + (filterErr.message || String(filterErr)));
+                rows = query.runSuiteQL({ query: TALLY_SQL }).asMappedResults() || [];
+            }
             // log.audit, NOT log.error. This is a per-run condition and reduce runs once
             // per pair, so at error level a hit cap would emit 13 ERROR lines an hour,
             // roughly 312 a day, and possibly emails. Level goes by cause, not importance.
@@ -970,27 +1360,66 @@ define([
                     const lot = b && b.lot != null ? String(b.lot).trim().toUpperCase() : '';
                     // The whole point. An unmatched bundle is expected, not an error.
                     if (!lot) continue;
-                    if (byLot[lot]) {
-                        // Newest already won, thanks to ORDER BY c.id DESC. Say so rather
-                        // than resolve it silently: two documents claiming one lot is a
-                        // human question (supersede? re-push?) and Carlos owns it.
+
+                    const held = byLot[lot];
+
+                    /* SAME capture, second entry for this lot. LEGITIMATE, and it must be
+                     * KEPT. A supplier form with ONE Length column per row has to split a
+                     * mixed-length bundle across rows, so one lot's wood arrives as two
+                     * entries of one document. Measured on JCM doc 02PS000198: bundle 13
+                     * appears twice, batches 09230-13 and 09230-13-1, same forest, same
+                     * compartment, same coordinates, 480cm/19pcs and 450cm/9pcs. On the
+                     * hardwood side this is the NORM rather than an oddity: one Zebrano FAS
+                     * bundle in the 2026-09 supplier set carries 15 distinct lengths.
+                     *
+                     * 🔴 This branch did not exist. The second entry fell into the
+                     * cross-capture guard below, so its pieces were DROPPED from the map
+                     * and the log named a second document that does not exist. The
+                     * `bundles` array below has always been an array, and both the payload
+                     * this MR forwards raw and `bundlesForLot()` on the client already
+                     * return every match, so the server was the only place collapsing a
+                     * lot to a single bundle. */
+                    if (held && held.captureId === r.captureid) {
+                        held.bundles.push(b);
+                        continue;
+                    }
+
+                    /* DIFFERENT capture. Newest already won, thanks to ORDER BY c.id DESC.
+                     * Say so rather than resolve it silently: two DOCUMENTS claiming one
+                     * lot is a human question (supersede? re-push?) and Carlos owns it.
+                     * The wording is now true whenever it prints, which it was not before. */
+                    if (held) {
                         log.audit('ARCH tally lot claimed twice',
                             'lot ' + lot + ' appears in more than one capture. Keeping the ' +
-                            'newest (capture ' + byLot[lot].captureId + ') and ignoring ' +
+                            'newest (capture ' + held.captureId + ') and ignoring ' +
                             'capture ' + r.captureid + '.');
                         continue;
                     }
-                    {
-                        byLot[lot] = {
-                            captureId:  r.captureid,
-                            status:     status,
-                            container:  r.container || payload.container || null,
-                            sourceFile: prov.sourceFile || null,
-                            docUrl:     r.fileurl || null,
-                            bundles:    [],
-                        };
-                    }
-                    byLot[lot].bundles.push(b);
+
+                    byLot[lot] = {
+                        captureId:  r.captureid,
+                        /* When this capture was last touched. The split comparison
+                         * in reduce() needs it, and it must come from the SAME
+                         * source as the transaction timestamp it is compared
+                         * against: both are the account's local time through
+                         * SuiteQL, verified 2026-09-14 against two records whose
+                         * real creation time was known. */
+                        lastModified: r.lastmodified ? new Date(r.lastmodified) : null,
+                        /* PER-LOT freshness, when the payload carries it. See
+                         * `tallyStampFor` and the B3 note on the comparison in
+                         * reduce(). Null on every payload written so far, which is
+                         * why the record-level `lastModified` above stays as the
+                         * fallback rather than being replaced. */
+                        lotStamp: bundleStamp(b),
+                        /* When the DOCUMENT's payload last changed. Narrower than
+                         * `lastModified`, wider than `lotStamp`. */
+                        payloadChangedAt: payloadChanges[String(r.captureid)] || null,
+                        status:     status,
+                        container:  r.container || payload.container || null,
+                        sourceFile: prov.sourceFile || null,
+                        docUrl:     r.fileurl || null,
+                        bundles:    [b],
+                    };
                 }
             }
             _tallyCache = byLot;
@@ -1040,25 +1469,26 @@ define([
         'JOIN inventorynumber inv ON inv.id = inl.inventorynumber ' +
         'JOIN item i              ON i.id  = inv.item ' +
         'LEFT JOIN unitstypeuom u ON u.internalid = i.stockunit ' +
-        'WHERE i.cseg_subsidiary_loc = ? ' +
+        'WHERE BUILTIN.DF(i.department) = ? ' +
+        '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
         '  AND inl.quantityonhand <> 0';
 
     /**
-     * Items that LOOK like hardwood by the old heuristic but are NOT tagged.
+     * Items that LOOK like hardwood by the old units-type heuristic but are NOT
+     * in Department 11.
      *
-     * The segment is a deliberate act — somebody has to set it — so an untagged
-     * hardwood SKU is invisible to this cache, silently. That is the price of
-     * moving off the units-type heuristic, which caught things by accident.
-     *
-     * This query is the early warning: anything carrying an ARCH-shaped units
-     * type without the Hardwood segment is probably a SKU someone forgot to tag.
-     * It costs one query per run and turns a silent omission into a log line.
+     * Department is set at item creation, not an extra opt-in step the way the
+     * segment was — so this is a much rarer case than the segment's "untagged"
+     * problem was. Kept anyway as a cheap sanity check: an ARCH-shaped SKU
+     * outside the department is more likely a miscategorization than a new
+     * product line, and it costs one query per run to turn that into a log
+     * line instead of a silent gap.
      */
     const UNTAGGED_SQL =
         'SELECT i.id, i.itemid FROM item i ' +
         'WHERE i.unitstype IS NOT NULL ' +
         '  AND i.unitstype NOT IN (' + EXCLUDED_UNITS_TYPES.map(() => '?').join(',') + ') ' +
-        '  AND (i.cseg_subsidiary_loc IS NULL OR i.cseg_subsidiary_loc <> ?)';
+        '  AND (i.department IS NULL OR BUILTIN.DF(i.department) <> ?)';
 
     /**
      * ═══ THE FOUR SOURCED BUCKETS ════════════════════════════════════════════
@@ -1088,10 +1518,15 @@ define([
      * ⚠️ SALES ORDER QUANTITIES ARE NEGATIVE. NetSuite signs outbound lines, so
      * everything from a SalesOrd is taken through Math.abs.
      *
-     * The `cseg_subsidiary_loc` filter does double duty: it scopes to hardwood
-     * AND removes the CA-E and TAXQC lines that user events add to every order,
-     * because those items carry no segment. Without it they would be counted as
-     * stock.
+     * ⚠️ 2026-09-10: this used to filter on `cseg_subsidiary_loc`, which did
+     * double duty — scoped to hardwood AND removed the CA-E and TAXQC lines
+     * that user events add to every order, since those items carried no
+     * segment. The `department = "Hardwood"` filter below does the same second job by
+     * construction, not by accident: every one of the 149 Department 11 items
+     * is `itemtype = 'Assembly'`, measured with zero exceptions, and a
+     * currency-adjustment or tax charge line is never that type. If that ever
+     * stops being true, it will show up loudly as a nonsense row on the grid,
+     * not silently as a miscounted total.
      */
     const BUCKET_SQL =
         'SELECT ' +
@@ -1160,7 +1595,8 @@ define([
         // `unattributed` figure were.
         '       ON ia.transaction = t.id AND ia.transactionline = tl.id ' +
         'LEFT JOIN inventorynumber inv ON inv.id = ia.inventorynumber ' +
-        'WHERE i.cseg_subsidiary_loc = ? ' +
+        'WHERE BUILTIN.DF(i.department) = ? ' +
+        '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
         "  AND tl.mainline = 'F' " +
         "  AND tl.isclosed = 'F' " +
         "  AND t.type IN ('SalesOrd', 'PurchOrd')";
@@ -1216,13 +1652,13 @@ define([
     const loadBuckets = () => {
         const byPair = {};
         const seenLines = {};
-        const blank = () => ({ reserve: 0, outbound: 0, onOrder: 0, inTransit: 0 });
+        const blank = () => ({ reserve: 0, outbound: 0, onOrder: 0, inTransit: 0, readyToBuild: 0 });
 
         let rows;
         try {
             rows = query.runSuiteQL({
                 query: BUCKET_SQL,
-                params: [HARDWOOD_SEGMENT],
+                params: [HARDWOOD_DEPARTMENT],
             }).asMappedResults();
         } catch (e) {
             // Buckets missing is bad; On Hand being wrong is worse. Return empty
@@ -1230,6 +1666,104 @@ define([
             log.error('ARCH cache buckets — COULD NOT LOAD, all four buckets will read 0',
                 e.name + ': ' + e.message);
             return {};
+        }
+
+        /* ── Ready to Build, a SEPARATE query over the SO ids this run already
+         * found ─────────────────────────────────────────────────────────────
+         *
+         * Same shape as `repByTransaction` below: one query for the whole run,
+         * scoped to the ids BUCKET_SQL already returned, never joined into
+         * BUCKET_SQL itself — joining a header field onto a query that fans out
+         * per line and per lot assignment would not change any total (a header
+         * value is identical on every fanned-out row), but it is still the
+         * wrong shape to add a header-only read to.
+         *
+         * Read BEFORE the fold below, not after: the fold has to know the flag
+         * to decide reserve vs readyToBuild while it sums, and patching a
+         * classification in after the fact would mean walking every bucket and
+         * every lot a second time to move quantity between the two keys.
+         *
+         * 🔴 `custbody_arch_ready_to_build` DOES NOT EXIST YET. This is
+         * DELIBERATELY isolated in its own try/catch, never added as a column
+         * to BUCKET_SQL itself: SuiteQL fails an entire query on an unknown
+         * column, and BUCKET_SQL feeds On Hand, Reserved, Outbound, On Order
+         * and In Transit too. Adding it there would take down all five buckets
+         * the moment this deploys, not just the one that is not sourced yet.
+         * This way, an absent field degrades to exactly today's behaviour —
+         * every open line stays in `reserve` — and the day the field is
+         * created, the NEXT hourly run picks it up with no further deploy.
+         */
+        const soIdsForFlag = [];
+        const seenSoId = {};
+        rows.forEach((r) => {
+            // Numbers, not strings: these go straight into `params` below, and
+            // the id is the dedupe key either way (object keys stringify).
+            const id = parseInt(r.tranid, 10);
+            if (String(r.trantype) !== 'SalesOrd') return;
+            if (id > 0 && !seenSoId[id]) { seenSoId[id] = true; soIdsForFlag.push(id); }
+        });
+        /*
+         * CHUNKED at 500, changed 2026-09-13. This comment used to argue the
+         * opposite — that the list is "already bounded by BUCKET_SQL's own scope
+         * (open hardwood SO lines only), currently a few dozen orders
+         * account-wide" — and that bound is the thing about to move: 169 items
+         * carry the Hardwood department today against the six that carried the
+         * old segment, with ~200 SKUs planned and traders starting.
+         *
+         * ⚠️ NOT because of a 1,000-expression cap. That claim was written here
+         * on 2026-09-13 and MEASURED FALSE the next day: against this account's
+         * SuiteQL endpoint, `WHERE id IN (...)` with 999, 1,005, 5,000, 20,000
+         * and 50,000 literal ids all returned OK. NetSuite compiles SuiteQL
+         * rather than passing it to Oracle verbatim, so the familiar limit does
+         * not apply as stated. `archSalesTeam.js` carried the same belief and
+         * has been corrected too. Two things that test did NOT settle, so do not
+         * read it as more than it is: it ran against REST SuiteQL, a different
+         * dialect and host from the `N/query` that actually runs here, and it
+         * used inline literals rather than the `?` binds below.
+         *
+         * The chunking stays, on the reasons that survive measurement:
+         *   - BLAST RADIUS. The catch below is a deliberate silent degrade, so
+         *     one failing query means "Ready to Build reads zero everywhere"
+         *     with nothing naming the cause. Chunking bounds what one failure
+         *     can cost and makes the loop able to report which part failed.
+         *   - CONSISTENCY with the two sibling reads of this same id list
+         *     (`archSalesTeam.repByTransaction`, and the open-orders service),
+         *     both chunked at 500.
+         *
+         * ⚠️ ALL OR NOTHING on a failed chunk, which is the OPPOSITE of the
+         * partial-keeping loops in `archSalesTeam.repByTransaction` and in the
+         * open-orders service, and deliberately so. Those resolve a DISPLAY
+         * value per row, so a name resolved is still a name. This one decides
+         * whether quantity is folded into `reserve` or into `readyToBuild`: a
+         * half-read map splits two buckets the screen presents as measured,
+         * while `readyToBuildSourced` — one boolean feeding META's
+         * bucketsBuilt/bucketsEmpty — has no way to say "half". Sourced has to
+         * mean sourced, so a single failed chunk unsources the whole run.
+         */
+        const FLAG_CHUNK = 500;
+        let readyToBuildIds = {};
+        for (let i = 0; i < soIdsForFlag.length; i += FLAG_CHUNK) {
+            const slice = soIdsForFlag.slice(i, i + FLAG_CHUNK);
+            try {
+                const flagRows = query.runSuiteQL({
+                    query: 'SELECT id AS tranid FROM transaction ' +
+                           'WHERE id IN (' + slice.map(() => '?').join(',') + ') ' +
+                           "  AND custbody_arch_ready_to_build = 'T'",
+                    params: slice,
+                }).asMappedResults();
+                flagRows.forEach((r) => { readyToBuildIds[String(r.tranid)] = true; });
+            } catch (e) {
+                // Same degrade as everywhere else this field is touched: absence
+                // is not an error, it is "nobody has been asked to create it
+                // yet". Every order falls back to `reserve`, exactly today's
+                // behaviour, and META is told so this run did not source it.
+                readyToBuildSourced = false;
+                readyToBuildIds = {};
+                log.audit('ARCH cache — Ready to Build field not readable (non-fatal, ' +
+                    'every order stays in Reserved): ' + (e.name || '') + ': ' +
+                    (e.message || String(e)));
+                break;
+            }
         }
 
         rows.forEach((r) => {
@@ -1257,8 +1791,17 @@ define([
             if (!seenLines[lineKey]) {
                 seenLines[lineKey] = true;
                 if (isSale) {
-                    // Sold and still in the building.
-                    bucket.totals.reserve  += open;
+                    // Sold, and either still in the building (reserve) or the
+                    // trader has marked the whole order ready to build. The two
+                    // are mutually exclusive by construction: `readyToBuildIds`
+                    // decides which ONE bucket this line's open quantity lands
+                    // in, never both, so the sum against `reserve + readyToBuild`
+                    // matches what `reserve` alone used to carry.
+                    if (readyToBuildIds[String(r.tranid)]) {
+                        bucket.totals.readyToBuild += open;
+                    } else {
+                        bucket.totals.reserve += open;
+                    }
                     // Already gone out the door.
                     bucket.totals.outbound += moved;
                 } else {
@@ -1340,8 +1883,18 @@ define([
             const openShare = ordered > 0 ? open / ordered : 0;
             if (r.lotno && assigned > 0 && openShare > 0) {
                 if (!bucket.lots[r.lotno]) bucket.lots[r.lotno] = blank();
-                if (isSale) bucket.lots[r.lotno].reserve += assigned * openShare;
-                else        bucket.lots[r.lotno].onOrder += assigned * openShare;
+                if (isSale) {
+                    // Same either/or split as the line-level totals above, on
+                    // the same order id, so a lot's readyToBuild + reserve never
+                    // disagrees with the row's.
+                    if (readyToBuildIds[String(r.tranid)]) {
+                        bucket.lots[r.lotno].readyToBuild += assigned * openShare;
+                    } else {
+                        bucket.lots[r.lotno].reserve += assigned * openShare;
+                    }
+                } else {
+                    bucket.lots[r.lotno].onOrder += assigned * openShare;
+                }
 
                 /* ── WHICH order, under the SAME guard as the quantity ────────
                  *
@@ -1374,6 +1927,29 @@ define([
                             repId:      r.hdrrepid ? String(r.hdrrepid) : '',
                             rep:        String(r.hdrrep || ''),
                             repSource:  r.hdrrepid ? 'header' : 'none',
+                            /* WHICH BUCKET THIS ORDER'S SHARE LANDED IN. Added
+                             * 2026-09-14, and it is what lets the drawer name an
+                             * order under Ready to Build at all.
+                             *
+                             * 🔴 Without it the client CANNOT tell the two apart.
+                             * `qty` below accumulates the order's share of this
+                             * bundle, and a bundle can be claimed by a Reserved
+                             * order AND a Ready-to-Build one at the same time —
+                             * 31 lots in this sandbox are held by two or more
+                             * orders, one in 17. So `archLotOrders.ts` reading
+                             * `orders` for both buckets was tried on 2026-09-10
+                             * and reverted the same day: it showed the same list
+                             * and the same qty under both tabs, which is worse
+                             * than an honest em dash.
+                             *
+                             * Stamped from the SAME `readyToBuildIds` map that
+                             * decided the quantity a few lines up, so the
+                             * attribution and the number can never disagree.
+                             *
+                             * Per TRANSACTION, which is the right grain: the flag
+                             * is a header field, so every line of one order shares
+                             * it and there is no per-line case to worry about. */
+                            readyToBuild: !!readyToBuildIds[oid],
                             // BASE units, converted in reduce with the same
                             // `/ rate` every other quantity goes through.
                             qty:        0,
@@ -1566,14 +2142,14 @@ define([
 
             const rows = query.runSuiteQL({
                 query: LOT_SQL,
-                params: [HARDWOOD_SEGMENT],
+                params: [HARDWOOD_DEPARTMENT],
             }).asMappedResults();
 
-            // Early warning for SKUs nobody tagged — see UNTAGGED_SQL.
+            // Early warning for ARCH-shaped SKUs outside Department 11 — see UNTAGGED_SQL.
             try {
                 const untagged = query.runSuiteQL({
                     query: UNTAGGED_SQL,
-                    params: EXCLUDED_UNITS_TYPES.concat([HARDWOOD_SEGMENT]),
+                    params: EXCLUDED_UNITS_TYPES.concat([HARDWOOD_DEPARTMENT]),
                 }).asMappedResults();
                 if (untagged.length) {
                     /*
@@ -1596,12 +2172,21 @@ define([
                      *
                      * If this should ever shout again, gate it on the count
                      * CHANGING between runs, not on the count being non-zero.
+                     *
+                     * ⚠️ The "2,294" above is history, not current. It was the
+                     * segment-vs-heuristic gap, measured before the 2026-09-10
+                     * switch to Department 11. Under the department scope this
+                     * query measures 0 today — the near-permanent standing
+                     * warning this comment justified downgrading is not
+                     * expected to fire routinely anymore. If it does start
+                     * firing often, that is itself a signal something is off,
+                     * not the account's normal state anymore.
                      */
-                    log.audit('ARCH cache — POSSIBLE UNTAGGED HARDWOOD, invisible to this screen',
-                        untagged.length + ' item(s) carry an ARCH-shaped units type but no Hardwood ' +
-                        'segment, so their stock does NOT appear: ' +
+                    log.audit('ARCH cache — POSSIBLE MISCATEGORIZED HARDWOOD, invisible to this screen',
+                        untagged.length + ' item(s) carry an ARCH-shaped units type but sit outside ' +
+                        'Department 11 (Hardwood), so their stock does NOT appear: ' +
                         untagged.map((r) => r.itemid).join(', ') +
-                        '. Set cseg_subsidiary_loc = Hardwood on them, or confirm they are not hardwood.');
+                        '. Set Department = Hardwood on them, or confirm they are not hardwood.');
 
                     /* 🔴 CARRIED TO META, added 2026-09-10, and the reason is a real
                      * client report rather than tidiness.
@@ -1674,6 +2259,9 @@ define([
                         locationName: r.locationname || KNOWN_LOCATIONS[r.locationid] || '',
                         holds:        holds[key] || {},
                         buckets:      buckets[key] || null,
+                        // Carried per pair only so it can cross into `summarize`.
+                        // See `readyToBuildSourced`.
+                        rtbSourced:   readyToBuildSourced,
                         lots:         [],
                     };
                 }
@@ -1744,6 +2332,10 @@ define([
                     locationName: b.locationName || KNOWN_LOCATIONS[String(b.locationId)] || '',
                     holds:        holds[key] || {},
                     buckets:      buckets[key],
+                    // Same carrier as the pair above. A donor-recovered pair
+                    // reaches `summarize` by the same route and must not be the
+                    // row that reports the run as sourced when it was not.
+                    rtbSourced:   readyToBuildSourced,
                     // No on-hand lot exists at this location. An EMPTY array, not a
                     // fabricated lot: the drill-down correctly shows nothing on hand,
                     // and bucketGap on the front end names the quantity no bundle claims.
@@ -1955,9 +2547,78 @@ define([
             const perLot   = (bk && bk.lots) || {};
             // One query per pair, same shape as loadLotCosts. See loadTallies.
             const tallies  = loadTallies();
+            // Same one-query-per-run shape as loadTallies. See loadSplitEvents.
+            const splits   = loadSplitEvents();
 
             const lots = pair.lots.map((l) => {
-                const tally  = tallies[String(l.lotNo || '').trim().toUpperCase()] || null;
+                const lotKey = String(l.lotNo || '').trim().toUpperCase();
+                const tally  = tallies[lotKey] || null;
+
+                /* ── CAN THIS LOT'S TALLY STILL BE TRUSTED? ─────────────────────
+                 *
+                 * Three outcomes, genuinely different things:
+                 *
+                 *   null          no split on record. Ordinary lot.
+                 *   'staleParent' the lot WAS split and a tally names it, but that
+                 *                 tally predates the split, so its matrix describes
+                 *                 wood that is no longer all here.
+                 *   'newChild'    the lot was CREATED by a split and no supplier
+                 *                 document has ever described it. Distinct from the
+                 *                 830 lots that simply never had a tally, and it is
+                 *                 the case Marc-Antoine asked for at 26:54.
+                 *
+                 * ⚠️ A capture modified AFTER the split clears this BY DESIGN: it
+                 * means somebody re-tallied the lot. That is the self-clearing
+                 * property, and it works whether the re-tally arrives as a new
+                 * capture or as an edit of the existing one, because `lastmodified`
+                 * moves either way.
+                 *
+                 * 🔴 KNOWN LIMIT, do not read more into this than it says.
+                 * `lastmodified` is per RECORD, not per lot or per bundle entry, so
+                 * ANY edit to a capture, even a typo fix in Status Reason, clears
+                 * the flag for EVERY lot in that document. Narrowing it needs a
+                 * per-lot signal inside the payload, which is a schema change. Until
+                 * then this errs toward showing the tally, the same direction the
+                 * screen already errs. */
+                const split = splits[lotKey] || null;
+                let tallyState = null;
+                if (split) {
+                    /* 🔴 ROLE DECIDES THE LABEL, then the timestamp decides whether
+                     * there is a label at all. The two used to be entangled: the
+                     * `newChild` arm required `!tally`, so a CHILD lot that carried a
+                     * tally older than its own creation fell through to the parent arm
+                     * and the trader was told "this bundle was split" about a bundle
+                     * the split CREATED. Wrong noun, wrong remedy — a parent needs
+                     * re-measuring, a child has never been measured at all.
+                     *
+                     * Reachable whenever a capture names a lot before that lot exists,
+                     * which is exactly what a document listing `X-B` does when the
+                     * split that makes `X-B` has not run yet. */
+                    if (split.role === 'child') {
+                        const childStamp = tally
+                            ? (tally.lotStamp || tally.payloadChangedAt || tally.lastModified)
+                            : null;
+                        // No tally, or one that predates the lot: nothing here describes it.
+                        if (!tally || (split.at && childStamp && split.at.getTime() > childStamp.getTime())
+                                   || (split.at && !childStamp)) {
+                            tallyState = 'newChild';
+                        }
+                    } else if (tally && split.at) {
+                        /* Per-LOT stamp wins over the per-RECORD one. See
+                         * `bundleStamp`: the record-level timestamp moves for any
+                         * edit to any part of the document, so it clears this flag
+                         * too eagerly. Where the payload names when this particular
+                         * bundle was tallied, that is the honest comparison. */
+                        /* Most precise first. `lotStamp` is per bundle and needs
+                         * the writer to emit it. `payloadChangedAt` is per document
+                         * but only moves when the tally really changed.
+                         * `lastModified` moves for any edit and is the last resort. */
+                        const stamp = tally.lotStamp || tally.payloadChangedAt || tally.lastModified;
+                        if (stamp && split.at.getTime() > stamp.getTime()) {
+                            tallyState = 'staleParent';
+                        }
+                    }
+                }
                 const isHeld = Object.prototype.hasOwnProperty.call(heldLots, l.lotNo);
                 const lb     = perLot[l.lotNo] || null;
                 return {
@@ -1981,6 +2642,7 @@ define([
                     outbound:      lb ? lb.outbound  / rate : 0,
                     onOrder:       lb ? lb.onOrder   / rate : 0,
                     inTransit:     lb ? lb.inTransit / rate : 0,
+                    readyToBuild:  lb ? (lb.readyToBuild || 0) / rate : 0,
                     /* ── THE SALES ORDERS THAT HOLD THIS BUNDLE ───────────────
                      *
                      * One entry per order, quantities converted to display units
@@ -2035,12 +2697,6 @@ define([
                                 ? String(a.soNumber).localeCompare(String(b.soNumber))
                                 : String(a.created).localeCompare(String(b.created))))
                         : [],
-                    // ⛔ readyToBuild has NO SOURCE. Marc-Antoine described it as a
-                    // header status a trader ticks by hand, and no such field
-                    // exists on the transaction — every candidate custbody name
-                    // was probed on 2026-08-18 and none resolved. It stays 0 until
-                    // the field is created; guessing a proxy would invent data.
-                    readyToBuild:  0,
                     // The lot is still REPORTED — it physically exists and On Hand
                     // must keep showing it. It is only withheld from `available`.
                     onHold:        isHeld,
@@ -2059,6 +2715,11 @@ define([
                         docUrl:     tally.docUrl,
                         bundles:    tally.bundles,
                     } : null,
+                    /* null, 'staleParent' or 'newChild'. See the block above.
+                     * Emitted BESIDE `tally` rather than inside it, because
+                     * 'newChild' is exactly the case where `tally` is null and
+                     * there is nowhere inside it to put anything. */
+                    tallyState: tallyState,
                     // Kept: the image a user uploads by hand is a different thing from
                     // the parsed document, and the dialog shows both. A capture's file
                     // arrives as `tally.docUrl` above, never here.
@@ -2111,17 +2772,23 @@ define([
             // Row-level buckets, converted from BASE units the same way On Hand
             // is. Taken from the order lines rather than summed from the lots —
             // see the note on `reserve` below.
-            const bt        = (bk && bk.totals) || { reserve: 0, outbound: 0, onOrder: 0, inTransit: 0 };
-            const bu        = (bk && bk.unattributed) || { reserve: 0, outbound: 0, onOrder: 0, inTransit: 0 };
-            const reserve   = bt.reserve   / rate;
-            const outbound  = bt.outbound  / rate;
-            const onOrder   = bt.onOrder   / rate;
-            const inTransit = bt.inTransit / rate;
+            const blankTotals = { reserve: 0, outbound: 0, onOrder: 0, inTransit: 0, readyToBuild: 0 };
+            const bt          = (bk && bk.totals) || blankTotals;
+            const bu          = (bk && bk.unattributed) || blankTotals;
+            const reserve      = bt.reserve      / rate;
+            const outbound     = bt.outbound     / rate;
+            const onOrder      = bt.onOrder      / rate;
+            const inTransit    = bt.inTransit    / rate;
+            // Absent on a bucket keyed before this field existed in the payload
+            // shape — `|| 0` rather than a throw, the same tolerance every other
+            // figure here already has for a missing bucket.
+            const readyToBuild = (bt.readyToBuild || 0) / rate;
             const unattributed = {
-                reserve:   bu.reserve   / rate,
-                outbound:  bu.outbound  / rate,
-                onOrder:   bu.onOrder   / rate,
-                inTransit: bu.inTransit / rate,
+                reserve:      bu.reserve      / rate,
+                outbound:     bu.outbound     / rate,
+                onOrder:      bu.onOrder      / rate,
+                inTransit:    bu.inTransit    / rate,
+                readyToBuild: (bu.readyToBuild || 0) / rate,
             };
 
             const summaryRow = {
@@ -2190,6 +2857,14 @@ define([
                 // inlines the bundle rather than letting the browser cache it.
                 lots:         lots,
                 unit:         pair.unit,
+                /*
+                 * ADDING a field here is safe; the deploy-order warning above is
+                 * about REMOVING one. This is the stage-crossing carrier for
+                 * `readyToBuildSourced` — see its note. `!== false` so that a row
+                 * written by an older reduce, replayed from a retried stage, is
+                 * read as "no claim" rather than as unsourced.
+                 */
+                rtbSourced:   pair.rtbSourced !== false,
                 onHand:       onHand,
                 // Row totals come from the ORDER LINES, not from summing the
                 // lots. A line without an inventory-detail assignment is real
@@ -2199,12 +2874,13 @@ define([
                 outbound:     outbound,
                 onOrder:      onOrder,
                 inTransit:    inTransit,
-                // ⛔ STILL NO SOURCE. There is no Ready to Build field on the
-                // transaction — every candidate custbody name was probed on
-                // 2026-08-18 and none exists. Marc-Antoine describes it as a
-                // header status ticked by hand, so the field has to be created
-                // before this can be anything but 0. Do not substitute a proxy.
-                readyToBuild: 0,
+                // Sourced from `custbody_arch_ready_to_build` where the field
+                // exists and could be read this run (see `loadBuckets`); 0 on
+                // any account where it cannot, which is exactly today's value
+                // and exactly what every open line falls back to. Never both
+                // this and `reserve` for the same open quantity — the two are
+                // an either/or split of the same line.
+                readyToBuild: readyToBuild,
                 // Quantity the row carries that NO lot claims, because the order
                 // line has no inventory detail. Published so a drill-down showing
                 // fewer lots than the column suggests reads as a known gap rather
@@ -2215,8 +2891,7 @@ define([
                 // sellable while a correction is pending.
                 held:         held,
                 heldLotCount: lots.filter((l) => l.onHold).length,
-                /* The full formula, floored. readyToBuild stays a literal 0 so it
-                 * is obvious it contributes nothing yet.
+                /* The full formula, floored.
                  *
                  * 🔴 `outbound` IS NOT SUBTRACTED, and removing it on 2026-09-08
                  * was a CORRECTION, not a simplification. Do not put it back
@@ -2256,9 +2931,14 @@ define([
                  * on-hand stock and subtracts it, which is self-consistent for a
                  * generator but no longer matches live. Bring it in step when it
                  * is next touched.
+                 *
+                 * `readyToBuild` IS subtracted, same as `reserve`: it is sold
+                 * wood one stage further along, not unsold wood. When the field
+                 * cannot be read, `readyToBuild` is 0 and this line is
+                 * unchanged from before it existed.
                  */
                 available:    Math.max(0, onHand + onOrder + inTransit
-                                          - reserve - 0 /*readyToBuild*/
+                                          - reserve - readyToBuild
                                           - held),
                 // NULL, NOT ZERO, when nothing could be costed. 0 renders as
                 // "$0.00/BF" — indistinguishable from stock that genuinely cost
@@ -2353,6 +3033,11 @@ define([
                 catch (e) { log.error('ARCH cache summarize parse', e.message); }
                 return true;
             });
+
+            /* Read off the ROWS, never off `readyToBuildSourced` — this is a
+             * different execution and that variable is a re-initialised `true`
+             * here. See its note for what that used to make META claim. */
+            const rtbSourced = rtbSourcedFrom(rows);
 
             /*
              * Stage errors, counted for one reason: to tell a run that produced
@@ -2598,8 +3283,8 @@ define([
                         lastAttempt:        new Date().toISOString(),
                         rowCount:           existingCount,
                         lastRunMode:        'FULL',
-                        bucketsBuilt:       ['onHand', 'reserve', 'outbound', 'onOrder', 'inTransit'],
-                        bucketsEmpty:       ['readyToBuild'],
+                        bucketsBuilt:       bucketsMeta(rtbSourced).bucketsBuilt,
+                        bucketsEmpty:       bucketsMeta(rtbSourced).bucketsEmpty,
                         skippedLotCount:    skippedLots.length,
                         recoveredCount:     recoveredCount,
                         unrecoverableCount: unrecoverableCount,
@@ -2667,11 +3352,11 @@ define([
                     rowCount:     rows.length,
                     lastRunMode:  'FULL',
                     // Stated in the payload, not just in this file, so the screen
-                    // can tell the user which columns are real.
-                    bucketsBuilt: ['onHand', 'reserve', 'outbound', 'onOrder', 'inTransit'],
-                    // readyToBuild alone. No field exists on the transaction to
-                    // source it from — see the note in reduce.
-                    bucketsEmpty: ['readyToBuild'],
+                    // can tell the user which columns are real. See `bucketsMeta`:
+                    // readyToBuild moves from Empty to Built the first run after
+                    // the field exists and can be read.
+                    bucketsBuilt: bucketsMeta(rtbSourced).bucketsBuilt,
+                    bucketsEmpty: bucketsMeta(rtbSourced).bucketsEmpty,
                     // Non-zero means the On Hand figures on screen are LOW: these
                     // lots exist but could not be converted to display units.
                     skippedLotCount: skippedLots.length,
@@ -2696,7 +3381,8 @@ define([
             });
 
             log.audit('ARCH cache summarize',
-                rows.length + ' summary row(s), ' + payloadBytes + ' bytes. readyToBuild not sourced. ' +
+                rows.length + ' summary row(s), ' + payloadBytes + ' bytes. ' +
+                (rtbSourced ? 'readyToBuild sourced. ' : 'readyToBuild not sourced. ') +
                 costedRows + '/' + rows.length + ' row(s) costed from book ' + costBookId() + '.' +
                 (existingCount ? ' Replaced ' + existingCount + ' cached row(s).' : '') +
                 (forceFull ? ' FORCED — shrink guard bypassed.' : ''));

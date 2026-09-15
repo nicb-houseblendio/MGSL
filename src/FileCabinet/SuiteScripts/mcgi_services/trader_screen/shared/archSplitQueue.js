@@ -18,6 +18,36 @@
  * So this query and the availability rule read the same flag, and cannot drift
  * apart the way two records would.
  *
+ * ── AND the order must be marked Ready to Build ─────────────────────────────
+ * Added 2026-09-11, from Marc-Antoine directly (Feedback 5 call, 2026-09-10):
+ * "il faudrait que le split s'envoie juste quand le SO est ready to build" — a
+ * trader can flag a split while the order is still being built, and the warehouse
+ * must not see it until the order is actually ready. `custbody_arch_ready_to_build`
+ * (see `F_READY_TO_BUILD` in `archOrderCreate.js`) is read in its OWN isolated,
+ * try-caught query rather than joined into `fetchRows()`.
+ *
+ * 🔴 CORRECTED 2026-09-14. This note used to say the field "does not exist in
+ * this account yet". It DOES: `custbody_arch_ready_to_build` is internal id 14083,
+ * a BODY field, and it is in use — 2 sales orders read T and 8 read F today. The
+ * claim was true when written on 2026-09-11 and was never revisited.
+ *
+ * The isolated query stays anyway, and the reason is now the honest one: this file
+ * has to keep working against an account where the field is absent (production has
+ * never had it), and joining it into `fetchRows()`'s single big query would take
+ * the ENTIRE queue down the moment that column does not exist, for every trader
+ * and every order, not only the ones this gate is about. Same reasoning as
+ * `archOrderCreate.js` guarding every write to it with `setIfPresent`.
+ *
+ * The gate FAILS CLOSED: an order is excluded unless it is affirmatively read as
+ * Ready to Build, both when it explicitly reads false/blank and when the field
+ * cannot be read at all (not yet created, or a query error). Failing open would
+ * reproduce exactly the bug being fixed — the warehouse seeing unfinished work —
+ * the moment the field's absence causes a lookup miss. `counts.readyToBuildKnown`
+ * says whether the gate could actually be evaluated (false when the field itself
+ * is unavailable), and `counts.notReadyToBuild` is how many otherwise-pending jobs
+ * this excluded, so the warehouse screen can say WHY the queue is short rather
+ * than reading as empty or broken.
+ *
  * ── Units ───────────────────────────────────────────────────────────────────
  * `systemBF` is converted from the lot's stored quantity, which is the item's
  * BASE unit — MBF for Lumber, so a lot holding 2.206 reports 2206. Ovals and
@@ -57,6 +87,46 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
         if (s === 'lf' || (s.indexOf('linear') !== -1 && s.indexOf('feet') !== -1)) return 'LF';
         if (s === 'unit' || s === 'units' || s === 'ea' || s === 'each') return 'UNIT';
         return 'BF';
+    };
+
+    /**
+     * Must stay in step with `F_READY_TO_BUILD` in `archOrderCreate.js` — one
+     * field, two files, because a read query and a record-save call cannot
+     * share a constant across SDF modules without a third shared file neither
+     * currently needs.
+     */
+    const F_READY_TO_BUILD = 'custbody_arch_ready_to_build';
+
+    /**
+     * Ready to Build per SO id, read in its OWN try-caught query — see the
+     * module doc comment for why this cannot join into `fetchRows()`.
+     *
+     * `available: false` means the gate could not be evaluated at all (the
+     * field does not exist yet, or the query failed for any other reason), as
+     * distinct from `available: true` with an id simply absent from `map`
+     * (read successfully, and it is not Ready to Build). The caller treats
+     * both the same way — excluded — but reports them differently so the
+     * warehouse screen can say WHY the queue is short.
+     */
+    const readyToBuildBySo = (soIds) => {
+        if (!soIds.length) return { available: true, map: {} };
+        try {
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT id AS soid, ' + F_READY_TO_BUILD + ' AS flag ' +
+                    'FROM transaction WHERE id IN (' + soIds.map(() => '?').join(',') + ')',
+                params: soIds,
+            }).asMappedResults();
+            const map = {};
+            rows.forEach((r) => { map[String(r.soid)] = r.flag === 'T'; });
+            return { available: true, map: map };
+        } catch (e) {
+            log.audit('ARCH Split Queue — Ready to Build unavailable',
+                'custbody_arch_ready_to_build could not be read, so every pending split is being ' +
+                'excluded from the queue rather than shown unfiltered: ' +
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return { available: false, map: {} };
+        }
     };
 
     /**
@@ -221,7 +291,6 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
         const units = unitsByItem([...new Set(rows.map((r) => String(r.itemid)))].filter(Boolean));
 
         const bySo = {};
-        let lotMissingCount = 0;
 
         const rateless = [];
         // Same second query as the open-orders tab, for the same reason: joined
@@ -249,7 +318,6 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
             const stored = parseFloat(r.lotstored);
             const systemBF = (rate > 0 && isFinite(stored)) ? stored / rate : 0;
             const lotMissing = !r.lotno;
-            if (lotMissing) lotMissingCount++;
 
             if (!bySo[r.sono]) {
                 bySo[r.sono] = {
@@ -281,11 +349,32 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
             });
         });
 
-        const jobs = Object.keys(bySo).map((k) => bySo[k]);
+        const allJobs = Object.keys(bySo).map((k) => bySo[k]);
+
+        // Ready to Build gate — see the module doc comment. FAILS CLOSED: a job
+        // is kept only when its SO is affirmatively read as Ready to Build.
+        const rtb = readyToBuildBySo([...new Set(allJobs.map((j) => String(j.soId)))]);
+        const jobs = rtb.available ? allJobs.filter((j) => rtb.map[String(j.soId)] === true) : [];
+        const notReadyToBuildCount = rtb.available ? allJobs.length - jobs.length : allJobs.length;
+
+        // Counted from the VISIBLE jobs, not from every pending-split row — a
+        // lot-missing line on an order the Ready to Build gate just hid would
+        // otherwise show a banner about a line the warehouse cannot find in
+        // the table below it.
+        const lotMissingCount = jobs.reduce(
+            (n, j) => n + j.bundles.filter((b) => b.lotMissing).length, 0
+        );
+
         const counts = {
             orders:      jobs.length,
-            bundles:     rows.length,
+            bundles:     jobs.reduce((n, j) => n + j.bundles.length, 0),
             lotMissing:  lotMissingCount,
+            // How many otherwise-pending orders the Ready to Build gate excluded,
+            // and whether the gate could be evaluated at all — see the module doc
+            // comment. The warehouse screen uses these to say WHY the queue is
+            // short rather than leaving it looking empty or broken.
+            notReadyToBuild:    notReadyToBuildCount,
+            readyToBuildKnown:  rtb.available,
         };
         if (rateless.length) {
             log.error('ARCH Split Queue — no conversion rate',
@@ -296,6 +385,11 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
             log.audit('ARCH Split Queue',
                 lotMissingCount + ' split-flagged line(s) have no lot assigned; returned with lotMissing so the ' +
                 'warehouse sees the order rather than nothing.');
+        }
+        if (notReadyToBuildCount) {
+            log.audit('ARCH Split Queue — Ready to Build gate',
+                notReadyToBuildCount + ' order(s) have a pending split but are not (yet, or verifiably) ' +
+                'Ready to Build, so they were held back from the warehouse queue.');
         }
         return { jobs: jobs, counts: counts };
     };

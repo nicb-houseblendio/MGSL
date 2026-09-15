@@ -48,7 +48,22 @@
  */
 define(['N/query', 'N/log'], (query, log) => {
 
-    /** Oracle-style IN lists cap at 1000 entries; stay well under. */
+    /**
+     * Batch size for the id list below.
+     *
+     * ⚠️ This said "Oracle-style IN lists cap at 1000 entries; stay well under."
+     * MEASURED FALSE 2026-09-14 against this account's SuiteQL endpoint: `WHERE
+     * id IN (...)` returned OK at 999, 1,005, 5,000, 20,000 and 50,000 literal
+     * ids. NetSuite compiles SuiteQL rather than handing it to Oracle verbatim,
+     * so the familiar limit does not apply as stated. Caveats on that test: it
+     * was REST SuiteQL, a different dialect and host from the `N/query` this
+     * module uses, and it used literals rather than binds.
+     *
+     * 500 stays anyway, and the reason is the loop below, not a cap: one failed
+     * chunk costs 500 ids instead of the whole tab, which is the entire point of
+     * the try sitting inside the loop. The two ARCH reads of this same id list
+     * (the cache MR and the open-orders service) match it deliberately.
+     */
     const CHUNK = 500;
 
     const SQL =

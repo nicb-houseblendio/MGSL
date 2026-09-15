@@ -89,27 +89,50 @@ export const evaluateEntry = (e: ArchSplitEntry, systemBF: number): SplitRowStat
   };
 };
 
-/**
- * The new lot number for the remainder: the original with a `-N` suffix,
- * incrementing per split ("à chaque split, on fait un incrément... il y a un
- * « -1 » après").
+/* 🔴 `nextSplitLotNo()` WAS HERE AND IS DELETED. Do not bring it back.
  *
- * ALWAYS APPENDS. Never parse a trailing number off the lot and increment it —
- * MGSL lot numbers already end in a sequence (`ARCH-SAP-64-001`, `-002`, `-003`
- * are three different bundles of the same item), so incrementing the last group
- * would hand back the lot number of a DIFFERENT PHYSICAL BUNDLE and collide with
- * it in NetSuite. Nothing in the lot number distinguishes "bundle sequence" from
- * "split sequence", so the only safe move is to append a new group.
+ * It returned `` `${lotNo}-${priorSplits + 1}` `` and was rendered in three places,
+ * one of them the printed SPLIT / LOT SHEET the warehouse staples to the new
+ * bundle. NetSuite never created that name. Two separate faults:
  *
- * ⚠️ Splitting an already-split lot is ambiguous in the source material: does
- * `ARCH-SAP-64-001-1` split into `-001-2` (a sibling) or `-001-1-1` (nested)?
- * This returns the sibling form via `priorSplits`. Confirm with the client
- * before this reaches NetSuite.
+ * 1. WRONG NAMESPACE. The numeric `-N` suffix is what RECEIVING hands to a second
+ *    bundle on one PO line, not what a split produces. Measured on Marc-Antoine's
+ *    own screen, 2026-09-10 [11:50]: one 2,000 BF line of BEM84AD carrying lots
+ *    `12345` AND `12345-1`, 1,000 BF each, two different physical bundles. His
+ *    receiving reports do the same, `315946-1` through `315946-15`. So `-1` on a
+ *    split can name a real bundle that already exists or has not landed yet.
+ *    `archSplitExecute.js:336-375` already knew this and appends a LETTER instead
+ *    (`-B`, `-C`, …), walking past every sibling name already taken.
+ * 2. WRONG AUTHOR. Only the server creates the lot, and only the server can
+ *    collision-check against siblings at the moment it does. Any name computed on
+ *    the client is a prediction of a decision that has not been made.
+ *
+ * The client therefore does not predict. It DISPLAYS what the server created,
+ * carried back as `childLot` from `completeBundle`. Before completion there is no
+ * name, and the paperwork says so rather than guessing (see `SplitWorkOrder.tsx`,
+ * which already treats LOT BF the same way and for the same reason).
+ *
+ * ⚠️ This deliberately sidesteps, rather than answers, the `-N` vs `-B` convention
+ * question. Marc-Antoine answered `-N` in the Feedback 2/3 round ("à chaque split,
+ * on fait un incrément... il y a un « -1 » après"); the server's own comment marks
+ * its letter ladder UNCONFIRMED. That is one client question with one answer, and
+ * it belongs in ONE place: `nextChildLotNumber()` on the server. Answering it here
+ * too is how the two halves drifted apart in the first place.
  */
-export const nextSplitLotNo = (lotNo: string, priorSplits = 0): string => `${lotNo}-${priorSplits + 1}`;
 
-/** What completing this row should do in NetSuite. */
-export const splitOutcome = (bundle: ArchSplitBundle, e: ArchSplitEntry): ArchSplitOutcome => {
+/**
+ * What completing this row should do in NetSuite.
+ *
+ * `childLotNo` is the name NetSuite ACTUALLY created, returned by
+ * `executeSplit` as `childLot`. Pass it whenever the split has run. Omit it on
+ * the fixture path, where nothing is written and no lot exists, and the panel
+ * reports the quantity without inventing a number for it.
+ */
+export const splitOutcome = (
+  bundle: ArchSplitBundle,
+  e: ArchSplitEntry,
+  childLotNo: string | null = null
+): ArchSplitOutcome => {
   const s = evaluateEntry(e, bundle.systemBF);
   return {
     lotNo: bundle.lotNo,
@@ -117,7 +140,7 @@ export const splitOutcome = (bundle: ArchSplitBundle, e: ArchSplitEntry): ArchSp
     soLineBF: s.customer,
     originalLotBF: s.customer,
     newLotBF: s.inventory,
-    newLotNo: nextSplitLotNo(bundle.lotNo),
+    newLotNo: childLotNo,
     systemVarianceBF: s.discrepancy,
   };
 };

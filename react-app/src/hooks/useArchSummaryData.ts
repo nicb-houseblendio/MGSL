@@ -149,7 +149,12 @@ export interface ArchCacheMeta {
   rowCount?: number;
   /** Buckets with a real source behind them. */
   bucketsBuilt?: string[];
-  /** Structurally zero — today: readyToBuild, which has no field to read. */
+  /**
+   * Reads 0 on every row this run, for want of a source. `readyToBuild` lands
+   * here until `custbody_arch_ready_to_build` exists in the account; it moves
+   * to `bucketsBuilt` on its own on the first cache run after the field is
+   * created, no redeploy needed.
+   */
   bucketsEmpty?: string[];
   /** >0 means On Hand is LOW: lots exist that could not be converted. */
   skippedLotCount?: number;

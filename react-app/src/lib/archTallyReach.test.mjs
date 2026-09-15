@@ -78,19 +78,31 @@ const REAL_ARCH_LOTS = [
 
   ok('the lot list is the 67 measured on 2026-09-08', REAL_ARCH_LOTS.length === 67, REAL_ARCH_LOTS.length);
 
+  /* 🔴 `true` IS THE FIXTURE GATE, ADDED 2026-09-15, AND THIS WHOLE BLOCK IS NOW
+   * ABOUT DEMO MODE ONLY.
+   *
+   * Every assertion below measures how far the demo fixture reaches, which is a
+   * question that only exists when the screen is running on local fixtures. On a
+   * screen reading the real ARCH cache the fixture is not served at all, and the
+   * block immediately after this one pins that instead.
+   *
+   * These were NOT deleted. "Every lot a trader can click draws a width grid" is
+   * still the contract for the demo, and it is still the thing the client complained
+   * about; it just stopped being the contract for live data, where a lot with no
+   * tally now says so rather than borrowing another shipment's. */
   const seen = REAL_ARCH_LOTS.map((lot) => {
-    const p = demoTallyProps(lot);
+    const p = demoTallyProps(lot, null, null, true);
     return { lot, p, w: p.bundle ? toWidthDistribution(p.bundle) : null };
   });
 
   const noBundle = seen.filter((s) => !s.p.bundle).map((s) => s.lot);
-  ok('every real lot still gets a bundle', noBundle.length === 0, noBundle);
+  ok('IN DEMO MODE: every real lot still gets a bundle', noBundle.length === 0, noBundle);
 
   /* 🔴 THE ASSERTION THE CLIENT'S COMPLAINT REDUCES TO.
    * Before the fix this was 0 of 67. It must be 67 of 67: whichever lot he clicks,
    * the row-per-width table draws. */
   const degenerate = seen.filter((s) => !s.w || s.w.degenerate).map((s) => s.lot);
-  ok('EVERY real lot renders a NON-degenerate width grid', degenerate.length === 0,
+  ok('IN DEMO MODE: EVERY real lot renders a NON-degenerate width grid', degenerate.length === 0,
     { degenerateCount: degenerate.length, of: seen.length, examples: degenerate.slice(0, 6) });
 
   const thin = seen.filter((s) => s.w.rows.length < 2).map((s) => [s.lot, s.w.rows.length]);
@@ -115,9 +127,53 @@ const REAL_ARCH_LOTS = [
 
   // Deterministic, so a screenshot reproduces and two tables on one screen agree.
   ok('two calls for the same lot give the same bundle',
-    REAL_ARCH_LOTS.every((lot) => demoTallyProps(lot).bundle === demoTallyProps(lot).bundle), null);
+    REAL_ARCH_LOTS.every((lot) =>
+      demoTallyProps(lot, null, null, true).bundle === demoTallyProps(lot, null, null, true).bundle), null);
   ok('demoTallyProps agrees with demoTallyForLot while nothing is configured',
-    REAL_ARCH_LOTS.every((lot) => demoTallyProps(lot).bundle === demoTallyForLot(lot).bundle), null);
+    REAL_ARCH_LOTS.every((lot) =>
+      demoTallyProps(lot, null, null, true).bundle === demoTallyForLot(lot).bundle), null);
+
+  /* ── THE GATE ITSELF. The same 67 lots, called the way the deployed screen calls
+   * them: no fourth argument, because the screen is reading the real cache.
+   *
+   * 771 of the 820 ARCH lots have no tally. Every one of them used to draw a
+   * stranger's matrix under a "not this lot's document" banner. Honest, and still
+   * four columns of pieces nobody counted for this wood. */
+  const live = REAL_ARCH_LOTS.map((lot) => ({ lot, p: demoTallyProps(lot) }));
+  const leaked = live.filter((x) => x.p.bundle).map((x) => x.lot);
+  ok('CONNECTED: not one lot without a tally of its own gets a fixture bundle',
+    leaked.length === 0, leaked);
+  ok('CONNECTED: ...and none of them gets a sample banner either, since there is no sample',
+    live.every((x) => !x.p.sample), live.filter((x) => x.p.sample).map((x) => x.lot));
+  ok('CONNECTED: ...nor a `source` line, which is reserved for real parsed data',
+    live.every((x) => !x.p.source), null);
+  ok('CONNECTED: siblings is an empty array, not undefined, so the panel can spread it',
+    live.every((x) => Array.isArray(x.p.siblings) && x.p.siblings.length === 0), null);
+
+  /* REAL data is unaffected by the gate. This is the half that must not regress:
+   * the gate withholds fixtures, never a lot's own parsed tally. */
+  const realBundle = {
+    bundleNo: '1', lot: '315643-5', species: 'Purpleheart',
+    thickness: { raw: '4/4', inches: 1 },
+    matrix: { widthsIn: [6, 8], rows: [
+      { lengthFt: 8, pieces: { '6': 32, '8': 32 }, declaredBF: 298.7 },
+      { lengthFt: 10, pieces: { '6': 32, '8': 32 }, declaredBF: 373.3 },
+    ] },
+    totals: { pieces: 128, boardFeet: 672, volumeM3: null },
+  };
+  const withReal = demoTallyProps('315643-5',
+    { status: 'PARSED', sourceFile: 'SEED.json', docUrl: null, bundles: [realBundle] });
+  ok('CONNECTED: a lot WITH a parsed tally still gets it, gate or no gate',
+    withReal.bundle === realBundle, null);
+  ok('CONNECTED: ...and it still carries its provenance, and still no sample banner',
+    withReal.source?.sourceFile === 'SEED.json' && withReal.sample === undefined, withReal.source);
+
+  /* The split states were already refused ahead of everything else. Re-pinned here so
+   * the gate cannot be "simplified" into replacing them. */
+  ok('CONNECTED: a split parent is still refused even with the fixture allowed',
+    demoTallyProps('315643-6', null, 'staleParent', true).bundle === undefined, null);
+  ok('CONNECTED: ...and so is a split child',
+    demoTallyProps('315643-6-B', null, 'newChild', true).bundle === undefined, null);
 
   /* 🔴 THE REASON THE MATRIX WAS HIDDEN IN THE FIRST PLACE, now measured rather than
    * assumed. The multi-width document is metric, so through rowLabel() its lengths

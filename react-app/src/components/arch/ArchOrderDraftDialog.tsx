@@ -176,6 +176,51 @@ const OutcomeNotice = ({
     </div>
   ) : null;
 
+  /* 🔴 THE TEAM THAT WAS PICKED AND NOT WRITTEN. The server understands the
+   * request, accepts it, then declines to act on it because the write switch is
+   * off on ITS deployment -- a different deployment from the one that decides
+   * whether this screen shows the picker at all. So the trader can be told the
+   * split will be written, be given a success, and have no commission attributed,
+   * with nothing anywhere saying so. The endpoint reports it now, and this is
+   * where the trader finds out, before they close the dialog. */
+  const teamIgnored = result.salesTeamWritten === false && !!result.salesTeamIgnoredReason;
+  const teamNotice = teamIgnored ? (
+    <div
+      style={{
+        ...notice,
+        background: '#FEFCE8',
+        border: '1px solid #FDE047',
+        color: '#713F12',
+        marginTop: 8,
+      }}
+    >
+      <div>
+        <strong>The commission split was not written.</strong> {result.salesTeamIgnoredReason}
+      </div>
+    </div>
+  ) : null;
+
+  /* An append that REATTRIBUTED commission already on the order. Worth saying
+   * plainly and with the ids, because it is the one thing here that changes
+   * something a different person may own. */
+  const teamReplaced = !!result.salesTeamReplaced && (result.salesTeamPrevious || []).length > 0;
+  const replacedNotice = teamReplaced ? (
+    <div
+      style={{
+        ...notice,
+        background: '#FFF7ED',
+        border: '1px solid #FDBA74',
+        color: '#7C2D12',
+        marginTop: 8,
+      }}
+    >
+      <div>
+        <strong>The commission split on this order was replaced.</strong> It previously credited
+        employee {(result.salesTeamPrevious || []).join(', ')}.
+      </div>
+    </div>
+  ) : null;
+
   const unlocked = (result.lotsNotAttributed || []).length > 0;
   if (unlocked || result.formWarning) {
     return (
@@ -195,6 +240,8 @@ const OutcomeNotice = ({
           </div>
         </div>
         {remanNotice}
+        {teamNotice}
+        {replacedNotice}
       </>
     );
   }
@@ -214,6 +261,8 @@ const OutcomeNotice = ({
         </span>
       </div>
       {remanNotice}
+      {teamNotice}
+      {replacedNotice}
     </>
   );
 };

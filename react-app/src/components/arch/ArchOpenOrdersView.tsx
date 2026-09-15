@@ -60,6 +60,7 @@ import { traderAttributionNotice, UNASSIGNED } from '@/lib/archTraderAttribution
 import { useNetSuite } from '@/context/NetSuiteContext';
 import { useArchOpenOrders } from '@/hooks/useArchOpenOrders';
 import type { ArchLiveOpenOrder } from '@/hooks/useArchOpenOrders';
+import { setReadyToBuild } from '@/lib/archOrderApi';
 import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archOrder';
 
 /* ── Derived figures ────────────────────────────────────────────────────────*/
@@ -257,9 +258,77 @@ interface ArchOpenOrdersViewProps {
 }
 
 export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => {
-  const { orders, source, error, taggedItemCount, traderAttribution, transport, fallbackReason, degraded } =
+  const { orders, source, error, taggedItemCount, traderAttribution, transport, fallbackReason, degraded, reload } =
     useArchOpenOrders();
   const { accountId } = useNetSuite();
+  /*
+   * Ready to Build toggle state. Keyed by `soNo` rather than `internalId`
+   * because a fixture order's `internalId` is null and cannot key a Set/Record
+   * distinctly (every fixture would collide on the same `null` key) — moot in
+   * practice since the toggle only renders when `editable`, but keying on the
+   * field that IS always distinct costs nothing and avoids relying on that.
+   *
+   * No local optimistic copy of `readyToBuild` is kept: on success this calls
+   * `reload()` and lets the next fetch be the source of truth, the same
+   * trust-but-verify preference the server side already applies to this same
+   * write (`verifyReadyToBuild`). A brief re-fetch delay is a smaller risk
+   * than a client-side copy silently drifting from what NetSuite actually
+   * stored.
+   */
+  const [rtbBusy, setRtbBusy] = React.useState<Set<string>>(new Set());
+  const [rtbError, setRtbError] = React.useState<Record<string, string>>({});
+  /*
+   * 🔴 THE TICK IS INVISIBLE ON THE INVENTORY GRID UNTIL THE CACHE REBUILDS, and
+   * saying nothing about that is how a working tick reads as a broken one.
+   *
+   * `reload()` below re-reads THIS TAB only. The grid's READY TO BUILD column is
+   * served from the hourly cache, and nothing in the write path busts it
+   * (`mcgi_sl_arch_order_create.js` contains no cache reference at all). Measured
+   * 2026-09-14: a tick landed at 18:5x against a cache last built 18:48:12Z, so
+   * the column would not have moved for another 49 minutes.
+   *
+   * ⚠️ NOT a fixed sentence about "an hour". `TTL_SUMMARY` and `TTL_DETAIL` are
+   * both 43200 (12h) against an hourly backstop, so a stalled chain stretches this
+   * much further, and a hardcoded number would be confidently wrong exactly when
+   * it matters most. The banner points at the header badge, which reads the
+   * cache's own `lastUpdated` through `lib/archFreshness`.
+   */
+  const [rtbLagNotice, setRtbLagNotice] = React.useState<string | null>(null);
+  const handleToggleReadyToBuild = React.useCallback(
+    async (o: ArchLiveOpenOrder) => {
+      if (!o.internalId || rtbBusy.has(o.soNo)) return;
+      setRtbBusy((s) => new Set(s).add(o.soNo));
+      setRtbError((e) => { const next = { ...e }; delete next[o.soNo]; return next; });
+      const result = await setReadyToBuild(o.internalId, !o.readyToBuild);
+      setRtbBusy((s) => { const next = new Set(s); next.delete(o.soNo); return next; });
+      if (result.ok) {
+        setRtbLagNotice(
+          `${o.soNo} saved. This tab is up to date now, but the Hardwood tab's ` +
+          `READY TO BUILD column is served from the hourly cache and will not ` +
+          `show it until the next rebuild. The age of those figures is on the ` +
+          `badge beside the date at the top.`
+        );
+        reload();
+      } else {
+        setRtbLagNotice(null);
+        /*
+         * NOT_STORED is a failure that CHANGED the record's neighbourhood: the
+         * save went through and NetSuite read back something else, so this row
+         * is now stale in a way a refusal or a dropped fetch never leaves it.
+         * Re-read even while reporting the failure, so the checkbox shows what
+         * NetSuite actually holds rather than what the trader clicked.
+         */
+        if (result.code === 'NOT_STORED') reload();
+        setRtbError((e) => ({
+          ...e,
+          [o.soNo]: result.transportFailure
+            ? (result.error || 'NetSuite did not answer.') + ' Reload before retrying.'
+            : result.error || 'Ready to Build could not be changed.',
+        }));
+      }
+    },
+    [rtbBusy, reload],
+  );
   /*
    * 🔴 'loading' is NOT demo. `isDemo` used to be `source !== 'netsuite'`, so the
    * whole in-flight window rendered "Demo data. These orders are placeholders, not
@@ -274,25 +343,42 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
   const isDemo = source === 'fixtures';
 
   /**
-   * 🔴 GROUPED BY THE CREATOR BY DEFAULT, which is what the client asked for.
+   * 🔴 GROUPED BY THE SALES REP BY DEFAULT. Changed 2026-09-14.
    *
-   * "Ils affichent tous a unassigned, mais devrait être la personne qui a créé le
-   * SO" (Marc-Antoine, 2026-09-08). The rep stays a column and a grouping option;
-   * it is not removed and it is not what stands in for the creator.
+   * This defaulted to the CREATOR, on the strength of "Ils affichent tous a
+   * unassigned, mais devrait être la personne qui a créé le SO" (Marc-Antoine,
+   * 2026-09-08). **He retracted that on the 2026-09-10 call at [32:00]**, having
+   * seen what it actually produces:
    *
-   * ⚠️ Unless there are no creators to group by, in which case it falls back to
-   * the rep rather than banding everything under one "Unknown". That is not
-   * hypothetical: FIXTURE orders carry no `createdBy` at all, so demo mode would
-   * otherwise collapse every invented order into a single meaningless group and
-   * lose the trader bands the fixtures exist to demonstrate. The same fallback
-   * covers a live response whose creator nobody's role can read.
+   *   "je pense qu'on s'est mal compris pour le created by, parce que là ici ce
+   *    que je vois c'est que c'est comme, c'est created by Houseblend. Tu sais ce
+   *    que je voulais dire c'est que ça peut arriver que moi je crée un sales
+   *    order pour quelqu'un... il y a comme un owner, parce que le sales team ça
+   *    peut être deux personnes, mais il y a toujours un owner du sales order
+   *    quand même. Fait que là qu'on utilise le sales rep."
+   *
+   * And then, explicitly: "le sales rep il est ici. Comme ça, c'est la personne
+   * qui a créé, puis après ça, le sales team est utilisé juste pour le split de
+   * commission."
+   *
+   * Confirmed live in sandbox the same way he saw it, 2026-09-14: 7 open orders
+   * banded as "House Blend 2" x6 and "Marc-Antoine Poirier" x1. The creator is the
+   * integration account on almost every real order, so banding by it says nothing,
+   * while the Sales Rep column underneath held Lucas Gibb, Alec Wolf and Camil
+   * Perrault. Grouping by the creator was hiding the only axis with information in
+   * it.
+   *
+   * The creator is NOT removed: it stays a column and a grouping option, because
+   * "who keyed this in" is still a real question, just not the default one.
+   *
+   * ⚠️ No `anyCreator` fallback any more, and it is not needed. The old code fell
+   * back to the rep when no order carried a `createdBy`, which existed for FIXTURE
+   * orders; the rep is now the default in every case, so fixtures and live data
+   * take the same path. `groupValue` still substitutes REP_UNKNOWN for a blank
+   * rep, so an order with no rep bands honestly rather than disappearing.
    */
   const [axisOverride, setAxisOverride] = React.useState<GroupAxis | null>(null);
-  const anyCreator = React.useMemo(
-    () => orders.some((o) => (o.createdBy || '').trim() !== ''),
-    [orders]
-  );
-  const groupBy: GroupAxis = axisOverride !== null ? axisOverride : anyCreator ? 'creator' : 'rep';
+  const groupBy: GroupAxis = axisOverride !== null ? axisOverride : 'rep';
   const [groupFilter, setGroupFilter] = React.useState('');
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
 
@@ -499,19 +585,24 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
           ⚠️ `taggedItemCount` is itself read by whichever role served the request
           (HARDWOOD_ITEM_COUNT_SQL runs in the same execution), so it is not an
           account fact and the copy no longer calls it one.
+
+          ⚠️ Updated 2026-09-10: the count and the copy both moved from the
+          Hardwood SEGMENT to Department 11 ("Hardwood") — see the cache MR's
+          header comment. The count is therefore much larger now (~142, not 6)
+          and that is expected, not a regression.
         */
         <div style={{ ...notice, background: '#EFF6FF', borderBottom: '1px solid #93C5FD', color: '#1E40AF' }}>
           <span style={{ fontSize: 13, lineHeight: 1 }}>ℹ️</span>
           <span>
             <strong>Live, and nothing to show.</strong> No open sales order that this
-            request could read carries a hardwood-tagged item.
+            request could read carries a Hardwood-department item.
             {taggedItemCount !== null ? (
               <> This request could see {taggedItemCount} item
-                {taggedItemCount === 1 ? '' : 's'} carrying the Hardwood segment, so orders
-                on untagged SKUs cannot appear here.</>
+                {taggedItemCount === 1 ? '' : 's'} in the Hardwood department, so orders
+                on items outside it cannot appear here.</>
             ) : (
-              <> The hardwood-tagged item count could not be read, so this banner cannot say
-                how many items are tagged.</>
+              <> The Hardwood item count could not be read, so this banner cannot say
+                how many items are in scope.</>
             )}{' '}
             {/*
               🔴 THE TAGGING ADVICE IS NOT UNCONDITIONAL, and it used to be. On the
@@ -750,6 +841,42 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
         </div>
       </div>
 
+      {/* A tick lands here instantly and on the Hardwood grid only at the next
+          cache rebuild. Said once, dismissible, and never a number: see the note
+          on `rtbLagNotice`. */}
+      {rtbLagNotice && (
+        <div style={{ padding: `0 ${PAD_L}px 10px` }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 10,
+              padding: '9px 12px',
+              borderRadius: 8,
+              background: '#EFF6FF',
+              border: '1px solid #BFDBFE',
+              fontSize: 11.5,
+              lineHeight: 1.5,
+              color: ARCH_SURFACE.text,
+            }}
+          >
+            <span aria-hidden="true">🕒</span>
+            <span style={{ flex: 1 }}>{rtbLagNotice}</span>
+            <button
+              type="button"
+              onClick={() => setRtbLagNotice(null)}
+              aria-label="Dismiss"
+              style={{
+                border: 'none', background: 'transparent', cursor: 'pointer',
+                color: ARCH_SURFACE.textLight, fontSize: 13, lineHeight: 1, padding: 0,
+              }}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── One table for everything ──────────────────────────────────────── */}
       <div style={{ padding: `0 ${PAD_L}px 18px` }}>
         <div
@@ -898,6 +1025,19 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                        * (no internalId, so no write target) is genuinely uneditable. */
                       const editable = !!o.internalId;
                       const buildWarning = o.status === 'Ready to Build';
+                      /* Something has already left the building, so Ready to Build
+                       * can no longer change anything. 'In Transit' is exactly the
+                       * D/E/F case: `archStatusFor` maps those three and only those
+                       * to this pill, and its own comment says "A and B are the only
+                       * statuses where the tick is meaningful".
+                       *
+                       * 🔴 The TICK WAS A SILENT NO-OP HERE until 2026-09-14. The
+                       * cache buckets on `open = max(0, ordered - moved)`, which is
+                       * 0 once a line is fully shipped, so ticking a shipped order
+                       * wrote the field, reported success, and moved no number on
+                       * any screen. Three of the seven open orders were in that
+                       * state when the deployed screen was opened. */
+                      const shippedAlready = o.status === 'In Transit';
                       return (
                         <React.Fragment key={o.soNo}>
                           <tr
@@ -1037,6 +1177,54 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
                             </td>
                             <td style={td}>
                               <StatusPill status={o.status} />
+                              {/*
+                                The manual tick behind `readyToBuild`. Only on a
+                                real order (`editable`, same gate as Edit above):
+                                a fixture's `internalId` is null and there is no
+                                NetSuite record to write to. Shown regardless of
+                                whether `readyToBuild` currently landed the pill
+                                on 'Ready to Build' or 'In Transit' — see the type
+                                comment on `ArchLiveOpenOrder.readyToBuild` for why
+                                the raw flag and the pill can legitimately differ
+                                once an order ships.
+                              */}
+                              {editable && (
+                                <label
+                                  title={
+                                    rtbError[o.soNo]
+                                      ? rtbError[o.soNo]
+                                      : shippedAlready
+                                        ? 'This order has already shipped, so Ready to Build no longer applies. Ticking it would change no figure on any screen.'
+                                        : o.readyToBuild
+                                          ? 'Ready to build. Untick to move it back to Reserved.'
+                                          : 'Not yet marked ready to build.'
+                                  }
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 4,
+                                    marginLeft: 8,
+                                    fontSize: 9.5,
+                                    fontWeight: 700,
+                                    color: rtbError[o.soNo] ? '#B42318' : ARCH_SURFACE.textLight,
+                                    // Greyed rather than hidden: the trader should see that the
+                                    // control exists and why it is unavailable here, not wonder
+                                    // why this row is missing something every other row has.
+                                    opacity: shippedAlready ? 0.45 : 1,
+                                    cursor: rtbBusy.has(o.soNo) || shippedAlready ? 'default' : 'pointer',
+                                    verticalAlign: '1px',
+                                  }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={!!o.readyToBuild}
+                                    disabled={rtbBusy.has(o.soNo) || shippedAlready}
+                                    onChange={() => handleToggleReadyToBuild(o)}
+                                    style={{ margin: 0, cursor: 'inherit' }}
+                                  />
+                                  {rtbBusy.has(o.soNo) ? '…' : 'Build'}
+                                </label>
+                              )}
                             </td>
                             <td style={{ ...td, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {o.customer}

@@ -767,21 +767,28 @@ define([
         }
 
         /*
-         * Two steps from Nic's section 3.2 are deliberately NOT here yet, because
-         * both depend on things that do not exist:
+         * 🔴 CORRECTED 2026-09-14. This block used to say "there is no ARCH cache
+         * to refresh. The MR, the cache keys and the saved searches are all still
+         * to be built (Track C)". That is FALSE and has been for some time:
+         * `mcgi_mr_trader_screen_cache_arch.js` is ~3,000 lines, reads tallies at
+         * :1006-1140, and its deployment is live on a self-rescheduling hourly
+         * chain. Anyone planning work from the old wording was planning against a
+         * system that does not exist.
          *
-         *   Cache refresh — there is no ARCH cache to refresh. The MR, the cache
-         *   keys and the saved searches are all still to be built (Track C), so
-         *   there is nothing to invalidate. Until then the remainder appears on
-         *   the trader screen at the next scheduled rebuild rather than
-         *   immediately, which is a visible lag but not a correctness problem.
+         * ⚠️ AND DO NOT PUT A TALLY HOOK HERE. This point is AFTER the true-up,
+         * which RETHROWS at :762-766. So this block does not run on the one path
+         * that matters most: the inventory adjustment has already committed at
+         * :583, the lots really have moved, and the parent's tally is really
+         * wrong, but the true-up failed and execution never reaches this line.
+         *
+         * The tally staleness is DERIVED, not written. The cache MR compares each
+         * lot's most recent inventory adjustment against its capture record's
+         * `lastmodified`, so a split needs no hook at all here and no write to
+         * anybody else's record. See the ARCH split-to-tally plan.
          *
          *   Tag hook — bundle-tag PDF generation is the adjacent BT7 workstream.
          *   Emitting an event nothing consumes would be dead code that looks
-         *   finished.
-         *
-         * Both are one call each once their dependency lands. Left as a gap on
-         * purpose rather than stubbed, so nobody reads a no-op as done.
+         *   finished. Still a real gap, left on purpose rather than stubbed.
          */
         return {
             ok: true,

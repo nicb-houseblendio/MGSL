@@ -39,6 +39,13 @@ interface InventoryTableARCHProps {
   totals?: ArchTotals;
   rowCount?: number;
   uom: string;
+  /**
+   * From `action=meta`: true once `readyToBuild` is in `bucketsBuilt` rather
+   * than `bucketsEmpty`. Defaults to false — the "not sourced yet" note stays
+   * up — so a caller that has not wired META through never wrongly claims the
+   * column is sourced when it might not be.
+   */
+  readyToBuildSourced?: boolean;
 }
 
 /**
@@ -76,7 +83,15 @@ interface InventoryTableARCHProps {
  * The measurement is in the cache MR beside the formula. All 13 rows reconcile
  * exactly as this stands; 4 of 13 did not before.
  */
-const METRIC_COLUMNS: { key: ArchDetailKey; label: string; width: number; drillable?: boolean; note?: string }[] = [
+/**
+ * A function, not a constant array, because the Ready to Build note is no
+ * longer a permanent claim — see `readyToBuildSourced`. `METRIC_IDS` below
+ * still derives from it with a fixed argument, since the note is the only
+ * thing that varies; the set of keys does not.
+ */
+const getMetricColumns = (
+  readyToBuildSourced: boolean,
+): { key: ArchDetailKey; label: string; width: number; drillable?: boolean; note?: string }[] => [
   { key: 'available', label: 'AVAILABLE', width: 105, drillable: true },
   { key: 'onHand', label: 'ON HAND', width: 100, drillable: true },
   { key: 'reserve', label: 'RESERVED', width: 100, drillable: true },
@@ -85,9 +100,16 @@ const METRIC_COLUMNS: { key: ArchDetailKey; label: string; width: number; drilla
     label: 'READY TO BUILD',
     width: 130,
     drillable: true,
-    // The honest answer to Marc-Antoine's question, on the column he expects to
-    // see it in. Kept in step with notSourcedNote() in lib/archBuckets.ts.
-    note: 'Not sourced yet: no field in NetSuite feeds this, so it reads 0 on every row. Stock sold on an order sits in Reserved until it ships.',
+    // The honest answer to Marc-Antoine's question, on the column he expects
+    // to see it in. Driven by the cache's own META (`bucketsEmpty`) rather
+    // than hardcoded, because unlike outbound/onOrder below this one stopped
+    // being permanently unsourced on 2026-09-10 — see `archOrderCreate.js`'s
+    // `setReadyToBuild` and the cache MR's isolated read of
+    // `custbody_arch_ready_to_build`. A hardcoded string here would keep
+    // claiming "no field yet" long after one exists.
+    note: readyToBuildSourced
+      ? undefined
+      : 'Not sourced yet: no field in NetSuite feeds this, so it reads 0 on every row. Stock sold on an order sits in Reserved until it ships.',
   },
   {
     key: 'outbound',
@@ -100,7 +122,7 @@ const METRIC_COLUMNS: { key: ArchDetailKey; label: string; width: number; drilla
   { key: 'onOrder', label: 'ON ORDER', width: 100, drillable: true },
 ];
 
-const METRIC_IDS = new Set<string>(METRIC_COLUMNS.map((c) => c.key));
+const METRIC_IDS = new Set<string>(getMetricColumns(true).map((c) => c.key));
 
 const SortHeader = ({
   label,
@@ -257,6 +279,7 @@ export const InventoryTableARCH = ({
   totals,
   rowCount,
   uom,
+  readyToBuildSourced = false,
 }: InventoryTableARCHProps) => {
   const [sorting, setSorting] = React.useState<SortingState>([]);
   const [rowSelection, setRowSelection] = React.useState<Record<string, boolean>>({});
@@ -267,7 +290,7 @@ export const InventoryTableARCH = ({
   }, [rowSelection, onRowSelectionChange]);
 
   const columns = React.useMemo<ColumnDef<ArchSummaryRow>[]>(() => {
-    const metricCols: ColumnDef<ArchSummaryRow>[] = METRIC_COLUMNS.map(({ key, label, width, drillable, note }) => ({
+    const metricCols: ColumnDef<ArchSummaryRow>[] = getMetricColumns(readyToBuildSourced).map(({ key, label, width, drillable, note }) => ({
       id: key,
       accessorFn: (r) => r[key],
       header: ({ column }) => <SortHeader label={label} column={column} align="right" note={note} />,
@@ -346,7 +369,7 @@ export const InventoryTableARCH = ({
         size: 115,
       },
     ];
-  }, [uom, onDrillDown, onCellFilter, activeFilters]);
+  }, [uom, onDrillDown, onCellFilter, activeFilters, readyToBuildSourced]);
 
   const defaultOrder = React.useMemo(
     () => columns.map((c) => c.id as string),

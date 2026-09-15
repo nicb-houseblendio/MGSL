@@ -54,6 +54,17 @@ export type ArchDetailKey = ArchQtyKey | 'available';
 export interface ArchLotOrder {
   /** NetSuite internal id of the sales order. The link target, and the identity. */
   tranId: string;
+  /**
+   * Which bucket this order's share of the bundle landed in: `true` for Ready to
+   * Build, `false` for Reserved. Stamped by the cache MR from the same
+   * `readyToBuildIds` map that decided the quantity, so the two cannot disagree.
+   *
+   * ⚠️ OPTIONAL ON PURPOSE, and `archLotOrders.ts` checks for it before trusting
+   * it. A cache written by the previous MR has no such key, and on that payload
+   * the Ready to Build tab must keep showing an em dash rather than a list that
+   * may belong to the Reserved tab. Added 2026-09-14.
+   */
+  readyToBuild?: boolean;
   /** The document number, e.g. "SO-CWP-001344". `t.tranid`, not `t.id`. */
   soNumber: string;
   customerId: string;
@@ -215,6 +226,30 @@ export interface ArchLot {
     /** Raw `mgsl.tally.v1` bundle objects whose `lot` matched this lot exactly. */
     bundles: TallyBundle[];
   } | null;
+
+  /**
+   * Whether this lot's tally can still be trusted, derived server-side by the
+   * ARCH cache MR. Added 2026-09-15.
+   *
+   *   undefined / null   no split on record. Ordinary lot.
+   *   'staleParent'      the lot WAS split and a tally names it, but that tally
+   *                      predates the split, so its matrix describes wood that is
+   *                      no longer all here.
+   *   'newChild'         the lot was CREATED by a split and no supplier document
+   *                      has ever described it. This is a DIFFERENT thing from the
+   *                      hundreds of lots that simply never had a tally, and it is
+   *                      the case Marc-Antoine asked for on 2026-09-10 at 26:54.
+   *
+   * 🔴 SEPARATE FROM `tally`, not inside it, because 'newChild' is exactly the
+   * case where `tally` is null and there would be nowhere inside it to put this.
+   *
+   * Clears itself: a capture modified after the split means somebody re-tallied
+   * the lot, and that works whether the re-tally arrives as a new capture or as an
+   * edit of the existing one. Known limit, the server comment says it in full: the
+   * timestamp is per RECORD, so any edit to a capture clears the flag for every lot
+   * in that document.
+   */
+  tallyState?: 'staleParent' | 'newChild' | null;
 }
 
 export interface ArchSummaryRow {

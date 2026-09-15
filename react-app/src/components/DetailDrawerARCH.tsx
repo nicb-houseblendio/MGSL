@@ -3,6 +3,7 @@ import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { formatQty, displaySuffix } from '@/lib/archUom';
 import { ARCH_BUCKET_META } from '@/components/arch/archColors';
 import { ArchLotTable } from '@/components/arch/ArchLotTable';
+import type { ArchDataSource } from '@/hooks/useArchSummaryData';
 import { ArchPOListView } from '@/components/arch/ArchPOListView';
 import type { ArchSummaryRow, ArchDetailKey } from '@/types/arch';
 
@@ -22,6 +23,15 @@ import type { ArchSummaryRow, ArchDetailKey } from '@/types/arch';
  */
 
 interface DetailDrawerARCHProps {
+  /**
+   * Whether this screen is reading the real ARCH cache or local demo fixtures.
+   *
+   * Passed straight through to `ArchLotTable`, which is the only thing that needs it:
+   * on `'netsuite'` a lot with no tally gets no matrix at all rather than another
+   * shipment's wood. Defaults to `'netsuite'`, the safe reading — a caller that
+   * forgets gets the truthful screen, not the invented one.
+   */
+  dataSource?: ArchDataSource;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   row: ArchSummaryRow;
@@ -83,6 +93,7 @@ export const DetailDrawerARCH = ({
   uom,
   onAddToCart,
   cartLotNos,
+  dataSource = 'netsuite',
 }: DetailDrawerARCHProps) => {
   const [activeBucket, setActiveBucket] = React.useState<ArchDetailKey>(() => resolveTab(triggerBucket));
   // Land with reserved expanded when that is the column the trader actually clicked.
@@ -248,6 +259,7 @@ export const DetailDrawerARCH = ({
               row={row}
               bucket={activeBucket}
               uom={uom}
+              dataSource={dataSource}
               showReserved={showReserved}
               onToggleReserved={() => setShowReserved((v) => !v)}
               selected={selected}

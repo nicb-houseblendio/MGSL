@@ -91,12 +91,28 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
 (record, query, search, runtime, log, render, email, splitLib) => {
 
     /**
-     * `cseg_subsidiary_loc` = 1 is Hardwood. Named `_loc` because Lucas and Julie
-     * first built it on locations; the 2026-08-17 call moved it to the SKU and
-     * the name did not follow. Scoping by location would have been wrong anyway:
-     * CWP Prevost is tagged Softwood and holds most of the hardwood volume.
+     * ⚠️ SUPERSEDED 2026-09-10 — see the cache MR's header comment for the full
+     * reasoning (`mcgi_mr_trader_screen_cache_arch.js`). The segment
+     * (`cseg_subsidiary_loc`, 1 = Hardwood) is a manual, opt-in, per-item flag
+     * that has already failed twice: real ARCH stock went invisible because
+     * nobody tagged the item. Scoping is now department "Hardwood", minus a
+     * hardcoded exclusion list for decking, the one real product-line
+     * distinction inside that department. This module gates ORDER CREATION,
+     * not display, so it has to use the SAME scope the screen now uses — an
+     * item that shows on the grid must be orderable, and one that does not
+     * must still be refused here.
+     *
+     * BY NAME, not internal id 11: measured 2026-09-10, that id does not
+     * exist at all in production — same class of trap as a status-list value
+     * differing by environment. `readLotStates` below selects
+     * `BUILTIN.DF(i.department)`, a string, not the raw id.
      */
-    const HARDWOOD_SEGMENT = 1;
+    const HARDWOOD_DEPARTMENT = 'Hardwood';
+    const NON_ARCH_DEPARTMENT_ITEMS = [
+        'IPE44DECKD', 'IPE54DECKD', 'IPE54DECKDDNU',
+        'NRM44DECKDS4S', 'NRM44DECKDTNG',
+        'RBL44DECKD', 'RBL54DECKD',
+    ];
 
     /**
      * Split marker columns. These ALREADY EXIST — they were created for the
@@ -887,7 +903,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         }
     };
 
-    const resolveSalesTeam = (requestedId) => {
+    const resolveSalesTeam = (requestedId, suppliedMembers, suppliedName) => {
         if (!salesTeamWriteEnabled()) {
             // Not a refusal: a refusal would fail the whole order, and the order is
             // fine. The caller asked for something this deployment is not authorised
@@ -928,31 +944,76 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             }
         };
 
-        const groups = read('team',
-            'SELECT groupname, issalesrep, isinactive FROM entitygroup WHERE id = ?', [teamId]);
-        if (!groups.length) {
-            throw refusal('Sales team ' + teamId + ' does not exist, or is outside the ' +
-                          'subsidiaries this endpoint can read, so nothing was written. Pick ' +
-                          'one from the Sales team list on the order.');
-        }
-        const teamName = String(groups[0].groupname || ('Team ' + teamId));
-        if (String(groups[0].isinactive) === 'T') {
-            throw refusal('Sales team "' + teamName + '" is inactive, so it was not written. ' +
-                          'Pick an active team.');
-        }
-        /* An employee group that is not a sales team carries no commission split.
-         * 45 employee groups exist in this account and the 45th is exactly that,
-         * so this is a real distinction rather than a defensive one. */
-        if (String(groups[0].issalesrep) !== 'T') {
-            throw refusal('"' + teamName + '" is an employee group but not a sales team, so it ' +
-                          'carries no commission split and was not written. Setup > Sales Team ' +
-                          'lists the ones that do.');
+        /* ── THE TEAM COMES FROM THE CALLER, NOT FROM `entitygroup` ───────────
+         *
+         * 🔴 REWRITTEN 2026-09-14, because the two reads this replaces CANNOT RUN
+         * on this deployment. Measured live, four times:
+         *
+         *   SSS_SEARCH_ERROR_OCCURRED: Search error occurred:
+         *   Record 'entitygroup' was not found.
+         *
+         * This Suitelet executes as `runasrole` customrole2184, an ACCOUNTCENTER
+         * role, and `entitygroup` is not reachable from it. Granting that role
+         * LIST_CRMGROUP (View) changed nothing: the error was byte-identical
+         * before and after, ten minutes later. It is not a permission level, it is
+         * the record not being exposed to that context.
+         *
+         * ⚠️ AND THE OBVIOUS FIXES ARE BOTH WRONG:
+         *   - Changing `runasrole` breaks lot attachment on EVERY order, silently.
+         *     2184 is chosen because the SO form comes from the executing role's
+         *     preference and only the ARCH/MTL forms have INVENTORYDETAIL visible.
+         *     See "DO NOT FIX THE runasrole ON DEPLOYMENT 6505" in the todo-list.
+         *   - Widening an accounting role's CRM access so a sales feature can
+         *     write is the wrong direction, and it did not work anyway.
+         *
+         * ── WHY LOSING THE GROUP READ COSTS ALMOST NOTHING ───────────────────
+         * The group read answered three questions: who the members are, what each
+         * one's share is, and whether the team is real. The caller already holds
+         * the first two — the screen gets them from `action=salesTeams` on the
+         * RESTlet, which runs under the CALLER's role and works. And the third was
+         * never what protected the money: what protects it is the employee
+         * validation immediately below, which reads `employee` (this role reads it
+         * fine, 20 sales reps came back on this same deployment) and which is the
+         * SAME check NetSuite itself applies when it accepts a Sales Team line.
+         *
+         * ⚠️ WHAT IS GENUINELY GIVEN UP, stated plainly: a hand-crafted POST can
+         * send a member list matching no real team. Today this endpoint admits
+         * only roles 3 and 2181, so such a caller is already an administrator or
+         * the trader whose own commission it is. If that stops being acceptable,
+         * the group read moves to a sales-centre deployment and this becomes a
+         * second line of defence rather than the only one. It is NOT a reason to
+         * trust the numbers: every share is still re-validated below.
+         */
+        const teamName = String(suppliedName || '').trim() || ('Team ' + teamId);
+        const supplied = Array.isArray(suppliedMembers) ? suppliedMembers : null;
+        if (!supplied) {
+            throw refusal('Sales team "' + teamName + '" was named without its members, so ' +
+                          'there is nothing to credit and nothing was written. The screen sends ' +
+                          'the members alongside the team id; a caller that sends only the id ' +
+                          'is using an older shape than this endpoint accepts.');
         }
 
-        const rows = read('team members',
-            'SELECT employeemember AS repid, name AS repname, contribution AS contribution ' +
-            'FROM entitygroupmember ' +
-            'WHERE "group" = ? AND isinactive = \'F\'', [teamId]);
+        /* Shaped to match what the `entitygroupmember` read used to return, so
+         * everything below this point is unchanged: the duplicate check, the
+         * member cap, the share checks, the employee validation and the percent
+         * conversion all run exactly as they did. */
+        const rows = supplied.map((m) => ({
+            repid:        m && (m.id !== undefined ? m.id : m.repid),
+            repname:      m && (m.name !== undefined ? m.name : m.repname),
+            /* The FRACTION, matching what SuiteQL returned. The client carries
+             * both (`contribution` 0.5 and `contributionPct` 50) and sending the
+             * wrong one would put a 50x error into a commission split, so the
+             * percent form is refused outright rather than guessed at. */
+            contribution: m && (m.contribution !== undefined ? m.contribution : NaN),
+        }));
+
+        const looksLikePercent = rows.filter((r) => numOr(r.contribution, 0) > 1);
+        if (looksLikePercent.length) {
+            throw refusal('Sales team "' + teamName + '" was sent with shares above 1 (' +
+                          looksLikePercent.map((r) => String(r.contribution)).join(', ') +
+                          '), which is the percent form. This endpoint takes the fraction, so ' +
+                          '50% is 0.5. Nothing was written.');
+        }
 
         /* One person twice in a group would post two sublist lines crediting
          * them, and `verifySalesTeam` compares by employee id so it would read
@@ -992,8 +1053,19 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         members.sort((a, b) => a.id - b.id);
 
         if (!members.length) {
-            throw refusal('Sales team "' + teamName + '" has no active members this endpoint ' +
-                          'can read, so there is nobody to credit and nothing was written.');
+            /* Two different faults, one symptom, and naming the wrong one sends
+             * whoever debugs it at role scope when the caller simply sent nothing.
+             * This endpoint stopped reading the group on 2026-09-14, so "no members
+             * this endpoint can read" is no longer a thing it can truthfully say:
+             * it reads no members at all, it is handed them. */
+            throw refusal(supplied.length
+                ? 'Sales team "' + teamName + '" was sent ' + supplied.length + ' member row(s), ' +
+                  'not one of which carries a usable employee id, so there is nobody to credit ' +
+                  'and nothing was written.'
+                : 'Sales team "' + teamName + '" was sent with an EMPTY member list, so there is ' +
+                  'nobody to credit and nothing was written. The members come from the screen ' +
+                  'rather than from NetSuite, so this is the caller sending none rather than a ' +
+                  'team this endpoint cannot see.');
         }
         if (members.length > MAX_TEAM_MEMBERS) {
             throw refusal('Sales team "' + teamName + '" has ' + members.length + ' members. ' +
@@ -1334,6 +1406,176 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         return true;
     };
 
+    const F_READY_TO_BUILD = 'custbody_arch_ready_to_build';
+
+    /**
+     * Ticks or unticks Ready to Build on an EXISTING, already-saved sales
+     * order. This is the ENTIRE point of the call — unlike `remanStored` /
+     * `splitStored` on order creation, where the order itself is the real
+     * outcome and a missing side field is a partial success, there is no
+     * partial success here: if the field cannot be set, nothing this call was
+     * asked to do happened, so it REFUSES rather than returning a quiet no-op.
+     *
+     * Loaded and saved standard-mode, matching `assignLots`: a narrow,
+     * single-field update to a record that already exists, not the
+     * order-creation path. `enableSourcing: false` for the same reason
+     * `assignLots` uses it — this call has no business re-deriving anything
+     * else on the order — and `ignoreMandatoryFields: true` so a save is not
+     * blocked by an unrelated mandatory field on an old order this endpoint
+     * did not create.
+     *
+     * Reverting (`value: false`) is the SAME call with the opposite value,
+     * deliberately: this is a plain checkbox, not a one-way workflow status,
+     * which is also the answer to Marc-Antoine's 2026-08-14 question of
+     * whether an order can go back from Ready to Build to Reserved.
+     */
+    /**
+     * Is this sales order in scope for the ARCH screen?
+     *
+     * 🔴 ADDED 2026-09-14. `setReadyToBuild` accepted ANY sales order id, in a
+     * module whose order-creation path refuses a non-ARCH item line by line
+     * (see the HARDWOOD_DEPARTMENT check in `validateLines`). So the one call
+     * that writes to an order it did not create was the least guarded one in
+     * the file, and a mistyped or stale id could flip a flag on an Industriel
+     * or MTL order that no ARCH screen will ever show again.
+     *
+     * The test is the SAME one every other ARCH module uses, and it is BY NAME:
+     * department "Hardwood", minus the decking exclusions. Never the internal
+     * id — 11 does not exist in production at all, measured 2026-09-10, which is
+     * why `HARDWOOD_DEPARTMENT` is a string.
+     *
+     * Returns `{ known, hardwoodLines, totalLines, sample }`. `known: false`
+     * means the question could not be answered, which the caller treats
+     * differently from an answered "no": a read failure must not silently
+     * become a refusal that looks like a business rule.
+     *
+     * ⚠️ ONE LINE IS ENOUGH, and that is a decision nobody has put to the
+     * client. A mixed order carrying one hardwood line and four softwood lines
+     * passes this guard. The permissive reading is chosen because the whole-order
+     * flag is what the warehouse consumes and a part-ARCH order still has ARCH
+     * wood to build; the strict reading (every line hardwood) would refuse an
+     * order the trader can legitimately see on the screen. Worth one line of
+     * confirmation from Marc-Antoine, and it changes one comparison here.
+     *
+     * ⚠️ IN PRODUCTION THIS CURRENTLY REFUSES EVERYTHING. Measured 2026-09-13:
+     * prod has exactly one Trading department row, id 9, with no Hardwood child,
+     * so `BUILTIN.DF(i.department) = 'Hardwood'` matches zero items there. That
+     * is correct behaviour for an ARCH endpoint on an account with no ARCH data,
+     * but it must not be mistaken for a bug when prod cutover starts. The
+     * refusal text below names the department so the cause is readable.
+     */
+    const readOrderArchScope = (soId) => {
+        try {
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT BUILTIN.DF(i.department) AS dept, i.itemid AS itemcode ' +
+                    'FROM transactionline tl ' +
+                    '  JOIN item i ON i.id = tl.item ' +
+                    "WHERE tl.transaction = ? AND tl.mainline = 'F'",
+                params: [int(soId)],
+            }).asMappedResults() || [];
+
+            let hardwood = 0;
+            let sample = null;
+            for (let i = 0; i < rows.length; i++) {
+                const dept = String(rows[i].dept || '').trim();
+                const code = String(rows[i].itemcode || '').trim();
+                if (dept === HARDWOOD_DEPARTMENT && NON_ARCH_DEPARTMENT_ITEMS.indexOf(code) === -1) {
+                    hardwood++;
+                } else if (!sample) {
+                    sample = code || '(unnamed item)';
+                }
+            }
+            return { known: true, hardwoodLines: hardwood, totalLines: rows.length, sample: sample };
+        } catch (e) {
+            // Deliberately NOT a refusal. The caller decides, and it logs, because
+            // "we could not check" and "this is not an ARCH order" are different
+            // facts and collapsing them is how a query outage starts reading as a
+            // business rule.
+            log.error('ARCH Order Create — ARCH scope check failed',
+                'SO ' + soId + ': ' + (e.name || '') + ': ' + (e.message || String(e)));
+            return { known: false, hardwoodLines: 0, totalLines: 0, sample: null };
+        }
+    };
+
+    const setReadyToBuild = (soId, value) => {
+        const id = int(soId);
+        if (!id) throw refusal('No sales order id was given, so nothing was changed.');
+
+        /* Scope BEFORE load, so a non-ARCH order is refused without this endpoint
+           ever opening it, and the refusal names the reason rather than surfacing
+           whatever NetSuite says about the record. */
+        const scope = readOrderArchScope(id);
+        if (!scope.known) {
+            throw refusal('Ready to Build was not changed on sales order ' + id +
+                          ': its lines could not be read, so whether this is an ARCH ' +
+                          'hardwood order is unknown. Nothing was changed. This is a ' +
+                          'read failure, not a rule about the order.');
+        }
+        if (!scope.totalLines) {
+            throw refusal('Sales order ' + id + ' has no lines, so there is nothing to ' +
+                          'build and Ready to Build was not changed.');
+        }
+        if (!scope.hardwoodLines) {
+            throw refusal('Sales order ' + id + ' carries no ' + HARDWOOD_DEPARTMENT +
+                          ' line' + (scope.sample ? ' (for example ' + scope.sample + ')' : '') +
+                          ', so it is not an ARCH order and Ready to Build was not changed.');
+        }
+
+        let so;
+        try {
+            so = record.load({ type: record.Type.SALES_ORDER, id: id, isDynamic: false });
+        } catch (e) {
+            throw refusal('Sales order ' + id + ' could not be loaded, so Ready to Build was ' +
+                          'not changed: ' + (e.name || '') + ': ' + (e.message || String(e)));
+        }
+
+        const present = setIfPresent(so, F_READY_TO_BUILD, !!value, 'Ready to Build');
+        if (!present) {
+            throw refusal('Ready to Build is not available on this account yet: the field ' +
+                          'has not been created in NetSuite. Nothing was changed.');
+        }
+
+        try {
+            so.save({ enableSourcing: false, ignoreMandatoryFields: true });
+        } catch (e) {
+            const message = (e.name || '') + ': ' + (e.message || String(e));
+            log.error('ARCH Order Create — setReadyToBuild failed to save',
+                'SO ' + id + ': ' + message);
+            // FAILED, not REFUSED: setValue succeeded on the in-memory record
+            // and only the save threw, so whether NetSuite kept a partial
+            // write is genuinely unknown — the same distinction createOrder's
+            // ARCH_ORDER_REFUSED/plain-throw split exists to preserve.
+            throw new Error('Ready to Build could not be saved on SO ' + id + ': ' + message);
+        }
+
+        return { soId: id, readyToBuild: !!value };
+    };
+
+    /**
+     * What the SAVED order's Ready to Build flag actually holds, the same
+     * trust-but-verify shape as `verifySalesTeam`: `setValue` + `save` not
+     * throwing is not proof NetSuite kept the value, only that nothing
+     * objected.
+     */
+    const verifyReadyToBuild = (soId, expected) => {
+        let rows;
+        try {
+            rows = query.runSuiteQL({
+                query: 'SELECT ' + F_READY_TO_BUILD + ' AS flag FROM transaction WHERE id = ?',
+                params: [int(soId)],
+            }).asMappedResults();
+        } catch (e) {
+            log.audit('ARCH Order Create',
+                'Ready to Build on SO ' + soId + ' could not be read back, so the value that ' +
+                'was written is unverified: ' + (e.name || '') + ': ' + (e.message || String(e)));
+            return { verified: false, matches: false };
+        }
+        if (!rows.length) return { verified: false, matches: false };
+        const stored = rows[0].flag === 'T';
+        return { verified: true, matches: stored === !!expected };
+    };
+
     /**
      * Sets Incoterms, which is a SELECT and mandatory on the sales-order form.
      *
@@ -1343,7 +1585,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * the save of an EXISTING record that has no incoterms just as readily as a
      * new one.
      */
-    const applyIncoterms = (rec, h) => {
+    const applyIncoterms = (rec, h, creating) => {
         /* An explicit ID wins over the display text, and the wizard now sends one.
          * `setText` has to match a list label exactly, and a label the screen
          * invented is how "Customer Pick Up" reached NetSuite and was rejected. The
@@ -1354,9 +1596,26 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             rec.setValue({ fieldId: H_INCOTERMS, value: id });
         } else if (h && h.incoterms) {
             rec.setText({ fieldId: H_INCOTERMS, text: String(h.incoterms) });
-        } else {
+        } else if (creating) {
+            /* Only on a NEW order. The field is mandatory on form 386, so a create
+             * that names none still has to carry something, and the configured
+             * default is the honest choice there. */
             rec.setValue({ fieldId: H_INCOTERMS, value: incotermsDefault() });
         }
+        /* 🔴 AN APPEND THAT NAMES NO INCOTERMS NOW LEAVES THEM ALONE.
+         *
+         * MEASURED 2026-09-14 on SO-CWP-001371. It was created with FOB Mill (4).
+         * A later append that said nothing about incoterms fell into the old
+         * unconditional `else`, wrote `incotermsDefault()`, and the order silently
+         * became Delivered (3). Nobody asked for that: adding a bundle to an order
+         * is not a statement about its shipping terms, the trader is not shown the
+         * field on an append, and the change is invisible until somebody reads the
+         * order back.
+         *
+         * Same defect as the Created By / Sales Rep item, and the same rule
+         * settles it: an append changes what the caller ASKED to change and
+         * nothing else. The mandatory-field argument does not carry over, because
+         * an existing order already holds a value. */
     };
 
     /**
@@ -1442,7 +1701,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 '  inv.inventorynumber   AS lotname, ' +
                 '  inv.item              AS itemid, ' +
                 '  i.itemid              AS itemcode, ' +
-                '  i.cseg_subsidiary_loc AS segment, ' +
+                '  BUILTIN.DF(i.department) AS department, ' +
                 '  inl.location          AS locationid, ' +
                 '  inl.quantityonhand    AS storedqty, ' +
                 '  i.stockunit           AS stockunit, ' +
@@ -1463,7 +1722,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 lotName:    String(r.lotname),
                 itemId:     int(r.itemid),
                 itemCode:   String(r.itemcode),
-                segment:    int(r.segment),
+                department: String(r.department || ''),
                 locationId: int(r.locationid),
                 storedQty:  numOr(r.storedqty, 0),
                 // Both units, because the rate below is keyed on the STOCK unit
@@ -1717,10 +1976,11 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 return;
             }
 
-            if (st.segment !== HARDWOOD_SEGMENT) {
+            if (st.department !== HARDWOOD_DEPARTMENT || NON_ARCH_DEPARTMENT_ITEMS.indexOf(st.itemCode) !== -1) {
                 // Not a caller mistake to explain away. This endpoint exists for
-                // hardwood and must refuse anything else outright.
-                problems.push(label + ': ' + st.itemCode + ' is not tagged as hardwood and cannot be ' +
+                // hardwood and must refuse anything else outright. Same scope as
+                // the cache MR uses for display — see the header comment above.
+                problems.push(label + ': ' + st.itemCode + ' is not an ARCH hardwood item and cannot be ' +
                               'ordered from the ARCH screen.');
                 return;
             }
@@ -2931,10 +3191,36 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
          * nothing at all on an append. There is no fallback team and no
          * configured one -- see `resolveSalesTeam`. */
         const teamRequest = (input.header || {}).salesTeamId;
-        const namedTeam = (teamRequest === undefined || teamRequest === null ||
-                           String(teamRequest).trim() === '')
+        /* The members travel WITH the id. See the long note on `resolveSalesTeam`:
+         * this deployment's role cannot read `entitygroup` at all, so the caller
+         * supplies what it was served and the server re-validates every member
+         * against `employee`, which it can read. */
+        const teamRequested = !(teamRequest === undefined || teamRequest === null ||
+                                String(teamRequest).trim() === '');
+        const namedTeam = !teamRequested
             ? null
-            : resolveSalesTeam(teamRequest);
+            : resolveSalesTeam(
+                teamRequest,
+                (input.header || {}).salesTeamMembers,
+                (input.header || {}).salesTeamName
+            );
+        /* WHY THIS IS SOUND: `resolveSalesTeam` returns null on EXACTLY ONE path,
+         * the write switch being off. Every other exit throws. So a request that
+         * came back empty is the switch and nothing else.
+         *
+         * It exists because the response could not tell "the switch is off, your
+         * team was ignored" from "the team was written and replaced nothing":
+         * both left `teamWrite` null, so both answered `salesTeamReplaced: false`
+         * with an empty `salesTeamPrevious`. The client latch and this deployment's
+         * parameter are two different script deployments and CAN disagree, and
+         * when they do the trader is told the team will be written, gets a success,
+         * and no commission is attributed. Silent, which is the exact defect this
+         * screen keeps being corrected for. */
+        const teamIgnoredReason = (teamRequested && !namedTeam)
+            ? 'A sales team was picked, but ' + SALES_TEAM_WRITE_PARAM + ' is off on this ' +
+              'deployment, so no commission was attributed and the order keeps its single rep. ' +
+              'Nothing else about the order was affected.'
+            : null;
         /* Filled by whichever branch writes the team, so the response can say
          * what it replaced. Stays null when no team was named. */
         let teamWrite = null;
@@ -3136,8 +3422,9 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 teamWrite = writeSalesTeam(so, namedTeam);
                 log.audit('ARCH Order Create',
                     'Sales team "' + namedTeam.teamName + '" (' + namedTeam.teamId + ') written ' +
-                    'to a new order: ' +
-                    namedTeam.members.map((m) => m.name + ' ' + m.pct + '%').join(', ') +
+                    'to a new order. The label comes from the CALLER and is verified against ' +
+                    'nothing; the names and ids below were re-read from `employee`: ' +
+                    namedTeam.members.map((m) => m.name + ' #' + m.id + ' ' + m.pct + '%').join(', ') +
                     (teamWrite.contributionWritten
                         ? '. Contributions were set explicitly.'
                         : '. Single member, so NetSuite fills the 100% in itself.'));
@@ -3162,7 +3449,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 // created already prove, so it is left exactly as it was.
             }
 
-            applyIncoterms(so, h);
+            applyIncoterms(so, h, true);
 
             if (h.shipDate) {
                 // setValue with a real Date, NOT setText. setText parses against
@@ -3338,8 +3625,10 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                         ? 'employee(s) ' + teamWrite.previousEmployees.join(', ')
                         : 'no team') +
                     ' -> "' + namedTeam.teamName + '" (' + namedTeam.teamId + ') = ' +
-                    namedTeam.members.map((m) => m.name + ' ' + m.pct + '%').join(', ') +
-                    '. Commission on this order has been reattributed.');
+                    namedTeam.members.map((m) => m.name + ' #' + m.id + ' ' + m.pct + '%').join(', ') +
+                    '. The team LABEL comes from the caller and is unverified; the names ' +
+                    'and ids are ' +
+                    'from `employee`. Commission on this order has been reattributed.');
             }
 
             // Shown on the wizard's header step, so applied. Sending the value
@@ -3489,6 +3778,56 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                                       'Nothing was duplicated.');
                 dup.name = 'ARCH_ORDER_REFUSED';
                 throw dup;
+            }
+
+            /* 🔴 THE DEPARTMENT THE EXECUTING ROLE IS NOT ALLOWED TO USE.
+             *
+             * "You have entered an Invalid Field Value 11 for the following field:
+             * department" reached the trader as a raw 500 with no cause and no
+             * next step, which is how it arrives: `setValue` ACCEPTS the id
+             * happily and only `save` enforces the restriction, so nothing before
+             * this point can see it coming.
+             *
+             * MEASURED 2026-09-14. This endpoint created SO-CWP-001366 and
+             * SO-CWP-001367 with department 11 on 2026-09-09. At 08:52 on
+             * 2026-09-14 role 2184, this deployment's `runasrole`, was given
+             * SRESTRICTDEPT "own, subordinate, and unassigned" together with
+             * BRESTRICTEDITINGONLYONDEPT and BRESTRICTITEMSBYDEPT. "Own" resolves
+             * to the EXECUTING USER's department, not the role's, so the same code
+             * now succeeds or fails depending on who is signed in:
+             *   employee 3293 Trader Hardwood  department 11  -> allowed
+             *   employee 3136 House Blend 2    department  1  -> refused
+             * Department 11 is `Trading : Hardwood`, parent 9, subsidiary 5, and
+             * department 1 is Administration, so 11 is neither own nor subordinate
+             * nor unassigned.
+             *
+             * Nothing was written: this is the save itself failing, so the order
+             * does not exist. Reported as a refusal so the message reaches the
+             * trader intact instead of as FAILED, which also tells them the order
+             * MAY exist -- here it certainly does not. */
+            if (/invalid field value/i.test(e.message || String(e)) &&
+                /department/i.test(e.message || String(e))) {
+                const dept = new Error(
+                    'NetSuite refused department ' + departmentId() + ' on this order, so nothing ' +
+                    'was written and the order does not exist. This is a PERMISSION on the role ' +
+                    'this endpoint runs as, not a problem with the order: that role restricts ' +
+                    'which departments it may use to the signed-in user’s own, and ' +
+                    'the ARCH department is not one of them for this user. An administrator has ' +
+                    'to lift the department restriction on that role. Moving the signed-in ' +
+                    'employee into the ARCH department instead only works if they are already ' +
+                    'in the same subsidiary as it, which most users are not. NetSuite ' +
+                    'said: ' + (e.message || String(e)));
+                dept.name = 'ARCH_ORDER_REFUSED';
+                log.error('ARCH Order Create — department refused by the runasrole',
+                    'department=' + departmentId() + ' | user=' + currentUserId() +
+                    ' | NetSuite: ' + (e.message || String(e)) +
+                    ' | THIS IS ROLE CONFIGURATION, NOT CODE. Check SRESTRICTDEPT / ' +
+                    'BRESTRICTEDITINGONLYONDEPT on the deployment’s runasrole. MEASURED ' +
+                    '2026-09-14: department 11 is scoped to subsidiary 5, so it CANNOT be put ' +
+                    'on an employee outside that subsidiary, which rules out the ' +
+                    'move-the-employee workaround for most users. Changing the runasrole is ' +
+                    'NOT the fix either; see the runasrole note on this deployment.');
+                throw dept;
             }
             throw e;
         }
@@ -3672,6 +4011,11 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
              * so the change is recoverable from the response alone. */
             salesTeamPrevious: teamWrite ? teamWrite.previousEmployees : [],
             salesTeamReplaced: !!(teamWrite && teamWrite.previousEmployees.length),
+            /* The two that make the difference above legible to a caller.
+             * `salesTeamWritten` false with a non-null reason means the team was
+             * understood, accepted and then deliberately not written. */
+            salesTeamWritten: !!teamWrite,
+            salesTeamIgnoredReason: teamIgnoredReason,
             salesTeamVerified: !!(teamCheck && teamCheck.verified),
             salesTeamMismatches: teamCheck ? teamCheck.mismatches : [],
             // Reported, not asserted — this is how the sign convention for a
@@ -3732,15 +4076,24 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
          * owns the field.
          *
          * Reported as a problem rather than thrown, because a dry run's job is to
-         * report. Note it is also the ONLY way to exercise
-         * `entitygroupmember."group"` against the live N/query dialect without
-         * creating an order -- see the trap note on `resolveSalesTeam`. */
+         * report.
+         *
+         * 🔴 THE MEMBERS MUST BE PASSED HERE TOO. `resolveSalesTeam` stopped
+         * reading `entitygroup` on 2026-09-14 and now takes the member list from
+         * its caller, so calling it with the id alone refuses with "was named
+         * without its members" -- which the dry run would then report as a problem
+         * with the ORDER. It fails only once the write switch is on, because the
+         * switch is checked first and returns null, so an off-switch smoke test
+         * looks clean. Ordinary unit tests miss it as well: they call
+         * `resolveSalesTeam` directly and never come through here. */
         const teamProblems = [];
-        const teamRequest = ((input && input.header) || {}).salesTeamId;
+        const teamHeader = (input && input.header) || {};
+        const teamRequest = teamHeader.salesTeamId;
         if (!(teamRequest === undefined || teamRequest === null ||
               String(teamRequest).trim() === '')) {
             try {
-                resolveSalesTeam(teamRequest);
+                resolveSalesTeam(teamRequest, teamHeader.salesTeamMembers,
+                                 teamHeader.salesTeamName);
             } catch (e) {
                 if (e.name !== 'ARCH_ORDER_REFUSED') throw e;
                 teamProblems.push(e.message);
@@ -3794,6 +4147,90 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * record being written rather than trusting this; treat this as "is the
      * deploy done", not as a per-order guarantee.
      */
+    /**
+     * WHICH DEPARTMENT VALUES THIS DEPLOYMENT CAN ACTUALLY WRITE.
+     *
+     * 🔴 Added 2026-09-14, after a create failed on
+     * "You have entered an Invalid Field Value 11 for the following field:
+     * department" with every piece of stored data agreeing that 11 is right:
+     * department 11 is `Trading : Hardwood`, subsidiary 5, active; the customer,
+     * the location and the item are all subsidiary 5; role 2184 is scoped to
+     * subsidiary 5 and holds LIST_DEPARTMENT. Reading more tables was not going
+     * to settle it, so this asks the record.
+     *
+     * `record.create` writes NOTHING -- only `save` does -- so this is a plain
+     * read under this deployment's own `runasrole`, which is the whole point:
+     * the valid list is the EXECUTING role's, and no SuiteQL query run as
+     * Administrator can show it. Same reasoning as the `salesTeam` probe above.
+     *
+     * The customer matters, because department options are filtered by the
+     * order's subsidiary and the subsidiary is sourced from the customer, so the
+     * probe takes one rather than guessing.
+     */
+    const diagnoseDepartment = (customerId) => {
+        const out = {
+            wanted: departmentId(),
+            paramPresent: param('custscript_arch_department') !== null,
+        };
+        try {
+            const so = record.create({ type: record.Type.SALES_ORDER, isDynamic: false });
+            if (int(customerId)) {
+                so.setValue({ fieldId: 'entity', value: int(customerId) });
+                out.customerSet = int(customerId);
+            }
+            out.subsidiary = so.getValue({ fieldId: 'subsidiary' });
+            /* 🔴 THE FORM IS THE OTHER HALF. `customform` is deliberately never
+             * set by the create path, so the form comes from the EXECUTING role's
+             * preference, and the form decides which fields are mandatory and what
+             * they will accept. Role 2184 was edited on 2026-09-14 and a role save
+             * can move that preference, which would change the form under us
+             * without a line of code changing. Reported here so the form in play is
+             * a fact rather than an assumption. */
+            out.customform = so.getValue({ fieldId: 'customform' });
+            out.location = so.getValue({ fieldId: 'location' });
+            const fld = so.getField({ fieldId: 'department' });
+            out.fieldFound = !!fld;
+            if (fld) {
+                out.mandatory = !!fld.isMandatory;
+                try {
+                    const opts = fld.getSelectOptions({}) || [];
+                    out.optionCount = opts.length;
+                    out.options = opts.slice(0, 60).map((o) => String(o.value) + '=' + String(o.text));
+                    out.wantedIsOffered = opts.some((o) => String(o.value) === String(out.wanted));
+                } catch (e) {
+                    out.optionsError = (e.name || '') + ': ' + (e.message || String(e));
+                }
+            }
+            /* The same call the create path makes, so a failure here is the
+             * failure there, reported instead of thrown. */
+            try {
+                so.setValue({ fieldId: 'department', value: out.wanted });
+                out.setOk = true;
+                out.readBack = so.getValue({ fieldId: 'department' });
+            } catch (e) {
+                out.setOk = false;
+                out.setError = (e.name || '') + ': ' + (e.message || String(e));
+            }
+
+            /* 🔴 DO NOT ADD A SAVE BACK HERE.
+             *
+             * A `probeDeptSave=T` branch lived here on 2026-09-14 and called
+             * `so.save()` from this GET. It answered the question it was written
+             * for -- `setValue` accepts a department the save then refuses, so
+             * only a save tells the truth -- and it was deleted the same day.
+             *
+             * A GET that writes a transaction is a hazard however well gated:
+             * browsers prefetch, links get shared and bookmarked, monitors poll
+             * health URLs, and this one hardcoded a customer, an item and a
+             * location, so every accidental hit left a junk order holding real
+             * inventory. If the question comes up again, reproduce it through the
+             * POST path against a throwaway order rather than here. */
+        } catch (e) {
+            out.error = (e.name || '') + ': ' + (e.message || String(e));
+        }
+        return out;
+    };
+
     const fieldReadiness = () => {
         try {
             const so = record.create({ type: record.Type.SALES_ORDER, isDynamic: false });
@@ -3849,6 +4286,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         createOrder: createOrder,
         validateOrder: validateOrder,
         fieldReadiness: fieldReadiness,
+        diagnoseDepartment: diagnoseDepartment,
         listSalesReps: listSalesReps,
         listIncoterms: listIncoterms,
         // Exported for the test runner.
@@ -3860,5 +4298,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         resolveSalesTeam: resolveSalesTeam,
         writeSalesTeam: writeSalesTeam,
         verifySalesTeam: verifySalesTeam,
+        setReadyToBuild: setReadyToBuild,
+        verifyReadyToBuild: verifyReadyToBuild,
     };
 });

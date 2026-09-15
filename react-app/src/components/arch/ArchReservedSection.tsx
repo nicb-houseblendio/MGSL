@@ -42,11 +42,25 @@ interface ArchReservedSectionProps {
   row: ArchSummaryRow;
   tallyImages: Record<string, string>;
   onUploadTally: (lotNo: string, dataUrl: string) => void;
+  /**
+   * May a lot with no tally of its own fall back to a demo fixture?
+   *
+   * Handed down from `ArchLotTable` rather than derived here, so a reserved lot and
+   * the same lot in the On Hand table above it cannot answer differently. False on a
+   * screen reading the real cache. See `demoTallyProps`.
+   */
+  allowFixture?: boolean;
 }
 
-const COLUMNS = ['Lot #', 'Container #', 'SO #', 'SO Creation Date', 'Reserved For', 'Ship Week', 'Customer', 'Trader'];
+/* "Sales rep", not "Trader", since 2026-09-14: the same person was called two
+   different names on one screen (this panel and ArchLotTable said Trader, the
+   Open Orders tab said Sales rep). Marc-Antoine settled which one is the order's
+   owner on the 2026-09-10 call at [32:53]. */
+const COLUMNS = ['Lot #', 'Container #', 'SO #', 'SO Creation Date', 'Reserved For', 'Ship Week', 'Customer', 'Sales rep'];
 
-export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchReservedSectionProps) => {
+export const ArchReservedSection = ({
+  row, tallyImages, onUploadTally, allowFixture = false,
+}: ArchReservedSectionProps) => {
   // `accent` paints fills — borders and tints, where contrast rules do not apply.
   // Anything that becomes a glyph uses `ink`: the same orange is under AA as text.
   const accent = ARCH_BUCKET_META.reserve.color;
@@ -352,7 +366,12 @@ export const ArchReservedSection = ({ row, tallyImages, onUploadTally }: ArchRes
           /* A reserved lot is ALSO in the On Hand table above, so this is the same lot
              number with two tally buttons on one screen. Until 2026-09-05 they opened
              two different dialogs. See demoTallyProps for why the choice lives there. */
-          {...demoTallyProps(tallyOpen, row.lots.find((l) => l.lotNo === tallyOpen)?.tally)}
+          {...demoTallyProps(
+            tallyOpen,
+            row.lots.find((l) => l.lotNo === tallyOpen)?.tally,
+            row.lots.find((l) => l.lotNo === tallyOpen)?.tallyState,
+            allowFixture,
+          )}
         />
       )}
     </div>

@@ -82,12 +82,32 @@ const TODAY = new Date(2026, 8, 8);   // 2026-09-08, local
     orderSource(lot({ orders: [] }), 'reserve') === 'unavailable');
   ok('A3 a populated array on the reserve bucket is real data',
     orderSource(lot({ orders: [order()] }), 'reserve') === 'netsuite');
-  // readyToBuild is a literal 0 in the cache and outbound is attributed to no
-  // bundle, so neither may borrow the reserve's orders.
-  ok('A4 readyToBuild never borrows the reserve orders',
+  /* ⚠️ A4 REWRITTEN 2026-09-14. It read "readyToBuild is a literal 0 in the
+     cache and outbound is attributed to no bundle, so neither may borrow the
+     reserve's orders", and pinned readyToBuild at 'unavailable' unconditionally.
+     The first half expired when the field went live: the deployed screen showed
+     lot 315643-5 with readyToBuild 25 and every contextual column blank.
+
+     What survives, and is now pinned precisely: readyToBuild may NOT borrow the
+     reserve's orders on a payload that cannot tell the two apart. A bundle can be
+     claimed by a Reserved order and a Ready-to-Build one at once, and `qty` is the
+     order's share of the BUNDLE, so an unstamped payload would show the same list
+     and number under both tabs. That is the 2026-09-10 revert, preserved. */
+  ok('A4 readyToBuild does NOT borrow orders when the payload cannot tell the buckets apart',
     orderSource(lot({ orders: [order()] }), 'readyToBuild') === 'unavailable');
+  ok('A4b ...but DOES resolve them once the cache stamps which bucket each order landed in',
+    orderSource(lot({ orders: [order({ readyToBuild: true })] }), 'readyToBuild') === 'netsuite');
+  ok('A4c ...and then each tab shows only its own orders, never the other tab\'s',
+    ordersFor(lot({ orders: [order({ tranId: '1', readyToBuild: true }), order({ tranId: '2', readyToBuild: false })] }), 'readyToBuild')
+      .map((o) => o.tranId).join() === '1' &&
+    ordersFor(lot({ orders: [order({ tranId: '1', readyToBuild: true }), order({ tranId: '2', readyToBuild: false })] }), 'reserve')
+      .map((o) => o.tranId).join() === '2');
+  ok('A4d ...while an UNSTAMPED payload still gives reserve everything, exactly as before',
+    ordersFor(lot({ orders: [order({ tranId: '1' }), order({ tranId: '2' })] }), 'reserve').length === 2);
   ok('A5 outbound never borrows the reserve orders',
     orderSource(lot({ orders: [order()] }), 'outbound') === 'unavailable');
+  ok('A5b ...even on a stamped payload, because shipped wood is attributed to no bundle',
+    orderSource(lot({ orders: [order({ readyToBuild: true })] }), 'outbound') === 'unavailable');
   ok('A6 ordersFor returns nothing unless the source is real',
     ordersFor(lot({ orders: [order()] }), 'outbound').length === 0 &&
     ordersFor(lot({ orders: [order()] }), 'reserve').length === 1);

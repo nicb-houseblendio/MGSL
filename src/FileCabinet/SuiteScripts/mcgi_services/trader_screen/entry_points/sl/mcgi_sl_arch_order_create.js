@@ -344,6 +344,13 @@ define([
                 // refused, so check it here after any deploy rather than
                 // inferring it from stored data.
                 lineFields: orderLib.fieldReadiness(),
+                /* Read-only: which department values this deployment's runasrole
+                 * is actually offered, and whether the one the create path writes
+                 * is among them. `?probeDeptCustomer=<customer id>`, because the
+                 * list is filtered by the order's subsidiary and that comes from
+                 * the customer. Writes nothing. */
+                department: orderLib.diagnoseDepartment(
+                    (context.request.parameters || {}).probeDeptCustomer),
                 /* Whether the order-confirmation email has a recipient, and of
                  * what kind. Reports the KINDS only, never the address. This is
                  * the only read-only way to tell an ABSENT parameter from an
@@ -381,6 +388,44 @@ define([
             return respond(context, 400, {
                 ok: false, code: 'BAD_JSON', error: 'The request body was not valid JSON.',
             });
+        }
+
+        /* Dispatched BEFORE the order-creation shape checks below, which
+         * require `lines`/`mode` this request does not carry — those two
+         * requests are otherwise unrelated. Same allowlist gate as every
+         * other action on this Suitelet; it already ran above this branch. */
+        if (input.action === 'setReadyToBuild') {
+            if (typeof input.soId === 'undefined' || typeof input.value !== 'boolean') {
+                return respond(context, 400, {
+                    ok: false, code: 'MISSING_FIELDS',
+                    error: 'setReadyToBuild needs a soId and a boolean value.',
+                });
+            }
+            try {
+                const result = orderLib.setReadyToBuild(input.soId, input.value);
+                const verify = orderLib.verifyReadyToBuild(input.soId, input.value);
+                return respond(context, 200, {
+                    ok: true,
+                    soId: result.soId,
+                    readyToBuild: result.readyToBuild,
+                    verified: verify.verified,
+                    verifiedMatches: verify.matches,
+                });
+            } catch (e) {
+                const message = e.message || String(e);
+                const expected = e.name === 'ARCH_ORDER_REFUSED';
+                if (expected) {
+                    log.audit('ARCH Order Create — setReadyToBuild',
+                        'Refused for user ' + user.id + ': ' + message);
+                } else {
+                    log.error('ARCH Order Create — setReadyToBuild',
+                        'Failed for user ' + user.id + ': ' + message +
+                        (e.stack ? ' | ' + e.stack : ''));
+                }
+                return respond(context, expected ? 409 : 500, {
+                    ok: false, code: expected ? 'REFUSED' : 'FAILED', error: message,
+                });
+            }
         }
 
         if (!Array.isArray(input.lines) || !input.lines.length) {

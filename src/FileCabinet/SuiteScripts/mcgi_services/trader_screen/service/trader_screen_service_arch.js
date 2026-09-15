@@ -606,13 +606,26 @@ define([
     };
 
     /**
-     * Hardwood segment on the item. Third copy of this constant — the builder and
-     * archOrderCreate each hold one — kept local because it is a single number and
-     * a shared module for it would add an import to a scheduled cache builder for
-     * no behavioural gain. `customrecord_cseg_subsidiary_loc`: 1=Hardwood,
-     * 2=Softwood.
+     * ⚠️ SUPERSEDED 2026-09-10 — same switch as the cache MR and
+     * archOrderCreate, each of which holds its own copy for the same reason
+     * (kept local rather than a shared module, single value, no behavioural
+     * gain from an import here). Scoping is `department = "Hardwood"`, minus
+     * decking. See `mcgi_mr_trader_screen_cache_arch.js`'s header comment for
+     * the full reasoning — the segment kept failing silently on new items;
+     * department is what an item is set to at creation.
+     *
+     * BY NAME, not internal id 11: that id does not exist at all in
+     * production (measured), the same class of trap this account has already
+     * been bitten by with status-list ids. Every WHERE clause below resolves
+     * it with `BUILTIN.DF(i.department) = ?`.
      */
-    const HARDWOOD_SEGMENT = 1;
+    const HARDWOOD_DEPARTMENT = 'Hardwood';
+    const NON_ARCH_DEPARTMENT_ITEMS = [
+        'IPE44DECKD', 'IPE54DECKD', 'IPE54DECKDDNU',
+        'NRM44DECKDS4S', 'NRM44DECKDTNG',
+        'RBL44DECKD', 'RBL54DECKD',
+    ];
+    const NON_ARCH_ITEMS_SQL = NON_ARCH_DEPARTMENT_ITEMS.map((id) => "'" + id + "'").join(',');
 
     /**
      * Open ARCH sales orders — for the second tab, and for the wizard's
@@ -703,18 +716,36 @@ define([
     /**
      * NetSuite status → one of the three ARCH pills.
      *
-     * Nothing maps to 'Ready to Build' and nothing should: it is a manual header
-     * tick that does not exist yet. A and B mean the goods are committed and still
-     * here; D, E and F all mean something has physically shipped.
+     * `readyToBuild` is the trader's own manual tick on
+     * `custbody_arch_ready_to_build`, read separately (see `handleGetOpenOrders`)
+     * because the field may not exist in this account yet. SHIPPED WINS: D, E
+     * and F all mean something has physically left the building, and a trader
+     * ticking Ready to Build on an order that then ships must not freeze the
+     * pill on a stage the order has already passed. A and B are the only
+     * statuses where the tick is meaningful, because those are the only ones
+     * where the goods are still committed and still here.
+     *
+     * ⚠️ THE PARTIAL CASE USED TO MAKE THIS PILL DISAGREE WITH THE GRID. On a
+     * PARTLY shipped order (D or E) that is ticked, this returns 'In Transit'
+     * while the cache counts the still-open remainder into READY TO BUILD, so
+     * two surfaces described the same order differently. Latent rather than live
+     * when found on 2026-09-14: the seven open ARCH orders were B, F and G only,
+     * no D or E anywhere.
+     *
+     * Closed on the CLIENT rather than here, deliberately: `ArchOpenOrdersView`
+     * now disables the tick on any order this function calls 'In Transit', so the
+     * state cannot be entered in the first place. Changing the pill instead would
+     * have left the trader able to create the contradiction and then explained it
+     * afterwards. This function stays as it is, and 'SHIPPED WINS' still holds.
      */
-    const archStatusFor = (raw) => {
+    const archStatusFor = (raw, readyToBuild) => {
         switch (statusLetter(raw)) {
             case 'D':
             case 'E':
             case 'F':
                 return 'In Transit';
             default:
-                return 'Reserved';
+                return readyToBuild ? 'Ready to Build' : 'Reserved';
         }
     };
 
@@ -789,10 +820,14 @@ define([
         'LEFT JOIN inventoryassignment ia ' +
         '       ON ia.transaction = t.id AND ia.transactionline = tl.id ' +
         'LEFT JOIN inventorynumber inv ON inv.id = ia.inventorynumber ' +
-        // Doing double duty, same as the builder: scopes to hardwood AND drops the
-        // CA-E / TAXQC lines a user event adds to every order, which carry no
-        // segment and would otherwise be counted as sold stock.
-        'WHERE i.cseg_subsidiary_loc = ? ' +
+        // ⚠️ 2026-09-10: switched from the segment to Department 11, same
+        // reasoning as the cache MR (see its header comment). Doing double
+        // duty, same as before: scopes to hardwood AND drops the CA-E / TAXQC
+        // lines a user event adds to every order — every Department 11 item
+        // is `itemtype = 'Assembly'`, measured with zero exceptions, and
+        // those charge lines never are.
+        'WHERE BUILTIN.DF(i.department) = ? ' +
+        '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
         "  AND tl.mainline = 'F' " +
         "  AND tl.isclosed = 'F' " +
         "  AND t.type = 'SalesOrd' " +
@@ -808,9 +843,10 @@ define([
         '  AND t.status NOT IN (' + CLOSED_STATUSES.map((v) => "'" + v + "'").join(',') + ') ' +
         'ORDER BY t.trandate DESC, t.id DESC, tl.id';
 
-    /** Counts hardwood-tagged items, so an empty tab can explain itself. */
+    /** Counts Department 11 (Hardwood) items, so an empty tab can explain itself. */
     const HARDWOOD_ITEM_COUNT_SQL =
-        'SELECT COUNT(*) AS n FROM item i WHERE i.cseg_subsidiary_loc = ?';
+        'SELECT COUNT(*) AS n FROM item i WHERE BUILTIN.DF(i.department) = ? ' +
+        '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ')';
 
     /**
      * yyyy-mm-dd from whatever SuiteQL hands back, or '' — never a guess.
@@ -897,7 +933,7 @@ define([
         try {
             rows = query.runSuiteQL({
                 query: OPEN_ORDERS_SQL,
-                params: [HARDWOOD_SEGMENT],
+                params: [HARDWOOD_DEPARTMENT],
             }).asMappedResults();
         } catch (e) {
             log.error('ARCH service — open orders failed',
@@ -947,6 +983,92 @@ define([
             if (roleLabelCache === null) roleLabelCache = currentRoleLabel();
             return roleLabelCache;
         };
+        /* Ready to Build, the same isolated-query shape as `teamRep` above and
+         * for the identical reason: NEVER joined into OPEN_ORDERS_SQL, because
+         * that query also feeds every other column on this tab and a missing
+         * `custbody_arch_ready_to_build` would take all of them down with it,
+         * not just this one pill. Unreadable degrades to "every order reads
+         * Reserved or In Transit", which is exactly today's behaviour — this
+         * is a genuinely new column, not a regression, so AUDIT rather than
+         * the ERROR level `teamRep` uses below. */
+        const readyToBuildIds = {};
+        /*
+         * DEDUPED, CHUNKED and PARAMETERIZED, none of which it was until
+         * 2026-09-13. The dedupe is the unarguable one: `rows` fans out per
+         * LINE, so the id list is the LINE count, not the order count. Measured
+         * 2026-09-14 this tab is 30 line rows across 22 orders, so nothing is
+         * breaking today; a 200-order tab averaging five lines would ask about
+         * 200 orders with 1,000 ids, and THAT is a projection, not a reading.
+         * The comment here used to wave the duplicates away as "not worth a
+         * dedupe pass just to shorten a query string this small".
+         *
+         * ⚠️ NOT because of a 1,000-expression cap. That claim was written here
+         * on 2026-09-13 and MEASURED FALSE the next day: against this account's
+         * SuiteQL endpoint, `WHERE id IN (...)` with 999, 1,005, 5,000, 20,000
+         * and 50,000 literal ids all returned OK. NetSuite compiles SuiteQL
+         * rather than passing it to Oracle verbatim, so the familiar limit does
+         * not apply as stated. `archSalesTeam.js` carried the same belief and
+         * has been corrected too. Two things that test did NOT settle, so do not
+         * read it as more than it is: it ran against REST SuiteQL, a different
+         * dialect and host from the `N/query` that actually runs here, and it
+         * used inline literals rather than the `?` binds below.
+         *
+         * The chunking stays, on the reasons that survive measurement:
+         *   - BLAST RADIUS. This catch is a deliberate silent degrade, so ANY
+         *     failure of one big query turns into "every order reads Reserved"
+         *     with nothing on screen naming a cause. A failure of one chunk of
+         *     500 costs 500 orders, and now says PARTIAL out loud.
+         *   - CONSISTENCY. `ArchSalesTeam.repByTransaction` runs on the very
+         *     next line, over the same ids, chunked at 500 with the try INSIDE
+         *     the loop and partial results kept. Two reads of one id list that
+         *     batch differently is a trap for whoever changes one of them.
+         *
+         * The empty guard stays explicit: an empty `IN ()` is invalid SQL, and
+         * "no open orders right now" is a real, unremarkable state for this tab,
+         * not a field-read failure.
+         */
+        const RTB_CHUNK = 500;
+        const rtbIdList = [...new Set(rows
+            .map((r) => parseInt(r.tranid, 10))
+            .filter((v) => v > 0))];
+        let rtbFailedChunks = 0;
+        let rtbLastError = '';
+        const rtbChunkCount = Math.ceil(rtbIdList.length / RTB_CHUNK);
+        for (let i = 0; i < rtbIdList.length; i += RTB_CHUNK) {
+            const slice = rtbIdList.slice(i, i + RTB_CHUNK);
+            try {
+                const rtbRows = query.runSuiteQL({
+                    query: 'SELECT id AS tranid FROM transaction ' +
+                           'WHERE id IN (' + slice.map(() => '?').join(',') + ') ' +
+                           "  AND custbody_arch_ready_to_build = 'T'",
+                    params: slice,
+                }).asMappedResults();
+                rtbRows.forEach((r) => { readyToBuildIds[String(r.tranid)] = true; });
+            } catch (e) {
+                rtbFailedChunks++;
+                rtbLastError = (e.name || '') + ': ' + (e.message || String(e));
+            }
+        }
+        if (rtbFailedChunks && rtbFailedChunks === rtbChunkCount) {
+            /* Every chunk failed, so the overwhelmingly likely cause is the one
+             * this read was written to survive: the field does not exist in this
+             * account yet. Degrading to "every order reads Reserved or In
+             * Transit" is exactly the behaviour before the column existed, so
+             * this is a per-run condition, not a failure — AUDIT by cause. */
+            log.audit('ARCH open orders — Ready to Build field not readable (non-fatal, ' +
+                'every order reads Reserved or In Transit): ' + rtbLastError);
+        } else if (rtbFailedChunks) {
+            /* ERROR, and for the same reason the sales-team read next door uses
+             * ERROR for its partial: SOME orders now read Reserved while others
+             * with the identical true state read Ready to Build, and nothing on
+             * screen says which rows were simply unread. An inconsistency nobody
+             * can see is worse than a uniform fallback. */
+            log.error('ARCH open orders — Ready to Build PARTIAL read',
+                rtbFailedChunks + ' of ' + rtbChunkCount + ' chunk(s) failed, so some orders fall ' +
+                'back to Reserved despite being marked Ready to Build. Partial, not empty: ' +
+                rtbLastError);
+        }
+
         try {
             teamRep = ArchSalesTeam.repByTransaction(rows.map((r) => r.tranid));
         } catch (e) {
@@ -1011,9 +1133,10 @@ define([
                     // not a team, and a name under a "team" label would be a guess
                     // dressed up as data.
                     salesTeam:  '',
-                    status:     archStatusFor(letter),
+                    status:     archStatusFor(letter, !!readyToBuildIds[tranId]),
                     nsStatus:   letter,
                     nsStatusLabel: NS_STATUS_LABEL[letter] || letter,
+                    readyToBuild: !!readyToBuildIds[tranId],
                     lines:      [],
                 };
                 ordered.push(byOrder[tranId]);
@@ -1100,7 +1223,10 @@ define([
                         // A partly-shipped line belongs in outbound, not reserve.
                         bucket:       shipped > 0 ? 'outbound' : 'reserve',
                         existing:     true,
-                        lineStatus:   archStatusFor(String(r.status || '')),
+                        // Same flag as the header `status` above, so a line
+                        // never disagrees with its own order about whether it
+                        // is ready to build.
+                        lineStatus:   archStatusFor(String(r.status || ''), !!readyToBuildIds[tranId]),
                     },
                 };
                 lineOrder.push(lineKey);
@@ -1164,19 +1290,18 @@ define([
 
         /* ── Why this tab can look empty, and it is not a bug ────────────────────
          *
-         * Measured 2026-08-20: only SIX items in the whole account carry
-         * cseg_subsidiary_loc = Hardwood, and every other CWP sales order runs on
-         * untagged SS* items. So exactly ONE sales order in the account has ever
-         * touched a hardwood-tagged item. Until the remaining SKUs are tagged
-         * (todo 0.1, Lucas), real orders will not appear here — and the cause is
-         * the tag, not this query. Returning the count lets the front end say that
-         * instead of showing a blank table.
+         * ⚠️ SUPERSEDED 2026-09-10. Measured 2026-08-20 that only six items
+         * carried the segment, and real orders were rare because of it. That
+         * scope is gone — see the cache MR's header comment. Department 11
+         * now covers ~142 real items, so this branch should fire far less
+         * often; when it does, `taggedItemCount` still lets the front end say
+         * how many items were in scope for whichever role served the request.
          */
         let taggedItemCount = null;
         try {
             const c = query.runSuiteQL({
                 query: HARDWOOD_ITEM_COUNT_SQL,
-                params: [HARDWOOD_SEGMENT],
+                params: [HARDWOOD_DEPARTMENT],
             }).asMappedResults();
             const n = c && c.length ? parseInt(c[0].n, 10) : NaN;
             taggedItemCount = isFinite(n) ? n : null;

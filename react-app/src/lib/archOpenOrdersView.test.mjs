@@ -56,14 +56,30 @@ ok('people: the rep is NOT removed', /const repOf = /.test(v) && /repOf\(o\)/.te
 ok('people: the band names WHICH person it is banding by',
   /\{AXES\[groupBy\]\.band\}/.test(v), false);
 ok('people: and so does the subtotal row', /Subtotal · \{AXES\[groupBy\]\.band\} · \{groupName\}/.test(v), false);
-// The client asked for the creator, and the creator is also the field that cannot
-// silently go unread (see 3). So that is the default, with the rep one click away.
-ok('people: the default grouping is the creator, which is what was asked for',
-  /axisOverride !== null \? axisOverride : anyCreator \? 'creator' : 'rep'/.test(v), false);
-// Fixture orders carry no createdBy, so a hard "creator" default would band every
-// demo order under one "Unknown" and lose the trader bands demo mode is for.
-ok('people: with no creators to group by it falls back to the rep rather than one Unknown band',
-  /const anyCreator = /.test(v) && /\(o\.createdBy \|\| ''\)\.trim\(\) !== ''/.test(v), false);
+/* ⚠️ THESE TWO GUARDS ARE REPLACED, 2026-09-14, not worked around.
+ *
+ * They pinned `anyCreator ? 'creator' : 'rep'` on the reasoning that "the client
+ * asked for the creator". He did, on 2026-09-08, and then RETRACTED it on the
+ * 2026-09-10 call at [32:00] once he saw what it produces: "je pense qu'on s'est
+ * mal compris pour le created by... il y a toujours un owner du sales order quand
+ * même. Fait que là qu'on utilise le sales rep."
+ *
+ * Confirmed by clicking the deployed sandbox screen on 2026-09-14: 7 open orders
+ * banded as "House Blend 2" x6 and "Marc-Antoine Poirier" x1, while the Sales Rep
+ * column underneath carried Lucas Gibb, Alec Wolf and Camil Perrault. The creator
+ * is the integration account on nearly every real order, so banding by it is
+ * banding by the one axis with no information in it.
+ *
+ * The `anyCreator` fallback went with it, and is not merely unused: the rep is now
+ * the default in every case, so fixtures and live data take the same path and
+ * there is no branch left to fall back from.
+ */
+ok('people: the default grouping is the SALES REP, which is what he settled on',
+  /const groupBy: GroupAxis = axisOverride !== null \? axisOverride : 'rep';/.test(v), false);
+ok('people: the anyCreator fallback is gone, not left dangling',
+  !/const anyCreator = /.test(v), false);
+ok('people: and the creator is still offered, not deleted',
+  /<option value="creator">/.test(v), false);
 ok('people: the grouping is switchable rather than baked in',
   /Group by: Created by/.test(v) && /Group by: Sales rep/.test(v), false);
 // `createdBy` is '' when the role cannot read it, and grouping on '' yields a

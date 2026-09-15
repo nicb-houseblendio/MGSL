@@ -116,8 +116,16 @@ export interface ArchSplitOutcome {
   originalLotBF: number;
   /** Board feet on the newly created bundle. */
   newLotBF: number;
-  /** New lot number — the original with an incrementing `-N` suffix. */
-  newLotNo: string;
+  /**
+   * The lot number NetSuite created for the remainder, as returned by the server.
+   *
+   * 🔴 `null` until the split has actually run. The client does NOT derive this.
+   * The server mints it with a collision check at write time (`nextChildLotNumber`
+   * in `archSplitExecute.js`), and a name computed here would be a guess in the
+   * numeric namespace RECEIVING uses for a second bundle on one PO line. See the
+   * block comment in `lib/archSplit.ts`.
+   */
+  newLotNo: string | null;
   /** Difference between what was measured and what the system believed. */
   systemVarianceBF: number;
 }

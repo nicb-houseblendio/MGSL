@@ -96,6 +96,16 @@ export interface ArchLiveOpenOrder extends ArchOpenOrder {
   /** NetSuite's own status letter and label, kept because `status` is a projection. */
   nsStatus?: string;
   nsStatusLabel?: string;
+  /**
+   * The RAW `custbody_arch_ready_to_build` value, independent of `status`.
+   *
+   * `status` folds this together with the NetSuite status letter and reads
+   * 'In Transit' once the order ships even if this stayed true underneath —
+   * see `archStatusFor` server-side. The toggle needs THIS field, not
+   * `status`, so a shipped order's control still shows its real state instead
+   * of silently reading unticked.
+   */
+  readyToBuild?: boolean;
 }
 
 interface RawLine {

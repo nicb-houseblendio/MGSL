@@ -54,6 +54,23 @@ declare module '@/types/archOrder' {
      * from the rep, the customer or a fixture.
      */
     salesTeamId?: string;
+    /**
+     * The team's members and their FRACTIONS, sent alongside the id.
+     *
+     * 🔴 Added 2026-09-14 because the order endpoint cannot look the team up. It
+     * runs as an ACCOUNTCENTER role and `entitygroup` is not reachable from it —
+     * `Record 'entitygroup' was not found`, measured four times, unchanged by
+     * granting that role LIST_CRMGROUP. The server now validates these members
+     * against `employee`, which it CAN read, which is the same check NetSuite
+     * applies when it accepts a Sales Team line.
+     *
+     * ⚠️ `contribution` is the FRACTION (0.5), never the percent (50). The server
+     * refuses anything above 1 rather than guessing, because the two differ by
+     * 50x on a commission split.
+     */
+    salesTeamMembers?: ArchSalesTeamMember[];
+    /** The team's display name, for the server's refusal text only. */
+    salesTeamName?: string;
   }
 }
 

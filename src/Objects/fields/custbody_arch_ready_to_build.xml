@@ -1,0 +1,155 @@
+<transactionbodycustomfield scriptid="custbody_arch_ready_to_build">
+  <!--
+    CWP ARCH "Ready to Build". The trader ticks this on a Sales Order to say the
+    order is ready for the warehouse to pull and build. MANUAL, never computed —
+    Marc-Antoine, 2026-09-10 call at [30:26]: "c'est manuel, c'est le trader qui
+    dit genre c'est ready to build."
+
+    ── WHY THIS FILE EXISTS, added 2026-09-14 ──────────────────────────────────
+    The field was created BY HAND in sandbox on 2026-09-11 from a throwaway SDF
+    project, and until today nothing in this repo could recreate it. Two
+    consequences, both real:
+      1. A sandbox refresh deletes it and nothing here can put it back. What
+         fires when it vanishes is the refusal at archOrderCreate.js:1390, which
+         tells the trader the field "has not been created in NetSuite" — true,
+         but it reads like a permanent state rather than a lost object.
+      2. It could never reach PRODUCTION, where it still does not exist.
+         Go-live is 1 October.
+
+    ⚠️ DO NOT reuse custbody_so_ready_to_ship (12056) instead. That is
+    Marc-Antoine's own field, a LATER stage of the flow, already written by
+    MR 5544 on a schedule with no subsidiary or segment guard, so a trader's
+    tick would be overwritten by the batch. Rejected to the client in writing
+    on 2026-08-13.
+
+    ── PROVENANCE OF THE VALUES BELOW ──────────────────────────────────────────
+    Read off the LIVE sandbox field, internal id 14083, via a SOAP get on
+    CustomizationRef (same TBA passport nsfile.mjs uses; needs no SuiteCloud
+    authid). Confirmed from that read: accesslevel 2, searchlevel 2, displaytype
+    NORMAL, fieldtype CHECKBOX, storevalue T, showinlist F, globalsearch F,
+    isparent F, ismandatory F, checkspelling F, defaultchecked F, isformula F,
+    subtab Main, bodysale T with every other bodyX false, and the label and help
+    verbatim.
+
+    The ELEMENT SET and its alphabetical order come from this account's own
+    object:import dialect, copied from
+      Tasks/Task 3 - Profitability Report/src/Objects/transactionbodycustomfields/
+      custbody_mcgi_cm_source_so.xml
+    which was produced by a real import on 2026-07-27. The eight custcol_*.xml
+    files in this folder use a trimmed hand-written shape; do NOT copy those,
+    SDF fills omitted elements with its own defaults on deploy.
+
+    ⚠️ STILL INFERRED, and a deploy WILL write them: applyformatting F,
+    encryptatrest F, empty description, and the element set itself (which bodyX
+    elements exist, the presence of aidescription / enabletextenhance /
+    fldsizelabel, the absence of bodyexpensereport / bodystore). All of that came
+    from an import of a DIFFERENT field. Settle it with a read-only import of
+    THIS one as soon as the SuiteCloud authid is restored: run suitecloud
+    object:import for type transactionbodycustomfield, scriptid
+    custbody_arch_ready_to_build, into a scratch destinationfolder, then diff
+    against this file before any deploy that includes it. (The flags are spelled
+    out in prose rather than shown, because a double hyphen cannot appear inside
+    an XML comment and putting the real command here makes this file unparseable.)
+
+    ── TWO THINGS THAT ARE NOT COSMETIC ────────────────────────────────────────
+    searchlevel 2: the warehouse split queue reads this field under the
+    warehouse user's OWN role (customscript_mcgi_sl_warehouse_react has an empty
+    runasrole and allemployees=T), and archSplitQueue.readyToBuildBySo FAILS
+    CLOSED. A role that cannot search this field therefore sees an empty queue,
+    not an error.
+
+    displaytype NORMAL: SDF refuses both INLINE and DISABLED for this object
+    type and fails the whole deploy. Proven against prod on 2026-07-27 with the
+    field named above, and not caused by accesslevel.
+
+    ── OPEN UX GAP, and SDF CANNOT CLOSE IT ────────────────────────────────────
+    Measured on a live Sales Order 2026-09-14: on the VIEW page,
+    custbody_so_ready_to_ship (12056, Marc-Antoine's own field) renders as a live
+    INPUT, so a user ticks it inline without opening the record. THIS field
+    renders "inputreadonly" inside a span, so it needs Edit, tick, Save.
+
+    That is a worse interaction than the field he already uses for the identical
+    gesture, and he asked on the 2026-09-10 call at [30:26] where he ticks this
+    one. Closing it means an MGSL administrator changing the Display Type in the
+    NetSuite UI (Customization > Lists, Records, and Fields > Transaction Body
+    Fields).
+
+    ⚠️ AND IT WILL BE REVERTED BY THE NEXT DEPLOY OF THIS OBJECT, because
+    displaytype must stay NORMAL here for SDF to accept the file at all. Exactly
+    the trap custbody_mcgi_cm_source_so documents: prod is deliberately not
+    NORMAL, set by hand, and redeploying reverts it. If the Display Type is ever
+    changed by hand, re-apply it after any deploy that includes this object, or
+    leave the object out of deploy.xml once it is live.
+
+    ── FORM MEMBERSHIP IS NOT EXPRESSED HERE ───────────────────────────────────
+    Whether a given role sees this on a given Sales Order form is a FORM
+    property, not a field property, and there is no form XML in this repo.
+    Measured 2026-09-14: systemnote holds six writes to this field, four of them
+    context UIF (the NetSuite UI form) under role 3, so it is already reachable
+    on a form for an Administrator. Whether the ARCH trader role sees it is
+    UNVERIFIED — reading form membership needs object:import, which needs the
+    authid.
+  -->
+  <accesslevel>2</accesslevel>
+  <aidescription></aidescription>
+  <applyformatting>F</applyformatting>
+  <bodyassemblybuild>F</bodyassemblybuild>
+  <bodybom>F</bodybom>
+  <bodycustomerpayment>F</bodycustomerpayment>
+  <bodycustomtransactions></bodycustomtransactions>
+  <bodydeposit>F</bodydeposit>
+  <bodydepositapplication>F</bodydepositapplication>
+  <bodyinventoryadjustment>F</bodyinventoryadjustment>
+  <bodyitemfulfillment>F</bodyitemfulfillment>
+  <bodyitemfulfillmentorder>F</bodyitemfulfillmentorder>
+  <bodyitemreceipt>F</bodyitemreceipt>
+  <bodyitemreceiptorder>F</bodyitemreceiptorder>
+  <bodyjournal>F</bodyjournal>
+  <bodyopportunity>F</bodyopportunity>
+  <bodyothertransaction>F</bodyothertransaction>
+  <bodypickingticket>F</bodypickingticket>
+  <bodyprintflag>F</bodyprintflag>
+  <bodyprintpackingslip>F</bodyprintpackingslip>
+  <bodyprintstatement>F</bodyprintstatement>
+  <bodypurchase>F</bodypurchase>
+  <bodysale>T</bodysale>
+  <bodytransferorder>F</bodytransferorder>
+  <bodyvendorpayment>F</bodyvendorpayment>
+  <bodyvendorprepayment>F</bodyvendorprepayment>
+  <checkspelling>F</checkspelling>
+  <defaultchecked>F</defaultchecked>
+  <defaultselection></defaultselection>
+  <defaultvalue></defaultvalue>
+  <description></description>
+  <displayheight></displayheight>
+  <displaytype>NORMAL</displaytype>
+  <displaywidth></displaywidth>
+  <dynamicdefault></dynamicdefault>
+  <enabletextenhance>F</enabletextenhance>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>CHECKBOX</fieldtype>
+  <fldsizelabel></fldsizelabel>
+  <globalsearch>F</globalsearch>
+  <help>Set by the trader on the ARCH trader screen once the order is ready to be pulled and built at the warehouse. Manual only, not computed.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <isparent>F</isparent>
+  <label>Ready to Build</label>
+  <linktext></linktext>
+  <maxlength></maxlength>
+  <maxvalue></maxvalue>
+  <minvalue></minvalue>
+  <onparentdelete></onparentdelete>
+  <parentsubtab></parentsubtab>
+  <searchcomparefield></searchcomparefield>
+  <searchdefault></searchdefault>
+  <searchlevel>2</searchlevel>
+  <selectrecordtype></selectrecordtype>
+  <showhierarchy>F</showhierarchy>
+  <showinlist>F</showinlist>
+  <sourcefilterby></sourcefilterby>
+  <sourcefrom></sourcefrom>
+  <sourcelist></sourcelist>
+  <storevalue>T</storevalue>
+  <subtab>TRANSACTIONMAIN</subtab>
+</transactionbodycustomfield>

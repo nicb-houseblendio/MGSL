@@ -42,7 +42,7 @@
  * what toLengthDistribution() in archTally.ts produces. See that file.
  */
 
-import type { TallyPayload, TallyBundle } from '@/lib/archTally';
+import type { TallyPayload, TallyBundle, TallyState } from '@/lib/archTally';
 import { siblingsOf, toWidthDistribution } from '@/lib/archTally';
 import { TALLY_DETAIL_PL } from '@/lib/archTallyDetailPL';
 import { TALLY_ZEBRANO } from '@/lib/archTallyZebrano';
@@ -1418,10 +1418,53 @@ export const demoWidthTallyForLot = (lotNo: string): DemoTally | null =>
 export const demoTallyProps = (
   lotNo: string,
   tally?: { status: string; sourceFile?: string | null; docUrl?: string | null; bundles: TallyBundle[] } | null,
+  tallyState?: TallyState | null,
+  /**
+   * May this call fall back to a DEMO fixture when the lot has no tally of its own?
+   *
+   * 🔴 DEFAULTS TO FALSE, and the default is the whole point. The fixture is another
+   * shipment's wood. On a screen reading the real ARCH cache, a lot with no tally is
+   * not an unknown to be illustrated, it is a KNOWN ABSENCE: the cache looked, found
+   * no capture record matching that lot name, and said so. Drawing a stranger's
+   * matrix over that answers a question nobody asked with numbers nobody measured.
+   *
+   * 771 of the 820 ARCH lots are in exactly that state. Until now every one of them
+   * rendered a fixture under a "Sample tally, not this lot's document" banner, which
+   * is honest but is still four columns of invented pieces where the honest answer is
+   * "no tally yet, chase the supplier".
+   *
+   * The callers pass `source === 'fixtures'` from `useArchSummaryData`, the same
+   * explicit signal the toolbar's own demo-data badge reads (`ArchScreen.tsx:380`
+   * gates on it too). It is NOT inferred from the tally being absent, and it is not
+   * inferred from `MCGI_CONFIG` being present: an offline demo genuinely has nothing
+   * else to show, and a connected screen genuinely has an answer already.
+   *
+   * ⚠️ This was unsafe to turn on before 2026-09-15. Until the seeded capture record
+   * landed, NO ARCH lot resolved a tally at all, so the gate would have blanked the
+   * matrix on all 67 demo lots at once and the feature would have looked deleted.
+   * Five lots now carry one. See the build plan's Wave 0.
+   */
+  allowFixture: boolean = false,
 ): {
   bundle?: TallyBundle; siblings?: TallyBundle[]; sample?: DemoTally['sample'];
   source?: { sourceFile: string | null; status: string } | null;
+  tallyState?: TallyState | null;
 } => {
+  /* 🔴 A SPLIT LOT GETS NO BUNDLE AT ALL, real or demo, and this has to be the
+   * FIRST thing here.
+   *
+   * Both states are cases where any matrix on screen would be wrong:
+   *   'staleParent' still HAS a real tally, and it is the stale one. Rendering it
+   *                 is the original defect this whole feature exists to fix.
+   *   'newChild'    has none, so without this it would fall through to
+   *                 `demoTallyForLot` below and draw ANOTHER SHIPMENT'S wood
+   *                 against a real lot.
+   *
+   * Returning no bundle routes both to the caller's empty state, where
+   * `tallyStateNote` says which of the two it is. */
+  if (tallyState === 'staleParent' || tallyState === 'newChild') {
+    return { bundle: undefined, siblings: [], sample: undefined, source: null, tallyState };
+  }
   /* 🔴 REAL DATA WINS, AND IT CARRIES NO `sample`.
    *
    * The sample banner is the only thing on screen telling a trader the numbers are
@@ -1450,6 +1493,11 @@ export const demoTallyProps = (
       source: { sourceFile: tally.sourceFile ?? null, status: tally.status },
     };
   }
+
+  /* No tally, and no licence to invent one. The caller's empty state takes over and
+   * `tallyStateNote` says nothing, so it falls through to "No tally parsed for this
+   * bundle yet" plus the attach-a-photo link, which is the true statement. */
+  if (!allowFixture) return { bundle: undefined, siblings: [], sample: undefined, source: null };
 
   const cfg = typeof window !== 'undefined'
     ? (window as unknown as { MCGI_CONFIG?: { tallyDemoDoc?: string } }).MCGI_CONFIG

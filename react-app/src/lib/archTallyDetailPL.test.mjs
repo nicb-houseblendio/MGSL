@@ -326,14 +326,14 @@ const ok = (name, cond, got) => {
   if (!had2) g2.window = {};
   g2.window.MCGI_CONFIG = { tallyDemoDoc: '314307' };
   ok("tallyDemoDoc = '314307' brings back the imperial document",
-    sampled.every((l) => demoTallyProps(l).sample.sourceFile === TALLY_314307.provenance.sourceFile), null);
-  ok('  ...with whole-foot lengths', sampled.every((l) => Number.isInteger(demoTallyProps(l).bundle.lengthFt)), null);
+    sampled.every((l) => demoTallyProps(l, null, null, true).sample.sourceFile === TALLY_314307.provenance.sourceFile), null);
+  ok('  ...with whole-foot lengths', sampled.every((l) => Number.isInteger(demoTallyProps(l, null, null, true).bundle.lengthFt)), null);
   g2.window.MCGI_CONFIG = { tallyDemoDoc: 'chechen' };
   ok("tallyDemoDoc = 'chechen' brings back the random-width document, which is what shows the RW caveat",
-    sampled.every((l) => demoTallyProps(l).bundle.widthPolicy === 'randomWidth'), null);
+    sampled.every((l) => demoTallyProps(l, null, null, true).bundle.widthPolicy === 'randomWidth'), null);
   g2.window.MCGI_CONFIG = { tallyDemoDoc: 'not-a-document' };
   ok('an unknown key falls back to the default pool rather than emptying the dialog',
-    sampled.every((l) => demoTallyProps(l).bundle === demoTallyForLot(l).bundle), null);
+    sampled.every((l) => demoTallyProps(l, null, null, true).bundle === demoTallyForLot(l).bundle), null);
   if (!had2) delete g2.window; else delete g2.window.MCGI_CONFIG;
 }
 
@@ -342,17 +342,17 @@ const ok = (name, cond, got) => {
 // lot had two tally buttons on one screen opening two different dialogs.
 {
   const sampled = ['316027-1', '315970-7', '315604-13', '315411-16A', '1535', 'ZEB84KD-2'];
-  const props = sampled.map((l) => demoTallyProps(l));
+  const props = sampled.map((l) => demoTallyProps(l, null, null, true));
   ok('every lot gets all three props, not a subset',
     props.every((p) => p.bundle && Array.isArray(p.siblings) && p.sample), props.map((p) => Object.keys(p)));
   ok('two calls for the same lot agree, so both tables show the same dialog',
-    sampled.every((l) => demoTallyProps(l).bundle === demoTallyProps(l).bundle), null);
+    sampled.every((l) => demoTallyProps(l, null, null, true).bundle === demoTallyProps(l, null, null, true).bundle), null);
   ok('it matches demoTallyForLot while the flag is unset',
-    sampled.every((l) => demoTallyProps(l).bundle === demoTallyForLot(l).bundle), null);
+    sampled.every((l) => demoTallyProps(l, null, null, true).bundle === demoTallyForLot(l).bundle), null);
   ok('the clicked bundle is findable by identity inside its siblings, which is how the dialog marks it',
     props.every((p) => p.siblings.indexOf(p.bundle) >= 0), null);
   ok('an empty lot number yields undefined props rather than throwing',
-    demoTallyProps('').bundle === undefined, null);
+    demoTallyProps('', null, null, true).bundle === undefined, null);
 
   // the opt-in flag, exercised through the same helper both components call
   const g = globalThis;
@@ -360,12 +360,12 @@ const ok = (name, cond, got) => {
   if (!had) g.window = {};
   g.window.MCGI_CONFIG = { tallyDemoDoc: 'detail-pl' };
   ok('with the flag set, the helper serves the multi-width document',
-    sampled.every((l) => demoTallyProps(l).sample.sourceFile === 'detail pl inv 2026_00031.xlsx'), null);
+    sampled.every((l) => demoTallyProps(l, null, null, true).sample.sourceFile === 'detail pl inv 2026_00031.xlsx'), null);
   ok('  ...and every bundle it serves is multi-width',
-    sampled.every((l) => toWidthDistribution(demoTallyProps(l).bundle).degenerate === false), null);
+    sampled.every((l) => toWidthDistribution(demoTallyProps(l, null, null, true).bundle).degenerate === false), null);
   g.window.MCGI_CONFIG = {};
   ok('clearing the flag restores the default rotation',
-    sampled.every((l) => demoTallyProps(l).bundle === demoTallyForLot(l).bundle), null);
+    sampled.every((l) => demoTallyProps(l, null, null, true).bundle === demoTallyForLot(l).bundle), null);
   if (!had) delete g.window; else delete g.window.MCGI_CONFIG;
 }
 
@@ -388,13 +388,34 @@ const ok = (name, cond, got) => {
   ok('  ...and the width table would draw from it',
     toWidthDistribution(real.bundle).degenerate === false, toWidthDistribution(real.bundle));
 
-  // null tally is the COMMON case: most lots have no matching bundle, by design
-  const none = demoTallyProps('316027-1', null);
-  ok('a lot with no tally falls back to the fixture', none.bundle === demoTallyForLot('316027-1').bundle, null);
-  ok('  ...and the fixture DOES carry the sample banner', !!none.sample, none.sample);
-  ok('an empty bundles array is treated as no tally',
-    demoTallyProps('316027-1', { status: 'PARSED', bundles: [] }).sample !== undefined, null);
-  ok('an undefined tally behaves exactly as before', demoTallyProps('316027-1').sample !== undefined, null);
+  /* null tally is the COMMON case: most lots have no matching bundle, by design.
+   *
+   * 🔴 WHAT THAT CASE RENDERS CHANGED ON 2026-09-15. It used to fall back to the
+   * fixture unconditionally; now the fixture is served only when the caller says the
+   * screen is running on demo data. Both halves are pinned, because the bug this
+   * guards against is a future "simplification" that drops the flag and quietly
+   * restores a stranger's matrix over 771 real lots. */
+  const noneDemo = demoTallyProps('316027-1', null, null, true);
+  ok('DEMO: a lot with no tally still falls back to the fixture',
+    noneDemo.bundle === demoTallyForLot('316027-1').bundle, null);
+  ok('DEMO: ...and the fixture DOES carry the sample banner', !!noneDemo.sample, noneDemo.sample);
+  ok('DEMO: an empty bundles array is treated as no tally',
+    demoTallyProps('316027-1', { status: 'PARSED', bundles: [] }, null, true).sample !== undefined, null);
+
+  const noneLive = demoTallyProps('316027-1', null);
+  ok('CONNECTED: a lot with no tally gets NO bundle, rather than another shipment\'s wood',
+    noneLive.bundle === undefined, noneLive.bundle);
+  ok('CONNECTED: ...and no sample banner, because there is no sample to disclaim',
+    noneLive.sample === undefined, noneLive.sample);
+  ok('CONNECTED: ...and no source line either', noneLive.source === null, noneLive.source);
+  ok('CONNECTED: an empty bundles array is the same known absence',
+    demoTallyProps('316027-1', { status: 'PARSED', bundles: [] }).bundle === undefined, null);
+  ok('CONNECTED: and so is an undefined tally', demoTallyProps('316027-1').bundle === undefined, null);
+  /* The default is the safe one: a call site that forgets the flag gets the truthful
+     screen, never the invented one. */
+  ok('the fourth argument DEFAULTS to refusing the fixture',
+    demoTallyProps('316027-1', null).bundle === undefined &&
+    demoTallyProps('316027-1', null, null, false).bundle === undefined, null);
 }
 
 // ---- FIX 2 + 3, from the 2026-09-08 adversarial review.
@@ -433,15 +454,27 @@ const ok = (name, cond, got) => {
   ok('  ...and the capture status', real.source.status === 'PARSED', real.source);
   ok('  ...while the sample banner stays absent', real.sample === undefined, null);
   ok('a fixture carries a sample and NO source line', (() => {
-    const f = demoTallyProps('316027-2', null);
+    const f = demoTallyProps('316027-2', null, null, true);
     return !!f.sample && !f.source;
   })(), null);
-  ok('so exactly one provenance line renders, never two and never zero', (() => {
-    for (const t of [null, { status: 'PARSED', sourceFile: 'x.pdf', bundles: [bad] }]) {
-      const p = demoTallyProps('316027-2', t);
-      if (!!p.sample === !!p.source) return false;
-    }
-    return true;
+  /* 🔴 THE INVARIANT IS ABOUT A RENDERED BUNDLE, not about every call.
+   *
+   * It used to read "never zero", and that was right while every call produced a
+   * bundle. The fixture gate added a third state on 2026-09-15: connected, no tally,
+   * NO BUNDLE. Zero provenance lines is correct there, because there are no numbers on
+   * screen to attribute to anything. Restated as: whenever a matrix renders, exactly
+   * one line says where it came from. */
+  ok('wherever a bundle renders, exactly one provenance line renders with it', (() => {
+    const cases = [
+      demoTallyProps('316027-2', null, null, true),                                            // fixture
+      demoTallyProps('316027-2', { status: 'PARSED', sourceFile: 'x.pdf', bundles: [bad] }),   // real
+      demoTallyProps('316027-2', { status: 'PARSED', sourceFile: 'x.pdf', bundles: [bad] }, null, true),
+    ];
+    return cases.every((p) => p.bundle && (!!p.sample !== !!p.source));
+  })(), null);
+  ok('  ...and where NO bundle renders, neither line does', (() => {
+    const p = demoTallyProps('316027-2', null);
+    return !p.bundle && !p.sample && !p.source;
   })(), null);
 }
 

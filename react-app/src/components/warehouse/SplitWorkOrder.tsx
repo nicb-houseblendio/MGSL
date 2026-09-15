@@ -1,7 +1,7 @@
 // Presentational only — no hooks, no React namespace types needed.
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { formatQty, formatUnitTotals } from '@/lib/archUom';
-import { nextSplitLotNo, shortDate } from '@/lib/archSplit';
+import { shortDate } from '@/lib/archSplit';
 import type { ArchSplitJob } from '@/types/archSplit';
 
 /**
@@ -12,11 +12,18 @@ import type { ArchSplitJob } from '@/types/archSplit';
  * ours, not theirs, and Andrei flagged it — the printed form has to be the one
  * the warehouse was shown.
  *
- * Per the call, the worker prints this, sees the split to do and the new lot
- * number, writes the measured board footage on the sheet by hand and staples it
- * to the new bundle. So LOT BF is deliberately a blank rule: printing a number
- * there would be printing a guess, and the whole point is that the real figure
- * is only known once the bundle is opened and re-tallied.
+ * Per the call, the worker prints this, sees the split to do, writes the measured
+ * board footage on the sheet by hand and staples it to the new bundle. So LOT BF
+ * is deliberately a blank rule: printing a number there would be printing a guess,
+ * and the whole point is that the real figure is only known once the bundle is
+ * opened and re-tallied.
+ *
+ * ⚠️ NEW LOT # is a blank rule for exactly the same reason, corrected 2026-09-14.
+ * The sheet prints BEFORE the split runs, and NetSuite mints the remainder's lot
+ * number only at write time, collision-checked against its siblings. This sheet
+ * used to print a client-side prediction, `<lot>-1`, which NetSuite never creates
+ * and which receiving already uses for a second bundle on the same PO line. That
+ * one went onto paper and onto the wood.
  */
 
 interface SplitWorkOrderProps {
@@ -380,9 +387,11 @@ export const SplitWorkOrder = ({ job, onClose }: SplitWorkOrderProps) => {
                   <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: 3, color: INK }}>
                     SPLIT / LOT SHEET
                   </div>
-                  {/* The lot the NEW bundle will carry — the same number the
-                      completion screen says it creates, not a generated one. */}
-                  <Chip>{nextSplitLotNo(b.lotNo, 0)}</Chip>
+                  {/* The lot being SPLIT, which is what identifies this sheet and the
+                      bundle the worker has to find on the floor. It used to print the
+                      child's predicted name, `<lot>-1`, which NetSuite never creates.
+                      See the LOT # box below and the block comment in lib/archSplit.ts. */}
+                  <Chip>{b.lotNo}</Chip>
                   <div
                     style={{
                       fontSize: 10.5,
@@ -433,20 +442,20 @@ export const SplitWorkOrder = ({ job, onClose }: SplitWorkOrderProps) => {
                   textAlign: 'center',
                 }}
               >
+                {/* A BLANK RULE, for the same reason LOT BF above is one: at print
+                    time this number does not exist yet. The sheet is printed before
+                    the split runs, and NetSuite mints the remainder's lot only when
+                    the figures are recorded, collision-checking it against every
+                    sibling lot as it does. This box used to print `<lot>-1`, a name
+                    NetSuite never creates and one that receiving gives to a DIFFERENT
+                    physical bundle on the same PO line. Printing a guess here staples
+                    it to the wood. */}
                 <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.6, color: INK }}>
-                  LOT #
+                  NEW LOT #
                 </div>
-                <div
-                  style={{
-                    fontSize: 32,
-                    fontWeight: 800,
-                    fontFamily: MONO,
-                    color: ACCENT,
-                    letterSpacing: 1,
-                    marginTop: 6,
-                  }}
-                >
-                  {nextSplitLotNo(b.lotNo, 0)}
+                <div style={{ borderBottom: '1.5px solid #0D1F33', height: 34, marginTop: 6 }} />
+                <div style={{ fontSize: 10, fontWeight: 600, color: LABEL, marginTop: 8 }}>
+                  Assigned by NetSuite when this split is recorded. Write it here then.
                 </div>
               </div>
 

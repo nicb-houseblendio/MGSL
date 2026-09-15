@@ -1,3 +1,4 @@
+import { lengthDisplayRow } from '@/lib/archTallyLength';
 /**
  * Bundle tally: the storage contract and the render adapter.
  *
@@ -469,6 +470,30 @@ export const widthLabel = (b: TallyBundle): string => {
  * carries provenance, and returning a sentence here too put two near-identical
  * lines under the table.
  */
+/** The three states the ARCH cache can report for a lot's tally. */
+export type TallyState = 'staleParent' | 'newChild';
+
+/**
+ * What to tell a trader when a lot has no tally it can be trusted on.
+ *
+ * 🔴 These two are NOT the same as "no tally yet", and saying so matters. A lot
+ * that was split has a REASON its tally is missing, and a trader who knows the
+ * reason knows who to chase. A generic empty state hides that.
+ *
+ * Returns null for any other state, so the caller keeps its existing empty text.
+ */
+export const tallyStateNote = (state?: TallyState | null): string | null => {
+  if (state === 'staleParent') {
+    return 'This bundle was split, so the tally taken for it no longer describes '
+      + 'what is here. A new one has not been attached yet.';
+  }
+  if (state === 'newChild') {
+    return 'This bundle was created by a split, so no supplier document has ever '
+      + 'described it. A tally has not been attached yet.';
+  }
+  return null;
+};
+
 export const widthNote = (b: TallyBundle): string => {
   if (b?.width?.inches != null) return '';
   // 🔴 CORRECTION 2026-09-05. Without this branch a multi-width bundle fell through
@@ -646,6 +671,32 @@ export interface TallyGrid {
   /** width -> summed pieces down the column. */
   columnTotals: Record<string, number>;
   columnUnattributedTotal: number;
+  /**
+   * Piece-weighted average width, in `widthUnit`, or null when nothing is attributed.
+   *
+   * The V4 mockup prints this per lot as `avgW.toFixed(1)` and computes it as
+   * `wWeighted / totPcs` where `wWeighted += w * p` across every cell. WEIGHTED by
+   * piece count, not a mean of the width columns: a bundle of 100 six-inch boards
+   * and 1 twelve-inch board averages 6.1, not 9.
+   *
+   * Unattributed pieces are excluded from both sides rather than counted at width
+   * zero, which would drag the average down by inventing a width the document never
+   * stated.
+   */
+  avgWidth: number | null;
+  /**
+   * True when a length filter dropped rows, so every total here describes WHAT IS
+   * SHOWN rather than the whole bundle.
+   *
+   * 🔴 THIS EXISTS TO STOP A FALSE ACCUSATION. `footsToTotal` means "the cells
+   * sum to the bundle's stated pieces", and a view drawing only some rows cannot
+   * satisfy it. Setting that flag false made the panel print "the document states N
+   * pieces but this grid sums to M", which blames the supplier's paperwork for the
+   * trader having moved a slider. A filtered grid is not a broken document.
+   */
+  isFiltered: boolean;
+  /** width -> summed BOARD FEET down the column, when the document stated row BF. */
+  columnBoardFeet: Record<string, number | null>;
   totals: { pieces: number; boardFeet: number | null; volumeM3: number | null };
   /** False means the grid's own cells do not sum to the bundle's stated totals.pieces.
    * Same rule as `TallyWidthDistribution.footsToTotal`: a view must not draw a Total
@@ -703,9 +754,132 @@ export interface TallyGrid {
  * This function is correct against the data it was given; it is not yet proof the
  * screen shows a real trader a real two-axis tally.
  */
-export const toLengthWidthGrid = (bundle: TallyBundle | null | undefined): TallyGrid | null => {
+/**
+ * The grid, keeping only rows whose length falls inside [lo, hi], with every total
+ * recomputed from what survives.
+ *
+ * 🔴 TOTALS MUST BE RECOMPUTED, NOT CARRIED OVER. The V4 mockup's `filterTally`
+ * rebuilds `colPcs`, `colBF`, `totPcs`, `totBF` and `avgW` from the filtered rows for
+ * exactly this reason: a grid showing four of twelve lengths under a Total that still
+ * counts all twelve is worse than no filter at all, because every number on screen
+ * looks authoritative.
+ *
+ * `boardFeet` on the totals drops to null when anything was filtered out, because the
+ * bundle's stated BF describes the WHOLE bundle and no longer matches what is shown.
+ * `footsToTotal` goes false for the same reason: a partial view has nothing to foot
+ * against.
+ *
+ * Rows with no parseable length (a range row, or a bundle with no length at all) are
+ * KEPT rather than silently dropped, since excluding them would quietly change the
+ * piece count for a filter the trader did not ask for on that row.
+ */
+export const filterGridByLength = (
+  grid: TallyGrid | null | undefined,
+  lo: number,
+  hi: number,
+): TallyGrid | null => {
+  if (!grid) return null;
+  const inRange = (r: TallyGridRow) =>
+    !Number.isFinite(r.sortKey) || (r.sortKey >= lo && r.sortKey <= hi);
+  const rows = grid.rows.filter(inRange);
+  if (rows.length === grid.rows.length) return grid;
+
+  const columnTotals: Record<string, number> = {};
+  const columnBoardFeet: Record<string, number | null> = {};
+  for (const w of grid.widths) { columnTotals[String(w)] = 0; columnBoardFeet[String(w)] = null; }
+  let pieces = 0, columnUnattributedTotal = 0, widthWeighted = 0, attributed = 0;
+  for (const r of rows) {
+    pieces += r.pieces;
+    columnUnattributedTotal += r.unattributed;
+    for (const w of grid.widths) {
+      const k = String(w);
+      const n = r.cells[k] || 0;
+      columnTotals[k] += n;
+      widthWeighted += w * n;
+      attributed += n;
+      if (r.boardFeet != null && r.pieces > 0 && n > 0) {
+        columnBoardFeet[k] = (columnBoardFeet[k] || 0) + (r.boardFeet * n) / r.pieces;
+      }
+    }
+  }
+  return {
+    widths: grid.widths,
+    widthUnit: grid.widthUnit,
+    rows,
+    columnTotals,
+    columnUnattributedTotal,
+    avgWidth: attributed > 0 ? widthWeighted / attributed : null,
+    isFiltered: true,
+    columnBoardFeet,
+    /* BF summed from the rows that survived, NOT the bundle's stated total, which
+     * describes wood no longer shown. Null when no surviving row stated one. */
+    totals: {
+      pieces,
+      boardFeet: rows.some((r) => r.boardFeet != null)
+        ? rows.reduce((t, r) => t + (r.boardFeet || 0), 0)
+        : null,
+      volumeM3: null,
+    },
+    /* TRUE. The filtered cells foot to the filtered totals, which is the only claim
+     * the footer makes about a filtered view. `isFiltered` is what tells the panel
+     * to say the totals are of the shown rows. */
+    footsToTotal: true,
+  };
+};
+
+/** The distinct lengths a bundle holds, for the chips the mockup shows per lot row. */
+export const bundleLengthChips = (bundle: TallyBundle | null | undefined): string[] => {
   const rows = Array.isArray(bundle?.matrix?.rows) ? (bundle!.matrix as TallyMatrix).rows : [];
-  if (rows.length < 2) return null;
+  const seen: string[] = [];
+  for (const r of rows) {
+    const raw = rowLabel(r);
+    if (!raw || raw === '—') continue;
+    /* 🔴 THE SAME METRIC DISPLAY THE MATRIX ROWS GET, or the two disagree in one
+     * glance. A Zebrano bundle's 2400mm row prints "2400mm" inside the grid and
+     * printed "7.874′" as a chip on the row directly above it — the same board,
+     * two numbers, neither obviously the other. The prototype's chips read 6′ 7′ 12′
+     * because its fake wood is imperial; ours has to survive a metric document. */
+    const l = lengthDisplayRow({ label: raw, sortKey: rowSortKey(r) }).text;
+    if (l && seen.indexOf(l) === -1) seen.push(l);
+  }
+  return seen;
+};
+
+/** The smallest and largest length a bundle holds, for clamping a range control. */
+export const bundleLengthBounds = (
+  bundle: TallyBundle | null | undefined,
+): { lo: number; hi: number } | null => {
+  const rows = Array.isArray(bundle?.matrix?.rows) ? (bundle!.matrix as TallyMatrix).rows : [];
+  const keys = rows.map(rowSortKey).filter((n) => Number.isFinite(n));
+  if (!keys.length) return null;
+  return { lo: Math.min(...keys), hi: Math.max(...keys) };
+};
+
+export const toLengthWidthGrid = (
+  bundle: TallyBundle | null | undefined,
+  opts?: {
+    /**
+     * Draw a grid for a bundle that holds only ONE length.
+     *
+     * Off by default, because this function was written to take over from
+     * `toWidthDistribution` only where that table could not go, and everything held
+     * before 2026-09-10 must keep the shape it shipped with. See the `merged.size`
+     * comment below for the full argument.
+     *
+     * 🔴 The V4 prototype has no such gate. Its expanded row is a length x width
+     * matrix for every tallied lot, one length or fifteen, so a single-length bundle
+     * there prints a one-row grid with a Total under it. Ours printed NOTHING AT ALL
+     * for a bundle that is also single-width — `w.degenerate` suppresses the width
+     * table and this returned null — which is how the seeded 315643-14-B lot came to
+     * expand into an empty panel. `TallyMatrixPanel` passes this on, so the rendered
+     * screen matches the prototype while the default call keeps the old contract.
+     */
+    allowSingleLength?: boolean;
+  },
+): TallyGrid | null => {
+  const rows = Array.isArray(bundle?.matrix?.rows) ? (bundle!.matrix as TallyMatrix).rows : [];
+  const minLengths = opts?.allowSingleLength ? 1 : 2;
+  if (rows.length < minLengths) return null;
 
   const widthUnit: 'in' | 'mm' = bundle?.matrix?.widthUnit === 'mm' ? 'mm' : 'in';
   // Same gate toWidthDistribution and checkPayload use: a key not in the document's
@@ -751,7 +925,7 @@ export const toLengthWidthGrid = (bundle: TallyBundle | null | undefined): Tally
   // proven toWidthDistribution table, breaking the "nothing that rendered before
   // today changes" guarantee this function exists to preserve. Found in adversarial
   // review 2026-09-10 by reproducing the exact archTally.test.mjs "dup" bundle.
-  if (merged.size < 2) return null;
+  if (merged.size < minLengths) return null;
 
   const widthSet = new Set<number>();
   for (const m of merged.values()) for (const w of m.cells.keys()) widthSet.add(w);
@@ -770,14 +944,33 @@ export const toLengthWidthGrid = (bundle: TallyBundle | null | undefined): Tally
     });
 
   const columnTotals: Record<string, number> = {};
-  for (const w of widths) columnTotals[String(w)] = 0;
+  const columnBoardFeet: Record<string, number | null> = {};
+  for (const w of widths) { columnTotals[String(w)] = 0; columnBoardFeet[String(w)] = null; }
   let columnUnattributedTotal = 0;
   let pieces = 0;
+  let widthWeighted = 0;
+  let attributedPieces = 0;
   for (const r of gridRows) {
     pieces += r.pieces;
     columnUnattributedTotal += r.unattributed;
-    for (const w of widths) { const k = String(w); columnTotals[k] += r.cells[k] || 0; }
+    for (const w of widths) {
+      const k = String(w);
+      const n = r.cells[k] || 0;
+      columnTotals[k] += n;
+      widthWeighted += w * n;
+      attributedPieces += n;
+      /* 🔴 BF PER COLUMN IS APPORTIONED, AND ONLY WHERE THE DOCUMENT STATED IT.
+       * A row's BF is a single figure for the whole row, so a column's share is the
+       * row's BF times that column's share of the row's pieces. Left null wherever
+       * the row gave no BF, so a column total is either backed by the paper or
+       * absent. Never derived from dimensions: this file's whole contract is that a
+       * BF figure computed here would disagree with the document. */
+      if (r.boardFeet != null && r.pieces > 0 && n > 0) {
+        columnBoardFeet[k] = (columnBoardFeet[k] || 0) + (r.boardFeet * n) / r.pieces;
+      }
+    }
   }
+  const avgWidth = attributedPieces > 0 ? widthWeighted / attributedPieces : null;
 
   const stated = bundle?.totals?.pieces ?? null;
 
@@ -787,6 +980,9 @@ export const toLengthWidthGrid = (bundle: TallyBundle | null | undefined): Tally
     rows: gridRows,
     columnTotals,
     columnUnattributedTotal,
+    avgWidth,
+    isFiltered: false,
+    columnBoardFeet,
     totals: {
       pieces,
       boardFeet: bundle?.totals?.boardFeet ?? null,

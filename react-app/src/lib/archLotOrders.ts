@@ -33,12 +33,22 @@
  * rebuild lands: until it does, every lot is 'unsourced', the banner stays, and
  * nothing on screen claims to be real.
  *
- * ── ONLY `reserve` HAS A SOURCE ────────────────────────────────────────────
- * `orders` describes the sales orders behind a bundle's RESERVE. The other two
- * buckets with SO columns cannot be answered from it and must not borrow it:
+ * ── ONLY `reserve` HAS A SOURCE, STILL ──────────────────────────────────────
+ * `orders` describes the sales orders behind a bundle's committed quantity.
+ * The other two buckets with SO columns cannot be answered from it:
  *
- *   readyToBuild  is a hardcoded literal 0 in the cache — no NetSuite field
- *                 feeds it — so no live bundle is ever listed under it.
+ *   readyToBuild  ⚠️ Its ROW TOTAL is real as of 2026-09-10 — see
+ *                 `loadBuckets` and `setReadyToBuild` — but `orders` is NOT
+ *                 yet split by which of `reserve`/`readyToBuild` an order's
+ *                 quantity landed in: `lotRec.orders[oid].qty` accumulates
+ *                 across BOTH regardless of which bucket a given line was
+ *                 classified into. Naively allowing this bucket to read
+ *                 `orders` (tried and reverted the same day) would show the
+ *                 SAME possibly-wrong list and qty under both buckets on any
+ *                 lot split between a Reserved order and a Ready-to-Build
+ *                 one — worse than today's honest 'unavailable'. Fixing this
+ *                 properly needs a per-order, per-bucket split in the
+ *                 accumulator, not just a change here.
  *   outbound      is attributed to NO lot on purpose. The wood has shipped, the
  *                 bundle's on-hand is already net of it, and booking it against
  *                 the bundle would count the same stock twice.
@@ -57,21 +67,61 @@ export type ArchOrderSource = 'netsuite' | 'unavailable' | 'unsourced';
 export const NO_VALUE = '—';
 
 /**
+ * Does this payload know which bucket each order's share landed in?
+ *
+ * 🔴 THE WHOLE REASON `readyToBuild` COULD NOT READ `orders` UNTIL NOW. A bundle
+ * can be claimed by a Reserved order AND a Ready-to-Build one at the same time
+ * (31 lots in this sandbox are held by two or more orders, one in 17), and
+ * `qty` accumulates the order's share of the BUNDLE. With no per-order marker,
+ * letting both buckets read `orders` shows the same list and the same number
+ * under both tabs. That was tried on 2026-09-10 and reverted the same day,
+ * correctly: an em dash beats a confident wrong answer.
+ *
+ * The cache MR now stamps `readyToBuild` on each order entry, from the same
+ * `readyToBuildIds` map that decided the quantity, so the two can never
+ * disagree. This checks the stamp is actually there before trusting it: a cache
+ * written by the PREVIOUS MR has no such key, and on that payload the old
+ * behaviour is still the honest one.
+ */
+const ordersCarryBucket = (orders: ArchLotOrder[]): boolean =>
+  orders.some((o) => typeof o.readyToBuild === 'boolean');
+
+/**
  * Which of the three states a bundle is in for a given bucket.
  *
  * `Array.isArray` and not a truthiness check: `[]` is truthy in JS but is the
  * whole signal here, and `orders && orders.length` would have silently thrown
  * the 'unavailable' state away.
+ *
+ * ⚠️ `outbound` is never order-bearing, and that is not an oversight. Shipped
+ * wood is deliberately attributed to no bundle, because the bundle's on-hand is
+ * already net of it, so an order named there would be a claim on stock that has
+ * left the building.
  */
 export const orderSource = (lot: ArchLot, bucket: ArchDetailKey): ArchOrderSource => {
   if (!Array.isArray(lot.orders)) return 'unsourced';
-  if (bucket === 'reserve' && lot.orders.length > 0) return 'netsuite';
+  if (!lot.orders.length) return 'unavailable';
+  if (bucket === 'reserve') return 'netsuite';
+  // Only once the payload can tell the two buckets apart. Otherwise the old
+  // honest em dash, not a list that might belong to the other tab.
+  if (bucket === 'readyToBuild' && ordersCarryBucket(lot.orders)) return 'netsuite';
   return 'unavailable';
 };
 
-/** The orders to show for this bucket — empty unless the source is real. */
-export const ordersFor = (lot: ArchLot, bucket: ArchDetailKey): ArchLotOrder[] =>
-  orderSource(lot, bucket) === 'netsuite' ? (lot.orders as ArchLotOrder[]) : [];
+/**
+ * The orders to show for this bucket, empty unless the source is real.
+ *
+ * FILTERED BY BUCKET where the payload supports it. Both tabs read the same
+ * `orders` array, so without this a Reserved order would appear under Ready to
+ * Build and vice versa on any shared bundle. `reserve` keeps everything on a
+ * pre-stamp payload, which is exactly what it showed before.
+ */
+export const ordersFor = (lot: ArchLot, bucket: ArchDetailKey): ArchLotOrder[] => {
+  if (orderSource(lot, bucket) !== 'netsuite') return [];
+  const orders = lot.orders as ArchLotOrder[];
+  if (!ordersCarryBucket(orders)) return orders;
+  return orders.filter((o) => (bucket === 'readyToBuild' ? o.readyToBuild === true : o.readyToBuild !== true));
+};
 
 /**
  * Days between an ISO date and today, floored at 0; null when there is no date.

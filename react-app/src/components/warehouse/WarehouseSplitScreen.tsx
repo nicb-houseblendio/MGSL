@@ -103,7 +103,10 @@ export const WarehouseSplitScreen = () => {
   // Live from NetSuite when the Suitelet injects its URL, fixtures otherwise.
   // The source is surfaced in the toolbar rather than hidden: demo data shown as
   // if it were real is the one outcome worth designing against.
-  const { jobs, source, error, lotMissingCount, reload, completeBundle } = useArchSplitQueue();
+  const {
+    jobs, source, error, lotMissingCount, notReadyToBuildCount, readyToBuildKnown,
+    reload, completeBundle,
+  } = useArchSplitQueue();
   const [saving, setSaving] = React.useState(false);
   // Colours assigned across the whole roster, so no two traders collide.
   const traderColors = React.useMemo(() => traderColorMap(jobs.map((j) => j.trader)), [jobs]);
@@ -217,6 +220,11 @@ export const WarehouseSplitScreen = () => {
     setSaving(true);
     const done: string[] = [];
     const failed: string[] = [];
+    /* The name NetSuite actually gave each remainder, keyed by the parent lot.
+       The client cannot derive it: the server collision-checks against sibling
+       lots at write time and appends a letter, while `-1` belongs to receiving.
+       Anything not in this map has no created lot to name. */
+    const childByParent = new Map<string, string>();
 
     for (const b of ready) {
       const e = entryFor(job, b.lotNo);
@@ -233,8 +241,10 @@ export const WarehouseSplitScreen = () => {
         customerQty: parseFloat(e.customerBF),
         remainderQty: parseFloat(e.inventoryBF),
       });
-      if (res.ok) done.push(`${res.parentLot || b.lotNo} → ${res.childLot || ''}`.trim());
-      else failed.push(`${b.lotNo}: ${res.error}`);
+      if (res.ok) {
+        if (res.childLot) childByParent.set(b.lotNo, res.childLot);
+        done.push(`${res.parentLot || b.lotNo} → ${res.childLot || ''}`.trim());
+      } else failed.push(`${b.lotNo}: ${res.error}`);
     }
 
     setSaving(false);
@@ -248,7 +258,14 @@ export const WarehouseSplitScreen = () => {
     } else if (left) {
       setToast(`${done.length} bundle${done.length === 1 ? '' : 's'} split on ${job.soNo} — ${left} still to record`);
     } else {
-      setResult({ job, outcomes: job.bundles.map((b) => splitOutcome(b, entryFor(job, b.lotNo))) });
+      setResult({
+        job,
+        // The server's name, never a predicted one. A bundle that failed is not in
+        // the map and its card then names no child lot, which is the truth.
+        outcomes: job.bundles.map((b) =>
+          splitOutcome(b, entryFor(job, b.lotNo), childByParent.get(b.lotNo) ?? null)
+        ),
+      });
       setToast(`${job.soNo} split in NetSuite — ${done.join(', ')}`);
     }
   }, [jobs, openJob, entryFor, entryDone, source, completeBundle, reload, saving]);
@@ -649,6 +666,28 @@ export const WarehouseSplitScreen = () => {
             {lotMissingCount} line{lotMissingCount === 1 ? '' : 's'} without a bundle
           </span>
         )}
+        {source === 'netsuite' && !readyToBuildKnown && (
+          <span
+            title="Ready to Build has not been set up in NetSuite yet, so this queue cannot tell a finished order from one still being built — every pending split is held back until it is."
+            style={{
+              fontSize: 10, fontWeight: 700, color: '#7A4100', background: '#FBF1E5',
+              border: '1px solid #D9822B', padding: '2px 8px', borderRadius: 9,
+            }}
+          >
+            Ready to Build not set up yet
+          </span>
+        )}
+        {source === 'netsuite' && readyToBuildKnown && notReadyToBuildCount > 0 && (
+          <span
+            title="These orders have a bundle flagged for a split, but the order itself is not marked Ready to Build yet, so the warehouse does not see it until it is."
+            style={{
+              fontSize: 10, fontWeight: 700, color: ARCH_SURFACE.textMid, background: '#EEF1F6',
+              border: '1px solid #CBD5E1', padding: '2px 8px', borderRadius: 9,
+            }}
+          >
+            {notReadyToBuildCount} order{notReadyToBuildCount === 1 ? '' : 's'} waiting on Ready to Build
+          </span>
+        )}
         <span
           title={
             source === 'netsuite' ? 'Live from NetSuite.'
@@ -798,7 +837,7 @@ const SplitResultDialog = ({
           Split recorded — <span className="font-mono">{job.soNo}</span>
         </div>
         <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: 11.5, marginTop: 2 }}>
-          The hold on {outcomes.length === 1 ? 'the bundle' : 'these bundles'} would now be released
+          The hold on {outcomes.length === 1 ? 'the bundle' : 'these bundles'} is released
         </div>
       </div>
 
@@ -816,11 +855,15 @@ const SplitResultDialog = ({
                 Correct the sales order line to{' '}
                 <strong className="font-mono">{formatQty(o.soLineBF, o.unit)}</strong> — replacing the trader's placeholder.
               </li>
+              {/* `newLotNo` is the server's own answer or nothing at all. It used to be
+                  computed here as `<lot>-1`, which NetSuite never creates and which
+                  receiving already uses for a second bundle on one PO line. */}
               <li>
                 Inventory adjustment splitting the lot: <strong className="font-mono">{o.lotNo}</strong> becomes{' '}
                 <strong className="font-mono">{formatQty(o.originalLotBF, o.unit)}</strong>, and a new bundle{' '}
-                <strong className="font-mono">{o.newLotNo}</strong> is created at{' '}
-                <strong className="font-mono">{formatQty(o.newLotBF, o.unit)}</strong>.
+                {o.newLotNo && <><strong className="font-mono">{o.newLotNo}</strong>{' '}</>}
+                is created at <strong className="font-mono">{formatQty(o.newLotBF, o.unit)}</strong>.
+                {!o.newLotNo && ' NetSuite assigns its lot number when the split is recorded.'}
               </li>
               {o.systemVarianceBF !== 0 && (
                 <li>
@@ -853,9 +896,16 @@ const SplitResultDialog = ({
         >
           <span style={{ fontSize: 13, lineHeight: 1 }}>⚠️</span>
           <span>
-            None of this is written to NetSuite yet. Three things need agreeing first: how the SO line is corrected
-            after the fact, the exact form of the inventory adjustment, and the lot-numbering rule when an
-            already-split bundle is split again.
+            {/* 🔴 CORRECTED 2026-09-14. This said "None of this is written to NetSuite
+                yet" and named three things as unagreed: the SO line correction, the form of
+                the inventory adjustment, and the lot-numbering rule. All three shipped. This
+                panel renders on the LIVE path, after a real inventory adjustment has posted
+                and the SO line has been trued up, so the old text told a warehouse worker
+                their completed job had not happened. */}
+            The inventory adjustment has posted and the sales order line is updated. Two things
+            are still worth knowing: the child lot naming is a working assumption, not a
+            confirmed rule, and the tally for these lots is now out of date until somebody
+            attaches a new one.
           </span>
         </div>
       </div>

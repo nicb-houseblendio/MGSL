@@ -697,6 +697,34 @@ export const SOWizard = ({
     () => findTeam(liveTeams, salesTeamId),
     [liveTeams, salesTeamId]
   );
+
+  /**
+   * The chosen team does not credit the order's own rep. Names who it credits
+   * instead, or null when there is nothing to say.
+   *
+   * 🔴 A NOTICE, NOT A GUARD, and the distinction is the whole point. Refusing
+   * this combination was considered on 2026-09-14 and rejected, because
+   * `archOrderCreate.js` already records that Marc-Antoine keeps the two apart
+   * deliberately: "Je crois qu'on devrait ajouter le field 'sales rep'. Qui
+   * permet d'identifier qui est le owner du SO. Le sales team définit le split
+   * commission" (2026-09-08). The rep is the OWNER, the team is the MONEY, and
+   * an owner outside the split is a legitimate thing to want. Blocking it would
+   * break a case the client asked for.
+   *
+   * What is NOT legitimate is doing it by accident. Measured in this sandbox on
+   * 2026-09-14: of the seven people who are the rep on a recent ARCH order,
+   * **Lucas Gibb appears in none of the 44 teams at all**, and Alec Wolf,
+   * Christopher Pajot and Tom Gorelle have no solo team, so the only way to pick
+   * them is inside a pairing that also credits somebody else. A trader in that
+   * position can hand half their commission away without the screen ever saying
+   * so. This says so.
+   */
+  const teamExcludesRep = React.useMemo<string[] | null>(() => {
+    if (!pickedTeam || !salesRepId) return null;
+    const rep = String(salesRepId);
+    if ((pickedTeam.members || []).some((m) => String(m.id) === rep)) return null;
+    return (pickedTeam.members || []).map((m) => m.name).filter(Boolean);
+  }, [pickedTeam, salesRepId]);
   const comboTeams = React.useMemo<ArchComboOption[]>(
     () => liveTeams.map((t) => ({ id: t.id, label: teamOptionLabel(t) })),
     [liveTeams]
@@ -1295,13 +1323,41 @@ export const SOWizard = ({
        * cannot post an `entitygroup` id at somebody's commission. Undefined
        * leaves the key out of the request entirely, see toRequest.
        *
-       * ⚠️ NEW ORDERS ONLY, and the gate is here rather than only in the state
-       * so it cannot be forgotten. The picker is not rendered on an append (the
-       * endpoint skips the whole header block there), so sending a team picked
-       * before the trader switched modes would post a value they can no longer
-       * see, on a request that ignores it. Both halves of that are wrong.
+       * 🔴 THE NEW-ORDER GATE WAS REMOVED 2026-09-14, because the reason
+       * given for it was not true. It read "the endpoint skips the whole header
+       * block on an append", and the endpoint does not: it applies the customer
+       * PO, the incoterms and the ship date there, and it has an explicit, argued
+       * branch that writes a named team on an append too (see "A NAMED TEAM IS
+       * DIFFERENT, AND IS HONOURED" in `archOrderCreate.js`). So the server was
+       * built to accept this and the client was refusing to send it, which made
+       * that whole server branch unreachable and made the panel tell the trader
+       * to go and do it in NetSuite instead.
+       *
+       * What the gate was RIGHT about is that a team must never be sent because
+       * it was left sitting in state. That is handled properly by
+       * `sendableTeamId`, which re-resolves against the CURRENT live list, and by
+       * the picker now being rendered in both modes, so anything sent is
+       * something the trader can see. The rep is still not sent on an append and
+       * that asymmetry is deliberate: a rep can be a prefill, a picked team
+       * cannot.
        */
-      salesTeamId: mode === 'new' ? sendableTeamId(liveTeams, salesTeamId) : undefined,
+      salesTeamId: sendableTeamId(liveTeams, salesTeamId),
+      /* The members and the name travel WITH the id, under the SAME condition,
+       * so the three can never disagree about which team is meant.
+       *
+       * 🔴 Taken from `pickedTeam`, which is resolved against the CURRENT live
+       * list rather than remembered (see its useMemo), so a team that vanished
+       * from Setup between load and save sends nothing rather than stale members.
+       * `sendableTeamId` applies the same rule to the id, and both resolve from
+       * `liveTeams`, so either both go or neither does.
+       *
+       * The server cannot look these up — it runs as a role that cannot read
+       * `entitygroup` — so this is the only source of the split, and it is
+       * re-validated there against `employee` before anything is written. */
+      salesTeamMembers:
+        sendableTeamId(liveTeams, salesTeamId) ? pickedTeam?.members : undefined,
+      salesTeamName:
+        sendableTeamId(liveTeams, salesTeamId) ? pickedTeam?.name : undefined,
       paymentTerms: paymentTermsFor(customer),
     },
     // Totals for what is BEING WRITTEN, so the confirm dialog does not quote the
@@ -1490,11 +1546,15 @@ export const SOWizard = ({
                        *
                        * This was a ternary that tested `demo` first, so a demo order
                        * swallowed the Ready to Build text. That looked harmless and was
-                       * not: a fixture order is the ONLY thing in the running app that
-                       * carries 'Ready to Build' status, because no NetSuite field feeds
-                       * it on real orders yet. Choosing `demo` therefore hid the warning
-                       * in every state it could occur in, so the behaviour the client
-                       * asked for on 2026-08-14 rendered nowhere at all.
+                       * not: at the time, a fixture order was the ONLY thing in the
+                       * running app that could carry 'Ready to Build' status, because
+                       * no NetSuite field fed it on real orders. Choosing `demo`
+                       * therefore hid the warning in every state it could occur in, so
+                       * the behaviour the client asked for on 2026-08-14 rendered
+                       * nowhere at all. ⚠️ That premise changed 2026-09-10 —
+                       * `setReadyToBuild` lets a real order carry it too — but the fix
+                       * itself (compose rather than choose) stays correct regardless of
+                       * which orders can reach the state.
                        *
                        * The two facts are independent and both matter, so compose them.
                        * Pinned by archUiGuards.test.mjs.
@@ -2272,20 +2332,23 @@ export const SOWizard = ({
             percentages are `entitygroupmember.contribution`.
 
             What is shown depends on what is reachable, and the third case is new:
-              editing  the order's own split, from `traderShared`/`traderTied`,
-                       which the openOrders endpoint already computes from those
-                       contribution values. NOT a picker: the create endpoint
-                       skips the whole header block on an append, so a chooser
-                       there would discard the choice silently.
-              new      a PICKER over the 44 real teams when the role can read
+              either   a PICKER over the 44 real teams when the role can read
                        them (`action=salesTeams`, live), so the trader sets the
                        commission split rather than being told about it.
+
+                       🔴 ON AN APPEND TOO, since 2026-09-14. It used to say
+                       a chooser here "would discard the choice silently" because
+                       the endpoint skipped the header block on an append. It does
+                       not skip it, and it has an explicit branch that writes a
+                       named team there and reports what it replaced. The panel was
+                       telling the trader to go and change it in NetSuite while the
+                       server sat ready to do it.
               neither  the mechanism, stated plainly, and WHY the list is absent.
                        A RESTlet runs as the caller and every team sits in
                        subsidiary 1, so an empty list is expected for a trader
                        and is not the same as a failure. Never a fixture.
           */}
-          {mode === 'new' && teamsResult.status === 'ok' ? (
+          {teamsResult.status === 'ok' ? (
             <>
               <ArchCombobox
                 value={pickedTeam ? pickedTeam.name : ''}
@@ -2338,6 +2401,21 @@ export const SOWizard = ({
                       : '. Shown for reference only: it is NOT written to the order yet, so the rep above stays its sole owner.')
                   : 'Optional. Leave it empty and NetSuite credits the rep above on the order’s Sales Team. Typing matches the team name or any rep on it.'}
               </div>
+              {/* The team credits somebody other than the order's owner. Legitimate,
+                  and easy to do by accident on this catalogue, so it is stated rather
+                  than blocked. See the note on `teamExcludesRep`. */}
+              {teamExcludesRep && (
+                <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
+                  ⚠️ This team does not include the rep above, so the commission goes to{' '}
+                  {teamExcludesRep.length === 1
+                    ? teamExcludesRep[0]
+                    : teamExcludesRep.slice(0, -1).join(', ') + ' and ' + teamExcludesRep[teamExcludesRep.length - 1]}
+                  {salesTeamWriteEnabled()
+                    ? ', not to them. The rep above stays the order’s owner.'
+                    : '. Nothing is written yet, so today the rep above is credited in full.'}
+                </div>
+              )}
+
               {/* Never silently: a team we cannot fully read, or one whose
                   percentages do not total 100, says so on the field. */}
               {/* The notice written for exactly this and imported nowhere until now. */}
@@ -2383,18 +2461,25 @@ export const SOWizard = ({
               {/*
                 Says WHY there is no picker, in the trader's terms, and keeps
                 "the service answered with none" apart from "we could not ask".
-                Only on a new order: on an append the panel is showing the
-                order's own split and the absence of a picker is deliberate.
+                Shown in both modes now that the picker is.
               */}
-              {mode === 'new' && teamsResult.notice && (
+              {teamsResult.notice && (
                 <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
                   ⚠️ {teamsResult.notice}
                 </div>
               )}
-              {mode === 'existing' && (
+              {/*
+                🔴 REPLACING, not adding. On an append the order already carries a
+                split, and writing a team REATTRIBUTES commission that is on it
+                today. The endpoint says what it replaced (`salesTeamPrevious`),
+                but the trader has to be told BEFORE they confirm, not after. Only
+                when a team is actually picked: an append that leaves the picker
+                alone sends nothing and changes nothing.
+              */}
+              {mode === 'existing' && pickedTeam && (
                 <div style={{ marginTop: 5, fontSize: 10.5, color: '#B45309', lineHeight: 1.5 }}>
-                  ⚠️ Adding lines does not change the commission split: change the Sales Team on the
-                  order in NetSuite.
+                  ⚠️ This REPLACES the commission split already on the order. Leave the team
+                  blank to keep it as it is.
                 </div>
               )}
             </>

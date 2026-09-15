@@ -164,8 +164,18 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /onDrillDown=\{drillable \? onDrillDown : undefined\}/.test(t));
 
   // ── Marc-Antoine: Ready to Build cannot receive anything, and says so ────
-  ok('grid: READY TO BUILD carries a not-sourced note',
-    /key: 'readyToBuild'[\s\S]{0,400}?note: 'Not sourced yet/.test(t));
+  // Updated 2026-09-10: the note is no longer a permanent claim. It is wired
+  // to the cache's own META (`readyToBuildSourced`) via `getMetricColumns`,
+  // because the field it describes ("no field in NetSuite yet") stopped being
+  // permanently true the moment `setReadyToBuild` and the isolated cache read
+  // shipped — see `archOrderCreate.js` and the cache MR below. A hardcoded
+  // string here would keep asserting absence after the field exists.
+  ok('grid: READY TO BUILD is a function of readyToBuildSourced, not a fixed string',
+    /key: 'readyToBuild'[\s\S]{0,800}?note: readyToBuildSourced\s*\n\s*\? undefined\s*\n\s*: 'Not sourced yet/.test(t));
+  ok('grid: no hardcoded not-sourced literal survives for readyToBuild',
+    !/note: 'Not sourced yet: no field in NetSuite feeds this/.test(t));
+  ok('grid: the column function takes readyToBuildSourced as its only argument',
+    /const getMetricColumns = \(\s*\n\s*readyToBuildSourced: boolean,/.test(t));
   ok('grid: a column carrying a note renders the marker, not just a tooltip',
     /note && <span aria-hidden/.test(t));
 
@@ -206,8 +216,17 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /reserve \+= assigned \* openShare/.test(mr) && /onOrder \+= assigned \* openShare/.test(mr));
   ok('cache MR: the unconditional whole-assignment reserve is gone',
     !/\.reserve \+= assigned;/.test(mr));
-  ok('cache MR: readyToBuild is still an unsourced literal 0, matching archBuckets',
-    /readyToBuild: 0,/.test(mr));
+  // Updated 2026-09-10: readyToBuild moved from a hardcoded literal 0 to an
+  // isolated, separately try/caught query over `custbody_arch_ready_to_build`
+  // — see `loadBuckets`. Pin the shape that keeps it safe to deploy before the
+  // field exists (never joined into BUCKET_SQL, which the other five buckets
+  // depend on) rather than the old hardcoded absence.
+  ok('cache MR: readyToBuild is read from its own isolated, try/caught query',
+    /custbody_arch_ready_to_build = 'T'/.test(mr) && /readyToBuildSourced = false/.test(mr));
+  ok('cache MR: that query is never joined into BUCKET_SQL itself',
+    !(mr.match(/const BUCKET_SQL =[\s\S]*?;/) || [''])[0].includes('custbody_arch_ready_to_build'));
+  ok('cache MR: no unconditional hardcoded readyToBuild literal survives',
+    !/readyToBuild:\s*0,/.test(mr));
 
   /* ── Marc-Antoine, ROOT CAUSE, server side ────────────────────────────────
    * `available` subtracted `outbound` from an `onHand` figure that was already
@@ -215,14 +234,100 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
    * the deduction never expired — nothing closes a shipped-and-billed line.
    * 1,166 BF across the 13 live rows on 2026-09-08. With it gone all 13
    * reconcile; 4 did not before. */
+  // Updated 2026-09-10: `readyToBuild` is a real subtracted variable now, not
+  // the literal `0 /*readyToBuild*/` placeholder — it is sold wood one stage
+  // further along, and must be excluded from Available the same as `reserve`.
   ok('cache MR: available no longer subtracts outbound',
-    /available:\s*Math\.max\(0, onHand \+ onOrder \+ inTransit\s*\n\s*- reserve - 0 \/\*readyToBuild\*\/\s*\n\s*- held\)/.test(mr));
+    /available:\s*Math\.max\(0, onHand \+ onOrder \+ inTransit\s*\n\s*- reserve - readyToBuild\s*\n\s*- held\)/.test(mr));
   ok('cache MR: and the removal is documented, not silent',
     /`outbound` IS NOT SUBTRACTED/.test(mr));
   ok('grid: the Outbound header does not claim a second deduction',
     /NOT deducted from Available a second time/.test(t));
   ok('contract: types\\/arch.ts states the corrected formula',
     /onHand \+ onOrder \+ inTransit − reserve − readyToBuild − held/.test(src('types/arch.ts')));
+
+  // ── Ready to Build, the manual toggle, 2026-09-10 ─────────────────────────
+  const oc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js');
+  const sl = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/sl/mcgi_sl_arch_order_create.js');
+  const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
+  const api = src('lib/archOrderApi.ts');
+  const v = src('components/arch/ArchOpenOrdersView.tsx');
+
+  ok('order create: setReadyToBuild REFUSES rather than silently no-opping when the field is absent',
+    /throw refusal\('Ready to Build is not available on this account yet/.test(oc));
+  ok('order create: it is a plain checkbox — the same call reverts it, no separate path',
+    /Reverting \(`value: false`\) is the SAME call with the opposite value/.test(oc));
+  ok('order create: the write uses setIfPresent rather than a bare setValue',
+    /setIfPresent\(so, F_READY_TO_BUILD, !!value, 'Ready to Build'\)/.test(oc));
+  ok('order create: write is verified by re-reading the saved record, not trusted from save()',
+    /const verifyReadyToBuild = \(soId, expected\) => \{/.test(oc));
+  ok('suitelet: setReadyToBuild is dispatched before the order-creation shape checks',
+    /input\.action === 'setReadyToBuild'[\s\S]{0,2000}?The order has no lines\./.test(sl));
+  ok('open orders service: the flag is read in its OWN query, never joined into OPEN_ORDERS_SQL',
+    !(svc.match(/const OPEN_ORDERS_SQL =[\s\S]*?;/) || [''])[0].includes('custbody_arch_ready_to_build'));
+  ok('open orders service: archStatusFor lets a shipped status win over the tick',
+    /case 'D':\s*\n\s*case 'E':\s*\n\s*case 'F':\s*\n\s*return 'In Transit';\s*\n\s*default:\s*\n\s*return readyToBuild \? 'Ready to Build' : 'Reserved';/.test(svc));
+  /*
+   * This used to pin `if (rtbIdList.length) {`. The loop that replaced it on
+   * 2026-09-13 cannot build an empty IN () at all — a `for` over an empty list
+   * never runs — so the guard now pins the loop rather than the old wrapper.
+   * The three below it are the reason that loop exists.
+   */
+  ok('open orders service: an empty order list never reaches an invalid IN ()',
+    /for \(let i = 0; i < rtbIdList\.length; i \+= RTB_CHUNK\)/.test(svc));
+  ok('open orders service: the id list is DEDUPED — rows fan out per line, not per order',
+    /const rtbIdList = \[\.\.\.new Set\(rows/.test(svc));
+  ok('open orders service: and CHUNKED at 500, matching the sales-team read over the same ids',
+    /const RTB_CHUNK = 500;/.test(svc));
+  ok('open orders service: and the 1,000-expression cap that justified it is recorded as measured FALSE',
+    /MEASURED FALSE/.test(svc));
+  ok('open orders service: and parameterized, not concatenated',
+    /params: slice,/.test(svc));
+  ok('open orders service: a partial read is reported as partial, not as an absent field',
+    /Ready to Build PARTIAL read/.test(svc));
+  /*
+   * The cache MR runs its own copy of the same read. It always deduped, so it
+   * was further from the cap than the service, but it hit it the same way and
+   * degrades SILENTLY by design — the catch is the intended path while the
+   * field does not exist, so an overflow would land as "Ready to Build reads
+   * zero" with nothing naming the cause.
+   */
+  const mrArch = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js');
+  ok('cache MR: its copy of the Ready to Build read is chunked and parameterized too',
+    /const FLAG_CHUNK = 500;/.test(mrArch) && /params: slice,/.test(mrArch));
+  ok('cache MR: and a failed chunk unsources the WHOLE run, because this read splits two buckets',
+    /readyToBuildSourced = false;\s*\n\s*readyToBuildIds = \{\};/.test(mrArch));
+  /*
+   * `readyToBuildSourced` is written in getInputData and META is written in
+   * summarize — a different execution, where every module variable is a fresh
+   * `true`. Read there, it made META claim the bucket was sourced on exactly
+   * the runs where the read had failed. It travels in the rows instead.
+   */
+  ok('cache MR: bucketsMeta takes the flag as an ARGUMENT, so summarize cannot read the module copy',
+    /const bucketsMeta = \(sourced\) => \(\{/.test(mrArch) && !/bucketsMeta\(\)/.test(mrArch));
+  ok('cache MR: summarize derives it from the ROWS that crossed the stage boundary',
+    /const rtbSourced = rtbSourcedFrom\(rows\);/.test(mrArch));
+  ok('cache MR: and both pair constructors plus the reduce row carry it across',
+    (mrArch.match(/rtbSourced:   readyToBuildSourced,/g) || []).length === 2 &&
+    /rtbSourced:   pair\.rtbSourced !== false,/.test(mrArch));
+  ok('sales team: the same measured-false note reached the module that started the belief',
+    /MEASURED FALSE/.test(srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archSalesTeam.js')));
+  ok('frontend api: setReadyToBuild sends the action discriminator the Suitelet expects',
+    /body: JSON\.stringify\(\{ action: 'setReadyToBuild', soId, value \}\)/.test(api));
+  /*
+   * The server re-reads the saved record; these pin that the answer is ACTED
+   * ON. Until 2026-09-13 `verifiedMatches` was returned by the Suitelet and
+   * dropped by the client, so a value NetSuite stored as the opposite of what
+   * was asked for reported to the trader as success.
+   */
+  ok('frontend api: a save NetSuite accepted but did not store is a FAILURE, not a success',
+    /body\.verified === true && body\.verifiedMatches === false/.test(api));
+  ok('orders view: a NOT_STORED re-reads the row, because that row is now stale',
+    /if \(result\.code === 'NOT_STORED'\) reload\(\);/.test(v));
+  ok('orders view: the toggle only renders on a real order, the same gate as Edit',
+    /\{editable && \(\s*\n\s*<label/.test(v));
+  ok('orders view: the checked state reads the raw flag, not the derived status string',
+    /checked=\{!!o\.readyToBuild\}/.test(v));
 }
 
 /* ───────────────────────────────────────────────────────────────────────────
@@ -301,9 +406,21 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /pickedTeam\.name \+ ' \(' \+ teamSplitLabel\(pickedTeam\) \+ '\)'/.test(w) &&
     /: orderSplit\s*\?\s*orderSplit\.headline\s*: NEW_ORDER_SPLIT_HEADLINE/.test(w));
   /* And the id it sends can only be one the live list holds. A team picked before
-     a reload that no longer offers it must not post an entitygroup id. */
-  ok('wizard: the team id is sent only when the live list still holds it, and only on a NEW order',
-    /salesTeamId: mode === 'new' \? sendableTeamId\(liveTeams, salesTeamId\) : undefined,/.test(w));
+     a reload that no longer offers it must not post an entitygroup id.
+
+     🔴 THE "NEW ORDERS ONLY" HALF WAS DROPPED 2026-09-14, deliberately. It was
+     justified by "the endpoint skips the whole header block on an append", which
+     is not true: that branch applies the customer PO, the incoterms and the ship
+     date, and it has an explicit argued case for writing a named team too. The
+     gate made that server branch unreachable and made the panel tell the trader
+     to go and change the split in NetSuite instead. What the gate was RIGHT about
+     -- never sending a team just because one was left sitting in state -- is what
+     `sendableTeamId` does, and that still applies in both modes. */
+  ok('wizard: the team id is sent only when the live list still holds it',
+    /salesTeamId: sendableTeamId\(liveTeams, salesTeamId\),/.test(w));
+  ok('wizard: and a team picked on an APPEND is sent, since the endpoint honours it',
+    !/salesTeamId: mode === 'new'/.test(w)
+    && /mode === 'existing' && pickedTeam && \(/.test(w));
   ok('wizard: the required-field gate is salesRepOk over the two fields',
     /salesRepOk\(repTeam, liveReps\.length > 0\)/.test(w) &&
     !/liveReps\.length === 0 \|\| !!salesRepId/.test(w));
@@ -690,6 +807,150 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     ok(`${label}: the warning says the warehouse may already be preparing it`,
       /may already be preparing/.test(s), null);
   }
+}
+
+// ── Open Sales Orders bands by the SALES REP, and setReadyToBuild is scoped ──
+//
+// Both added 2026-09-14 after clicking the deployed sandbox screen.
+//
+// The grouping default was CREATOR, citing Marc-Antoine 2026-09-08. He retracted
+// it on the 2026-09-10 call at [32:00] once he saw the result, and the live screen
+// showed exactly what he complained about: 7 open orders banded as "House Blend 2"
+// x6 and "Marc-Antoine Poirier" x1, while the Sales Rep column underneath carried
+// Lucas Gibb, Alec Wolf and Camil Perrault. The creator is the integration account
+// on nearly every real order, so it is the axis with no information in it.
+{
+  const v = src('components/arch/ArchOpenOrdersView.tsx');
+
+  ok('open orders: the grouping default is the rep, unconditionally',
+    /const groupBy: GroupAxis = axisOverride !== null \? axisOverride : 'rep';/.test(v), null);
+  ok('  ...and the anyCreator fallback is gone, not merely unused',
+    !/const anyCreator = React\.useMemo/.test(v), null);
+  ok('  ...while the creator SURVIVES as a column and an option',
+    /<option value="creator">/.test(v) && /<option value="rep">/.test(v), null);
+  ok('open orders: the retraction is recorded, not just the change',
+    /32:00/.test(v) && /mal compris pour le created by/.test(v), null);
+}
+
+// setReadyToBuild took ANY sales order id, in a module whose creation path refuses
+// a non-ARCH item line by line. Measured live 2026-09-14: 4,219 non-Hardwood sales
+// orders exist in this sandbox, every one of which it would have written to.
+{
+  const s = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js');
+
+  ok('setReadyToBuild: an ARCH scope check exists',
+    /const readOrderArchScope = \(soId\) =>/.test(s), null);
+  ok('  ...and runs BEFORE the record is loaded',
+    s.indexOf('const scope = readOrderArchScope(id);') > 0 &&
+      s.indexOf('const scope = readOrderArchScope(id);') <
+        s.indexOf("so = record.load({ type: record.Type.SALES_ORDER"), null);
+  ok('  ...testing the department BY NAME, never the internal id',
+    /dept === HARDWOOD_DEPARTMENT/.test(s) && !/department === 11/.test(s), null);
+  ok('  ...and honouring the same decking exclusions as the line check',
+    /NON_ARCH_DEPARTMENT_ITEMS\.indexOf\(code\) === -1/.test(s), null);
+
+  // The distinction that matters: a read that FAILED must not be reported as a
+  // business rule about the order. Three separate refusals, three separate causes.
+  ok('setReadyToBuild: "could not read" is refused differently from "not ARCH"',
+    /its lines could not be read/.test(s) && /is not an ARCH order/.test(s), null);
+  ok('  ...and an empty order is its own case again',
+    /has no lines, so there is nothing to/.test(s), null);
+  ok('  ...with the scope failure logged rather than swallowed',
+    /ARCH scope check failed/.test(s), null);
+
+  // Prod has no Hardwood department, so this refuses everything there. That is
+  // correct, and it must be written down or it reads as a bug during cutover.
+  ok('setReadyToBuild: the production consequence is recorded next to the guard',
+    /IN PRODUCTION THIS CURRENTLY REFUSES EVERYTHING/.test(s), null);
+  // One hardwood line is enough, and nobody asked the client. Flagged, not hidden.
+  ok('  ...and the one-line-is-enough choice is flagged as unconfirmed',
+    /ONE LINE IS ENOUGH, and that is a decision nobody has put to the/.test(s), null);
+}
+
+// ── Ready to Build, after driving the deployed sandbox screen 2026-09-14 ─────
+//
+// Four defects were found by clicking, not by reading. Each guard below pins the
+// fix AND the reason, because three of the four were protected by a comment that
+// asserted the opposite of what the screen was doing.
+{
+  const lo = src('lib/archLotOrders.ts');
+  const lt = src('components/arch/ArchLotTable.tsx');
+  const v = src('components/arch/ArchOpenOrdersView.tsx');
+  const mr = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js');
+
+  // 1. The drawer named no order. Cache carried it; one hardcoded bucket dropped it.
+  ok('drawer: readyToBuild can resolve orders, not only reserve',
+    /bucket === 'readyToBuild' && ordersCarryBucket\(lot\.orders\)/.test(lo), null);
+  ok('  ...but ONLY on a payload that says which bucket each order landed in',
+    /const ordersCarryBucket = /.test(lo) &&
+      /typeof o\.readyToBuild === 'boolean'/.test(lo), null);
+  ok('  ...and each tab is filtered, so neither shows the other tab\'s orders',
+    /bucket === 'readyToBuild' \? o\.readyToBuild === true : o\.readyToBuild !== true/.test(lo), null);
+  ok('  ...while outbound stays unresolvable, which was always correct',
+    !/'outbound'/.test(lo.split('export const orderSource')[1].split('};')[0] || ''), null);
+
+  // The server half. Without the stamp the client cannot tell the buckets apart,
+  // which is why reading `orders` for both was reverted on 2026-09-10.
+  ok('cache MR: each order entry is stamped with the bucket its share landed in',
+    /readyToBuild: !!readyToBuildIds\[oid\]/.test(mr), null);
+  ok('  ...from the SAME map that decided the quantity, so they cannot disagree',
+    /Stamped from the SAME `readyToBuildIds` map/.test(mr), null);
+
+  // 2. The comments that justified the empty drawer, all three sites.
+  /* The old claim is deliberately still QUOTED, because this codebase records what
+     was wrong rather than deleting it. So absence is the wrong test: what matters is
+     that every place it appears is inside a correction, never as a live assertion. */
+  ok('the "readyToBuild is a literal 0" claim appears only inside a correction',
+    (lt.match(/readyToBuild is a literal 0|hardcoded 0 in\s*\n?\s*\*?\s*the ARCH cache/g) || [])
+      .length === (lt.match(/CORRECTED 2026-09-14[\s\S]{0,900}?(readyToBuild is a literal 0|hardcoded 0 in\s*\n?\s*\*?\s*the ARCH cache)/g) || []).length,
+    null);
+  ok('  ...both sites carry the correction marker',
+    (lt.match(/⚠️ CORRECTED 2026-09-14/g) || []).length >= 2, null);
+  ok('  ...and the correction names what was actually on screen',
+    /315643-5/.test(lt), null);
+
+  // 3. A tick is invisible on the grid until the cache rebuilds.
+  ok('open orders: a successful tick says the grid lags behind',
+    /rtbLagNotice/.test(v) && /will not\b[\s\S]{0,40}show it until the next rebuild/.test(v), null);
+  ok('  ...without hardcoding a duration, because the TTL is 12h not 1h',
+    !/within the hour|up to an hour|in about an hour/i.test(v), null);
+
+  // 4. The tick was offered where it provably does nothing.
+  ok('open orders: the tick is disabled once the order has shipped',
+    /const shippedAlready = o\.status === 'In Transit';/.test(v) &&
+      /disabled=\{rtbBusy\.has\(o\.soNo\) \|\| shippedAlready\}/.test(v), null);
+  ok('  ...and says why, rather than just going grey',
+    /already shipped, so Ready to Build no longer applies/.test(v), null);
+  ok('  ...with the no-op arithmetic recorded so nobody re-enables it',
+    /open = max\(0, ordered - moved\)/.test(v), null);
+}
+
+// ── A team that credits somebody other than the order's owner ───────────────
+//
+// Measured 2026-09-14: Lucas Gibb, the rep on two of the three genuinely open
+// ARCH orders, appears in NONE of the 44 named teams. Alec Wolf, Christopher
+// Pajot and Tom Gorelle have no solo team, so picking them means picking a
+// pairing that credits somebody else too.
+{
+  const w = src('components/arch/SOWizard.tsx');
+  const s = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js');
+
+  ok('wizard: warns when the picked team excludes the order\'s rep',
+    /const teamExcludesRep = React\.useMemo/.test(w) &&
+      /This team does not include the rep above/.test(w), null);
+  ok('  ...naming who is credited instead, rather than a generic caution',
+    /commission goes to\{' '\}/.test(w), null);
+  ok('  ...and telling the truth about whether anything is written yet',
+    /Nothing is written yet, so today the rep above is credited in full/.test(w), null);
+
+  // 🔴 The important half. A REFUSAL here would break a combination the client
+  // asked for, and the server comment says so. This guard exists to stop a future
+  // reader "hardening" the notice into a block.
+  ok('server: a rep outside the team is still ACCEPTED, not refused',
+    /header\.salesRepId` is NOT required to be a member of the team/.test(s) &&
+      /refusing it would block it/.test(s), null);
+  ok('  ...and nothing cross-checks the two on the write path',
+    /const repId = namedTeam \? null : resolveSalesRep\(/.test(s), null);
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');

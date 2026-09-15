@@ -31,7 +31,16 @@ const FILE = process.env.ARCH_ORDER_CREATE_FILE
   || join(here, '..', '..', '..', 'src', 'FileCabinet', 'SuiteScripts', 'mcgi_services', 'trader_screen', 'shared', 'archOrderCreate.js');
 
 let fail = 0;
-const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (cond ? '' : '   got: ' + JSON.stringify(got))); if (!cond) fail++; };
+/* 🔴 COUNTED AND PRINTED, because the aggregate hides it. This file is ONE
+ * `node:test` subtest (`ok 13 - archSalesTeamWrite.test.mjs`) however many
+ * assertions it runs, so `npm test` reported 62 before and 62 after four more
+ * were added on 2026-09-14, and 62/62 then got quoted as evidence that the
+ * sales team path was covered. It never meant that. A failure here does still
+ * fail the run, via the exit at the bottom; only the NUMBER was misleading,
+ * so the number is now stated. */
+let total = 0;
+const ok = (name, cond, got) => {
+  total++; console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (cond ? '' : '   got: ' + JSON.stringify(got))); if (!cond) fail++; };
 
 // ── the account, as the three answerable queries ─────────────────────────────
 const TEAMS = {
@@ -178,8 +187,31 @@ const refusalOf = (fn) => {
   try { fn(); return null; } catch (e) { return { name: e.name, message: e.message }; }
 };
 
+/* ── THE CONTRACT CHANGED 2026-09-14, and this adapter is how the file keeps its
+ *    value rather than being deleted ──────────────────────────────────────────
+ *
+ * `resolveSalesTeam` used to read `entitygroup` and `entitygroupmember` itself.
+ * It cannot: the deployment runs as an ACCOUNTCENTER role and that record is not
+ * reachable from it. Measured four times live, `Record 'entitygroup' was not
+ * found`, unchanged after granting the role LIST_CRMGROUP.
+ *
+ * So the members now arrive FROM THE CALLER and the function validates them. The
+ * fixtures below are unchanged, and this feeds them in through the new signature,
+ * so every assertion about percent conversion, the rounding remainder, duplicate
+ * members, share totals and employee validation still tests exactly what it did.
+ *
+ * ⚠️ `contribution` stays the FRACTION here, as SuiteQL returned it, because that
+ * is what the client sends and what the function now demands. */
+const resolve = (id) => resolveSalesTeam(
+  id,
+  (MEMBERS[String(id)] || []).map((m) => ({
+    id: m.repid, name: m.repname, contribution: Number(m.contribution),
+  })),
+  (TEAMS[String(id)] || {}).groupname
+);
+
 // ── 1. the happy paths, and the percentages the FIELD wants ──────────────────
-let t = resolveSalesTeam('2805');
+let t = resolve('2805');
 ok('Sam/Justin resolves to two members', t.memberCount === 2 && t.teamName === 'Sam/Justin', t);
 ok('percentages are the TYPED number (50), not the stored fraction (0.5)',
   t.members.every((m) => m.pct === 50), t.members);
@@ -188,17 +220,17 @@ ok('names come from the employee record rather than the member row',
 ok('members are sorted by employee id, so the remainder rule is deterministic',
   t.members[0].id === 2090 && t.members[1].id === 2094, t.members);
 
-t = resolveSalesTeam('2808');
+t = resolve('2808');
 ok('a real 0.67/0.33 weighting survives as 67/33 rather than being evened out',
   t.members.map((m) => m.pct).sort((a, b) => a - b).join('/') === '33/67', t.members);
 
-t = resolveSalesTeam('2803');
+t = resolve('2803');
 ok('the four-member team is 25% each and totals 100',
   t.memberCount === 4 && t.members.every((m) => m.pct === 25), t.members);
 
 // 🔴 THE ROUNDING CASE. 0.33333 * 100 is 33.332999999999998 in IEEE 754, so three
 // naively rounded members total 99.999 and Team Selling wants 100.
-t = resolveSalesTeam('9001');
+t = resolve('9001');
 const pcts = t.members.map((m) => m.pct);
 ok('a 0.33333/0.33333/0.33334 team totals EXACTLY 100',
   pcts.reduce((s, p) => s + p, 0) === 100, pcts);
@@ -215,7 +247,7 @@ ok('but a true one third rounds naively to 99.9999, which Team Selling refuses',
   [1 / 3, 1 / 3, 1 / 3].reduce((s, f) => s + Math.round(f * 1000000) / 10000, 0) !== 100,
   [1 / 3, 1 / 3, 1 / 3].reduce((s, f) => s + Math.round(f * 1000000) / 10000, 0));
 
-t = resolveSalesTeam('3137');
+t = resolve('3137');
 ok('a one-member team resolves to 100%', t.memberCount === 1 && t.members[0].pct === 100, t);
 
 // ── 2. every refusal, because each is a different real cause ─────────────────
@@ -225,37 +257,69 @@ ok('so are a float, an injection shape, a negative id and zero',
   ['2805.9', '1 OR 1=1', '-5', '0', 'abc', '2805abc'].every(
     (v) => (refusalOf(() => resolveSalesTeam(v)) || {}).name === 'ARCH_ORDER_REFUSED'));
 
+/* ⚠️ THREE REFUSALS DELETED 2026-09-14, and they are not being worked around.
+ *
+ * They were "the team does not exist or is out of scope", "the team is inactive"
+ * and "this is an employee group, not a sales team". All three were properties of
+ * the `entitygroup` ROW, and this function no longer reads that row: the
+ * deployment runs as an ACCOUNTCENTER role and `Record 'entitygroup' was not
+ * found`, measured four times live.
+ *
+ * The protection did not disappear with them. The screen can only offer the 44
+ * teams `action=salesTeams` served, and that query already filters
+ * `issalesrep = 'T'` and `isinactive = 'F'`, so an inactive or non-sales group
+ * cannot be picked in the first place. What replaces them is the check below:
+ * a team named with no members is refused outright, which is what an unknown,
+ * dead or empty group now looks like from here. */
 let r = refusalOf(() => resolveSalesTeam('999999'));
-ok('an unknown team says it may be out of scope rather than only "not found"',
-  /does not exist, or is outside the subsidiaries/.test(r.message), r);
-r = refusalOf(() => resolveSalesTeam('9002'));
-ok('an inactive team is refused', /is inactive/.test(r.message), r);
-r = refusalOf(() => resolveSalesTeam('9003'));
-ok('an employee group that is not a sales team is refused', /not a sales team/.test(r.message), r);
-r = refusalOf(() => resolveSalesTeam('9005'));
+ok('a team named with NO members is refused, whatever made it empty',
+  /was named without its members/.test(r.message), r);
+ok('  ...and the refusal names the caller shape rather than blaming the team',
+  /older shape than this endpoint accepts/.test(r.message), r);
+r = refusalOf(() => resolveSalesTeam('2805', [], 'Sam/Justin'));
+ok('an EMPTY member array is refused too, not treated as "no team named"',
+  r && /EMPTY member list/.test(r.message), r);
+/* Reworded 2026-09-14. It used to say "no active members this endpoint can read",
+   which blamed role scope for what is the caller sending nothing: the group read
+   is gone, so the endpoint reads no members at all, it is handed them. */
+ok('  ...and the refusal blames the CALLER, not the role scope it no longer uses',
+  r && /caller sending none/.test(r.message) && !/endpoint can read/.test(r.message), r);
+
+/* 🔴 THE 50x GUARD. The client holds both forms on the same object
+ * (`contribution` 0.5 and `contributionPct` 50) and sending the wrong one would
+ * put a 50-fold error into a commission split. Refused, never normalised. */
+r = refusalOf(() => resolveSalesTeam('2805', [
+  { id: '2094', name: 'Samuel Nadon', contribution: 50 },
+  { id: '2090', name: 'Justin Loveland', contribution: 50 },
+], 'Sam/Justin'));
+ok('shares sent as PERCENTS are refused, not silently divided by 100',
+  r && /which is the percent form/.test(r.message), r);
+ok('  ...and the refusal states the expected form outright',
+  r && /takes the fraction, so 50% is 0\.5/.test(r.message), r);
+r = refusalOf(() => resolve('9005'));
 ok('a team with no readable members is refused, never posted empty',
-  /no active members/.test(r.message), r);
+  /EMPTY member list/.test(r.message), r);
 
 // 🔴 6 of the 44 real teams fail this one.
 ok('a team whose members are all active reps is NOT refused (control)',
-  refusalOf(() => resolveSalesTeam('2808')) === null);
-r = refusalOf(() => resolveSalesTeam('3283'));
+  refusalOf(() => resolve('2808')) === null);
+r = refusalOf(() => resolve('3283'));
 ok('the real "James Bradley" team is refused: its only member is not flagged Sales Rep',
   r && /James Bradley is not flagged Sales Rep/.test(r.message), r);
 ok('and the refusal says the WHOLE order would have failed, not just the line',
   r && /refuses the WHOLE order/.test(r.message) && /no part of this team was written/.test(r.message), r);
-r = refusalOf(() => resolveSalesTeam('3302'));
+r = refusalOf(() => resolve('3302'));
 ok('the real Chris/Tom team is refused for the same reason, naming Pajot',
   r && /Christopher Pajot is not flagged Sales Rep/.test(r.message), r);
-r = refusalOf(() => resolveSalesTeam('9008'));
+r = refusalOf(() => resolve('9008'));
 ok('an INACTIVE member is refused, and distinguished from not being a rep',
   r && /Retired Rep is inactive/.test(r.message) && !/not flagged/.test(r.message), r);
-r = refusalOf(() => resolveSalesTeam('9009'));
+r = refusalOf(() => resolve('9009'));
 ok('a member the role cannot see is refused as out of scope, not as "not a rep"',
   r && /is outside the subsidiaries this endpoint can write for/.test(r.message), r);
 
 // The withheld-member case, which is what a `g.size` comparison used to be for.
-r = refusalOf(() => resolveSalesTeam('9004'));
+r = refusalOf(() => resolve('9004'));
 ok('a team whose readable members total 50% is refused as INCOMPLETE, not posted at 50%',
   r && /adds up to 50% across the 1 member\(s\)/.test(r.message), r);
 ok('and it points at role scope rather than blaming the team',
@@ -265,40 +329,39 @@ ok('and it points at role scope rather than blaming the team',
 // Refused by NAME rather than deduplicated: two rows at 0.5 mean the group
 // intends that person 100%, so keeping one of them would credit 50% instead, and
 // verifySalesTeam compares by employee id so it would read back as correct.
-r = refusalOf(() => resolveSalesTeam('9006'));
+r = refusalOf(() => resolve('9006'));
 ok('a member listed twice is refused by name, not silently deduplicated',
   r && /lists Samuel Nadon more than once/.test(r.message) && /ambiguous/.test(r.message), r);
 
 // ── 4. an unparseable member id is dropped, and the SUM then catches it ──────
-r = refusalOf(() => resolveSalesTeam('9007'));
+r = refusalOf(() => resolve('9007'));
 ok('a member row with an unusable id is dropped and the shortfall refuses the team',
   r && /adds up to 50% across the 1 member\(s\)/.test(r.message), r);
 
 // ── 5. a query failure is a refusal that quotes NetSuite, never a fallback ───
-throwOn = /FROM entitygroupmember/;
+/* The member read is gone (see above), so the only read left on this path is the
+   employee validation — which is also the only one that still CAN fail, and the
+   one that matters, since it is what stands between a bad member list and a real
+   commission write. */
 logged.error.length = 0;
-r = refusalOf(() => resolveSalesTeam('2805'));
-throwOn = null;
-ok('a failed member read refuses and states that nothing was attributed',
-  r && /no commission was attributed/.test(r.message), r);
-ok('and quotes NetSuite verbatim, the only way a dialect problem is identifiable',
-  r && /SSS_SEARCH_ERROR: Record Join not found/.test(r.message), r);
-ok('and logs the failing query at error level',
-  logged.error.some((l) => /sales team read failed/.test(l)), logged.error);
 throwOn = /FROM employee/;
-r = refusalOf(() => resolveSalesTeam('2805'));
+r = refusalOf(() => resolve('2805'));
 throwOn = null;
 ok('a failed EMPLOYEE read also refuses rather than skipping validation',
   r && r.name === 'ARCH_ORDER_REFUSED' && /could not be read/.test(r.message), r);
 
 // ── 6. the reserved word and the query shape ─────────────────────────────────
 sqlLog.length = 0;
-resolveSalesTeam('2805');
-ok('the group, the members and the employees are three separate reads', sqlLog.length === 3, sqlLog);
-const memberSql = sqlLog.find((s) => /entitygroupmember/.test(s)) || '';
-ok('`group` is DOUBLE-QUOTED: it is reserved and the read is a hard 400 without it',
-  /"group"\s*=\s*\?/.test(memberSql), memberSql);
-ok('the member read filters inactive members out in SQL', /isinactive = 'F'/.test(memberSql), memberSql);
+resolve('2805');
+/* Was "three separate reads": entitygroup, entitygroupmember, employee. Now ONE.
+   That is the whole point of the 2026-09-14 change — the two that are gone are
+   precisely the two this deployment's role cannot perform. */
+ok('the ONLY read left is the employee validation', sqlLog.length === 1, sqlLog);
+ok('  ...and nothing touches entitygroup or entitygroupmember any more',
+  sqlLog.every((s) => !/entitygroup/i.test(s)), sqlLog);
+ok('  ...while the employee read still validates every member id sent',
+  /FROM employee/.test(sqlLog[0] || '') && /2090/.test(sqlLog[0] || '') && /2094/.test(sqlLog[0] || ''),
+  sqlLog);
 ok('no query joins grouptype, which is a record join inside N/query and failed live',
   sqlLog.every((s) => !/grouptype/i.test(s)), sqlLog);
 ok('no query reads entitygroup.size either, so only ONE unproven identifier is used',
@@ -326,7 +389,7 @@ const makeRecord = (sublistFields, existingEmployees) => {
 const FULL = ['employee', 'salesrole', 'contribution', 'isprimary'];
 
 let rec = makeRecord(FULL, []);
-let w = writeSalesTeam(rec, resolveSalesTeam('2805'));
+let w = writeSalesTeam(rec, resolve('2805'));
 ok('a two-member team writes two lines', rec.lines.length === 2, rec.lines);
 ok('and sets contribution on both, as the typed number',
   rec.lines.every((l) => l.contribution === 50), rec.lines);
@@ -338,24 +401,24 @@ ok('a new order reports no previous team',
   w.previousEmployees.length === 0 && w.contributionWritten === true, w);
 
 rec = makeRecord(FULL, []);
-writeSalesTeam(rec, resolveSalesTeam('2808'));
+writeSalesTeam(rec, resolve('2808'));
 ok('the 67/33 weighting reaches the sublist as 67 and 33',
   rec.lines.map((l) => l.contribution).sort((a, b) => a - b).join('/') === '33/67', rec.lines);
 
 rec = makeRecord(FULL, []);
-writeSalesTeam(rec, resolveSalesTeam('3137'));
+writeSalesTeam(rec, resolve('3137'));
 ok('a ONE-member team sets only employee, keeping the byte-for-byte proven path',
   rec.lines.length === 1 && rec.lines[0].employee === 2094 && rec.lines[0].contribution === undefined,
   rec.lines);
 
 // 🔴 the refusal that separates money from a note
 rec = makeRecord(['employee', 'salesrole'], []);
-r = refusalOf(() => writeSalesTeam(rec, resolveSalesTeam('2805')));
+r = refusalOf(() => writeSalesTeam(rec, resolve('2805')));
 ok('no contribution field plus a multi-member team is REFUSED, not posted without its split',
   r && /does not expose a contribution field/.test(r.message), r);
 ok('and nothing was written to the record', rec.lines.length === 0, rec.lines);
 rec = makeRecord(['employee'], []);
-writeSalesTeam(rec, resolveSalesTeam('3137'));
+writeSalesTeam(rec, resolve('3137'));
 ok('a ONE-member team still writes when there is no contribution field',
   rec.lines.length === 1 && rec.lines[0].employee === 2094, rec.lines);
 
@@ -363,12 +426,12 @@ ok('a ONE-member team still writes when there is no contribution field',
 // SO-CWP-001352 really is Justin 2090 + Samuel 2094. Replacing it with a
 // one-member team must leave ONE line, not three.
 rec = makeRecord(FULL, [2090, 2094]);
-w = writeSalesTeam(rec, resolveSalesTeam('3137'));
+w = writeSalesTeam(rec, resolve('3137'));
 ok('replacing a two-member team leaves exactly one line', rec.lines.length === 1, rec.lines);
 ok('and reports what it replaced, so the change is recoverable from the response alone',
   w.previousEmployees.join(',') === '2090,2094', w);
 rec = makeRecord(FULL, [2090, 2094, 3163]);
-writeSalesTeam(rec, resolveSalesTeam('2808'));
+writeSalesTeam(rec, resolve('2808'));
 ok('replacing three members with two leaves two, with no stale third line',
   rec.lines.length === 2 && rec.lines.map((l) => l.employee).join(',') === '2093,2094', rec.lines);
 
@@ -378,7 +441,7 @@ ok('replacing three members with two leaves two, with no stale third line',
 logged.error.length = 0;
 const stubborn = makeRecord(FULL, [2090, 2094]);
 stubborn.removeLine = () => { const e = new Error('SUBLIST_READ_ONLY'); e.name = 'SSS_INVALID'; throw e; };
-r = refusalOf(() => writeSalesTeam(stubborn, resolveSalesTeam('3137')));
+r = refusalOf(() => writeSalesTeam(stubborn, resolve('3137')));
 ok('a sublist that cannot be cleared is a REFUSAL naming NetSuite, not a raw failure',
   r && r.name === 'ARCH_ORDER_REFUSED' && /no commission was reattributed/.test(r.message)
   && /SSS_INVALID: SUBLIST_READ_ONLY/.test(r.message), r);
@@ -386,7 +449,7 @@ ok('and it logs how far it got before failing',
   logged.error.some((l) => /Read 2 of 2 existing line\(s\) before failing/.test(l)), logged.error);
 
 // ── 9. verifySalesTeam: fractions out, typed numbers in ──────────────────────
-t = resolveSalesTeam('2805');
+t = resolve('2805');
 storedTeam = [{ employee: '2090', contribution: '0.5' }, { employee: '2094', contribution: '0.5' }];
 let v = verifySalesTeam(126664, t);
 ok('a matching read-back verifies clean', v.verified === true && v.mismatches.length === 0, v);
@@ -420,7 +483,7 @@ ok('and audits rather than errors, because "could not tell" is not actionable',
   { audit: logged.audit, error: logged.error });
 
 // the three-way rounding, verified end to end against its own stored fractions
-t = resolveSalesTeam('9001');
+t = resolve('9001');
 storedTeam = [{ employee: '2090', contribution: '0.33333' },
   { employee: '2091', contribution: '0.33334' },
   { employee: '2094', contribution: '0.33333' }];
@@ -435,8 +498,44 @@ ok('SOURCE: the team is resolved BEFORE the record is created, so a refusal writ
   src.indexOf('const namedTeam =') > 0
   && src.indexOf('const namedTeam =') < src.indexOf('? record.load({ type: record.Type.SALES_ORDER'),
   false);
+/* Updated 2026-09-14 for the three-argument call. The property being pinned is
+   unchanged and is the safety one: with no team id the result is null, so the
+   rep path runs exactly as it did and a caller can never get a team it did not
+   name. Only the call shape moved, because the members now travel with the id. */
+/* Restructured 2026-09-14: the same condition is now NAMED (`teamRequested`),
+   because the response has to tell "no team was asked for" from "a team was
+   asked for and the write switch is off", and those were indistinguishable.
+   The property pinned here is unchanged: no id means null means the rep path. */
 ok('SOURCE: with no salesTeamId the team is null, so the rep path is unchanged',
-  /String\(teamRequest\)\.trim\(\) === ''\)\s*\r?\n\s*\? null\s*\r?\n\s*: resolveSalesTeam\(teamRequest\)/.test(src),
+  /const teamRequested = !\(teamRequest === undefined/.test(src)
+  && /const namedTeam = !teamRequested\s*\r?\n\s*\? null/.test(src),
+  false);
+ok('SOURCE: and the members are passed from the SAME header, not looked up',
+  /resolveSalesTeam\(\s*\r?\n\s*teamRequest,\s*\r?\n\s*\(input\.header \|\| \{\}\)\.salesTeamMembers/.test(src),
+  false);
+/* 🔴 THE DRY RUN HAS TO PASS THEM TOO, and for two months it did not exist to
+   pass anything. `validateOrder` kept the one-argument call after the signature
+   changed, so every pre-flight of an order naming a team came back `ok: false`
+   with "was named without its members" -- a complaint about the ORDER, which was
+   fine. Behavioural coverage is in the DRY RUN block at the bottom; this pins the
+   call shape so the two sites cannot drift apart again silently. */
+ok('SOURCE: the DRY RUN passes the members as well, not just the id',
+  /resolveSalesTeam\(teamRequest, teamHeader\.salesTeamMembers,/.test(src),
+  false);
+
+/* 🔴 AND THE RESPONSE HAS TO SAY WHICH HAPPENED. "The switch is off, your team
+   was ignored" and "the team was written and replaced nothing" both left
+   `teamWrite` null, so both answered `salesTeamReplaced: false` with an empty
+   `salesTeamPrevious`. The client latch and this endpoint's parameter are on two
+   different script deployments and CAN disagree, and when they do the trader is
+   told the split will be written, gets a success, and no commission is
+   attributed. */
+ok('SOURCE: the response says whether the team was actually written',
+  /salesTeamWritten: !!teamWrite,/.test(src) &&
+  /salesTeamIgnoredReason: teamIgnoredReason,/.test(src),
+  false);
+ok('SOURCE: and the reason is derived from the REQUEST, not from the write result',
+  /const teamIgnoredReason = \(teamRequested && !namedTeam\)/.test(src),
   false);
 ok('SOURCE: a named team skips resolveSalesRep instead of running both',
   /const repId = namedTeam \? null : resolveSalesRep\(/.test(src), false);
@@ -493,10 +592,85 @@ for (const [why, getParameter] of [
     };
     m = factory(...deps.map((d) => table[d]));
   });
-  const got = m.resolveSalesTeam('2805');
+  /* A FRESH module instance, so the top-level `resolve` adapter does not apply.
+     Members are passed inline: the latch is checked before anything else, so this
+     must return null without looking at them at all. */
+  const got = m.resolveSalesTeam('2805', [
+    { id: '2094', name: 'Samuel Nadon', contribution: 0.5 },
+    { id: '2090', name: 'Justin Loveland', contribution: 0.5 },
+  ], 'Sam/Justin');
   ok('latch OFF (' + why + '): a named team resolves to NOTHING, so no commission is written',
     got === null, got);
 }
 
-console.log('\n' + (fail ? 'FAILURES: ' + fail : 'all passed'));
+/* ── the DRY RUN carries the members too ──────────────────────────────
+ *
+ * 🔴 REGRESSION, caught 2026-09-14 by reading the call sites rather than by
+ * any test here. When `resolveSalesTeam` stopped reading `entitygroup` and started
+ * taking its members from the caller, the WRITE call site was updated and the DRY
+ * RUN one was not: `validateOrder` still called it with the id alone, so every
+ * pre-flight of an order naming a team came back `ok: false` with "was named
+ * without its members" -- a complaint about the ORDER, which was fine.
+ *
+ * Two things hid it. The write switch is checked first and returns null, so with
+ * the switch off the dry run looks clean; it breaks only once the feature is
+ * turned on. And all 14 assertions above call `resolveSalesTeam` directly, so the
+ * suite stayed green at 62/62 while the path a trader actually walks was broken.
+ * These go through `validateOrder`. */
+/* `mode` matters: `validateOrder` refuses an unknown one and RETURNS before it
+ * reaches the team, so a helper without it makes the two negative assertions
+ * below pass for the wrong reason. Found exactly that way. */
+const dryRun = (header) =>
+  mod.validateOrder({ mode: 'new', customerId: 2502, header: header, lines: [] });
+
+let dr = dryRun({
+  salesTeamId: '2805',
+  salesTeamMembers: [
+    { id: '2094', name: 'Samuel Nadon', contribution: 0.5 },
+    { id: '2090', name: 'Justin Loveland', contribution: 0.5 },
+  ],
+  salesTeamName: 'Sam/Justin',
+});
+ok('DRY RUN: a good team reports NO team problem',
+  !dr.problems.some((x) => /sales team/i.test(x)), dr.problems);
+
+dr = dryRun({ salesTeamId: '2805' });
+ok('DRY RUN: the id alone is still refused, and the message names the missing members',
+  dr.problems.some((x) => /without its members/.test(x)), dr.problems);
+
+dr = dryRun({
+  salesTeamId: '3302',
+  salesTeamMembers: [
+    { id: '3268', name: 'Christopher Pajot', contribution: 0.7 },
+    { id: '3299', name: 'Tom Gorelle', contribution: 0.3 },
+  ],
+  salesTeamName: 'Chris/Tom',
+});
+ok('DRY RUN: the not-a-sales-rep team is caught BEFORE the cart is priced',
+  dr.problems.some((x) => /not flagged Sales Rep/.test(x)), dr.problems);
+
+dr = dryRun({});
+ok('DRY RUN: no team named means no team problem at all',
+  !dr.problems.some((x) => /sales team/i.test(x)), dr.problems);
+
+/* ── an APPEND must not rewrite what it was not asked about ──────────────
+ *
+ * 🔴 FOUND LIVE 2026-09-14 by test T4, on SO-CWP-001371. Created with
+ * incoterms FOB Mill (4); an append that said nothing about incoterms silently
+ * turned it into Delivered (3), because `applyIncoterms` ended in an
+ * unconditional `else` that wrote `incotermsDefault()` on BOTH paths.
+ *
+ * SOURCE guards rather than behaviour, because reaching `applyIncoterms` means
+ * building a whole order through the record fake. The property is small and
+ * structural, so pinning the shape is worth more than that machinery. */
+ok('SOURCE: the incoterms DEFAULT is create-only, never applied on an append',
+  /} else if \(creating\) {/.test(src) &&
+  !/} else {\s*\r?\n\s*rec\.setValue\({ fieldId: H_INCOTERMS, value: incotermsDefault/.test(src),
+  false);
+ok('SOURCE: and only the CREATE call site asks for the default',
+  /applyIncoterms\(so, h, true\);/.test(src) &&
+  /applyIncoterms\(so, h\);/.test(src),
+  false);
+
+console.log('\n' + total + ' assertions, ' + (fail ? fail + ' FAILED' : 'all passed'));
 if (fail) process.exit(1);
