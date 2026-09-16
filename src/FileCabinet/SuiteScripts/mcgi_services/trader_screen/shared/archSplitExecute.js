@@ -62,7 +62,20 @@ define([
 
     /** Split status list values, by the text the list carries. */
     const STATUS_PENDING = 'Pending';
-    const STATUS_DONE    = 'Done';
+    /**
+     * CLAIMED. Written BEFORE the inventory adjustment is posted, so a line can
+     * never be picked up twice.
+     *
+     * 🔴 THIS IS THE LOCK, and it is deliberately a fail-CLOSED one. The retry guard
+     * used to be the adjustment id, stamped AFTER the adjustment in a save that is
+     * best effort by design, so two concurrent posts both read Pending and both
+     * split the bundle, and a failed stamp left a split bundle looking untouched.
+     * Claiming first inverts the failure: a crash between the claim and the
+     * adjustment leaves a job that needs a human to reset, which is the right trade
+     * for inventory against a bundle cut twice.
+     */
+    const STATUS_INPROGRESS = 'In progress';
+    const STATUS_DONE       = 'Done';
 
     const F_SPLIT        = 'custcol_mgsl_split';
     const F_SPLIT_BF     = 'custcol_mgsl_split_bf';
@@ -240,19 +253,41 @@ define([
             role: 'issue', qty: -onHandDisplay, unitCost: null,
             expectedAmount: -openingValue, lot: 'parent',
         }];
-        // A split that hands the customer everything, or nothing, is legitimate:
-        // a full-bundle sale and a pure re-measure both arrive here. Neither may
-        // post a zero-quantity line, which NetSuite rejects.
+        // A split that hands the customer everything is legitimate: a bundle sold
+        // whole after re-measuring arrives here with remainder 0. The mirror case,
+        // customer 0, does NOT: `revalidate` refuses it. Neither figure may post a
+        // zero-quantity line, which NetSuite rejects, so each is guarded.
+        /*
+         * 🔴 THE CUSTOMER'S PIECE IS THE ONE THAT GETS THE NEW NUMBER, and the wood
+         * staying in stock keeps the parent's. Feedback 6 item 16: "Le bundle client
+         * devient 314000-13-1 et le bundle qui retourne en inventaire garde son
+         * numéro". This was the other way round until 2026-09-15, verified on
+         * IA-CWP-729 where the customer shipped as `314000-13` and `314000-13-B`
+         * stayed behind.
+         *
+         * It is also the better of the two for the tally. A lot's supplier tally is
+         * keyed on its name, so under the old direction the wood that REMAINS -- the
+         * wood a trader will be asked to sell next -- was renamed into a number no
+         * capture record has ever described, while the piece about to leave kept the
+         * matrix. Now the identity stays with the stock.
+         *
+         * ⚠️ `lot: 'child'` on the customer line is what forces the sales order's
+         * inventory assignment to be rewritten; see `trueUpSalesOrderLine`. With one
+         * of the two quantities at zero there is nothing to divide, so no child is
+         * minted at all and the surviving piece simply keeps the parent name.
+         */
+        const divides = customerQty > 0 && remainderQty > 0;
         if (customerQty > 0) {
             lines.push({
                 role: 'customer', qty: customerQty, unitCost: newUnitCost,
-                expectedAmount: round2(customerQty * newUnitCost), lot: 'parent',
+                expectedAmount: round2(customerQty * newUnitCost),
+                lot: divides ? 'child' : 'parent',
             });
         }
         if (remainderQty > 0) {
             lines.push({
                 role: 'remainder', qty: remainderQty, unitCost: newUnitCost,
-                expectedAmount: round2(remainderQty * newUnitCost), lot: 'child',
+                expectedAmount: round2(remainderQty * newUnitCost), lot: 'parent',
             });
         }
 
@@ -361,15 +396,43 @@ define([
      * Never generates a name that already exists — the caller passes the taken
      * names and this walks the alphabet past them.
      */
+    /**
+     * `<parent>-1`, then `-2`, walking past every sibling name already taken.
+     *
+     * Feedback 6 item 16 settles the convention: "Le bundle client devient
+     * 314000-13-1". It is Marc-Antoine's own shape, not a new one. Measured
+     * 2026-09-15, 14 lots at the three hardwood locations already read
+     * `<PO>-<bundle>-<n>` -- `314683-10-1`, `315690-3-1/-2/-3`, `310661-16-2` --
+     * and every one was created by him, through inventory adjustments IA-CWP-610,
+     * -647 and -726. The letter ladder it replaces matched nothing anyone writes.
+     *
+     * ⚠️ Those 14 are all stock-IN (every quantity positive), so in his hand-entered
+     * data the suffix means "sub-bundle received" and here it will mean "piece cut
+     * off by a split". One shape, two histories. That is his call and he has made
+     * it; recorded here because the name alone no longer says which happened.
+     *
+     * Collisions are not the risk: `takenNames` is every sibling already on the
+     * item, so a received `315690-7-1` simply pushes a split to `-2`.
+     */
+    /**
+     * How far a measured total may sit from the stored on-hand before a split is
+     * refused outright. See the ceiling in `revalidate`.
+     *
+     * 0.25 is deliberately loose: it exists to stop a digit being dropped or a
+     * bundle being measured twice, not to police a tally. The six real splits this
+     * code has made range from 0% to 3%; the one that went wrong was 58%.
+     */
+    const SPLIT_VARIANCE_CEILING = 0.25;
+
     const nextChildLotNumber = (parentName, takenNames) => {
         const taken = new Set((takenNames || []).map((n) => String(n).trim()));
-        for (let i = 0; i < 26; i++) {
-            const candidate = parentName + '-' + String.fromCharCode(66 + i); // B, C, D…
+        for (let i = 1; i <= 99; i++) {
+            const candidate = parentName + '-' + i;
             if (!taken.has(candidate)) return candidate;
         }
         throw new Error(
             'Cannot name a child lot for ' + parentName +
-            ': -B through -Z are all taken. This needs the naming convention settled.'
+            ': -1 through -99 are all taken. This needs the naming convention settled.'
         );
     };
 
@@ -451,6 +514,47 @@ define([
          * own: this endpoint takes a job id, and a stale browser tab, a retry or any
          * other caller can still submit one. The refusal belongs at the write.
          */
+        /*
+         * 🔴 THE CALLER CHOOSES WHICH WOOD GETS CUT, so the line has to agree.
+         *
+         * `lotId` and `locationId` arrive in the request body and were read straight
+         * into `readLotState` without ever being compared to the line they are being
+         * written against. The file already makes this argument for the shipped and
+         * billed guards a few lines above -- "a stale browser tab, a retry or any
+         * other caller can still submit one, the refusal belongs at the write" -- and
+         * it was not applied to the two identifiers that decide which bundle is split.
+         *
+         * Wrong lot: the adjustment cuts and renames an unrelated bundle, then the
+         * repoint finds no matching assignment and throws with the wood already moved.
+         * Wrong location: the adjustment posts at one location while the order ships
+         * from another, and the repoint matches on lot id alone so it happily points
+         * the line at stock that is somewhere else.
+         */
+        const lineLocation = so.getSublistValue({ sublistId: 'item', fieldId: 'location', line: lineIndex });
+        if (String(lineLocation || '') !== String(input.locationId || '')) {
+            throw new Error('That order line ships from location ' + (lineLocation || 'none') +
+                            ', not ' + input.locationId + '. Nothing was adjusted.');
+        }
+        /*
+         * ⚠️ Joined on `tl.id = ia.transactionline` and filtered on `tl.uniquekey`.
+         * Those are two different numbers: on SO-CWP-001346 the line is id 1 and
+         * unique key 523734, and `inventoryassignment.transactionline` references the
+         * ID. Filtering the assignment table directly on the unique key finds nothing
+         * and would have read as "this line reserves no lots", which passes.
+         */
+        const reserved = query.runSuiteQL({
+            query: 'SELECT DISTINCT ia.inventorynumber AS lotid ' +
+                   'FROM inventoryassignment ia ' +
+                   'JOIN transactionline tl ON tl.transaction = ia.transaction AND tl.id = ia.transactionline ' +
+                   'WHERE ia.transaction = ? AND tl.uniquekey = ?',
+            params: [input.soId, input.lineUniqueKey],
+        }).asMappedResults();
+        if (reserved.length && !reserved.some((r) => String(r.lotid) === String(input.lotId))) {
+            throw new Error('That order line does not reserve lot ' + input.lotId +
+                            ', so splitting it would cut a bundle the order has not asked for. ' +
+                            'Nothing was adjusted.');
+        }
+
         const soStatus = String(so.getValue({ fieldId: 'status' }) || '');
         const shipped = Math.abs(parseFloat(
             so.getSublistValue({ sublistId: 'item', fieldId: 'quantityshiprecv', line: lineIndex })
@@ -472,9 +576,45 @@ define([
         }
 
         const statusText = so.getSublistText({ sublistId: 'item', fieldId: F_SPLIT_STATUS, line: lineIndex });
+        const stamped = so.getSublistValue({ sublistId: 'item', fieldId: F_SPLIT_INVADJ, line: lineIndex });
         if (statusText === STATUS_DONE) {
-            const existing = so.getSublistValue({ sublistId: 'item', fieldId: F_SPLIT_INVADJ, line: lineIndex });
-            return { alreadyDone: true, inventoryAdjustmentId: existing, so: so, lineIndex: lineIndex };
+            return { alreadyDone: true, inventoryAdjustmentId: stamped, so: so, lineIndex: lineIndex };
+        }
+        /*
+         * 🔴 IN PROGRESS IS A REFUSAL, not a state to resume from. Something already
+         * claimed this line, so either a split is posting right now or one stopped
+         * part-way and the wood may have moved. Running it again is the one outcome
+         * that cannot be undone from here.
+         */
+        if (statusText === STATUS_INPROGRESS) {
+            throw new Error(
+                'This bundle is already being split' + (stamped ? ' (adjustment ' + stamped + ')' : '') +
+                '. If nothing is running, the last attempt stopped part-way and the wood may already ' +
+                'have moved: check the lot in NetSuite, correct the order line by hand, and set the ' +
+                'split status back to Pending or on to Done. Nothing was adjusted.'
+            );
+        }
+        /*
+         * A status this code does not know is not a Pending line. The list gained a
+         * third value on 2026-09-16 and could gain a fourth; refusing an unknown is
+         * how that stays safe without this file being edited again.
+         */
+        if (statusText && statusText !== STATUS_PENDING) {
+            throw new Error('That order line has a split status of "' + statusText + '", which is not ' +
+                            'a job this screen can run. Nothing was adjusted.');
+        }
+        /*
+         * 🔴 AN ADJUSTMENT WITHOUT A DONE STATUS is a split that posted and then
+         * failed to finish, not a split waiting to happen. The wood is already
+         * divided, so re-running would divide the REMAINDER and post a second
+         * adjustment. Refuse, and name the adjustment so somebody can go and look.
+         */
+        if (stamped) {
+            throw new Error(
+                'Inventory adjustment ' + stamped + ' has already split this bundle, but the order line ' +
+                'was never finished. Re-running would split the remainder a second time. Open that ' +
+                'adjustment, correct the order line by hand, and set the split status to Done.'
+            );
         }
 
         const lot = readLotState(input.lotId, input.locationId);
@@ -501,6 +641,43 @@ define([
                 'The remainder (' + input.remainderQty + ') is more than lot ' + lot.lotName +
                 ' holds (' + toDisplay(lot.storedQty, rate) + ').'
             );
+        }
+
+        /*
+         * 🔴 A CEILING ON THE MEASURED TOTAL, and nothing else provides one.
+         *
+         * A re-tally is expected to disagree with the stored figure; that is the
+         * point of measuring. It is not expected to disagree by half a bundle. The
+         * adjustment issues the WHOLE lot and receives the measured pieces back, so
+         * a wrong total does not error, it silently destroys or invents wood.
+         *
+         * ⚠️ `verifyAdjustmentGl` cannot catch this and never could: `planSplitCost`
+         * sets the new unit cost to openingValue / totalAfter, so the GL nets to zero
+         * for ANY total. It reports "GL conserved" while the board feet vanish.
+         *
+         * It has already happened. IA-CWP-731, posted by this code 2026-09-15,
+         * issued 1,348 BF of Purpleheart and received back 300 + 270 = 570. **778 BF,
+         * 58% of the bundle, gone**, with the unit cost more than doubling to absorb
+         * the value. Every other split this code has made sits between 0 and 3%:
+         * IA-CWP-683 +117, -729 -5, -730 +6, -732 0, -733 +19, -734 +15.
+         *
+         * The tolerance is generous on purpose. This refuses the fat finger, not the
+         * honest variance, and the screen already shows a variance badge well below
+         * it.
+         */
+        const measuredTotal = input.customerQty + (input.remainderQty || 0);
+        const onHandDisplay = toDisplay(lot.storedQty, rate);
+        if (onHandDisplay > 0) {
+            const drift = Math.abs(measuredTotal - onHandDisplay) / onHandDisplay;
+            if (drift > SPLIT_VARIANCE_CEILING) {
+                throw new Error(
+                    'The measured total (' + measuredTotal + ') is ' +
+                    Math.round(drift * 100) + '% away from what lot ' + lot.lotName +
+                    ' holds (' + onHandDisplay + '). A re-tally does not move a bundle by that ' +
+                    'much, so nothing was adjusted. Re-measure, or correct the lot in NetSuite ' +
+                    'first if the stored figure is the wrong one.'
+                );
+            }
         }
 
         return {
@@ -568,11 +745,31 @@ define([
                    plan.totalAfter + ' at ' + plan.newUnitCost + ')',
         });
 
+        /*
+         * Driven off `line.lot`, which is the plan's own word for which side keeps
+         * the parent's identity, rather than off the role. Since item 16 the two no
+         * longer coincide -- the CUSTOMER's piece is the child -- and reading the
+         * role here is exactly how they would drift apart again.
+         */
+        /*
+         * The plan decides which side is the child from its own copy of the
+         * quantities, and the caller decides whether to mint a name from its own.
+         * If those two ever disagree the adjustment either mints a lot the order
+         * never points at, or receives the customer's wood into a name that does
+         * not exist. Cheap to check, impossible to notice otherwise.
+         */
+        const childLines = plan.lines.filter((l) => l.lot === 'child').length;
+        if (childLines !== (childLotName ? 1 : 0)) {
+            throw new Error('Refusing to post: the cost plan has ' + childLines + ' child line(s) but ' +
+                            (childLotName ? 'one child lot name was minted' : 'no child lot name was minted') +
+                            '. Nothing was adjusted.');
+        }
+
         plan.lines.forEach((line) => {
-            const lotRef = line.role === 'remainder'
-                ? { receipt: childLotName }
-                : (line.role === 'issue'
-                    ? { issueId: v.lot.lotId }
+            const lotRef = line.role === 'issue'
+                ? { issueId: v.lot.lotId }
+                : (line.lot === 'child'
+                    ? { receipt: childLotName }
                     // The parent lot by NAME, not by id: a receipt takes a name,
                     // and this one already exists, so NetSuite attaches to it
                     // rather than minting a second lot with the same number.
@@ -582,7 +779,8 @@ define([
 
         const id = adj.save({ enableSourcing: true, ignoreMandatoryFields: false });
         log.audit('ARCH Split', 'Inventory Adjustment ' + id + ' created for ' + v.lot.lotName +
-                  ' -> ' + childLotName + ' (' + plan.lines.length + ' lines: ' +
+                  ' -> ' + (childLotName || 'no child, the bundle did not divide') +
+                  ' (' + plan.lines.length + ' lines: ' +
                   plan.lines.map((l) => l.role + ' ' + l.qty).join(', ') +
                   ', display units; value ' + plan.openingValue + ' held at ' +
                   plan.newUnitCost + ' per unit)');
@@ -649,14 +847,274 @@ define([
      * a second record that can drift out of sync, and matches Marc-Antoine's
      * "committed derives from the SO lines".
      */
-    const trueUpSalesOrderLine = (v, input, adjustmentId) => {
+    /**
+     * The internal id of a lot NetSuite has just minted by name.
+     *
+     * The adjustment creates the child by passing a NAME to `receiptinventorynumber`,
+     * which is the only way to mint one, so nothing hands back an id. The sales order
+     * needs the id, and a name is unique per item rather than globally -- 359 lot
+     * names in this account repeat across items -- so the item is part of the lookup.
+     */
+    let childLotNameForLookup = null;
+    const lotIdFromAdjustment = (adjustmentId, parentLotId) => {
+        /*
+         * 🔴 READ THE ASSIGNMENT TABLE, NOT THE RECORD. The first version of this
+         * walked the saved adjustment's subrecords and did
+         * `Number(getSublistValue('receiptinventorynumber'))`. That field does not
+         * hold an id: `issueinventorynumber` is an id reference and
+         * `receiptinventorynumber` is a bare STRING holding the lot NAME, which is
+         * how NetSuite lets it mint a lot that does not exist yet. Measured on
+         * adjustment 128223: line 1 reads `"315643-6"`, line 2 `"315643-6-B"`.
+         *
+         * So `Number('314000-13-1')` was NaN, both receipts were skipped, and this
+         * threw on EVERY split that divides -- after the adjustment had committed.
+         * Nic's own production script guards the same field the same way
+         * (`MSL_SUE_itemReceiptCloseSourcePO.js`: never treat a value from
+         * `receiptinventorynumber` as an id, even when it is all digits).
+         *
+         * Worse than the throw: a purely numeric lot name PARSES. This account has
+         * lots `12345` and `12345-1` on one PO line, so the parent's own receipt row
+         * could come back as a number, compare unequal to the parent id, and be
+         * returned as the child -- repointing a customer's order at whatever record
+         * happens to hold that internal id.
+         *
+         * `inventoryassignment.inventorynumber` is the internal id and is exposed to
+         * SuiteQL. Verified on IA-CWP-729: 49813 for `314000-13` and 51539 for
+         * `314000-13-B`.
+         */
+        const rows = query.runSuiteQL({
+            query: 'SELECT DISTINCT ia.inventorynumber AS lotid ' +
+                   'FROM inventoryassignment ia ' +
+                   'WHERE ia.transaction = ? AND ia.inventorynumber <> ?',
+            params: [adjustmentId, parentLotId],
+        }).asMappedResults();
+        if (rows.length === 1) return Number(rows[0].lotid);
+
+        /*
+         * A miss here is the post-creation search lag this account has shown before,
+         * so the name lookup is the FALLBACK rather than the primary. More than one
+         * is not a lag, it is an adjustment with a shape this code did not build, and
+         * guessing which lot the customer's wood is in is not a thing to guess at.
+         */
+        if (rows.length === 0 && childLotNameForLookup) {
+            const byName = query.runSuiteQL({
+                query: 'SELECT id FROM inventorynumber WHERE inventorynumber = ?',
+                params: [childLotNameForLookup],
+            }).asMappedResults();
+            if (byName.length === 1) return Number(byName[0].id);
+        }
+        throw new Error('Adjustment ' + adjustmentId + ' posted but ' +
+                        (rows.length ? 'carries ' + rows.length + ' new lots, not one' :
+                                       'carries no new lot to point the order at') +
+                        '. The wood has moved; the order has not.');
+    };
+
+    /**
+     * Makes the order's reservation match what the warehouse actually measured and
+     * where it actually is: Feedback 6 items 17 and 16, which are one write.
+     *
+     * 🔴 THE QUANTITY, ALWAYS. Item 17: "Le BF sur la ligne se modifie bien, par
+     * contre dans le INV detail c'est toujours l'ancienne valeur." The line was
+     * trued up to the measured figure while the assignment kept the ordered one, so
+     * the difference reserved nothing at all. Measured 2026-09-15: 9 split-linked
+     * lines disagree, 297 BF, and the ARCH cache derives `reserve` from
+     * `inventoryassignment`, so that wood reads as available to sell twice.
+     *
+     * 🔴 THE LOT, WHEN ONE WAS MINTED, and this is the whole cost of renaming the
+     * customer's piece.
+     * Until item 16 the customer's portion was received back into the PARENT lot, so
+     * the assignment the order already carried stayed true and only the quantity
+     * moved. Now that piece lives in a new lot and the parent holds the remainder,
+     * so an order left pointing at the parent would reserve wood that is no longer
+     * there -- an over-commitment against the remainder, silently.
+     *
+     * ⚠️ DISPLAY units here. An Inventory Adjustment's assignment quantity is BASE
+     * and a Sales Order's is DISPLAY; they are the same field name on two record
+     * types and the codebase has been caught by that four times. See the note in
+     * `archOrderCreate.js` beside the same write.
+     */
+    const syncAssignment = (so, line, v, input, childLotName, adjustmentId) => {
+        /*
+         * GUARDED, the way `archOrderCreate` guards the same call. `inventorydetail`
+         * is documented in that file as materialising only once a line is SAVED, and
+         * this one always runs against a loaded order, so the throw should not
+         * happen. "Should not" is the reason to catch it rather than the reason not
+         * to: an exception here lands after the adjustment has posted, and it would
+         * walk straight past the decision below about what is safe to leave behind.
+         */
+        let detail;
+        try {
+            detail = so.getSublistSubrecord({
+                sublistId: 'item', fieldId: 'inventorydetail', line: line,
+            });
+        } catch (e) {
+            if (childLotName) {
+                throw new Error('The adjustment posted but the order line has no readable inventory ' +
+                                'detail, so it cannot be pointed at ' + childLotName + ' (' +
+                                (e.message || String(e)) + '). The wood has moved; the order has not.');
+            }
+            log.error('ARCH Split — reservation left stale',
+                'Order line for ' + input.soTranId + ' has no readable inventory detail (' +
+                (e.message || String(e)) + '), so its reserved quantity still reads the ordered ' +
+                'figure rather than the measured ' + input.customerQty + '. The line is being ' +
+                'marked Done because the wood really was split. Correct the reservation by hand.');
+            return null;
+        }
+        // STANDARD-mode subrecord API: `selectNewLine`/`commitLine` are dynamic-only
+        // and fail here as a bare TypeError that reads like a missing subrecord.
+        const count = detail.getLineCount({ sublistId: 'inventoryassignment' });
+
+        /*
+         * COUNT FIRST, WRITE SECOND. Deciding while writing means the decision to
+         * refuse arrives after the record has already been changed, and on the path
+         * that only logs, those changes would be saved -- two assignments each
+         * holding the full customer quantity, which is the opposite of the fix.
+         */
+        const matches = [];
+        for (let i = 0; i < count; i++) {
+            const at = Number(detail.getSublistValue({
+                sublistId: 'inventoryassignment', fieldId: 'issueinventorynumber', line: i,
+            }));
+            if (at === Number(v.lot.lotId)) matches.push(i);
+        }
+
+        /*
+         * The response differs by case because the damage does.
+         *
+         * With a child minted, an order still pointing at the parent reserves wood
+         * that is not there, and an ambiguous line would be pointed at the wrong lot;
+         * neither can be left, so both refuse before anything is written.
+         *
+         * Without one, the only thing at stake is the stale quantity item 17 is
+         * about. Stranding a posted adjustment over that is the worse trade, so it is
+         * recorded and the line quantity is still corrected.
+         */
+        /*
+         * 🔴 `count`, NOT JUST `matches`. Counting only the assignments that name the
+         * split lot let a line carrying that lot AND A DIFFERENT ONE through with
+         * `matches.length === 1`. The repoint then set the line quantity and the
+         * parent's assignment to the customer figure and left the other lot's
+         * assignment untouched, so the assignments summed to more than the line and
+         * `so.save()` failed -- after the adjustment had committed.
+         */
+        if (matches.length !== 1 || count !== 1) {
+            const why = matches.length === 0
+                ? 'reserves no quantity from ' + v.lot.lotName
+                : (count !== 1
+                    ? 'reserves ' + count + ' lots, so correcting one of them would leave the ' +
+                      'assignments summing to more than the line'
+                    : 'reserves ' + v.lot.lotName + ' on ' + matches.length + ' separate assignments');
+            if (childLotName) {
+                throw new Error('The adjustment posted but the order line ' + why +
+                                ', so it cannot be pointed at ' + childLotName +
+                                '. The wood has moved; the order has not.');
+            }
+            /*
+             * ERROR, not audit. This is not a per-run condition -- the rule in this
+             * file is level by CAUSE -- and it leaves a record needing a human: the
+             * line is about to be marked Done, so the screen will show the job
+             * finished while the reservation still reads the ordered figure. Nothing
+             * else will ever point at it.
+             */
+            log.error('ARCH Split — reservation left stale',
+                'Order line for ' + input.soTranId + ' ' + why + ', so its inventory detail was ' +
+                'left alone and still reserves the ordered figure rather than the measured ' +
+                input.customerQty + '. The line is being marked Done because the wood really was ' +
+                'split. Correct the reservation by hand.');
+            return null;
+        }
+
+        const i = matches[0];
+        // The lot moves only when a child was minted. The QUANTITY moves every time:
+        // that is Feedback 6 item 17.
+        childLotNameForLookup = childLotName;
+        const childId = childLotName ? lotIdFromAdjustment(adjustmentId, v.lot.lotId) : null;
+        if (childId) {
+            detail.setSublistValue({
+                sublistId: 'inventoryassignment', fieldId: 'issueinventorynumber',
+                line: i, value: childId,
+            });
+        }
+        detail.setSublistValue({
+            sublistId: 'inventoryassignment', fieldId: 'quantity',
+            line: i, value: input.customerQty,
+        });
+        return childId;
+    };
+
+    /**
+     * Records WHICH adjustment divided this line, before anything else can fail.
+     *
+     * Deliberately writes nothing but the one field: not the quantity, not the
+     * status. A half-finished split must not look finished, and the status is what
+     * the screen and `revalidate` both read to decide there is work left.
+     */
+    /** Writes one status onto the split line and saves. Nothing else changes. */
+    const setLineStatus = (input, statusText) => {
+        const so = record.load({ type: record.Type.SALES_ORDER, id: input.soId, isDynamic: false });
+        const line = so.findSublistLineWithValue({
+            sublistId: 'item', fieldId: 'lineuniquekey', value: String(input.lineUniqueKey),
+        });
+        if (line === -1) throw new Error('The Sales Order line vanished before the split could start.');
+        so.setSublistText({ sublistId: 'item', fieldId: F_SPLIT_STATUS, line: line, text: statusText });
+        so.save({ enableSourcing: false, ignoreMandatoryFields: true });
+    };
+
+    /**
+     * Takes the line, or refuses the split.
+     *
+     * A failure here is a GOOD outcome: it means the claim could not be recorded, so
+     * no wood has moved and the job is still exactly where it was.
+     */
+    const claimLine = (input) => {
+        try {
+            setLineStatus(input, STATUS_INPROGRESS);
+        } catch (e) {
+            throw new Error('This split could not be claimed, so nothing was adjusted (' +
+                            (e.message || String(e)) + '). Try again; if it keeps failing the order ' +
+                            'is locked or has changed underneath the queue.');
+        }
+    };
+
+    const stampAdjustmentOnLine = (input, adjustmentId) => {
+        const so = record.load({ type: record.Type.SALES_ORDER, id: input.soId, isDynamic: false });
+        const line = so.findSublistLineWithValue({
+            sublistId: 'item', fieldId: 'lineuniquekey', value: String(input.lineUniqueKey),
+        });
+        if (line === -1) throw new Error('The Sales Order line vanished right after the adjustment posted.');
+        so.setSublistValue({ sublistId: 'item', fieldId: F_SPLIT_INVADJ, line: line, value: adjustmentId });
+        so.save({ enableSourcing: false, ignoreMandatoryFields: true });
+    };
+
+    const trueUpSalesOrderLine = (v, input, adjustmentId, childLotName) => {
         const so = record.load({ type: record.Type.SALES_ORDER, id: input.soId, isDynamic: false });
         const line = so.findSublistLineWithValue({
             sublistId: 'item', fieldId: 'lineuniquekey', value: String(input.lineUniqueKey),
         });
         if (line === -1) throw new Error('The Sales Order line vanished between the adjustment and the true-up.');
 
+        /*
+         * THE LINE FIRST, THEN ITS DETAIL. Both go out in one save, but a subrecord
+         * is fetched from the line it hangs off, and changing that line's quantity
+         * after the subrecord has been edited is the order most likely to have the
+         * edit rebuilt underneath it. Nothing here depends on the reverse.
+         */
         so.setSublistValue({ sublistId: 'item', fieldId: 'quantity',       line: line, value: input.customerQty });
+
+        /*
+         * 🔴 ALWAYS, not only when the bundle divided. Feedback 6 item 17: "Le BF sur
+         * la ligne se modifie bien, par contre dans le INV detail c'est toujours
+         * l'ancienne valeur." The line was trued up to the MEASURED figure and the
+         * reservation was left holding the ordered one, so the difference reserved
+         * nothing. Measured 2026-09-15: 9 split-linked lines disagree, 297 BF in
+         * total, and two of them were raised after the defect was first written up.
+         *
+         * The case that needs it most is the one item 16's repoint does NOT cover: a
+         * bundle sold whole after re-measuring mints no child, so the lot does not
+         * move, and the measurement is the only thing that changed. SO-CWP-001373,
+         * the 172 BF row above, is one of those.
+         */
+        syncAssignment(so, line, v, input, childLotName, adjustmentId);
         so.setSublistValue({ sublistId: 'item', fieldId: F_SPLIT_BF,       line: line, value: input.customerQty });
         so.setSublistText ({ sublistId: 'item', fieldId: F_SPLIT_STATUS,   line: line, text:  STATUS_DONE });
         so.setSublistValue({ sublistId: 'item', fieldId: F_SPLIT_INVADJ,   line: line, value: adjustmentId });
@@ -716,7 +1174,14 @@ define([
 
         return {
             subsidiaryId: rows[0].subsidiaryid,
-            departmentId: input.departmentId || rows[0].departmentid,
+            /*
+             * FROM THE ORDER, never from the caller. The doc block above says
+             * subsidiary, account and department are all read here and whatever the
+             * caller sends is ignored; that was true of the first two and false of
+             * this one, which the caller won. It drives the Trading Softwood /
+             * Trading Hardwood reporting split.
+             */
+            departmentId: rows[0].departmentid,
             adjustmentAccountId: accountId,
             soTranId: rows[0].tranid,
         };
@@ -748,21 +1213,85 @@ define([
             };
         }
 
-        const childLotName = nextChildLotNumber(v.lot.lotName, v.lot.siblings);
-        const adjustmentId = postSplitAdjustment(v, input, childLotName);
+        /*
+         * A child is minted only when the bundle actually DIVIDES.
+         *
+         * There is exactly ONE such case, not two: a bundle sold whole, remainder 0,
+         * after the warehouse re-measured it. `revalidate` refuses a customer
+         * quantity of zero outright, so `customerQty > 0` is always true here and
+         * this condition is `remainderQty > 0` in substance. It is written out in
+         * full anyway, because it mirrors `divides` in `planSplitCost` and the two
+         * must agree: disagreeing mints a lot the order never points at.
+         *
+         * ⚠️ An earlier version of this comment claimed a second case, "a pure
+         * re-measure (customer 0)". That cannot happen and the claim was used to
+         * justify the shape of the code.
+         */
+        const divides = input.customerQty > 0 && input.remainderQty > 0;
+        const childLotName = divides
+            ? nextChildLotNumber(v.lot.lotName, v.lot.siblings)
+            : null;
+        /*
+         * 🔴 CLAIM THE LINE BEFORE ANY STOCK MOVES, and refuse if the claim does not
+         * land.
+         *
+         * This is the lock, and it is the only thing that makes a second run
+         * impossible rather than merely discouraged. Everything that came before it
+         * -- the adjustment id stamped afterwards, the error text asking a worker not
+         * to try again -- reads the same status that a concurrent request has already
+         * read, so two posts could both see Pending and both cut the bundle.
+         *
+         * ⚠️ The order matters more than the mechanism. Claim, then post: a crash in
+         * between leaves a job marked In progress that a human has to look at, which
+         * is a nuisance. Post, then claim: a crash in between leaves a bundle that
+         * has been cut and looks untouched, which is a second cut. For inventory the
+         * nuisance is the correct failure.
+         *
+         * Not best effort. If the claim cannot be written, nothing is posted at all.
+         */
+        claimLine(input);
 
-        // Past this point the inventory has moved. A failure in the true-up
-        // leaves the adjustment posted and the line still Pending, which is the
-        // safe direction: the bundle is split in reality and the screen still
-        // shows work to do, rather than a completed line over unsplit stock.
+        let adjustmentId;
+        try {
+            adjustmentId = postSplitAdjustment(v, input, childLotName);
+        } catch (e) {
+            /*
+             * The claim outlived the thing it was protecting. Release it so the job
+             * goes back on the queue rather than needing a hand: nothing was posted,
+             * which is exactly the case where a retry is safe.
+             */
+            try {
+                setLineStatus(input, STATUS_PENDING);
+            } catch (e2) {
+                log.error('ARCH Split — claim left standing',
+                    'The adjustment failed for ' + input.soTranId + ' and the claim could not be ' +
+                    'released (' + (e2.message || String(e2)) + '). Nothing was posted, so this line ' +
+                    'is safe to set back to Pending by hand.');
+            }
+            throw e;
+        }
+
+        /*
+         * The adjustment id, recorded now that there is one. The CLAIM above is what
+         * stops a re-run; this is what tells a human WHICH adjustment to go and look
+         * at, so it stays best effort: losing it costs traceability, not safety.
+         */
+        try {
+            stampAdjustmentOnLine(input, adjustmentId);
+        } catch (e) {
+            log.error('ARCH Split', 'Adjustment ' + adjustmentId + ' posted but could not be stamped on the ' +
+                      'order line, so the In progress line will not name it: ' + e.message);
+        }
+
         let salesOrderId;
         try {
-            salesOrderId = trueUpSalesOrderLine(v, input, adjustmentId);
+            salesOrderId = trueUpSalesOrderLine(v, input, adjustmentId, childLotName);
         } catch (e) {
             log.error('ARCH Split', 'Adjustment ' + adjustmentId + ' posted but the Sales Order true-up failed: ' + e.message);
             throw new Error(
                 'The bundle was split (adjustment ' + adjustmentId + ') but the Sales Order could not be updated: ' +
-                e.message + ' The split is still marked Pending — do not run it again, fix the order first.'
+                e.message + ' The line is marked In progress and will not run again until somebody ' +
+                'corrects it, which is deliberate: the wood has already moved.'
             );
         }
 

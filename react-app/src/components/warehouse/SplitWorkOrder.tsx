@@ -13,13 +13,16 @@ import type { ArchSplitJob } from '@/types/archSplit';
  * the warehouse was shown.
  *
  * Per the call, the worker prints this, sees the split to do, writes the measured
- * board footage on the sheet by hand and staples it to the new bundle. So LOT BF
+ * board footage on the sheet by hand and staples it to the bundle. Since Feedback 6
+ * item 16 the sheet has to say WHICH bundle carries the new number, because the
+ * answer reversed: it is the customer's piece now, and the wood returning to stock
+ * keeps the original. That one is known at print time, so it is printed. So LOT BF
  * is deliberately a blank rule: printing a number there would be printing a guess,
  * and the whole point is that the real figure is only known once the bundle is
  * opened and re-tallied.
  *
  * ⚠️ NEW LOT # is a blank rule for exactly the same reason, corrected 2026-09-14.
- * The sheet prints BEFORE the split runs, and NetSuite mints the remainder's lot
+ * The sheet prints BEFORE the split runs, and NetSuite mints the customer's lot
  * number only at write time, collision-checked against its siblings. This sheet
  * used to print a client-side prediction, `<lot>-1`, which NetSuite never creates
  * and which receiving already uses for a second bundle on the same PO line. That
@@ -444,18 +447,43 @@ export const SplitWorkOrder = ({ job, onClose }: SplitWorkOrderProps) => {
               >
                 {/* A BLANK RULE, for the same reason LOT BF above is one: at print
                     time this number does not exist yet. The sheet is printed before
-                    the split runs, and NetSuite mints the remainder's lot only when
+                    the split runs, and NetSuite mints the CUSTOMER's lot only when
                     the figures are recorded, collision-checking it against every
-                    sibling lot as it does. This box used to print `<lot>-1`, a name
-                    NetSuite never creates and one that receiving gives to a DIFFERENT
-                    physical bundle on the same PO line. Printing a guess here staples
-                    it to the wood. */}
+                    sibling lot as it does. Printing a guess here staples it to the
+                    wood, and a guess is what this box used to hold.
+
+                    ⚠️ Since Feedback 6 item 16 the minted name IS `<lot>-1` and it is
+                    the piece that ships; the wood returning to stock keeps the parent
+                    number. That does NOT make the name predictable: `-1` may already
+                    belong to a bundle received that way, in which case the server
+                    walks to `-2`. Only the server knows which. */}
+                {/* 🔴 WHICH BUNDLE, said out loud. Until Feedback 6 item 16 the new
+                    number went to the wood STAYING in stock, and this sheet's own
+                    header still tells the worker to "staple it to the new bundle".
+                    The swap silently reversed which piece that is, so a worker
+                    following habit would label the wrong wood. The half that is
+                    known at print time is now printed: the stock keeps the number
+                    it already has. */}
                 <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.6, color: INK }}>
-                  NEW LOT #
+                  NEW LOT # &mdash; THE CUSTOMER&rsquo;S BUNDLE
                 </div>
                 <div style={{ borderBottom: '1.5px solid #0D1F33', height: 34, marginTop: 6 }} />
                 <div style={{ fontSize: 10, fontWeight: 600, color: LABEL, marginTop: 8 }}>
-                  Assigned by NetSuite when this split is recorded. Write it here then.
+                  Assigned by NetSuite when this split is recorded. Write it here then, and put it on
+                  the piece that ships.
+                </div>
+                <div
+                  style={{
+                    marginTop: 12,
+                    paddingTop: 10,
+                    borderTop: `1px dashed ${HAIRLINE}`,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: INK,
+                  }}
+                >
+                  The wood going back into stock keeps{' '}
+                  <span style={{ fontFamily: 'ui-monospace, Menlo, Consolas, monospace' }}>{b.lotNo}</span>
                 </div>
               </div>
 

@@ -129,6 +129,22 @@ export interface ArchLot {
    */
   po: string;
   /**
+   * What THIS bundle cost, per display unit, Feedback 6 item 18: "IA-CWP-730. Le
+   * MBF price est 12.76 vs 14.15."
+   *
+   * 🔴 NOT the row's `avgCostPerUnit`, which is what every cart line used to be
+   * priced against. That figure is an on-hand-weighted average across every costed
+   * lot in the item and location, so a trader picking the dearest bundle was quoted
+   * a blend: lot 316027-9 cost 14.15 and the screen said 12.76, the average of the
+   * 21 ZEB84KD bundles at CWP Prevost, which run 12.25 to 14.15.
+   *
+   * ⚠️ NULL, NOT ZERO, for a lot with no posting history. The row-level average has
+   * always excluded those from both sides rather than counting them as free, and a
+   * consumer that reads null as 0 prices the wood at nothing. Absent entirely on a
+   * payload built before 2026-09-16, which is why it is optional.
+   */
+  costPerUnit?: number | null;
+  /**
    * Shipping container, and it is NOT the lot prefix.
    *
    * A container can cover more than one PO, so the prefix that yields `po`

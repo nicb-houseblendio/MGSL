@@ -270,7 +270,7 @@ test('splitFeeState: three states, because the two parameters are independent', 
 test('the margin copy never contradicts the margin arithmetic', () => {
   // OFF: today's live state. May say a split costs nothing.
   const off = splitFeeMarginSentence('off', 0, 200);
-  assert.match(off, /\$200/);
+  assert.match(off, /CA\$200/);
   assert.match(off, /costs nothing in this margin/);
   assert.match(off, /switched off/);
 
@@ -288,17 +288,18 @@ test('the margin copy never contradicts the margin arithmetic', () => {
   assert.doesNotMatch(half, /\$0/);
 
   // A configured amount that is not the quote is printed as the configured one.
-  assert.match(splitFeeMarginSentence('on', 250, 200), /\$250 per split line is deducted/);
+  assert.match(splitFeeMarginSentence('on', 250, 200), /CA\$250 per split line is deducted/);
 });
 
 test('the split step, badge and formula agree with the state', () => {
   assert.match(splitFeeStepSentence('off', 0, 200), /No split fee is charged yet/);
-  assert.match(splitFeeStepSentence('on', 200, 200), /^\$200 per split is charged/);
+  assert.match(splitFeeStepSentence('on', 200, 200), /^CA\$200 per split is charged/);
   assert.match(splitFeeStepSentence('onWithoutAmount', 0, 200), /no amount configured/);
 
   assert.equal(splitFeeBadge('off', 0), null);
   assert.equal(splitFeeBadge('onWithoutAmount', 0), null);
-  assert.equal(splitFeeBadge('on', 200), '+$200');
+  // 🔴 CA$, not $. Item 9b: a service cost is Canadian whatever the order is billed in.
+  assert.equal(splitFeeBadge('on', 200), '+CA$200');
 
   assert.equal(splitFeeFormulaAmount('off', 0), 0);
   assert.equal(splitFeeFormulaAmount('onWithoutAmount', 0), 0);
@@ -335,8 +336,29 @@ test('SOURCE: every split-fee sentence comes from the tested module', () => {
   // that shows the margin. It must not be a literal any more.
   assert.doesNotMatch(w, /stays switched off until they ask for/);
   assert.doesNotMatch(w, /The \$\{splitFee\(\)\} split fee comes from configuration/);
-  assert.match(w, /splitFeeMarginSentence\(feeState, splitFee\(\), SPLIT_FEE_PLACEHOLDER\)/);
-  assert.match(w, /splitFeeStepSentence\(feeState, splitFee\(\), SPLIT_FEE_PLACEHOLDER\)/);
+  // The QUOTED amount comes from the milling rate record when it has a usable
+  // Split row (item 10c) and falls back to SPLIT_FEE_PLACEHOLDER otherwise, which
+  // is what `splitQuoted` resolves. What must not change is that the sentence
+  // still comes from the tested module rather than being written inline.
+  assert.match(w, /splitFeeMarginSentence\(feeState, splitFee\(\), splitQuoted\)/);
+  assert.match(w, /: SPLIT_FEE_PLACEHOLDER;/);
+  // The Bundle split step no longer carries a fee sentence at all: Marc-Antoine
+  // asked for that warning box to go on 2026-09-14 (Feedback 6 item 8). What must
+  // never come back is a LITERAL, so the absence is pinned instead.
+  assert.doesNotMatch(w, /splitFeeStepSentence\(/);
+  assert.doesNotMatch(w, /No split fee is charged yet/);
+  // Structural, not textual: the reman step's own comment legitimately quotes the
+  // old wording, so what is pinned is that the split step carries no warning banner
+  // rather than that a phrase is absent from the whole file.
+  //
+  // 🔴 The WHOLE step, not just its opening line. An earlier version of this guard
+  // matched only `const splitBody = (<div><ProvisionalNote>`, which a banner added
+  // one line lower, or wrapped in a fragment, would have walked straight past.
+  const splitStep = w.slice(w.indexOf('const splitBody'), w.indexOf('const remanBody'));
+  assert.ok(splitStep.length > 500, 'split step source not found');
+  assert.doesNotMatch(splitStep, /<ProvisionalNote>/);
+  // The per-line badge is the fee's remaining home on this step and must survive.
+  assert.match(splitStep, /splitFeeBadge\(feeState, splitFee\(\)\)/);
   assert.match(w, /splitFeeFormulaAmount\(feeState, splitFee\(\)\)/);
   assert.match(w, /const feeState = splitFeeState\(splitFeeEnabled\(\), splitFee\(\)\);/);
 });

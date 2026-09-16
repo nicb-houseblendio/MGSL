@@ -10,7 +10,7 @@
  * (1) ensure the RESTlet script/deploy IDs below match your deployed RESTlet, and (2) run or schedule the
  * Map/Reduce script to populate the cache.
  */
-define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record', 'N/log'], (serverWidget, runtime, url, file, record, log) => {
+define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record', 'N/query', 'N/log'], (serverWidget, runtime, url, file, record, query, log) => {
 
     const RESTLET_SCRIPT_ID = 'customscript_mcgi_rl_traderapi';
     const RESTLET_DEPLOY_ID = 'customdeploy_mcgi_rl_traderapi';
@@ -39,6 +39,33 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record', 'N/log'
     };
 
     const getReactCSS = () => loadBundleFile('bundle.css');
+
+    /**
+     * The signed-in role's display name.
+     *
+     * The screen opens on the CWP view the ROLE works in, not the one the
+     * employee's subsidiary implies, because every holder of a hardwood role in
+     * this account sits on subsidiary 5 (CWP MTL) and so opened on the softwood
+     * view. The internal id alone would not carry that to production, where
+     * these roles do not exist yet and will be minted with different ids, so the
+     * name is read too and the client matches on either.
+     *
+     * Best effort by design. A role without permission to read the role table
+     * gets an empty string and the id and script id still decide.
+     */
+    const getRoleName = (roleId) => {
+        if (!roleId) return '';
+        try {
+            const rows = query.runSuiteQL({
+                query: 'SELECT name FROM role WHERE id = ?',
+                params: [roleId],
+            }).asMappedResults();
+            return (rows && rows[0] && rows[0].name) ? String(rows[0].name) : '';
+        } catch (e) {
+            log.debug('Trader Screen', 'Role name lookup failed, falling back to the role id: ' + e.message);
+            return '';
+        }
+    };
 
     const buildConfig = (isFullscreen) => {
         let restletUrl;
@@ -152,6 +179,9 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/url', 'N/file', 'N/record', 'N/log'
             suiteletUrl: suiteletUrl,
             userId: String(user.id),
             userName: user.name || '',
+            userRole: String(user.role || ''),
+            userRoleScriptId: String(user.roleId || ''),
+            userRoleName: getRoleName(user.role),
             accountId: runtime.accountId,
             subsidiary: { id: user.subsidiary, name: subsidiaryName },
             logoUrl: logoUrl,

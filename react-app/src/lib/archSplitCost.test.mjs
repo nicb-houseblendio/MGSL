@@ -292,11 +292,20 @@ const drive = ({ storedQty = 0.307, rate = 0.001, lotCost = 2740, customerQty = 
     !('unitcost' in issue.fields), issue.fields);
 
   ok('D: line 2 is the customer quantity', cust.fields.adjustqtyby === 225, cust.fields.adjustqtyby);
-  ok('D: line 2 returns the wood to the PARENT lot, by name',
-    cust.assignments[0].receiptinventorynumber === '315093-27', cust.assignments[0]);
+  /*
+   * 🔴 SWAPPED 2026-09-15, Feedback 6 item 16. "Le bundle client devient
+   * 314000-13-1 et le bundle qui retourne en inventaire garde son numéro." So the
+   * CUSTOMER's line is the one that mints, and the remainder is received back into
+   * the parent by name. These two assertions pinned the old direction and were
+   * changed deliberately, not to make a red suite go green: they are the behaviour
+   * he asked for, and the sales-order repoint in `trueUpSalesOrderLine` exists only
+   * because of this swap.
+   */
+  ok('D: line 2, the customer, mints the NEW lot',
+    cust.assignments[0].receiptinventorynumber === '315093-27-B', cust.assignments[0]);
   ok('D: line 3 is the remainder', rem.fields.adjustqtyby === 100, rem.fields.adjustqtyby);
-  ok('D: only line 3 mints a lot, and it is the child',
-    rem.assignments[0].receiptinventorynumber === '315093-27-B', rem.assignments[0]);
+  ok('D: line 3 returns the wood to the PARENT lot, by name, so stock keeps its number',
+    rem.assignments[0].receiptinventorynumber === '315093-27', rem.assignments[0]);
 
   ok('E: both receipts carry a unit cost, and it is the same one',
     near(cust.fields.unitcost, rem.fields.unitcost, 1e-9) && cust.fields.unitcost > 0,

@@ -126,6 +126,123 @@
       <setting></setting>
       <storevalue>T</storevalue>
     </scriptcustomfield>
+    <!-- 🔴 FOUR PARAMETERS THAT EXIST IN THE ACCOUNT AND WERE NOT IN THIS FILE,
+         recovered by `object:import` on 2026-09-15. Without them SDF refuses the
+         deployment outright, because the deployment block sets values for fields the
+         project does not declare, and a reader of this file would have believed the
+         endpoint has four parameters when it has eight. -->
+    <scriptcustomfield scriptid="custscript_arch_department">
+      <accesslevel>2</accesslevel>
+      <aidescription></aidescription>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>Department internal id stamped on every ARCH sales order this endpoint creates. Empty means 11, Trading : Hardwood, which is what the endpoint has always used and what SO-CWP-001366 and SO-CWP-001367 carry. The code has read this parameter since the department was first set, but the parameter was never created, so 11 was unchangeable without a code deploy; created 2026-09-14. WHY IT MATTERS: the department is enforced by the SIGNED-IN USER, not by this script. Role 2184, the runasrole, was given a department restriction on 2026-09-14 and NetSuite now refuses the save with Invalid Field Value when the user is not in that department or one under it. Changing this value is NOT the fix for that; it books orders to the wrong department. The fix is the role restriction or the employee record.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>INTEGER</fieldtype>
+      <help>Department internal id. Leave empty for 11, Trading : Hardwood.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>ARCH Department</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
+    <scriptcustomfield scriptid="custscript_arch_incoterms">
+      <accesslevel>2</accesslevel>
+      <aidescription></aidescription>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>Incoterms stamped on a NEW ARCH sales order when the wizard sends none. Empty means 3, Delivered, which is what the endpoint has always used. The code has read this parameter since incoterms were first written but the parameter was never created, so the value was unchangeable without a code deploy; created 2026-09-14 alongside custscript_arch_department, which had the same gap. THIS IS A COMMERCIAL TERM on a customer-facing document, so it deserves a deliberate value rather than a fallback nobody can see. Valid ids measured 2026-09-14: 3 Delivered, 4 FOB Mill, 5 FOB Reload, 6 CIF, 7 FOB Port. An APPEND that names no incoterms does not apply this and leaves the order alone; see applyIncoterms.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>INTEGER</fieldtype>
+      <help>Incoterms internal id. Leave empty for 3, Delivered.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>ARCH Incoterms Default</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
+    <scriptcustomfield scriptid="custscript_arch_so_form">
+      <accesslevel>2</accesslevel>
+      <aidescription></aidescription>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>Sales order custom form the ARCH endpoint expects. Empty means 386, CWP ARC - Sales Order. Referenced by archFormId() but never created until 2026-09-14. READ THE RUNASROLE NOTE BEFORE CHANGING IT: the form is NOT set on the record, because setting customform breaks the save from a server script in this account. The form actually comes from the EXECUTING role preference, which is why runasrole customrole2184 is load-bearing, and only a form with Inventory Detail visible can carry a lot. This parameter is used to RECOGNISE and report the expected form, not to select it, so changing it does not change which form an order lands on.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>INTEGER</fieldtype>
+      <help>Custom form internal id. Leave empty for 386, CWP ARC - Sales Order.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>ARCH SO Form</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
+    <scriptcustomfield scriptid="custscript_arch_salesteam_write_on">
+      <accesslevel>2</accesslevel>
+      <aidescription></aidescription>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>Master switch for writing the Sales Team onto an ARCH sales order. OFF by default. When unticked, a team picked on the trader screen is shown but never written and the order keeps its single rep. Created 2026-09-14 to test the write path end to end.</description>
+      <displayheight></displayheight>
+      <displaytype>NORMAL</displaytype>
+      <displaywidth></displaywidth>
+      <dynamicdefault></dynamicdefault>
+      <fieldtype>CHECKBOX</fieldtype>
+      <help></help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <label>Sales Team Write On</label>
+      <linktext></linktext>
+      <maxlength></maxlength>
+      <maxvalue></maxvalue>
+      <minvalue></minvalue>
+      <onparentdelete></onparentdelete>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <setting></setting>
+      <storevalue>T</storevalue>
+    </scriptcustomfield>
   </scriptcustomfields>
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploy_mcgi_sl_arch_order_create">
@@ -148,14 +265,45 @@
            account for this deployment. Verify against the account before changing it
            again - `SELECT audslctrole FROM scriptdeployment WHERE scriptid = '...'`
            reads it without an import. -->
-      <audslctrole>ADMINISTRATOR|[scriptid=customrole2181]</audslctrole>
+      <!-- 🔴 UPDATED 2026-09-15 for Feedback 6 items 5 and 12. The account carried
+           ADMINISTRATOR alone, measured the same day (`audslctrole` = "3"), which is
+           what made the incoterms list unreadable for a trader: NetSuite serves its
+           own login page to a role outside the audience, and the wizard reported it
+           as "Unexpected token '<'". The three roles below are the ones Marc-Antoine
+           named on 09-14 as the people who should land on this screen. 2181 is NOT
+           here any more: it is inactive in this account (`isinactive = T`), and
+           listing a dead role would read as though it still mattered. -->
+      <audslctrole>ADMINISTRATOR|[scriptid=customrole2182]|[scriptid=customrole2183]|[scriptid=customrole2184]</audslctrole>
       <!-- 🔴 ALSO RECONCILED, and a second lockout vector. The account carries 2181
            here; this block did not carry the field at all, so a deploy would have
            cleared the script's own role allowlist and left the endpoint refusing
            everyone but Administrator even with the audience fixed. The two are
            different gates: the AUDIENCE decides who may reach the URL, this parameter
            decides who the script will act for. Both have to name the trader role. -->
-      <custscript_arch_order_roles>2181</custscript_arch_order_roles>
+      <!-- 🔴 THE WRITE LIST, and it is NOT the audience. Since 2026-09-15 the script
+           applies this only to a POST: a GET reads incoterms, customers, reps, open
+           orders, a currency rate and three milling rates, and writes nothing, so a
+           role in the audience above can load the wizard without being able to create
+           an order with it. 2182 is the Hardwood Trader, the role that actually places
+           orders. 2183 Logistics and 2184 AP/AR are in the audience and NOT here on
+           purpose: they can read the screen, they cannot commit stock with it.
+           Administrator is always appended by the script itself. -->
+      <custscript_arch_order_roles>2182</custscript_arch_order_roles>
+      <!-- 🔴 THESE SIX WERE MISSING FROM THIS BLOCK AND ARE NOT DECORATION. SDF
+           writes a deployment WHOLE: a parameter absent here is set to empty in the
+           account, so deploying this object without them would have cleared
+           `custscript_arch_pdf_email_to`, which is CREATOR,SALESREP live and decides
+           who receives the order PDF. Read out of the account with `object:import`
+           on 2026-09-15 and reproduced verbatim; the other five are empty live and
+           are listed so the next deploy cannot quietly invent a value for them.
+           Diff before deploying, always: the import is read-only and takes a
+           minute. -->
+      <custscript_arch_default_sales_rep></custscript_arch_default_sales_rep>
+      <custscript_arch_department></custscript_arch_department>
+      <custscript_arch_incoterms></custscript_arch_incoterms>
+      <custscript_arch_pdf_email_to>CREATOR,SALESREP</custscript_arch_pdf_email_to>
+      <custscript_arch_salesteam_write_on>F</custscript_arch_salesteam_write_on>
+      <custscript_arch_so_form></custscript_arch_so_form>
       <eventtype></eventtype>
       <isdeployed>T</isdeployed>
       <isonline>F</isonline>

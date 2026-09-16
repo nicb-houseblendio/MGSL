@@ -10,13 +10,25 @@ import {
   type ArchCustomerAddress,
   type ArchSalesRep,
 } from '@/hooks/useArchCustomers';
-import { fetchIncoterms, type ArchIncotermsResult } from '@/lib/archOrderApi';
+import {
+  fetchIncoterms,
+  fetchFxRate,
+  fetchMillingRates,
+  fetchWriteAuth,
+  type ArchIncotermsResult,
+  type ArchFxResult,
+  type ArchMillingRates,
+  type ArchWriteAuth,
+} from '@/lib/archOrderApi';
 import {
   SPLIT_FEE_PLACEHOLDER,
   splitFee,
   splitFeeEnabled,
   PLANING_RATE,
   CUT_RATE,
+  COST_CURRENCY,
+  LOW_PRICE_TRIGGER,
+  isLowPricedAt,
   opsInsuranceRate,
   lineEconomics,
   sumEconomics,
@@ -49,7 +61,6 @@ import { fetchArchSalesTeams } from '@/lib/archSalesTeamsApi';
 import {
   splitFeeState,
   splitFeeMarginSentence,
-  splitFeeStepSentence,
   splitFeeBadge,
   splitFeeFormulaAmount,
 } from '@/lib/archSplitFeeCopy';
@@ -65,7 +76,9 @@ import {
   type ArchRepTeamState,
 } from '@/lib/archSalesTeamSplit';
 import { useArchOpenOrders } from '@/hooks/useArchOpenOrders';
+import type { ArchOpenOrdersState } from '@/hooks/useArchOpenOrders';
 import { orderGate } from '@/lib/archOrderGate';
+import { canJumpToStep, firstBlockingStep } from '@/lib/wizardNav';
 import type {
   ArchCartLine,
   ArchOrderDraft,
@@ -124,6 +137,17 @@ interface SOWizardProps {
    * which order they mean, so asking them again on step 1 would be busywork.
    */
   initialExistingSO?: string;
+  /**
+   * The open-order list, held by the screen so this wizard and the Open Sales
+   * Orders tab share ONE fetch.
+   *
+   * 🔴 Feedback 6 item 15. Edit remounts this component (`key={wizardKey}`), and
+   * its own hook then re-fetched a list the tab beside it had already loaded.
+   * The header cannot fill until that lands -- see the preload effect -- so the
+   * whole wait was for data already in memory. Measured 2026-09-15: the call runs
+   * 2.3s to 11.9s against the sandbox, which is his ten seconds.
+   */
+  ordersState?: ArchOpenOrdersState;
 }
 
 /**
@@ -135,6 +159,12 @@ interface SOWizardProps {
  * two rows differing by item or location but sharing a lot number would be
  * treated as the same bundle, and one of them silently dropped.
  */
+/**
+ * NetSuite caps a transaction memo at 999 characters and truncates past it without
+ * saying so, which is a bad way to find out. Counted down in the field instead.
+ */
+const MEMO_MAX = 999;
+
 const bundleId = (l: ArchCartLine): string => `${l.internalId}|${l.lotNo}`;
 
 const emptySplit = (): ArchSplitIntent => ({ on: false, targetBF: '' });
@@ -219,7 +249,6 @@ const BULK_PLANING_LEVELS = ['Light (≈4% off)', 'Standard (≈12.5% off)', 'He
  * cost x this. The real trigger — customer floor, deal type, currency — has not
  * been specified, so this warns and never blocks.
  */
-const LOW_PRICE_TRIGGER = 1.1;
 
 /**
  * Edit-mode accent. Orange separates "adding to an existing order" from the
@@ -591,8 +620,12 @@ export const SOWizard = ({
   onCreate,
   onAddMoreItems,
   initialExistingSO,
+  ordersState,
 }: SOWizardProps) => {
   const [stepIndex, setStepIndex] = React.useState(0);
+  /** Hover on the step rail. Inline styles carry no :hover, and without a hover
+   *  state the tabs gave no sign they could be clicked. */
+  const [hoverStep, setHoverStep] = React.useState<number | null>(null);
   const [mode, setMode] = React.useState<ArchOrderMode>('new');
   const [existingSO, setExistingSO] = React.useState('');
   const [soSearch, setSoSearch] = React.useState('');
@@ -730,6 +763,8 @@ export const SOWizard = ({
     [liveTeams]
   );
   const [customerPO, setCustomerPO] = React.useState('');
+  /** Feedback 6 item 7b. Written to the order's native `memo`. */
+  const [customerNote, setCustomerNote] = React.useState('');
   const [shipTo, setShipTo] = React.useState('');
   const [currency, setCurrency] = React.useState('');
   const [shipDate, setShipDate] = React.useState('');
@@ -810,7 +845,10 @@ export const SOWizard = ({
    * and only appears in the draft. Keeping them separate is deliberate: the two
    * are not interchangeable and conflating them is the bug that was here.
    */
-  const { orders: openOrders, source: openOrdersSource } = useArchOpenOrders();
+  // Own hook only when the screen did not supply the list, so the two can never
+  // both be in flight. See `ordersState`.
+  const ownOrders = useArchOpenOrders(!ordersState);
+  const { orders: openOrders, source: openOrdersSource } = ordersState || ownOrders;
   const chosenOrder = openOrders.find((o) => o.soNo === existingSO) || null;
   /** Null for a demo order, which therefore cannot be submitted. */
   const chosenOrderId = chosenOrder ? chosenOrder.internalId : null;
@@ -841,8 +879,41 @@ export const SOWizard = ({
    * then was false. Dropping once cost it twice, and the notice kept insisting
    * the bundle was on an order it had just been taken off.
    */
+  /**
+   * 🔴 THE COST ON AN EXISTING LINE ARRIVES IN THE ORDER'S CURRENCY, NOT CAD, and
+   * putting it back into Canadian dollars here is what makes the single
+   * conversion rule correct.
+   *
+   * `trader_screen_service_arch.js:1198` divides the lot cost by the order's own
+   * stamped exchange rate before sending it, deliberately, because the Open Sales
+   * Orders tab subtracts it from a foreign-currency amount. A line picked off the
+   * grid carries a Canadian cost (`ArchScreen.tsx`, `row.avgCostPerUnit`). Since
+   * item 10b the wizard multiplies EVERY line by `costFx`, so an existing line
+   * was converted twice.
+   *
+   * Measured on real figures: ZEB84KD at CA$14.15/BF on a USD order stamped
+   * 1.3906 arrives as US$10.1755, is multiplied by 0.719115 again and lands at
+   * US$7.32/BF. On a 1,000 BF line that is US$2,858 of cost that does not exist,
+   * 11 margin points, and it flatters the trade rather than scaring anyone off
+   * it. It also moved the low-price floor from US$11.19 to US$8.05, so a US$9.00
+   * price, an 11.6% loss, was not flagged.
+   *
+   * Normalised on the way IN rather than at each use, so the rest of this file
+   * holds one kind of number.
+   */
   const keptExisting = React.useMemo(
-    () => (chosenOrder ? chosenOrder.lines.filter((l) => !droppedExisting.has(l.key)) : []),
+    () =>
+      chosenOrder
+        ? chosenOrder.lines
+            .filter((l) => !droppedExisting.has(l.key))
+            .map((l) => {
+              const rate = Number(l.exchangeRate);
+              if (!isFinite(rate) || rate <= 0 || l.costPerBF === null || l.costPerBF === undefined) {
+                return l;
+              }
+              return { ...l, costPerBF: l.costPerBF * rate };
+            })
+        : [],
     [chosenOrder, droppedExisting]
   );
 
@@ -919,11 +990,269 @@ export const SOWizard = ({
   const newAddressComplete =
     !!newAddress.name.trim() && !!newAddress.street.trim() && !!newAddress.city.trim();
 
-  /** Priced, but under the trigger. Warns only — pricing is never blocked on it. */
-  const isLowPriced = (l: ArchCartLine) => {
-    const p = parseFloat(pr(l.key)) || 0;
-    return p > 0 && p < (l.costPerBF || 0) * LOW_PRICE_TRIGGER;
+  /*
+   * 🔴 THIS BLOCK SITS ABOVE THE LOW-PRICE PREDICATE ON PURPOSE, and it did not
+   * for about an hour on 2026-09-15. `isLowPriced` reads `costFx`, and `costFx`
+   * was declared 275 lines further down, so the first time a trader added a lot
+   * the `lines.filter(isLowPriced)` on the next line ran the predicate, hit the
+   * temporal dead zone and threw `Cannot access before initialization`. React
+   * unmounted the whole tree: a white page on the first click of the day.
+   *
+   * It survived `tsc`, which does not model the temporal dead zone across a
+   * function boundary, and 67 unit tests, which never render this component. A
+   * live click-through is what caught it. Keep the declarations above their
+   * readers.
+   */
+  /**
+   * The two currencies on this screen, named once.
+   *
+   * `COST_CURRENCY` is the accounting book the ARCH cache costs against, book 1,
+   * whose subsidiaries are all Canadian. `orderCurrency` is what the customer is
+   * billed in and is blank until a customer is chosen, which is why it falls back
+   * rather than guessing: a header reading "Price / BF (USD)" before anyone has
+   * picked a customer would be a claim, not a label.
+   */
+  const orderCurrency = currency || 'USD';
+
+  /**
+   * The rate that puts costs and revenue in the same currency, item 10b.
+   *
+   * Asked for on the SHIP DATE the trader typed, because that is the date the
+   * order will carry, and re-asked whenever either input changes. Null until it
+   * answers, and null if it cannot: the screen says which, and never pretends a
+   * missing rate is parity.
+   */
+  const [fx, setFx] = React.useState<ArchFxResult | null>(null);
+  React.useEffect(() => {
+    if (!open || !currency) { setFx(null); return; }
+    let live = true;
+    fetchFxRate(currency, shipDate).then((r) => { if (live) setFx(r); });
+    return () => { live = false; };
+  }, [open, currency, shipDate]);
+
+  /**
+   * The milling rates as the record holds them, item 10c.
+   *
+   * Asked on the same ship date as the exchange rate, because both are
+   * date-effective and an order priced for October should be priced with
+   * October's rates. Null until it answers; each service falls back on its own.
+   */
+  const [milling, setMilling] = React.useState<ArchMillingRates | null>(null);
+  React.useEffect(() => {
+    if (!open) { setMilling(null); return; }
+    let live = true;
+    fetchMillingRates(shipDate).then((r) => { if (live) setMilling(r); });
+    return () => { live = false; };
+  }, [open, shipDate]);
+
+  const liveRates = React.useMemo(
+    () => ({
+      planing: milling && milling.status === 'ok' ? milling.planing : null,
+      cut: milling && milling.status === 'ok' ? milling.cut : null,
+    }),
+    [milling]
+  );
+  /** What the screen is actually charging, record first, constant second. */
+  const planingRate = liveRates.planing ?? PLANING_RATE;
+  const cuttingRate = liveRates.cut ?? CUT_RATE;
+  const splitQuoted = (milling && milling.status === 'ok' && milling.split !== null)
+    ? milling.split
+    : SPLIT_FEE_PLACEHOLDER;
+  /**
+   * 🔴 BOTH, not either. The legend under the reman table says where the rates
+   * came from, and with an `||` it claimed the record while quietly printing a
+   * constant for whichever service the record could not answer: an expired Cut
+   * row, a renamed fee type, a unit that does not match. Either is a real
+   * possibility, the Cut row carries an end date of 2026-12-31 today, and a
+   * legend that names the wrong source is worse than one that says nothing.
+   */
+  const ratesFromRecord = liveRates.planing !== null && liveRates.cut !== null;
+  /** One came from the record and the other did not, which is worth saying. */
+  const ratesMixed =
+    (liveRates.planing === null) !== (liveRates.cut === null);
+
+  /**
+   * Whether this role may create an order at all, asked when the wizard opens.
+   *
+   * Items 5 and 12 together put three roles on this screen and let all three read
+   * the endpoint, while only the trader role may write. Without this the refusal
+   * arrives after the work rather than before it.
+   */
+  const [writeAuth, setWriteAuth] = React.useState<ArchWriteAuth | null>(null);
+  React.useEffect(() => {
+    if (!open) return;
+    let live = true;
+    fetchWriteAuth().then((r) => { if (live) setWriteAuth(r); });
+    return () => { live = false; };
+  }, [open]);
+  /** Only a definite NO blocks. Unknown stays out of the way. */
+  const writeRefused = !!writeAuth && writeAuth.status === 'ok' && !writeAuth.allowed;
+
+  /** 1 until a real rate arrives, which is also what a Canadian order needs. */
+  const costFx = fx && fx.status === 'ok' && fx.rate ? fx.rate : 1;
+  /**
+   * Three states, not two, and the third one used to shout.
+   *
+   * `fx === null` means the answer has not come back yet, which is the first
+   * render of every non-Canadian order. Treating that as "no rate could be read"
+   * printed an amber "Costs are NOT converted" for a moment on a screen that was
+   * about to convert them, which teaches a trader to ignore the line that matters.
+   */
+  const fxLoading = currency !== '' && currency !== COST_CURRENCY && fx === null;
+  const fxMissing =
+    currency !== '' && currency !== COST_CURRENCY && fx !== null && costFx === 1;
+  /**
+   * What a CONVERTED figure is denominated in. Rates keep saying CAD, because a
+   * rate is quoted rather than converted, but any total the screen has multiplied
+   * by `costFx` is in the order's money and has to say so.
+   */
+  const costShown = costFx === 1 ? COST_CURRENCY : orderCurrency;
+  /** One sentence naming the rate, so a margin is never quietly converted. */
+  const fxNote = fxLoading
+    ? 'Reading the ' + COST_CURRENCY + ' to ' + orderCurrency + ' rate, so the costs below are not converted yet.'
+    : fxMissing
+    ? 'Costs are NOT converted: no ' + COST_CURRENCY + ' to ' + orderCurrency +
+      ' rate could be read, so the profit below subtracts ' + COST_CURRENCY +
+      ' costs from ' + orderCurrency + ' revenue.'
+    : costFx === 1
+      ? null
+      : 'Costs converted from ' + COST_CURRENCY + ' at ' +
+        (fx && fx.quotedRate ? fx.quotedRate.toFixed(4) : (1 / costFx).toFixed(4)) +
+        ' ' + COST_CURRENCY + ' per ' + orderCurrency +
+        (fx && fx.effectiveDate
+          ? ', the NetSuite rate dated ' + fx.effectiveDate
+          : fx && fx.asOf
+            ? ', the rate NetSuite applies for ' + fx.asOf
+            : '') + '.';
+
+  /**
+   * The currencies this customer can actually be billed in.
+   *
+   * 🔴 THIS USED TO BE A FIXTURE, AND THE CLIENT CAUGHT IT. Feedback 6 item 13:
+   * "Le client 84 lumber montre CAD, alors que sur le customer record on a juste
+   * 1 devise." `currenciesFor(name)` is a SEEDED RANDOM keyed on the customer's
+   * name, `rng() > 0.6 ? ['USD','CAD'] : ['USD']`, written for the offline
+   * prototype. It kept driving the buttons and the sentence under them after the
+   * customer list went live, so the screen offered a currency NetSuite does not
+   * hold for that customer.
+   *
+   * Reproduced exactly on 2026-09-15: of five real ARCH customers, the hash lands
+   * above 0.6 for precisely one, `84 Lumber Company`, which is the customer he
+   * named. NetSuite has it as US Dollar and nothing else (customer 2883).
+   *
+   * The service has sent the customer's own `currencyCode` all along, from
+   * `cur.symbol`, so the live path now reads it. An account that holds one
+   * currency per customer gets exactly one button, which is the truth rather than
+   * a coin flip. The fixtures remain for the offline path only, where a name is
+   * all there is.
+   */
+  /**
+   * The chosen customer's row in the live list, matched by id and falling back to
+   * the name for a typed pick. One lookup, because two things read the customer
+   * record now and both were fixtures until 2026-09-15.
+   */
+  const liveCustomer = React.useMemo(
+    () => (customersAreLive && customer
+      ? customerOptions.find((c) => (customerId && c.id === customerId) || c.name === customer)
+      : undefined),
+    [customersAreLive, customer, customerId, customerOptions]
+  );
+
+  /**
+   * The payment terms on the customer record, Feedback 6 item 14: "On voit 1% 15
+   * Net 30 days, alors que le defaut sur le customer c'est .5% 20 net 21 days."
+   *
+   * 🔴 THE SAME FIXTURE DEFECT AS THE CURRENCY, and this one was labelled. The
+   * field carries the title "From the customer record", while the value came from
+   * `paymentTermsFor(name)`, a seeded random over a list of five terms. Run on
+   * 2026-09-15 it returns "1% 15 Net 30 days" for `84 Lumber Company`, which is
+   * the exact string in his screenshot; the customer record says
+   * ".5% 20 net 21 days" (terms 13). So the screen printed a caption claiming a
+   * source it was not reading.
+   *
+   * The service has always sent `termsName`. 76 of 1,058 active customers carry no
+   * terms at all, so the empty case is real and says so rather than inventing one.
+   */
+  const customerTerms = React.useMemo<string>(() => {
+    /*
+     * 🔴 AN APPEND IS ANSWERED BY THE ORDER, for the same reason the currency is
+     * a few lines below. NetSuite stamps terms on the sales order when it saves
+     * it and they do not follow a later edit to the customer record: measured
+     * 2026-09-15, SO-CWP-000073 and -000074 carry ".5% 10 net 11 days" against a
+     * customer now on ".3%". Reading the customer record on an append would also
+     * have printed "None on the customer record" whenever the order's customer is
+     * not in the picker, which is not an edge case by accident: the picker hides
+     * subsidiary 7 on purpose, and 17 of 230 open ARCH-numbered orders belong to
+     * a customer it hides.
+     */
+    if (mode === 'existing') return (chosenOrder && chosenOrder.termsName) || '';
+    if (!customer) return '';
+    /*
+     * The fixture is for a DEMO NAME, never for a real customer. `customersAreLive`
+     * is also false while the list is still loading, and an append fills a real
+     * customer name before it lands, so keying on the name alone would flash the
+     * seeded-random terms over a real order -- the reported defect itself. A live
+     * pick always carries an id; `pickCustomerByName`, the fixture path, never does.
+     */
+    if (!customersAreLive) return customerId ? '' : paymentTermsFor(customer);
+    return (liveCustomer && liveCustomer.termsName) || '';
+  }, [mode, chosenOrder, customer, customerId, customersAreLive, liveCustomer]);
+
+  /**
+   * The internal id for a code the picker offered, or undefined.
+   *
+   * Positional against `currencyCodes`, which the service builds with the same
+   * ORDER BY, so index i of one names index i of the other. Undefined on the
+   * fixture path and on an append, where the order already has its own currency and
+   * the endpoint touches no header field anyway.
+   */
+  const currencyIdFor = (code: string): string | undefined => {
+    if (!code || !liveCustomer) return undefined;
+    const codes = liveCustomer.currencyCodes || [];
+    const ids = liveCustomer.currencyIds || [];
+    const at = codes.indexOf(code);
+    if (at >= 0 && ids[at]) return String(ids[at]);
+    return liveCustomer.currencyCode === code && liveCustomer.currencyId
+      ? String(liveCustomer.currencyId)
+      : undefined;
   };
+
+  const customerCurrencies = React.useMemo<string[]>(() => {
+    /*
+     * 🔴 AN APPEND IS ANSWERED BY THE ORDER, NOT BY THE CUSTOMER RECORD. The
+     * currency is stamped on the sales order and this screen cannot change it:
+     * the endpoint appends lines and touches no header field. Reading the
+     * customer record here would be wrong twice over. If that customer's currency
+     * has been changed since the order was raised, the picker would show a
+     * currency the order is not in; and if the order's customer id is absent or
+     * its name is spelled differently from the list's label, the lookup finds
+     * nothing and the screen would announce "no currency is set" over an order
+     * that plainly has one.
+     */
+    if (mode === 'existing') return currency ? [currency] : [];
+    if (!customer) return [];
+    if (!customersAreLive) return currenciesFor(customer);
+    const hit = liveCustomer;
+    if (!hit) return [];
+    /*
+     * The SUBLIST first, the primary field second. A customer record carries a
+     * currency list as well as a primary currency, and 50 of this account's
+     * customers hold two: measured 2026-09-15, and 5 of 4,249 sales orders are
+     * billed in a currency their customer's primary field does not name. Offering
+     * only the primary would have replaced an invented choice with a missing one.
+     */
+    if (hit.currencyCodes && hit.currencyCodes.length) return hit.currencyCodes;
+    return hit.currencyCode ? [hit.currencyCode] : [];
+  }, [mode, currency, customer, customersAreLive, liveCustomer]);
+
+  /** Priced, but under the trigger. Warns only — pricing is never blocked on it. */
+  /**
+   * The low-price floor. The rule and the currency trap behind it live in
+   * `archOrderPricing.isLowPricedAt`, which is tested against the boundary; this
+   * only supplies the typed price and the rate the margins are already using.
+   */
+  const isLowPriced = (l: ArchCartLine) =>
+    isLowPricedAt(parseFloat(pr(l.key)) || 0, l.costPerBF, costFx);
   const lowPricedLines = lines.filter(isLowPriced);
 
   /** Push the bulk settings onto every line, resolving the dressing per lot. */
@@ -1044,7 +1373,15 @@ export const SOWizard = ({
     // toLocaleString({ style: 'currency' }), so "US Dollar" throws
     // `RangeError: Invalid currency code` and takes the entire wizard down —
     // found by clicking it, after typecheck and build both passed clean.
-    setCurrency(hit?.currencyCode || currenciesFor(name)[0]);
+    /*
+     * 🔴 NO FIXTURE FALLBACK ON THE LIVE PATH. This read
+     * `hit?.currencyCode || currenciesFor(name)[0]`, so a live customer with no
+     * currency on file was silently given a seeded-random one, which is half of
+     * item 13. An empty currency leaves the required field empty and the step
+     * incomplete, which is the honest outcome: the trader is told rather than
+     * billed in a guess.
+     */
+    setCurrency(hit?.currencyCode || '');
 
     // Addresses belong to the customer, so they are loaded with it. Preselecting
     // the default shipping address (falling back to billing, then the only one)
@@ -1107,15 +1444,22 @@ export const SOWizard = ({
     // for another. `pickedTeam` re-resolves against the live list, so a stale id
     // could not be sent anyway; this is so the FIELD does not keep showing it.
     setSalesTeamId('');
+    // Fixture path only: this picker is reached when the live list is absent,
+    // so a name is genuinely all there is to go on. The live path reads the
+    // customer's own currencyCode, see `customerCurrencies`.
     setCurrency(currenciesFor(c)[0]);
   };
 
   /* ── Economics ────────────────────────────────────────────────────────────*/
 
   const economics = React.useMemo(
-    () => lines.map((l) => lineEconomics(l, sp(l.key), rm(l.key), parseFloat(pr(l.key)) || 0)),
+    () => lines.map((l) => lineEconomics(l, sp(l.key), rm(l.key), parseFloat(pr(l.key)) || 0, costFx, liveRates)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [lines, split, reman, price]
+    // 🔴 `liveRates` IS A DEPENDENCY. Without it, changing the ship date refetched
+    // the milling rates, the legend printed the new ones, and the money kept the
+    // old: the screen stated a rate it had not used. `liveRates` is itself a memo,
+    // so its identity is stable between real changes.
+    [lines, split, reman, price, costFx, liveRates]
   );
   const totals = React.useMemo(() => sumEconomics(economics), [economics]);
 
@@ -1132,29 +1476,17 @@ export const SOWizard = ({
    */
   const feeState = splitFeeState(splitFeeEnabled(), splitFee());
 
-  /**
-   * Lines carrying remanufacturing intent, and what that intent costs.
+  /*
+   * 🔴 `remanLines` and `remanTotalCost` are GONE, with the Review panel they fed
+   * (Feedback 6 item 11). Deleted rather than left dangling: an unused derived
+   * list is an invitation to re-add the warning it existed for, and this one also
+   * carried a currency defect, quoting a converted figure with a Canadian label.
    *
-   * Feeds the Review warning. Kept as a derived list rather than a boolean so the
-   * note can NAME each line and its spec: the intent is not written to NetSuite,
-   * so the only way it survives is a person copying it somewhere, and a warning
-   * that does not say WHAT to copy is barely better than silence.
-   *
-   * Cost comes from `economics`, which is index-aligned with `lines`, so the
-   * figure quoted is exactly the one already deducted from the margin above.
+   * Whether reman reached the order is still reported, by the endpoint through
+   * `remanStored` and by the confirmation dialog, and the instructions themselves
+   * are on the Review table as per-line badges. Nothing about reman became
+   * invisible; a duplicate of it stopped being shown twice.
    */
-  const remanLines = React.useMemo(
-    () =>
-      lines
-        .map((line) => ({ line, intent: rm(line.key) }))
-        .filter(({ intent }) => intent.planing || intent.cutting),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [lines, reman]
-  );
-  const remanTotalCost = React.useMemo(
-    () => economics.reduce((sum, e) => sum + e.planingCost + e.cuttingCost, 0),
-    [economics]
-  );
 
   /* ── Validation ───────────────────────────────────────────────────────────*/
 
@@ -1166,9 +1498,14 @@ export const SOWizard = ({
    * 🔴 SPLIT IN TWO because the order list became ASYNCHRONOUS. This was one
    * effect that entered edit mode and populated the header together, which was
    * correct only while `getOpenOrders()` was a synchronous fixture call. Against
-   * the live endpoint `openOrders` is still empty on this first pass, so
+   * the live endpoint `openOrders` was still empty on this first pass, so
    * `applyExistingOrder` hit its own `if (!o) return` and the trader who clicked
    * Edit on a real order got the right SO number above a completely blank header.
+   *
+   * ⚠️ Since Feedback 6 item 15 the list is the SCREEN'S, already loaded by the
+   * tab the Edit button lives on, so on that path it now arrives in the same pass.
+   * The split stays: it costs nothing, and it is the only thing standing between a
+   * trader and a blank header if the list is ever late again.
    *
    * Nothing in the types or the build could see that: the list is the same shape
    * either way, it is only late.
@@ -1258,21 +1595,37 @@ export const SOWizard = ({
     () => describeOrderSalesTeam(repTeam.team),
     [repTeam.team]
   );
-  const splitOk = lines.every((l) => {
+  /*
+   * 🔴 THESE THREE VALIDATE THE LINES THE SAVE WILL WRITE, NOT THE LINES ON SCREEN.
+   *
+   * On an append the wizard shows the order's own lines for context and writes
+   * only the added ones (`writableLines`, and `buildDraft` uses it). Validating
+   * the whole view meant an existing line could block a step that would never
+   * touch it, and one case is not hypothetical: the open-orders service sends
+   * `pricePerBF: 0` for a zero-amount or no-charge SO line, `priceOk` demands
+   * greater than zero, so Pricing could NEVER be satisfied on such an order. The
+   * only way past was to type a price into a line the endpoint then discards.
+   *
+   * Same defect `lib/archOrderGate.ts` exists for: gating a STEP on something only
+   * the WRITE cares about. In new-order mode `writableLines` is `lines`, so
+   * nothing changes there; in append mode with nothing added they are vacuously
+   * true, which is correct because `gate.canWrite` already refuses the save.
+   */
+  const splitOk = writableLines.every((l) => {
     const s = sp(l.key);
     if (!s.on) return true;
     const v = parseFloat(s.targetBF);
     // Must be a real quantity and cannot exceed what the bundle holds.
     return v > 0 && v <= l.preSplitQty + 1e-9;
   });
-  const remanOk = lines.every((l) => {
+  const remanOk = writableLines.every((l) => {
     const r = rm(l.key);
     const planingDone =
       !r.planing || (!!r.planingSpec && (r.planingSpec !== 'other' || !!r.planingOther.trim()));
     const cuttingDone = !r.cutting || !!r.cutLength.trim();
     return planingDone && cuttingDone;
   });
-  const priceOk = lines.every((l) => (parseFloat(pr(l.key)) || 0) > 0);
+  const priceOk = writableLines.every((l) => (parseFloat(pr(l.key)) || 0) > 0);
 
   const stepValid: Record<StepKey, boolean> = {
     start: startOk,
@@ -1283,7 +1636,12 @@ export const SOWizard = ({
     price: priceOk,
     review: true,
   };
-  const canCreate = startOk && gate.canWrite && headerOk && splitOk && remanOk && priceOk;
+  const canCreate =
+    startOk && gate.canWrite && headerOk && splitOk && remanOk && priceOk && !writeRefused;
+
+  /** The same validity, in step order, which is what the rail navigates by. */
+  const stepValidList = STEPS.map((s) => stepValid[s.key]);
+
 
   const step = STEPS[stepIndex];
   const accent = mode === 'existing' ? EDIT_ACCENT : ARCH_SURFACE.green;
@@ -1301,6 +1659,7 @@ export const SOWizard = ({
       customerPO,
       shipTo,
       currency,
+      currencyId: currencyIdFor(currency),
       shipDate,
       incoterms,
       incotermsId: incotermsId || undefined,
@@ -1358,12 +1717,17 @@ export const SOWizard = ({
         sendableTeamId(liveTeams, salesTeamId) ? pickedTeam?.members : undefined,
       salesTeamName:
         sendableTeamId(liveTeams, salesTeamId) ? pickedTeam?.name : undefined,
-      paymentTerms: paymentTermsFor(customer),
+      // The customer's own terms, not a fixture. Display only either way: the
+      // request carries no termsId, so NetSuite sources terms from the customer.
+      paymentTerms: customerTerms,
+      customerNote: customerNote.trim(),
     },
     // Totals for what is BEING WRITTEN, so the confirm dialog does not quote the
     // whole order's revenue for an append that adds one bundle to it.
     totals: sumEconomics(
-      writableLines.map((l) => lineEconomics(l, sp(l.key), rm(l.key), parseFloat(pr(l.key)) || 0))
+      // Same rate as the screen, or the confirmation would quote a different
+      // profit from the one the trader just approved.
+      writableLines.map((l) => lineEconomics(l, sp(l.key), rm(l.key), parseFloat(pr(l.key)) || 0, costFx, liveRates))
     ),
     lines: writableLines.map((l) => ({
       lotNo: l.lotNo,
@@ -1406,21 +1770,79 @@ export const SOWizard = ({
                 key={m}
                 type="button"
                 onClick={() => {
+                  /*
+                   * 🔴 THE RESET ONLY FIRES ON AN ACTUAL CHANGE OF MODE, and that
+                   * guard is not tidiness. Clicking this card used to clear the
+                   * customer, ship-to, currency, incoterms, rep split and sales
+                   * team every time, including when the card was already the
+                   * chosen one. That was survivable while Start was six Back
+                   * clicks away from Review and nobody returned to it. It stopped
+                   * being survivable the moment the step rail made Start one click
+                   * from anywhere and this card became the way forward: a trader
+                   * who steps back to check what they picked, clicks the card
+                   * again, and loses a header they filled in three steps ago.
+                   */
+                  const changed = mode !== m;
                   setMode(m);
                   if (m === 'new') {
-                    setExistingSO('');
-                    setCustomer('');
-                    setShipTo('');
-                    setCurrency('');
-                    setIncoterms('');
-                    setIncotermsId('');
-                    // Rep AND split. Switching away from an order must not leave
-                    // that order's commission split on a blank new one.
-                    setRepTeam(emptyRepTeam());
+                    if (changed) {
+                      setExistingSO('');
+                      setCustomer('');
+                      /*
+                       * 🔴 THE WHOLE HEADER, and three of these were missing.
+                       * `customerPO` and `shipDate` were not cleared, and
+                       * `customerId` / `shipAddressId` were rescued only as a side
+                       * effect of picking a customer again. So a trader who opened
+                       * SO-CWP-001329 to edit it, stepped back to Start and chose
+                       * "Create sales order" raised a NEW order for a DIFFERENT
+                       * customer carrying the old order's PO number and ship date,
+                       * both pre-filled, both satisfying the required-field check
+                       * without being looked at. `archOrderCreate.js` writes
+                       * `customerPO` to `otherrefnum`, so it reaches NetSuite.
+                       *
+                       * It is an old omission that only became reachable when the
+                       * step rail made Start one click from anywhere.
+                       */
+                      setCustomerId('');
+                      setCustomerPO('');
+                      setShipTo('');
+                      setShipAddressId('');
+                      setShipDate('');
+                      setCurrency('');
+                      setIncoterms('');
+                      setIncotermsId('');
+                      // Rep AND split. Switching away from an order must not leave
+                      // that order's commission split on a blank new one.
+                      setRepTeam(emptyRepTeam());
+                    }
+                    /*
+                     * 🔴 THE CARD IS THE ANSWER, so it moves on. Marc-Antoine,
+                     * 2026-09-14: "you only have to single or double click the
+                     * 'create sales order' card to move to next menu instead of
+                     * proceed button in the bottom right". This card is the one he
+                     * names, and picking it was the whole of this step: there is
+                     * nothing else to fill in for a new order, so Continue was
+                     * asking the trader to confirm a decision they had just made.
+                     *
+                     * ONLY on 'new'. The other card reveals an order picker below
+                     * it, so advancing from it would skip past the thing it just
+                     * asked for.
+                     *
+                     * He asked for "single or double click", so the second click
+                     * of a double was checked rather than assumed: it lands on
+                     * whatever the Items step draws at the same point. Measured
+                     * 2026-09-15, that is the intro paragraph, which is inert. The
+                     * only control on that band is Add more items, and it sits at
+                     * the far right while this card is the left of two, so the two
+                     * cannot overlap.
+                     */
+                    setStepIndex(1);
                   }
-                  // Either direction. Switching to an append hides the picker,
-                  // so a pick left behind it would be invisible.
-                  setSalesTeamId('');
+                  // Either direction, and only on a real switch. Switching to an
+                  // append hides the picker, so a pick left behind it would be
+                  // invisible. Re-picking the mode you are already in is not a
+                  // switch and must not throw the choice away.
+                  if (changed) setSalesTeamId('');
                 }}
                 style={{
                   flex: '1 1 0',
@@ -1691,7 +2113,9 @@ export const SOWizard = ({
               <th style={th}>Location</th>
               <th style={th}>Item / Lot</th>
               <th style={{ ...th, textAlign: 'right' }}>Lot BF</th>
-              <th style={{ ...th, textAlign: 'right' }}>Cost / BF</th>
+              {/* Same rule as the Pricing table: a cost column says which currency
+                  it is in, because it is not the one the order is billed in. */}
+              <th style={{ ...th, textAlign: 'right' }}>Cost / BF ({COST_CURRENCY})</th>
               <th style={{ ...th, textAlign: 'center', width: 44 }} />
             </tr>
           </thead>
@@ -1719,7 +2143,7 @@ export const SOWizard = ({
                     is still an open question with the client, so do not "tidy" these
                     into one currency until they answer.
                   */}
-                  {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF, 'CAD')}
+                  {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF, COST_CURRENCY)}
                 </td>
                 <td style={{ ...td, textAlign: 'center' }}>
                   {(
@@ -2107,7 +2531,7 @@ export const SOWizard = ({
         <div style={{ flex: '1 1 220px' }}>
           <label style={label}>Currency *</label>
           <div style={{ display: 'flex', gap: 8 }}>
-            {currenciesFor(customer).map((c) => (
+            {customerCurrencies.map((c) => (
               <button
                 key={c}
                 type="button"
@@ -2133,10 +2557,19 @@ export const SOWizard = ({
               showing, a trader cannot tell whether the customer is USD-only or
               the screen simply has not loaded their currencies. */}
           {customer && (
-            <div style={{ fontSize: 11, color: ARCH_SURFACE.textMid, marginTop: 6 }}>
-              {currenciesFor(customer).length > 1
-                ? `This customer can be billed in ${currenciesFor(customer).join(' or ')}.`
-                : `This customer is billed in ${currenciesFor(customer)[0]} only.`}
+            <div style={{ fontSize: 11, color: customerCurrencies.length === 0 ? '#8F5612' : ARCH_SURFACE.textMid, marginTop: 6 }}>
+              {/* Three cases, and the third is the one that used to be invented.
+                  A live customer with no currency on file gets a plain statement,
+                  not a guess: the order cannot be priced until somebody sets it. */}
+              {mode === 'existing'
+                ? customerCurrencies.length === 1
+                  ? `This order is billed in ${customerCurrencies[0]}, from the sales order itself.`
+                  : 'The order carries no currency.'
+                : customerCurrencies.length > 1
+                  ? `This customer can be billed in ${customerCurrencies.join(' or ')}, from their customer record.`
+                  : customerCurrencies.length === 1
+                    ? `This customer is billed in ${customerCurrencies[0]} only, from their customer record.`
+                    : 'No currency is set on this customer record, so none can be offered here.'}
             </div>
           )}
         </div>
@@ -2153,17 +2586,58 @@ export const SOWizard = ({
           <label style={label}>Payment terms</label>
           <input
             type="text"
-            value={customer ? paymentTermsFor(customer) : ''}
-            placeholder="—"
+            value={customerTerms}
+            placeholder={
+              mode === 'existing'
+                ? 'None on the order'
+                : customer && customersAreLive
+                  ? 'None on the customer record'
+                  : '—'
+            }
             disabled
             readOnly
-            title="From the customer record — display only"
+            title={mode === 'existing'
+              ? 'The terms on this sales order — display only'
+              : 'From the customer record — display only'}
             style={{ ...field(false), background: '#EEF1F6', color: ARCH_SURFACE.textMid, cursor: 'not-allowed' }}
           />
           <div style={{ fontSize: 10, color: ARCH_SURFACE.textLight, marginTop: 3 }}>
-            From customer record — read-only
+            {mode === 'existing' ? 'From the sales order — read-only' : 'From customer record — read-only'}
           </div>
         </div>
+      </div>
+
+      {/*
+        Feedback 6 item 7b, "une note pour leur client sur la commande". It writes the
+        order's NATIVE memo, which is the field Marc-Antoine already types this into by
+        hand: SO-CWP-001369 and -001370 both read "thank you for your business".
+
+        ⚠️ Editable on a NEW order only. An append writes no header field at all -- the
+        endpoint appends lines and touches nothing else -- so offering an editable box
+        here would take a note the trader typed and silently drop it.
+      */}
+      <div>
+        <label style={label} htmlFor="arch-customer-note">Note on the order</label>
+        {mode === 'existing' ? (
+          <div style={{ fontSize: 12, color: ARCH_SURFACE.textMid, padding: '8px 0' }}>
+            A note lives on the order header, and adding lines does not change the header, so it
+            stays as {existingSO} has it. Edit it on the order in NetSuite.
+          </div>
+        ) : (
+          <>
+            <textarea
+              id="arch-customer-note"
+              value={customerNote}
+              onChange={(e) => setCustomerNote(e.target.value.slice(0, MEMO_MAX))}
+              rows={2}
+              placeholder="Optional. Goes on the order as its memo."
+              style={{ ...field(false), height: 'auto', resize: 'vertical', fontFamily: 'inherit' }}
+            />
+            <div style={{ fontSize: 10, color: ARCH_SURFACE.textLight, marginTop: 3 }}>
+              Saved as the sales order&rsquo;s memo. {MEMO_MAX - customerNote.length} characters left.
+            </div>
+          </>
+        )}
       </div>
 
       <div>
@@ -2489,23 +2963,45 @@ export const SOWizard = ({
     </div>
   );
 
+  /*
+   * 🔴 NO WARNING BANNER ON THIS STEP. Removed 2026-09-15 at Marc-Antoine's
+   * request (Feedback 6 item 8, the box ringed in his `image.png`), and the
+   * first half of it had gone stale anyway.
+   *
+   * It told the trader that the way a split line is marked on the sales order
+   * was still an open choice between a custom record and a checkbox, and that
+   * the wizard committed to no NetSuite representation. True when written, false
+   * now, and the phrasing is kept out of this file so the guard in
+   * archSalesTeams.test.mjs can simply forbid the words themselves. The
+   * decision is three line-level custom columns, `custcol_mgsl_split`,
+   * `_split_bf` and `_split_status`; `archOrderCreate.js:2362` writes all three
+   * at SO creation behind a presence check, `archSplitQueue` reads them to build
+   * the warehouse queue, and **31 lines on 24 sales orders** carry the marker in
+   * the sandbox, dated 2026-08-20 to 09-15, measured 2026-09-15.
+   *
+   * ⚠️ A count of the raw column reads 88 lines. It is a transaction COLUMN
+   * field, so NetSuite copies it down: 29 of those lines are on invoices and 28
+   * on item fulfilments, which are the same splits seen again rather than more
+   * of them. Filter by `transaction.type = 'SalesOrd'` or the figure triples.
+   *
+   * The Review step had already been corrected to say a split-flagged line is
+   * marked on the SO and queued, so until today the two steps contradicted each
+   * other and this was the one that was wrong.
+   *
+   * ⚠️ The split fee is NOT silently dropped with it. It is still stated where
+   * the money is, by `splitFeeMarginSentence` on Pricing and by
+   * `splitFeeFormulaAmount` in the formula line under it, and when the fee is
+   * actually switched on `splitFeeBadge` prints "+$200" on the split row itself,
+   * a few lines below here. What went is a duplicate and a stale claim, not the
+   * only place a trader could learn what a split costs.
+   *
+   * The paragraph under this comment STAYS. He ringed the amber box, not the
+   * grey text, and that text is operational rather than provisional: the
+   * measured quantity really does come back different, and the bundle really is
+   * held meanwhile.
+   */
   const splitBody = (
     <div>
-      <ProvisionalNote>
-        How a split line is marked on the sales order is <strong>not decided yet</strong> — custom record or
-        checkbox. The wizard records the intent and the target quantity; it does not commit to a NetSuite
-        representation.{' '}
-        {/*
-          🔴 ONE SOURCE FOR EVERY SPLIT-FEE SENTENCE, and THREE states rather than
-          two. The two script parameters are independent: ticking
-          `custscript_arch_split_fee_on` without setting
-          `custscript_arch_split_fee_amt` — which is exactly how the sandbox
-          deployment stands, measured read-only 2026-09-09: `F` and blank — gives
-          `splitFee() === 0`, and the old two-way branch would then have printed
-          "The $0 split fee comes from configuration". See lib/archSplitFeeCopy.
-        */}
-        <strong>{splitFeeStepSentence(feeState, splitFee(), SPLIT_FEE_PLACEHOLDER)}</strong>
-      </ProvisionalNote>
       <div style={{ fontSize: 12.5, color: ARCH_SURFACE.textMid, lineHeight: 1.5, marginBottom: 14 }}>
         The quantity you enter is a <strong>placeholder</strong>. The warehouse measures each plank and
         finishes the row it lands in, so the delivered figure comes back slightly different. The{' '}
@@ -2600,25 +3096,33 @@ export const SOWizard = ({
     </div>
   );
 
+  /*
+   * 🔴 NO WARNING BANNER ON THIS STEP EITHER. Removed 2026-09-15, Feedback 6
+   * item 9a, and like item 8 the claim it led with had been overtaken.
+   *
+   * It warned that whether reman reaches the sales order depends on the account,
+   * because the line-level fields had to exist first. They exist: `14047` Reman
+   * Cutting, `14048` Cutting Target Length, `14049` Reman Planing, `14050`
+   * Planing Target Thickness, and **25 lines on 19 sales orders** carry a reman
+   * flag in the sandbox, the most recent dated 2026-09-15. (A raw count reads 51
+   * lines; 26 of those are the invoice copies NetSuite makes of a transaction
+   * column field. Filter on `transaction.type` or the figure doubles.)
+   *
+   * ⚠️ Production really does have none of the four, measured 2026-09-15. That is
+   * not a reason to warn a trader here: production also has no ARCH hardwood at
+   * all, so the screen has no users there to warn. The runtime answer is better
+   * than a standing banner anyway, and it stays: the endpoint reports
+   * `remanStored` and the confirmation after saving says whether the instructions
+   * landed, naming them when they did not.
+   *
+   * What went with it: that the dressed-thickness list is ours rather than the
+   * client's, which is a note to us and belongs in the tracking doc, and that
+   * ARCH reman creates no SKU and no inventory adjustment, which is explanation
+   * rather than instruction. The rates stay visible where they matter, as money
+   * on each line below.
+   */
   const remanBody = (
     <div>
-      <ProvisionalNote>
-        {/*
-          "not decided yet" is TRUE BUT IT IS NOT THE POINT, and a trader reads it
-          as "somebody will sort out where this goes". What they need to know while
-          they are typing is that it goes NOWHERE: the endpoint has no reman field,
-          so this step's input never leaves the browser. Said here, on the step
-          where the work is done, as well as on Review.
-        */}
-        <strong>Whether this reaches the sales order depends on the account.</strong> It is sent as
-        line-level fields, the shape Marc-Antoine asked for, but those fields have to exist before
-        anything can be written to them — so the confirmation after you save says which
-        happened, and warns you if the instructions were dropped. Until you have seen it say they
-        were saved, record them somewhere the mill will see. The <strong>rates below
-        are confirmed</strong> — $0.20/BF per service, both services on one line is $0.40/BF —
-        but the <strong>dressed-thickness options are still ours, not his</strong>. Unlike Industriel
-        reman, this creates no new SKU and no inventory adjustment: it is a service with a fee.
-      </ProvisionalNote>
       {lines.length > 1 && (
         <div
           style={{
@@ -2838,8 +3342,15 @@ export const SOWizard = ({
                   {/* Three states, not two. A dash where a service WAS asked for
                       would read as "nothing ordered" when it really means "we
                       have no rate for this unit" -- see lineEconomics. */}
+                  {/* 🔴 'CAD', never the order currency. Marc-Antoine, 2026-09-14:
+                      "Le service cost sera toujours en CAD, même si le SO est en
+                      USD." This cell used to print the CUSTOMER's currency, so a
+                      US order showed the $0.20/BF rate as US$0.20 when the rate
+                      MGSL confirmed is CA$0.20. Same treatment the lot-cost cells
+                      already get: the cost side of this screen is CAD, the
+                      revenue side is the order's. */}
                   {e.planingCost + e.cuttingCost > 0 ? (
-                    fmtMoney(e.planingCost + e.cuttingCost, currency || 'USD')
+                    fmtMoney(e.planingCost + e.cuttingCost, costShown)
                   ) : (r.planing || r.cutting) && l.unit !== 'BF' ? (
                     <span
                       style={{ color: '#7C2D12', fontSize: 10.5 }}
@@ -2861,8 +3372,29 @@ export const SOWizard = ({
         </tbody>
       </table>
       <div style={{ marginTop: 10, fontSize: 11, color: ARCH_SURFACE.textLight }}>
-        Planing {fmtMoney(PLANING_RATE)}/BF · Cutting {fmtMoney(CUT_RATE)}/BF · client-confirmed.
-        Both services on one line is $0.40/BF. These are <strong>board foot</strong> rates: a line
+        {/* The rates are Canadian, item 9b, and this legend defaulted to US dollars
+            because fmtMoney's fallback is USD. On a US order it therefore printed the
+            client's own CA$0.20 rate as $0.20 twice over. */}
+        Planing {fmtMoney(planingRate, COST_CURRENCY)}/BF · Cutting {fmtMoney(cuttingRate, COST_CURRENCY)}/BF ·{' '}
+        {ratesFromRecord
+          ? 'from the milling rate record'
+          : ratesMixed
+            ? 'one from the milling rate record, one client-confirmed'
+            : 'client-confirmed'}. Both services on one line is{' '}
+        {fmtMoney(planingRate + cuttingRate, COST_CURRENCY)}/BF.
+        {/* 🔴 SAID HERE TOO, because items 9b and 10b disagree on this step without
+            it. The RATE above is Canadian and the SERVICE COST column has already
+            been converted into the order's currency, so on a US order the column
+            does not equal board feet times the rate and there was nothing on this
+            step to say why. The note lives on Pricing as well; a trader who never
+            opens Pricing still sees the arithmetic here. */}
+        {costFx !== 1 && (
+          <>
+            {' '}The <strong>Service cost</strong> column is converted into {orderCurrency} at{' '}
+            {(1 / costFx).toFixed(4)} {COST_CURRENCY} per {orderCurrency}, so it is not board feet
+            times the rate above.
+          </>
+        )} These are <strong>board foot</strong> rates: a line
         measured in SQFT, LF or UNIT records its instructions but is not costed, because there is no
         confirmed rate for those units.
       </div>
@@ -2877,8 +3409,13 @@ export const SOWizard = ({
         one cost here that NetSuite computes <strong>differently</strong>: NetSuite takes the rate
         from the customer, not from this screen, and applies it to revenue rather than to lot cost.
         For every ARCH customer today that makes the real charge larger than shown, so this margin
-        is optimistic. The reman rates are confirmed at $0.20/BF
-        per service.{' '}
+        is optimistic. {/* A literal with no currency, which is both halves of the
+          item 9b defect on one line: on a US order it read US$0.20 for a Canadian
+          rate, and it kept saying 0.20 after the milling record started supplying
+          the figure, so the legend on the previous step and this sentence could
+          disagree. Reads from the same two variables the money does. */}
+        The reman rates are {fmtMoney(planingRate, COST_CURRENCY)}/BF for planing and{' '}
+        {fmtMoney(cuttingRate, COST_CURRENCY)}/BF for cutting.{' '}
         {/*
           🔴 THIS SENTENCE USED TO BE UNCONDITIONAL, and it is a claim about a
           SCRIPT PARAMETER rather than about this code: it read "it stays switched
@@ -2890,7 +3427,12 @@ export const SOWizard = ({
           200$/split"); the instruction to charge it has been asked twice and never
           answered, so the switch stays off and the copy follows the switch.
         */}
-        {splitFeeMarginSentence(feeState, splitFee(), SPLIT_FEE_PLACEHOLDER)}{' '}
+        {/* The QUOTED figure now comes from the milling rate record when it has a
+            usable Split row, item 10c, and falls back to the constant otherwise.
+            What is NOT taken from the record is whether to charge it: that stays
+            on the deployment switch, because the amount and the instruction to
+            apply it are different questions and only the first has been answered. */}
+        {splitFeeMarginSentence(feeState, splitFee(), splitQuoted)}{' '}
         <strong>Do not quote a customer from these margins.</strong>
       </ProvisionalNote>
       {lowPricedLines.length > 0 && (
@@ -2944,9 +3486,17 @@ export const SOWizard = ({
             <th style={th}>Location</th>
             <th style={th}>Item / Lot</th>
             <th style={{ ...th, textAlign: 'right' }}>BF</th>
-            <th style={{ ...th, textAlign: 'right' }}>Cost / BF</th>
-            <th style={{ ...th, textAlign: 'right' }}>Price / BF *</th>
-            <th style={{ ...th, textAlign: 'right' }}>Revenue</th>
+            {/* 🔴 THE TWO COLUMNS HE RINGED. Feedback 6 item 10a, `image (1).png`,
+                "ajouter currency" against Cost/BF and Price/BF: "ici c'est difficile
+                de savoir le cost est en quel devise et le prix de vente est en quelle
+                devise". They are genuinely two different currencies, which is the
+                whole reason it was hard to tell: the cost comes from accounting book
+                1 and is Canadian, the price is what the customer is billed in. Said
+                in the header rather than on every cell, so the table stays readable
+                and the two are visibly different. */}
+            <th style={{ ...th, textAlign: 'right' }}>Cost / BF ({COST_CURRENCY})</th>
+            <th style={{ ...th, textAlign: 'right' }}>Price / BF ({orderCurrency}) *</th>
+            <th style={{ ...th, textAlign: 'right' }}>Revenue ({orderCurrency})</th>
             <th style={{ ...th, textAlign: 'right' }}>Profit</th>
             <th style={{ ...th, textAlign: 'right' }}>Margin</th>
           </tr>
@@ -2967,7 +3517,7 @@ export const SOWizard = ({
                 <td style={{ ...td, textAlign: 'right', color: ARCH_SURFACE.textMid }} className="font-mono">
                   {/* 'CAD', not `currency` — see the note on the same cell in the
                       split step. Book 1 is CAD; the SO currency is the customer's. */}
-                  {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF, 'CAD')}
+                  {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF, COST_CURRENCY)}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }}>
                   <input
@@ -3160,17 +3710,52 @@ export const SOWizard = ({
         </div>
         Profit = Revenue − Lot cost − Services − Operations &amp; insurance.
         <br />
-        Revenue = BF × price/BF · Lot cost = BF × cost/BF · Services = ${splitFeeFormulaAmount(feeState, splitFee())} per split lot + $
-        {PLANING_RATE.toFixed(2)}/BF planing + ${CUT_RATE.toFixed(2)}/BF cutting ·
+        Revenue = BF × price/BF · Lot cost = BF × cost/BF · Services = CA$
+        {splitFeeFormulaAmount(feeState, splitFee())} per split lot + CA$
+        {planingRate.toFixed(2)}/BF planing + CA${cuttingRate.toFixed(2)}/BF cutting ·
         Operations &amp; insurance = {(opsInsuranceRate() * 100).toFixed(2)}% of lot cost ·
         Margin % = Profit ÷ Revenue
+        {/* 🔴 THE CONVERSION, NAMED. Item 10b: costs are Canadian and revenue is the
+            customer's, so the profit above is only meaningful once one side has
+            moved. The rate and the day it belongs to are printed because a margin
+            that changed without saying why is worse than one that never moved, and
+            because this is the number he will check against the sales order. */}
+        {fxNote && (
+          <>
+            <br />
+            <span style={{ color: fxMissing ? '#8F5612' : ARCH_SURFACE.textMid, fontWeight: fxLoading ? 400 : 600 }}>
+              {fxNote}
+            </span>
+          </>
+        )}
+        {/* The CA$ prefixes are the client's rule, not decoration: the service
+            rates are quoted in Canadian dollars whatever the order is billed in.
+            Revenue and price/BF stay in the order's own currency, which is why
+            only three of the five terms carry it. */}
       </div>
     </div>
   );
 
   const reviewBody = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div
+
+      {/* 🔴 THE CONVERSION IS STATED WHERE THE COMMIT HAPPENS, not only two steps
+          back. `fxNote` lived on Pricing alone, so an order whose rate could not be
+          read showed a Review strip mixing CA$ costs with US$ revenue and said so
+          nowhere on that screen. Plain text, not an amber panel: item 11 was about
+          warning boxes, and this is a statement of fact about the numbers beside
+          it. */}
+      {fxNote && (
+        <div style={{ fontSize: 11.5, color: fxMissing ? '#8F5612' : ARCH_SURFACE.textMid, fontWeight: fxMissing ? 600 : 400 }}>
+          {fxNote}
+        </div>
+      )}
+      {/* The one sentence the removed panel carried that nothing else says. Item 11
+          took the amber box, which is what the client ringed; this is the
+          irreversible consequence of the button below and belongs on the screen. */}
+      <div style={{ fontSize: 11.5, color: ARCH_SURFACE.textMid }}>
+        Creating the order attaches these lots, so the bundles leave availability on save.
+      </div>      <div
         style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
@@ -3188,7 +3773,10 @@ export const SOWizard = ({
           ['Ship date', shipDate || '—'],
           ['Incoterms', incoterms || '—'],
           ['Currency', currency || '—'],
-          ['Payment terms', paymentTermsFor(customer) || '—'],
+          ['Payment terms', customerTerms || '—'],
+          // Only when there is one. An empty row here would read as a note that
+          // failed rather than one that was never written.
+          ...(customerNote.trim() ? [['Note', customerNote.trim()] as [string, string]] : []),
           // The rep's NAME. The select's value is an internal id on the live path,
           // so printing it raw showed the trader "120" where a name belongs.
           ['Sales rep', salesRepLabel || '—'],
@@ -3250,8 +3838,8 @@ export const SOWizard = ({
             <th style={th}>Item / Lot</th>
             <th style={th}>Services</th>
             <th style={{ ...th, textAlign: 'right' }}>BF</th>
-            <th style={{ ...th, textAlign: 'right' }}>Price / BF</th>
-            <th style={{ ...th, textAlign: 'right' }}>Revenue</th>
+            <th style={{ ...th, textAlign: 'right' }}>Price / BF ({orderCurrency})</th>
+            <th style={{ ...th, textAlign: 'right' }}>Revenue ({orderCurrency})</th>
             <th style={{ ...th, textAlign: 'right' }}>Profit</th>
           </tr>
         </thead>
@@ -3299,7 +3887,8 @@ export const SOWizard = ({
                   {formatQty(e.orderedQty, l.unit)}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }} className="font-mono">
-                  {fmtMoney(parseFloat(pr(l.key)) || 0)}
+                  {/* The PRICE, so the order's currency, not the cost book's. */}
+                  {fmtMoney(parseFloat(pr(l.key)) || 0, orderCurrency)}
                 </td>
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
                   {fmtMoney(e.revenue, currency || 'USD', 0)}
@@ -3353,8 +3942,16 @@ export const SOWizard = ({
           // made the two describe different quantities.
           ['Quantity', formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: orderedBF(l, sp(l.key)) }))), '#fff'],
           ['Revenue', fmtMoney(totals.revenue, currency || 'USD', 0), '#fff'],
-          ['Lot cost', fmtMoney(totals.lotCost, currency || 'USD', 0), 'rgba(255,255,255,0.75)'],
-          ['Services + ops', fmtMoney(totals.processingCost + totals.opsInsuranceCost, currency || 'USD', 0), 'rgba(255,255,255,0.75)'],
+          /* 🔴 BOTH COST FIGURES ARE CAD, and both used to be printed in the
+             customer's currency here. The services are CAD by the client's own
+             rule (item 9b, 2026-09-14); the lot cost is CAD because it comes from
+             accounting book 1, which is what the Pricing table two steps earlier
+             has always said. This strip was the one place the two disagreed.
+             ⚠️ Revenue and Estimated profit below stay in the order currency, and
+             profit therefore still subtracts CAD costs from revenue that may be
+             in USD. That is his item 10b and is NOT fixed by relabelling. */
+          ['Lot cost', fmtMoney(totals.lotCost, costShown, 0), 'rgba(255,255,255,0.75)'],
+          ['Services + ops', fmtMoney(totals.processingCost + totals.opsInsuranceCost, costShown, 0), 'rgba(255,255,255,0.75)'],
           // Unknown reads as a dash in the neutral colour. A green "Estimated
           // profit" on the final review screen, computed without a lot cost, is
           // the last thing a trader sees before submitting.
@@ -3492,19 +4089,23 @@ export const SOWizard = ({
       )}
 
       {/*
-        This note used to say "Create does not write to NetSuite yet", which stopped
-        being true when the write path shipped on 2026-08-20 — the wizard has been
-        creating real sales orders since SO-CWP-001343. Telling a trader their order
-        was not saved when it was is worse than telling them nothing, so what is
-        left is only the part that is still genuinely provisional.
+        🔴 NO "THIS WRITES A REAL SALES ORDER" PANEL. Removed 2026-09-15, Feedback 6
+        item 11, the first of the two boxes ringed in `image (2).png`.
+        It carried three claims. Two were true and are said better elsewhere: the step
+        is called Review and the button under it says Create sales order, so that a
+        save writes an order is not news, and a split-flagged line being marked and
+        queued shows on the line itself as a Split badge. The third had gone stale the
+        same way item 9a's had, warning that the reman fields "have to be deployed
+        before anything lands in them" when they are deployed and 25 lines on 19 sales
+        orders carry them.
+        What goes with it is the one sentence nothing else says, that attaching lots
+        takes the bundles out of availability on save. That is the point of the feature
+        rather than a caveat about it, and the client asked for the box.
+        ⚠️ The panels BELOW were NOT ringed and stay. The append-mode notices say which
+        lines a save would actually touch, which is the difference between updating an
+        order and silently not updating it, and the low-price notice above is a pricing
+        signal he left alone on purpose.
       */}
-      <ProvisionalNote>
-        <strong>This writes a real sales order.</strong> Lots are attached, so the bundles leave
-        availability on save, and a split-flagged line is marked on the SO and
-        queued for the warehouse. Reman is sent as line-level fields and the rates behind
-        its cost are confirmed, but the fields have to be deployed before anything lands in them:
-        the confirmation will tell you, and say so plainly if the instructions were dropped.
-      </ProvisionalNote>
       {/*
         Says which lines are actually written. Only the ADDED lots go to NetSuite:
         the endpoint appends whatever it is given, so sending the lines the order
@@ -3535,63 +4136,19 @@ export const SOWizard = ({
         </ProvisionalNote>
       )}
       {/*
-        ✅ FIXED 2026-08-21, and this comment used to say the opposite. It read "the
-        trader's own input is discarded... archOrderCreate.js does not contain the
-        string reman at all", which was true when traced on 2026-08-20 and false from
-        the next commit. Left uncorrected it would have someone re-fix a working
-        feature, or tell MGSL that reman does not work.
-
-        THE PATH, as it actually runs: the Remanufacturing step writes into `reman`,
-        buildDraft carries it, `toRequest` sends it per line (only when a service is
-        ticked), and archOrderCreate.js normalizes it — `planingSpec` becomes
-        `planeTgt`, `cutLength` becomes `cutLen`, both sliced to 40 to match the field
-        maxlength — then writes the four `custcol_mgsl_reman_*` line fields.
-
-        ⚠️ WHAT IS STILL CONDITIONAL, which is why this note stays. The four line
-        fields must EXIST in the account. Until they are deployed the server probes
-        `getSublistFields`, declines to write, logs an audit note, and reports
-        `remanStored: false` — the order saves either way, because an order that saves
-        without its reman note is recoverable by hand and one that fails to save
-        BECAUSE of a note is not.
-
-        So the margin on screen is charged for dressing the wood (`lineEconomics`
-        folds planingCost and cuttingCost into processingCost) and the instruction may
-        or may not have reached the mill. The confirmation dialog reads `remanStored`
-        and warns when it is false; this note tells the trader before they save, and
-        names what to carry across by hand if it turns out not to have stored.
+        🔴 NO REMAN PANEL ON REVIEW EITHER. Removed 2026-09-15, the second box ringed
+        in `image (2).png`.
+        Its premise was the stale one again, that reman reaches the order "only if the
+        reman fields exist in this account", and it asked the trader to copy the
+        instructions out by hand until the confirmation said otherwise. The fields
+        exist, the confirmation still reports `remanStored` and still names what was
+        dropped, and the instructions have not gone anywhere: the Services column in
+        the table above prints them per line as Plane and Cut badges.
+        ⚠️ It also printed the reman cost with a Canadian label while item 10b had
+        already converted that figure into the order's currency, so on a US order it
+        read CA$ over a US number. Deleting the panel removed that defect. If this note
+        is ever restored it must use `costShown`, never COST_CURRENCY.
       */}
-      {remanLines.length > 0 && (
-        <ProvisionalNote>
-          <strong>
-            Remanufacturing on {remanLines.length}{' '}
-            {remanLines.length === 1 ? 'line' : 'lines'}, and it reaches the order only if the
-            reman fields exist in this account.
-          </strong>{' '}
-          {/* Not unconditional: the confirmed rate is per board foot, so a cart of
-              SQFT or UNIT lines carries reman with no estimated fee at all, and
-              "deducts the $0.00 it costs" would be a strange thing to read. */}
-          {remanTotalCost > 0 ? (
-            <>The margin above deducts the {fmtMoney(remanTotalCost)} it costs.</>
-          ) : (
-            <>
-              No fee is estimated: the confirmed rate is per board foot and{' '}
-              {remanLines.length === 1 ? 'this line is' : 'these lines are'} not measured in BF.
-            </>
-          )}{' '}
-          The confirmation after you save says whether the instructions were stored, and warns you
-          if they were not. Until you have seen it say they were, carry these across by hand:
-          <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
-            {remanLines.map(({ line, intent }) => (
-              <li key={line.key} style={{ marginBottom: 2 }}>
-                <strong>{line.lotNo || line.itemCode}</strong>
-                {intent.planing &&
-                  ` — plane to ${intent.planingSpec === 'other' ? intent.planingOther : intent.planingSpec}`}
-                {intent.cutting && ` — cut to ${intent.cutLength}`}
-              </li>
-            ))}
-          </ul>
-        </ProvisionalNote>
-      )}
     </div>
   );
 
@@ -3650,32 +4207,73 @@ export const SOWizard = ({
           </div>
         </div>
 
-        {/* Step rail */}
+        {/* Step rail
+            🔴 THE RAIL IS NAVIGATION, NOT A PROGRESS BAR. Marc-Antoine, 2026-09-14:
+            "Est-ce qu'on pourrait 'cliquer' sur les tabs pour retourner à une section
+            vs de devoir absoluement cliquer sur 'back' et ou continue". It already went
+            backwards; what cost him the clicks was coming forward again, four presses
+            of Continue to return to Review after fixing one field.
+
+            The rule is in lib/wizardNav.ts and grants nothing Continue would not: every
+            step before the target has to be valid, so Review is still unreachable over
+            an empty Pricing step. Two things had to change here beyond the handler, or
+            the feature would exist and go unused: a hover state, because an inline
+            style cannot carry :hover and the rail looked inert, and a title naming the
+            step that blocks a jump, because a tab that silently ignores a click reads
+            as broken. */}
         <div style={{ display: 'flex', background: 'var(--navy-mid)', flexShrink: 0, padding: '0 8px' }}>
           {STEPS.map((s, i) => {
             const on = i === stepIndex;
             const done = i < stepIndex;
+            const canJump = canJumpToStep(stepIndex, i, stepValidList);
+            const blocker = canJump || on ? -1 : firstBlockingStep(i, stepValidList);
+            const hot = canJump && hoverStep === i;
             return (
               <button
                 key={s.key}
                 type="button"
-                // Only allow jumping back, so a later step can't be reached with
-                // an invalid earlier one.
-                onClick={() => i < stepIndex && setStepIndex(i)}
+                aria-current={on ? 'step' : undefined}
+                /* 🔴 aria-disabled, NOT disabled. A disabled button receives no mouse
+                   events in Chrome, so its `title` never appears: the tooltip below
+                   would have been invisible on exactly the tabs that need to explain
+                   themselves. Keeping the element live costs nothing, because the
+                   click is guarded, and it lets the reason be read. */
+                aria-disabled={!on && !canJump ? true : undefined}
+                title={
+                  on
+                    ? s.label
+                    : canJump
+                      ? 'Go to ' + s.label
+                      : blocker === stepIndex
+                        ? 'Finish this step first'
+                        : blocker >= 0
+                          ? 'Finish ' + STEPS[blocker].label + ' first'
+                          : s.label
+                }
+                onMouseEnter={() => setHoverStep(i)}
+                onMouseLeave={() => setHoverStep((h) => (h === i ? null : h))}
+                onClick={() => { if (canJump) setStepIndex(i); }}
                 style={{
                   flex: 1,
                   padding: '9px 6px',
                   border: 'none',
-                  cursor: i < stepIndex ? 'pointer' : 'default',
+                  cursor: canJump ? 'pointer' : on ? 'default' : 'not-allowed',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: 6,
-                  background: on ? 'var(--navy)' : 'transparent',
-                  color: on ? '#fff' : done ? 'rgba(255,255,255,0.75)' : 'rgba(255,255,255,0.4)',
+                  background: on ? 'var(--navy)' : hot ? 'rgba(255,255,255,0.10)' : 'transparent',
+                  color: on ? '#fff' : hot ? '#fff' : done ? 'rgba(255,255,255,0.75)' : 'rgba(255,255,255,0.4)',
                   fontSize: 12,
                   fontWeight: on ? 700 : 600,
-                  borderBottom: on ? `3px solid ${accent}` : '3px solid transparent',
+                  borderBottom: on
+                    ? `3px solid ${accent}`
+                    : hot
+                      ? '3px solid rgba(255,255,255,0.45)'
+                      : '3px solid transparent',
+                  // A disabled button is dimmed by the browser on top of the colour
+                  // above, which made an unreachable step almost invisible.
+                  opacity: 1,
                 }}
               >
                 <span
@@ -3746,7 +4344,13 @@ export const SOWizard = ({
                     reason the button is dead when every other step passes. Showing it
                     unconditionally told a trader "nothing to write" while an earlier
                     step was also blocking, and they never learned about the other one. */}
-                {step.key === 'review'
+                {/* 🔴 The role refusal is named FIRST, because it is the one reason no
+                    amount of fixing the form will clear. Items 5 and 12 put roles on
+                    this screen that may read it and not write with it. */}
+                {step.key === 'review' && writeRefused
+                  ? 'Your role (' + (writeAuth && writeAuth.role) + ') can open this screen but ' +
+                    'cannot create orders with it. An administrator adds it to the ARCH order roles.'
+                  : step.key === 'review'
                   ? (startOk && headerOk && splitOk && remanOk && priceOk && gate.reviewHint) ||
                     'Complete the earlier steps'
                   : step.key === 'items'

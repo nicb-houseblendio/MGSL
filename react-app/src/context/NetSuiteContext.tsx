@@ -21,7 +21,9 @@ interface NSConfig {
   restletUrl?: string;
   userId?: string | number;
   userName?: string;
-  userRole?: string;
+  userRole?: string | number;
+  userRoleScriptId?: string;
+  userRoleName?: string;
   accountId?: string;
   subsidiary?: { id: string | number; name: string };
   uomConfig?: Record<string, string[]>;
@@ -43,6 +45,12 @@ export const NetSuiteProvider = ({ children }: { children: ReactNode }) => {
         subsidiaryName: r.subsidiary?.name ?? r.subsidiaryName ?? '',
         accountId: String(r.accountId ?? ''),
         restletUrl: r.restletUrl ?? '',
+        // The role the user is signed in with. The screen opens on the CWP view
+        // that role works in, and a build served by an older Suitelet simply
+        // carries none of these keys and falls back to the subsidiary.
+        roleId: r.userRole === undefined || r.userRole === null ? '' : String(r.userRole),
+        roleScriptId: r.userRoleScriptId ?? '',
+        roleName: r.userRoleName ?? '',
         uomConfig: r.uomConfig,
       } as NSContextType;
     }

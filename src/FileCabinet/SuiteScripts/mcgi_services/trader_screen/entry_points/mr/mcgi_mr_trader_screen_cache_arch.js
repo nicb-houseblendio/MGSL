@@ -940,6 +940,27 @@ define([
                 v = runtime.getCurrentScript().getParameter({ name: 'custscript_ts_arch_cost_book' });
             } catch (e) { /* parameter absent — fall through to the default */ }
             _costBookCached = parseInt(v, 10) || ARCH_COST_BOOK_DEFAULT;
+            /*
+             * 🔴 THE WRITE PATH CANNOT FOLLOW THIS PARAMETER. `archSplitExecute`
+             * calls the same costing library with NO book, deliberately, because an
+             * inventory adjustment posts to the PRIMARY book -- its own comment says
+             * so. Book 1 is the primary here, so the default agrees with it and the
+             * screen and the adjustment quote the same number.
+             *
+             * Point this at anything else and they diverge silently, which is
+             * precisely the shape of Feedback 6 item 18: two costs, both correct, for
+             * different questions. It is not theoretical. The USD Accounting Book
+             * (id 2) went live 2026-04-30 and carries a line for every ARCH posting:
+             * measured 2026-09-16 on ZEB84KD, 175 accounting lines in book 1 and 175
+             * in book 2.
+             */
+            if (_costBookCached !== ARCH_COST_BOOK_DEFAULT) {
+                log.error('ARCH cache — costing book is not the primary book',
+                    'custscript_ts_arch_cost_book is set to ' + _costBookCached + ', so the grid and ' +
+                    'the order wizard will quote costs from that book while a bundle split posts its ' +
+                    'inventory adjustment against the primary book (' + ARCH_COST_BOOK_DEFAULT + '). ' +
+                    'The two will disagree and nothing else will say so. See Feedback 6 item 18.');
+            }
         }
         return _costBookCached;
     };
@@ -1683,8 +1704,16 @@ define([
          * classification in after the fact would mean walking every bucket and
          * every lot a second time to move quantity between the two keys.
          *
-         * 🔴 `custbody_arch_ready_to_build` DOES NOT EXIST YET. This is
-         * DELIBERATELY isolated in its own try/catch, never added as a column
+         * ⚠️ `custbody_arch_ready_to_build` EXISTS. Corrected 2026-09-15: it is
+         * internal id 14083, created in sandbox 2026-09-11, and 3 sales orders
+         * already carry it set. The "DOES NOT EXIST YET" that stood here was
+         * true when written and is now simply wrong, which is worth more than a
+         * tidy-up: the next reader would have concluded the whole branch was
+         * dead. Production is still a different story, since it has no Hardwood
+         * department at all.
+         *
+         * The isolation below stays regardless, and NOT because the field might
+         * be missing. It is DELIBERATELY kept out of BUCKET_SQL as a column
          * to BUCKET_SQL itself: SuiteQL fails an entire query on an unknown
          * column, and BUCKET_SQL feeds On Hand, Reserved, Outbound, On Order
          * and In Transit too. Adding it there would take down all five buckets
@@ -2756,7 +2785,30 @@ define([
             let costVal = 0;
             lots.forEach((l) => {
                 const perBase = lotCosts[l.lotId];
-                if (perBase === null || perBase === undefined || !isFinite(perBase)) return;
+                const costed = perBase !== null && perBase !== undefined && isFinite(perBase);
+                /*
+                 * 🔴 THE LOT'S OWN COST, EMITTED. Feedback 6 item 18: "IA-CWP-730.
+                 * Le MBF price est 12.76 vs 14.15."
+                 *
+                 * Both figures were right and they are different figures. 14.15 is
+                 * what lot 316027-9 actually cost, which is why the adjustment posted
+                 * at 14150. 12.76 is the ROW's on-hand-weighted average, computed
+                 * three lines below, and it is what the wizard priced against because
+                 * it was the only cost this payload carried. The 21 ZEB84KD lots at
+                 * CWP Prevost run 12.25 to 14.15, so a trader picking the dearest
+                 * bundle was quoted the cheapest wood's share of the average.
+                 *
+                 * The figure was already here and was being thrown away after the
+                 * average was taken. Same conversion, same rounding as the row, so
+                 * the two can never disagree about units: base to display MULTIPLIES
+                 * by rate, the opposite of every quantity in this file.
+                 *
+                 * Null, never zero, for a lot with no posting history: the row-level
+                 * average has always made that distinction and the per-lot figure has
+                 * to make it too, or an uncosted bundle prices at free.
+                 */
+                l.costPerUnit = costed ? Math.round(perBase * rate * 100) / 100 : null;
+                if (!costed) return;
                 if (!(l.onHand > 0)) return;
                 costQty += l.onHand;
                 costVal += l.onHand * (perBase * rate);

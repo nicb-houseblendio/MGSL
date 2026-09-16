@@ -221,6 +221,29 @@ const OutcomeNotice = ({
     </div>
   ) : null;
 
+  /*
+   * 🔴 FIRST, and on its own. An order billed in a currency it was not priced in is
+   * worth more than a bundle that is not locked: every figure the trader approved is
+   * in the wrong money and the customer is about to be invoiced in the right one.
+   * Red rather than amber, and it does not share a panel with anything.
+   */
+  if (result.currencyMismatch) {
+    return (
+      <div style={{ ...notice, background: '#FEF2F2', border: '1px solid #FCA5A5', color: '#7F1D1D' }}>
+        <div>
+          <strong>
+            This order was created in {result.currencyMismatch.actual}, but it was priced in{' '}
+            {result.currencyMismatch.expected}.
+          </strong>{' '}
+          The price, the revenue and the margin you approved are all in{' '}
+          {result.currencyMismatch.expected}, and the customer will be billed in{' '}
+          {result.currencyMismatch.actual}. Check {result.tranId || 'the order'} in NetSuite before it
+          goes out.
+        </div>
+      </div>
+    );
+  }
+
   const unlocked = (result.lotsNotAttributed || []).length > 0;
   if (unlocked || result.formWarning) {
     return (
@@ -374,7 +397,10 @@ export const ArchOrderDraftDialog = ({
                 ['Ship date', draft.header.shipDate],
                 ['Incoterms', draft.header.incoterms],
                 ['Currency', draft.header.currency],
-                ['Payment terms', draft.header.paymentTerms],
+                ['Payment terms', draft.header.paymentTerms || '—'],
+                ...(draft.header.customerNote
+                  ? [['Note on the order', draft.header.customerNote] as [string, string]]
+                  : []),
                 ['Sales rep', draft.header.salesTeam],
               ] as [string, string][]
             ).map(([k, v]) => (
@@ -408,7 +434,10 @@ export const ArchOrderDraftDialog = ({
                 <th style={head}>Lot</th>
                 <th style={head}>Item</th>
                 <th style={{ ...head, textAlign: 'right' }}>BF</th>
-                <th style={{ ...head, textAlign: 'right' }}>Price/BF</th>
+                {/* The currency, because this dialog quotes both sides: a bare
+                    Price/BF beside a CA$ revenue invited the reader to assume they
+                    match. */}
+                <th style={{ ...head, textAlign: 'right' }}>Price/BF ({cur})</th>
                 <th style={head}>Intent</th>
               </tr>
             </thead>
@@ -426,7 +455,12 @@ export const ArchOrderDraftDialog = ({
                     )}
                   </td>
                   <td style={{ ...cell, textAlign: 'right' }} className="font-mono">
-                    {fmtMoney(l.pricePerBF)}
+                    {/* 🔴 `cur`, not the default. fmtMoney falls back to USD, and
+                        en-US prints USD as a bare $, so on a Canadian order this
+                        cell read $6.50 for CA$6.50 next to a CA$ revenue. It is the
+                        figure a trader checks against their quote, and it was 39%
+                        out at today's rate. */}
+                    {fmtMoney(l.pricePerBF, cur)}
                   </td>
                   <td style={{ ...cell, fontSize: 11 }}>
                     {l.isSplit && (
@@ -465,8 +499,20 @@ export const ArchOrderDraftDialog = ({
               [
                 ['Quantity', formatUnitTotals(draft.lines.map((l) => ({ unit: l.unit, qty: l.orderedQty }))), ARCH_SURFACE.text],
                 ['Revenue', fmtMoney(draft.totals.revenue, cur, 0), ARCH_SURFACE.text],
-                ['Estimated profit', fmtMoney(draft.totals.profit, cur, 0), marginColor(draft.totals.marginPct)],
-                ['Margin', fmtPct(draft.totals.marginPct), marginColor(draft.totals.marginPct)],
+                /* 🔴 UNKNOWN COST IS NOT A PERFECT MARGIN. `sumEconomics` sets
+                   `allCostsKnown` false when any line has no cost, and the wizard
+                   guards this same pair on Pricing and on Review. This dialog did
+                   not, so the LAST screen before Create would have reported a 100%
+                   margin precisely because the cost was missing: lotCost is 0 when
+                   costPerBF is null. Not reachable while every cache row carries a
+                   cost, and the identical bug already shipped once on the Open SO
+                   tab (96cbadf). */
+                ['Estimated profit',
+                  draft.totals.allCostsKnown ? fmtMoney(draft.totals.profit, cur, 0) : '— unknown',
+                  draft.totals.allCostsKnown ? marginColor(draft.totals.marginPct) : ARCH_SURFACE.textMid],
+                ['Margin',
+                  draft.totals.allCostsKnown ? fmtPct(draft.totals.marginPct) : '— unknown',
+                  draft.totals.allCostsKnown ? marginColor(draft.totals.marginPct) : ARCH_SURFACE.textMid],
               ] as [string, string, string][]
             ).map(([k, v, col]) => (
               <div key={k}>

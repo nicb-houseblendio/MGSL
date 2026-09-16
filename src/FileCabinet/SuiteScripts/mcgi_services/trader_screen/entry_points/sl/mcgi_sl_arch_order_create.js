@@ -11,15 +11,23 @@
  * A RESTlet runs as the calling user. A trader role cannot always write the
  * inventory detail an ARCH line needs, so a RESTlet drops those writes, and
  * sometimes silently. That failure mode hit PO Allocation twice and its RESTlet
- * was retired on 2026-07-30. This deployment runs Execute-as-Role =
- * Administrator so the write always lands, which then makes the authorisation
- * check this script's own responsibility rather than NetSuite's.
+ * was retired on 2026-07-30. This deployment sets Execute-as-Role, so the write
+ * lands whoever calls it, which then makes the authorisation check this script's
+ * own responsibility rather than NetSuite's.
+ *
+ * 🔴 IT IS NOT ADMINISTRATOR, and these lines said it was until 2026-09-15.
+ * Measured that day by `object:import`: `runasrole` is `customrole2184`, the
+ * CWP MTL Hardwood AP/AR Analyst, and it is that role deliberately because the
+ * executing role decides which SO form is used and only a form with Inventory
+ * Detail enabled can carry a lot. Believing this ran as an administrator makes
+ * every exposure argument in this file too pessimistic in one direction and too
+ * relaxed in the other, so check the deployment before repeating it.
  *
  * ── The role check fails CLOSED, and that is the point ──────────────────────
- * Running as Administrator means the deployment audience is not a security
- * boundary — anyone who can reach the URL writes as an administrator. The
- * audience has to stay wide enough for traders to load it, so the real boundary
- * is the allowlist below.
+ * Running as another role means the deployment audience is not a security
+ * boundary on its own: whoever reaches the URL acts with role 2184's rights, not
+ * their own. The audience has to stay wide enough for traders to load it, so the
+ * real boundary for a WRITE is the allowlist below.
  *
  * `custscript_arch_order_roles` holds the permitted role internal IDs, comma
  * separated. If it is empty or unset, ONLY Administrator passes. That default is
@@ -129,16 +137,60 @@ define([
     const onRequest = (context) => {
         const user = runtime.getCurrentUser();
         const allowed = permittedRoles();
+        const isWrite = context.request.method !== 'GET';
+        /** Developer diagnostics stay on the write list, which is where they were. */
+        const mayDiagnose = allowed.indexOf(Number(user.role)) !== -1;
 
-        if (allowed.indexOf(Number(user.role)) === -1) {
-            log.error('ARCH Order Create',
+        /*
+         * 🔴 THE ALLOWLIST GATES WRITES, NOT READS, and until 2026-09-15 it gated
+         * both. That is Feedback 6 item 12: "Avec le user trader j'ai le message
+         * d'erreur suivant: The incoterms list could not be read from NetSuite ...
+         * Unexpected token '<' ... (ça fonctionne avec le rôle admin)". The
+         * `<!DOCTYPE` is NetSuite's own page, served because the role was refused
+         * before the GET branch was ever reached, and the wizard cannot complete an
+         * order without incoterms. It has since come to gate the exchange rate and
+         * the milling rates too, so the same refusal now silently un-converts a
+         * margin as well as emptying a mandatory field.
+         *
+         * The split is not a relaxation of the boundary that matters. Creating a
+         * sales order commits stock and attributes commission, so the write list
+         * stays exactly as strict as it was. A GET writes nothing: it lists
+         * incoterms, customers, reps, open orders, a currency rate and three
+         * milling rates, and every write action is behind the POST guard further
+         * down, not behind this one.
+         *
+         * ⚠️ What a read DOES cross is the runasrole, which is `customrole2184`
+         * and NOT an administrator. So a role in the audience sees what that role
+         * can see, whether or not its own permissions would allow it. That is a
+         * real widening and a bounded one, which is why the audience is a named
+         * list of the hardwood roles rather than all employees.
+         */
+        if (isWrite && allowed.indexOf(Number(user.role)) === -1) {
+            /*
+             * 🔴 AUDIT, NOT ERROR, and that changed the day the audience did.
+             * While the audience and this allowlist named the same roles, a
+             * refusal here meant somebody had reached a URL they could not reach,
+             * which is worth an error. Since the audience was widened to 2182,
+             * 2183 and 2184 while only 2182 may write, a refusal is an ORDINARY
+             * outcome: a logistics coordinator ticking Ready to Build produces one
+             * per click. This file's own rule further down says expected refusals
+             * are audit, "the same mistake that once put hundreds of lines a day
+             * into this account's log".
+             */
+            log.audit('ARCH Order Create',
                 'Refused: user ' + user.id + ' role ' + user.role +
                 ' is not in [' + allowed.join(',') + ']');
             return respond(context, 403, {
                 ok: false,
                 code: 'FORBIDDEN',
-                error: 'Your role is not permitted to create orders from the trader screen. ' +
-                       'Ask an administrator to add it.',
+                /*
+                 * Says what was refused rather than naming one action. The old
+                 * wording was "not permitted to create orders", which is a strange
+                 * thing to read after ticking a checkbox on the Open Sales Orders
+                 * tab: `setReadyToBuild` comes through this same gate.
+                 */
+                error: 'Your role can open the ARCH screen but not change orders with it. ' +
+                       'Ask an administrator to add it to the ARCH order roles.',
             });
         }
 
@@ -237,6 +289,51 @@ define([
                     count: ic.incoterms.length,
                     incoterms: ic.incoterms,
                     error: ic.error || undefined,
+                });
+            }
+
+            if (action === 'fxRate') {
+                /*
+                 * The rate the Pricing step converts costs with, Feedback 6 item
+                 * 10b. Read-only and cheap, and deliberately NOT folded into the
+                 * customers payload: the rate depends on the SHIP DATE the trader
+                 * types, which arrives long after the customer list has loaded.
+                 */
+                const fx = orderLib.getFxRate(
+                    context.request.parameters.currency,
+                    context.request.parameters.date
+                );
+                return respond(context, 200, {
+                    ok: fx.rate !== null && fx.rate !== undefined,
+                    service: 'arch-order-create',
+                    action: 'fxRate',
+                    callerRole: user.role,
+                    rate: fx.rate,
+                    quotedRate: fx.quotedRate,
+                    source: fx.source,
+                    target: fx.target,
+                    asOf: fx.asOf,
+                    effectiveDate: fx.effectiveDate,
+                    via: fx.via,
+                    error: fx.error || undefined,
+                });
+            }
+
+            if (action === 'millingRates') {
+                /* Item 10c: the split, cutting and planing rates as the record
+                 * holds them, for the date the order will carry. Read-only. The
+                 * client keeps its own constants and uses these only where a row
+                 * is usable, so an empty or broken record changes no price. */
+                const mr = orderLib.getMillingRates(context.request.parameters.date);
+                return respond(context, 200, {
+                    ok: !mr.error,
+                    service: 'arch-order-create',
+                    action: 'millingRates',
+                    callerRole: user.role,
+                    asOf: mr.asOf,
+                    rates: mr.rates,
+                    rows: mr.rows,
+                    error: mr.error || undefined,
                 });
             }
 
@@ -349,8 +446,17 @@ define([
                  * is among them. `?probeDeptCustomer=<customer id>`, because the
                  * list is filtered by the order's subsidiary and that comes from
                  * the customer. Writes nothing. */
+                /* 🔴 THE PROBE ARGUMENT IS ADMIN-ONLY SINCE 2026-09-15. These two
+                 * diagnostics were written when this deployment's audience was
+                 * Administrator alone. Opening GET to the hardwood roles promoted
+                 * them, and they execute under `runasrole` 2184, which is wider
+                 * than role 2183's own scope. They are developer tools, not screen
+                 * data: the screen calls none of them. So the PROBE is gated on
+                 * the write list while the readiness payload itself stays open,
+                 * because `fetchWriteAuth` genuinely needs `role` and
+                 * `permittedRoles` from it. */
                 department: orderLib.diagnoseDepartment(
-                    (context.request.parameters || {}).probeDeptCustomer),
+                    mayDiagnose ? (context.request.parameters || {}).probeDeptCustomer : null),
                 /* Whether the order-confirmation email has a recipient, and of
                  * what kind. Reports the KINDS only, never the address. This is
                  * the only read-only way to tell an ABSENT parameter from an
@@ -368,6 +474,10 @@ define([
                  * from a sandbox, which is the exact harm the empty default guards
                  * against. This verifies the untested half and posts nothing. */
                 repProbe: (function () {
+                    // Same gate as the department probe above, and for the sharper
+                    // reason: this one takes ANY transaction id with no scope check,
+                    // which was acceptable while only an administrator could ask.
+                    if (!mayDiagnose) return undefined;
                     const so = parseInt(context.request.parameters.probeSo, 10);
                     if (!so) return undefined;
                     return orderLib.resolveRepRecipients(so);

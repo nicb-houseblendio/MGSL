@@ -59,7 +59,7 @@ import { salesOrderUrl } from '@/lib/nsRecordUrl';
 import { traderAttributionNotice, UNASSIGNED } from '@/lib/archTraderAttribution';
 import { useNetSuite } from '@/context/NetSuiteContext';
 import { useArchOpenOrders } from '@/hooks/useArchOpenOrders';
-import type { ArchLiveOpenOrder } from '@/hooks/useArchOpenOrders';
+import type { ArchLiveOpenOrder, ArchOpenOrdersState } from '@/hooks/useArchOpenOrders';
 import { setReadyToBuild } from '@/lib/archOrderApi';
 import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archOrder';
 
@@ -255,11 +255,27 @@ const notice: React.CSSProperties = {
 interface ArchOpenOrdersViewProps {
   /** Open the sales-order builder on this order. */
   onEditOrder?: (soNo: string) => void;
+  /**
+   * The list, held by the parent so this tab and the wizard share ONE fetch.
+   *
+   * 🔴 Feedback 6 item 15, "il y a un bon délais (10 secondes) avant que l'info
+   * apparraisse". Each of them used to own a hook instance, so clicking Edit in
+   * this tab remounted the wizard and made it fetch, from scratch, the identical
+   * list this tab was already displaying. Measured 2026-09-15: that call runs
+   * 2.3s to 11.9s against the sandbox, and the wizard's header cannot fill until
+   * it lands.
+   *
+   * Optional so the tab still stands alone; it falls back to its own hook, and
+   * the fallback is disabled whenever the parent supplies one, so there is never
+   * a second request in flight.
+   */
+  ordersState?: ArchOpenOrdersState;
 }
 
-export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => {
+export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersViewProps) => {
+  const ownOrders = useArchOpenOrders(!ordersState);
   const { orders, source, error, taggedItemCount, traderAttribution, transport, fallbackReason, degraded, reload } =
-    useArchOpenOrders();
+    ordersState || ownOrders;
   const { accountId } = useNetSuite();
   /*
    * Ready to Build toggle state. Keyed by `soNo` rather than `internalId`
@@ -281,7 +297,9 @@ export const ArchOpenOrdersView = ({ onEditOrder }: ArchOpenOrdersViewProps) => 
    * 🔴 THE TICK IS INVISIBLE ON THE INVENTORY GRID UNTIL THE CACHE REBUILDS, and
    * saying nothing about that is how a working tick reads as a broken one.
    *
-   * `reload()` below re-reads THIS TAB only. The grid's READY TO BUILD column is
+   * `reload()` below re-reads THE ORDER LIST only, which since Feedback 6 item 15
+   * is one list shared with the builder rather than this tab's private copy, so a
+   * tick is reflected in both. The grid's READY TO BUILD column is
    * served from the hourly cache, and nothing in the write path busts it
    * (`mcgi_sl_arch_order_create.js` contains no cache reference at all). Measured
    * 2026-09-14: a tick landed at 18:5x against a cache last built 18:48:12Z, so

@@ -2,6 +2,7 @@ import * as React from 'react';
 import { FilterPanel } from '@/components/FilterPanel';
 import { InventoryTableARCH, selectedArchRows } from '@/components/InventoryTableARCH';
 import { ArchOpenOrdersView } from '@/components/arch/ArchOpenOrdersView';
+import { useArchOpenOrders } from '@/hooks/useArchOpenOrders';
 import { DetailDrawerARCH } from '@/components/DetailDrawerARCH';
 import { SOCartBar } from '@/components/arch/SOCartBar';
 import { SOWizard } from '@/components/arch/SOWizard';
@@ -113,6 +114,21 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
     setWizardKey((k) => k + 1);
   }, []);
 
+  /*
+   * ONE open-orders fetch for the whole screen, Feedback 6 item 15.
+   *
+   * The tab and the wizard each used to hold their own instance of this hook, so
+   * Edit remounted the wizard and made it re-fetch the very list the tab was
+   * displaying. Measured 2026-09-15, that call runs 2.3s to 11.9s against the
+   * sandbox and the wizard's header cannot fill until it lands, which is the
+   * "bon délais (10 secondes)" he reported. Shared, Edit has nothing to wait for.
+   *
+   * Still gated: a trader who never opens an order never pays for the list. It is
+   * fetched when the orders tab is shown or the builder is opened, which is
+   * exactly when one of the two needs it.
+   */
+  const openOrdersState = useArchOpenOrders(tab === 'orders' || wizardOpen);
+
   const handleEditOrder = React.useCallback((soNo: string) => {
     setEditingSO(soNo);
     // Remount, so the wizard re-primes even if it was opened before.
@@ -184,7 +200,20 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
             // the full on-hand figure.
             preSplitQty: lotQuantity(lot, bucket),
             unit: row.unit,
-            costPerBF: row.avgCostPerUnit,
+            /*
+             * 🔴 THE BUNDLE'S OWN COST, falling back to the row. Feedback 6 item 18:
+             * the wizard priced every line at `row.avgCostPerUnit`, an on-hand-weighted
+             * average over every costed lot in the item and location, so lot 316027-9
+             * was quoted at 12.76 when it cost 14.15. The margin and the profit are
+             * computed off this same number, so the error was never only cosmetic.
+             *
+             * The fallback is the row average and NOT zero: a lot with no posting
+             * history sends null, and the row figure is the best honest estimate for
+             * it -- the same one this line has always used.
+             */
+            costPerBF: lot.costPerUnit === null || lot.costPerUnit === undefined
+              ? row.avgCostPerUnit
+              : lot.costPerUnit,
             bucket,
           });
         });
@@ -198,6 +227,13 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
     (key: string) => setCart((prev) => prev.filter((l) => l.key !== key)),
     []
   );
+
+  /*
+   * Pulled out so the callback below can depend on it without depending on the
+   * whole state object, whose identity changes every render. `reload` is a
+   * `useCallback([])` inside the hook, so this is stable for the screen's life.
+   */
+  const reloadOpenOrders = openOrdersState.reload;
 
   const handleCreateOrder = React.useCallback(async (draft: ArchOrderDraft) => {
     setCartNote(null);
@@ -258,9 +294,20 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
       // destroy the trader's selection while the stock is still sellable, which
       // is worse than leaving a cart they can retry from.
       setCart([]);
+      /*
+       * 🔴 REFRESH THE ORDER LIST, or the next Edit shows the order as it was
+       * BEFORE this write. Nothing reloaded it before either, but the wizard used
+       * to remount and fetch its own copy, so at least the append path was fresh.
+       * Sharing one list (Feedback 6 item 15) removed that accident, and without
+       * this the trader can open the order they just appended to, not see the lines
+       * they added, and add them a second time -- a duplicate write, not a stale
+       * caption. `reload` is a no-op while the list is not in use and refetches on
+       * the next use, so this costs nothing when nobody is looking at it.
+       */
+      reloadOpenOrders();
       orderKeyRef.current = null;
     }
-  }, []);
+  }, [reloadOpenOrders]);
 
   const rowSelectionRef = React.useRef<Record<string, boolean>>({});
   const handleSelectionChange = React.useCallback((selection: Record<string, boolean>) => {
@@ -400,7 +447,7 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
 
       <main className="flex-1 flex flex-col px-4 pt-3 pb-2 min-h-0 overflow-auto">
         {tab === 'orders' ? (
-          <ArchOpenOrdersView onEditOrder={handleEditOrder} />
+          <ArchOpenOrdersView onEditOrder={handleEditOrder} ordersState={openOrdersState} />
         ) : (
         <div className="relative flex-1 flex flex-col min-h-0">
           {loading && !allRows && (
@@ -476,6 +523,7 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
         onRemoveLine={removeCartLine}
         onCreate={handleCreateOrder}
         initialExistingSO={editingSO ?? undefined}
+        ordersState={openOrdersState}
         // "Add item" returns to the grid but KEEPS the draft, so it must not bump
         // the key — the trader is coming back to this same order.
         onAddMoreItems={() => setWizardOpen(false)}

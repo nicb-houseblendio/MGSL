@@ -411,6 +411,35 @@ define([
                     // different jobs.
                     '  cur.symbol               AS currencycode, ' +
                     '  BUILTIN.DF(c.currency)   AS currencyname, ' +
+                    /*
+                     * 🔴 EVERY CURRENCY THIS CUSTOMER CAN BE BILLED IN, not just
+                     * the primary. `customer.currency` above is one field; the
+                     * record also carries a currency SUBLIST, and 50 of this
+                     * account's customers hold two. Measured 2026-09-15: customer
+                     * 2700 Total Forest Industries is CAD and USD, and 5 of 4,249
+                     * sales orders are billed in a currency their customer's
+                     * primary field does not name.
+                     *
+                     * The sublist is readable as `customercurrencybalance`, which
+                     * is the only SuiteQL name for it: `customercurrency`,
+                     * `entitycurrency` and `customercurrencies` are all invalid
+                     * search types in this tenant. Sent as a comma-separated list
+                     * of ISO codes so the picker can offer exactly what the
+                     * customer record allows and nothing else.
+                     */
+                    "  (SELECT LISTAGG(c2.symbol, ',') WITHIN GROUP (ORDER BY c2.symbol) " +
+                    '     FROM customercurrencybalance ccb, currency c2 ' +
+                    '    WHERE c2.id = ccb.currency AND ccb.customer = c.id) AS currencycodes, ' +
+                    /*
+                     * The IDS, in the same ORDER BY as the codes above so position i
+                     * of one names position i of the other. The order endpoint sets
+                     * `currency` by internal id and ignores a code, so without these
+                     * the picker could offer a currency the order could never be
+                     * created in -- see the header note in `archOrderApi.toRequest`.
+                     */
+                    "  (SELECT LISTAGG(c3.id, ',') WITHIN GROUP (ORDER BY c3.symbol) " +
+                    '     FROM customercurrencybalance ccb2, currency c3 ' +
+                    '    WHERE c3.id = ccb2.currency AND ccb2.customer = c.id) AS currencyids, ' +
                     '  c.terms                  AS termsid, ' +
                     '  BUILTIN.DF(c.terms)      AS termsname, ' +
                     '  c.subsidiary             AS subsidiaryid, ' +
@@ -464,6 +493,11 @@ define([
                     name: String(r.companyname || r.entityid || ('Customer ' + r.id)),
                     currencyId: r.currencyid ? String(r.currencyid) : null,
                     currencyCode: r.currencycode ? String(r.currencycode) : null,
+                    // The full list, primary first only by alphabet. Absent rather
+                    // than empty when the sublist is silent, so the client can tell
+                    // "no list" from "a list with nothing in it".
+                    currencyCodes: r.currencycodes ? String(r.currencycodes).split(',') : null,
+                    currencyIds:   r.currencyids   ? String(r.currencyids).split(',')   : null,
                     currencyName: r.currencyname ? String(r.currencyname) : null,
                     termsId: r.termsid ? String(r.termsid) : null,
                     termsName: r.termsname ? String(r.termsname) : null,
@@ -620,6 +654,85 @@ define([
      * it with `BUILTIN.DF(i.department) = ?`.
      */
     const HARDWOOD_DEPARTMENT = 'Hardwood';
+
+    /**
+     * Feedback 6 item 15: "il y a un bon delais (10 secondes) avant que l'info
+     * apparraisse". Part of that delay is this filter.
+     *
+     * 🔴 `BUILTIN.DF(i.department) = ?` is a FUNCTION over the joined rows, so the
+     * optimiser cannot use the column and evaluates the display name per row.
+     * Measured 2026-09-15, best of four runs each, same 42 rows every time:
+     *
+     *   open orders, BUILTIN.DF          2.14 s
+     *   open orders, i.department = 11   1.24 s
+     *   item count,  BUILTIN.DF          1.76 s
+     *   item count,  i.department = 11   0.54 s
+     *
+     * A SUBQUERY does not help (`i.department IN (SELECT id ...)` measured 2.10 s,
+     * no better than the original): the optimiser needs a constant, so the id is
+     * resolved here, once, and bound.
+     *
+     * Resolved rather than hardcoded, which is the point: the cache MR's own note
+     * records that department id 11 is "Hardwood" in sandbox and DOES NOT EXIST AT
+     * ALL in production, so a literal 11 would silently match nothing there. The
+     * NAME stays the source of truth; only the comparison is by id. It also FALLS
+     * BACK to the old predicate when the lookup finds nothing, so a renamed or
+     * nested department costs speed and never rows.
+     */
+    let deptIdCache; // undefined = not looked up yet, null = looked up and unusable
+    const hardwoodDepartmentId = () => {
+        if (deptIdCache !== undefined) return deptIdCache;
+        deptIdCache = null;
+        let why = '';
+        try {
+            const r = query.runSuiteQL({
+                query: 'SELECT id FROM department WHERE name = ?',
+                params: [HARDWOOD_DEPARTMENT],
+            }).asMappedResults();
+            /*
+             * MORE THAN ONE is a real possibility and it must not narrow the tab.
+             * `BUILTIN.DF` compares the LEAF name -- department 11 is "Hardwood"
+             * with fullname "Trading : Hardwood", and the old predicate matches it
+             * on "Hardwood" -- so a second department with the same leaf under a
+             * different parent would match the old filter and both sets of items
+             * would be in scope. One id cannot express that, so the slow, correct
+             * predicate is used instead. One department is named Hardwood today,
+             * of 11 in the account.
+             */
+            if (!r || !r.length) why = 'no department is named "' + HARDWOOD_DEPARTMENT + '"';
+            else if (r.length > 1) why = r.length + ' departments share that name';
+            else {
+                const n = parseInt(r[0].id, 10);
+                if (isFinite(n)) deptIdCache = n;
+                else why = 'the id did not parse: ' + String(r[0].id);
+            }
+        } catch (e) {
+            why = (e.name || '') + ': ' + (e.message || String(e));
+        }
+        /*
+         * SAID OUT LOUD, because a silent fallback is an optimisation that can be
+         * inert in production forever with nothing to show for it. Audit, not error:
+         * the tab still returns the right rows, only slower.
+         */
+        if (deptIdCache === null) {
+            log.audit('ARCH service — department filtered by name, not id',
+                'The faster filter needs one department id and could not get it (' + why +
+                '), so the tab falls back to BUILTIN.DF. Rows are unaffected; the query is ' +
+                'roughly a second slower. See Feedback 6 item 15.');
+        }
+        return deptIdCache;
+    };
+
+    /**
+     * The department filter and the parameter that goes with it, as one pair so
+     * the two can never drift apart. `%DEPT%` appears once in each query.
+     */
+    const deptFilter = () => {
+        const id = hardwoodDepartmentId();
+        return id === null
+            ? { sql: 'BUILTIN.DF(i.department) = ?', param: HARDWOOD_DEPARTMENT }
+            : { sql: 'i.department = ?', param: id };
+    };
     const NON_ARCH_DEPARTMENT_ITEMS = [
         'IPE44DECKD', 'IPE54DECKD', 'IPE54DECKDDNU',
         'NRM44DECKDS4S', 'NRM44DECKDTNG',
@@ -776,6 +889,13 @@ define([
         '  cur.symbol                      AS currencycode, ' +
         '  t.otherrefnum                   AS customerpo, ' +
         '  BUILTIN.DF(t.custbody_incoterms) AS incoterms, ' +
+        // The ORDER'S OWN terms, not the customer's. NetSuite stamps terms on
+        // the sales order when it is saved and they do not follow a later edit
+        // to the customer: measured 2026-09-15, SO-CWP-000073 and -000074 read
+        // '.5% 10 net 11 days' against a customer now on '.3%'. Without this
+        // column an append had nothing truthful to print and read the customer
+        // record instead, which is the same mistake the currency avoids.
+        '  BUILTIN.DF(t.terms)            AS termsname, ' +
         // `shipdate` is the NATIVE field and it is populated. Verified 2026-08-20:
         // custbody_mgsl_expectedshipdate reads null on every row tried.
         '  t.shipdate                      AS shipdate, ' +
@@ -826,7 +946,7 @@ define([
         // lines a user event adds to every order — every Department 11 item
         // is `itemtype = 'Assembly'`, measured with zero exceptions, and
         // those charge lines never are.
-        'WHERE BUILTIN.DF(i.department) = ? ' +
+        'WHERE %DEPT% ' +
         '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
         "  AND tl.mainline = 'F' " +
         "  AND tl.isclosed = 'F' " +
@@ -845,7 +965,7 @@ define([
 
     /** Counts Department 11 (Hardwood) items, so an empty tab can explain itself. */
     const HARDWOOD_ITEM_COUNT_SQL =
-        'SELECT COUNT(*) AS n FROM item i WHERE BUILTIN.DF(i.department) = ? ' +
+        'SELECT COUNT(*) AS n FROM item i WHERE %DEPT% ' +
         '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ')';
 
     /**
@@ -931,9 +1051,10 @@ define([
     const handleGetOpenOrders = () => {
         let rows;
         try {
+            const dept = deptFilter();
             rows = query.runSuiteQL({
-                query: OPEN_ORDERS_SQL,
-                params: [HARDWOOD_DEPARTMENT],
+                query: OPEN_ORDERS_SQL.replace('%DEPT%', dept.sql),
+                params: [dept.param],
             }).asMappedResults();
         } catch (e) {
             log.error('ARCH service — open orders failed',
@@ -963,6 +1084,72 @@ define([
             log.audit('ARCH open orders — cost lookup unavailable',
                 (e.name || '') + ': ' + (e.message || String(e)));
         }
+
+        /*
+         * 🔴 THE BUNDLE'S OWN COST, memoised per item and location.
+         *
+         * Feedback 6 item 18 put the per-lot figure on the grid and in the order
+         * wizard. Leaving this tab on the row average would have been item 18 again
+         * one surface across: the same physical bundle reading 14.15 in the builder
+         * and 12.76 here, and an APPEND mixing both in one cart, because its existing
+         * lines come from this payload and its new ones from the grid.
+         *
+         * The detail cache is keyed per pair and already holds it, so this is a cache
+         * read rather than a query, taken once per pair and only for pairs that
+         * actually appear on an open order.
+         *
+         * The row average stays the fallback, never zero: a lot with no posting
+         * history has no cost, and so does a pair whose detail key has expired ahead
+         * of the summary. Both land on exactly what this tab showed before.
+         */
+        const lotCostCache = {};
+        // Fetched once. This used to be resolved inside the per-pair miss, which is
+        // a cache handle taken again for every pair on the response, on the one
+        // action Feedback 6 item 15 was about making cheaper.
+        const lotCostCacheHandle = getMyCache();
+        const lotCostFor = (itemId, locationId, lotNo) => {
+            if (!lotNo) return null;
+            const pair = String(itemId) + '__' + String(locationId);
+            if (!Object.prototype.hasOwnProperty.call(lotCostCache, pair)) {
+                let map = null;
+                try {
+                    /*
+                     * The pair key holds `{ onHand: [lots] }` -- NOT `{ lots }`, and
+                     * not the lots array bare. Falling back to the per-bucket key is
+                     * the same two-step `handleGetDetail` above already does, because
+                     * either shape can be what is in the cache.
+                     */
+                    const myCache = lotCostCacheHandle;
+                    let lots = null;
+                    const raw = myCache.get({ key: CacheKeysARCH.detailKey(itemId, locationId) });
+                    if (raw) {
+                        const parsed = JSON.parse(raw);
+                        lots = (parsed && parsed.onHand) || null;
+                    } else {
+                        const bRaw = myCache.get({
+                            key: CacheKeysARCH.buildDetailBucketKey(itemId, locationId, 'onHand'),
+                        });
+                        if (bRaw) lots = JSON.parse(bRaw);
+                    }
+                    if (lots && lots.length) {
+                        map = {};
+                        for (let i = 0; i < lots.length; i++) {
+                            const c = parseFloat(lots[i].costPerUnit);
+                            if (isFinite(c)) map[String(lots[i].lotNo)] = c;
+                        }
+                    }
+                } catch (e) {
+                    log.audit('ARCH open orders — per-lot cost unavailable for ' + pair,
+                        (e.name || '') + ': ' + (e.message || String(e)));
+                    map = null;
+                }
+                lotCostCache[pair] = map;
+            }
+            const hit = lotCostCache[pair];
+            if (!hit) return null;
+            const v = hit[String(lotNo)];
+            return v === undefined ? null : v;
+        };
 
         const byOrder = {};
         const ordered = [];
@@ -1126,6 +1313,7 @@ define([
                     currency:   String(r.currencycode || ''),
                     customerPO: String(r.customerpo || ''),
                     incoterms:  String(r.incoterms || ''),
+                    termsName:  r.termsname ? String(r.termsname) : null,
                     created:    isoDate(r.trandate),
                     shipDate:   isoDate(r.shipdate),
                     // The sublist is read for the TRADER above. This field stays
@@ -1156,9 +1344,13 @@ define([
                 const conv = isFinite(rate) && rate > 0 ? rate : 1;
                 const shipped = Math.abs(parseFloat(r.shiprecv) || 0);
                 const pairKey = String(r.itemid) + '__' + String(r.locationid);
-                const rawCost = Object.prototype.hasOwnProperty.call(costByPair, pairKey)
+                const rowCost = Object.prototype.hasOwnProperty.call(costByPair, pairKey)
                     ? costByPair[pairKey]
                     : null;
+                // This bundle's own cost where the detail cache knows it, the row
+                // average where it does not. See `lotCostFor`.
+                const lotCost = lotCostFor(r.itemid, r.locationid, r.lotno);
+                const rawCost = lotCost === null ? rowCost : lotCost;
 
                 /* ── Money is reported in the ORDER'S OWN CURRENCY ────────────
                  *
@@ -1216,7 +1408,17 @@ define([
                         // RAW NetSuite unit name. The front end normalises it.
                         unitName:     String(r.unitname || ''),
                         costPerBF:    cost === null ? null : tidy(cost, 4),
-                        costSource:   cost === null ? 'unknown' : 'rowAverage',
+                        /*
+                         * 🔴 SAY WHICH COST THIS IS. Hardcoding 'rowAverage' made the
+                         * per-lot figure indistinguishable from the shelf average it
+                         * replaced, which is Feedback 6 item 18 all over again: two
+                         * numbers, both correct, answering different questions, with
+                         * no way to tell which one you were handed. The client's
+                         * degradation count reads this field.
+                         */
+                        costSource:   cost === null
+                            ? 'unknown'
+                            : (lotCost === null ? 'rowAverage' : 'lot'),
                         // The order's own currency, for anything that needs to say so.
                         exchangeRate: tidy(fxRate, 6),
                         pricePerBF:   tidy(pricePerUnit, 6),
@@ -1299,9 +1501,10 @@ define([
          */
         let taggedItemCount = null;
         try {
+            const dept = deptFilter();
             const c = query.runSuiteQL({
-                query: HARDWOOD_ITEM_COUNT_SQL,
-                params: [HARDWOOD_DEPARTMENT],
+                query: HARDWOOD_ITEM_COUNT_SQL.replace('%DEPT%', dept.sql),
+                params: [dept.param],
             }).asMappedResults();
             const n = c && c.length ? parseInt(c[0].n, 10) : NaN;
             taggedItemCount = isFinite(n) ? n : null;

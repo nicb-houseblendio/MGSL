@@ -1,16 +1,24 @@
 <customlist scriptid="customlist_mgsl_split_status">
-  <name>MGSL Split Status</name>
-  <description>Lifecycle of a trader-flagged bundle split on a Sales Order line. Pending = the trader has flagged the split and the source bundle is held; nothing exists in inventory yet. Done = the warehouse keyed the actual quantities and the server has created the child lot, trued up the Sales Order line and released the remainder.</description>
+  <description>Lifecycle of a trader-flagged bundle split on a Sales Order line. Pending = the trader has flagged the split and the source bundle is held; nothing exists in inventory yet. In progress = the server has CLAIMED the line and is posting the inventory adjustment; a line left here means a split started and did not finish, so the wood may already have moved and it must be looked at by hand rather than run again. Done = the warehouse keyed the actual quantities and the server has created the child lot, trued up the Sales Order line and released the remainder.</description>
   <isinactive>F</isinactive>
+  <ismatrixoption>F</ismatrixoption>
   <isordered>T</isordered>
+  <name>MGSL Split Status</name>
   <customvalues>
     <customvalue scriptid="val_pending">
-      <value>Pending</value>
+      <abbreviation>P</abbreviation>
       <isinactive>F</isinactive>
+      <value>Pending</value>
+    </customvalue>
+    <customvalue scriptid="val_inprogress">
+      <abbreviation>W</abbreviation>
+      <isinactive>F</isinactive>
+      <value>In progress</value>
     </customvalue>
     <customvalue scriptid="val_done">
-      <value>Done</value>
+      <abbreviation>D</abbreviation>
       <isinactive>F</isinactive>
+      <value>Done</value>
     </customvalue>
   </customvalues>
 </customlist>

@@ -85,10 +85,11 @@
  * money goes TO. See `resolveSalesTeam`.
  */
 define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/email',
-        './archSplitExecute'],
+        'N/currency', './archSplitExecute'],
 // AMD BINDS POSITIONALLY. N/render and N/email were appended to the array and
 // their parameters inserted at the SAME positions, before splitLib, in one edit.
-(record, query, search, runtime, log, render, email, splitLib) => {
+// N/currency was appended the same way on 2026-09-15, again before splitLib.
+(record, query, search, runtime, log, render, email, currencyMod, splitLib) => {
 
     /**
      * ⚠️ SUPERSEDED 2026-09-10 — see the cache MR's header comment for the full
@@ -410,6 +411,275 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * The record is created and thrown away, never saved. `record.create` does not
      * validate mandatory fields, so this costs a governance unit, not an order.
      */
+    /**
+     * The rate that turns a COST into the currency the order is billed in.
+     *
+     * Feedback 6 item 10b, Marc-Antoine 2026-09-14: "Calcul du profit : Est-ce
+     * qu'il prend en compte la devise du SO vs la devise du lot? ... idéalement on
+     * le converti en USD au taux du SO date pour avoir une bonne idée." His own
+     * worked example is a USD sale with a CAD lot cost and CAD services, and the
+     * profit line under it reads "on a du cad et USD mixed".
+     *
+     * Everything on the cost side of the trader screen is Canadian: the cache
+     * costs against accounting book 1, whose subsidiaries are all CAD-based, and
+     * the service rates are Canadian by his instruction in item 9b. Revenue is
+     * whatever the customer is billed in. So one multiplier closes the gap.
+     *
+     * 🔴 DIRECTION. `rate` converts FROM the cost currency TO the order currency,
+     * which is what the screen multiplies by. For USD today that is about 0.719,
+     * the reciprocal of the 1.3906 a trader sees on the sales order itself, so
+     * `quotedRate` carries the familiar figure for display and nothing has to be
+     * inverted in the browser.
+     *
+     * Returns `rate: null` rather than 1 when it cannot answer. A silent 1 would
+     * be a claim that the currencies are at par, and the screen would print a
+     * converted margin that was never converted.
+     */
+    /**
+     * A YYYY-MM-DD in the ACCOUNT's day rather than UTC.
+     *
+     * `toISOString().slice(0,10)` is UTC, so from 20:00 Eastern it reads as
+     * tomorrow. Not cosmetic here: the Cut milling rate ends 2026-12-31, and a
+     * UTC "today" of 2027-01-01 on the evening of the 31st would expire it and
+     * drop the screen back to a constant without saying so.
+     */
+    const isoDay = (d) => {
+        const p = (n) => (n < 10 ? '0' : '') + n;
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    };
+
+    const getFxRate = (orderCurrency, dateIso) => {
+        const COST_CURRENCY = 'CAD';
+        const target = String(orderCurrency || '').trim().toUpperCase();
+        if (!target) return { rate: null, error: 'No order currency was given.' };
+        // An ISO code or nothing. Letting anything else through is what turned a
+        // currency into a LIKE pattern below.
+        if (!/^[A-Z]{3}$/.test(target)) {
+            return { rate: null, error: '"' + target + '" is not a currency code.' };
+        }
+        if (target === COST_CURRENCY) {
+            return { rate: 1, quotedRate: 1, source: COST_CURRENCY, target: target,
+                     effectiveDate: null, via: 'same-currency', error: null };
+        }
+
+        /*
+         * 🔴 ONE DATE PARSER IN THIS FILE, and this used to be the second one.
+         * The regex-and-construct version here accepted 2026-02-30 and let
+         * JavaScript roll it into 2026-03-02, then returned that day's rate as a
+         * success: measured live 2026-09-15, `date=2026-02-30` answered 1.3651
+         * where today is 1.3906, a 1.9% error on every converted cost, labelled
+         * with a date nobody asked for. `0002-09-15` became 1902 the same way.
+         *
+         * `parseIsoDate` refuses all of those, and it is the SAME parser the write
+         * path already uses for this same ship-date field, so the screen can no
+         * longer price an order against a day the order itself would reject.
+         */
+        const asked = parseIsoDate(dateIso);
+        if (dateIso && !asked) {
+            return { rate: null, error: 'Ship date "' + String(dateIso) +
+                '" is not a real date, so no exchange rate was read.' };
+        }
+        const effective = asked || new Date();
+
+        try {
+            const r = currencyMod.exchangeRate({
+                source: COST_CURRENCY,
+                target: target,
+                date: effective,
+            });
+            const n = parseFloat(r);
+            if (isFinite(n) && n > 0) {
+                /*
+                 * ⚠️ `asOf` is the date we ASKED about, not the date of the rate
+                 * row NetSuite used. For a future ship date NetSuite answers with
+                 * the latest rate it holds, so calling this "the rate for
+                 * 2026-09-30" would assert a rate that may not exist yet. The
+                 * client phrases it as the rate NetSuite APPLIES for that date,
+                 * which is exactly what it is and is also what the sales order
+                 * will carry.
+                 */
+                return {
+                    rate: n,
+                    quotedRate: 1 / n,
+                    source: COST_CURRENCY,
+                    target: target,
+                    asOf: isoDay(effective),
+                    effectiveDate: null,
+                    via: 'N/currency',
+                    error: null,
+                };
+            }
+        } catch (e) {
+            log.debug('ARCH fx', 'N/currency could not answer ' + COST_CURRENCY + '->' +
+                target + ': ' + (e.message || String(e)));
+        }
+
+        /*
+         * Fallback, and it reads the table the other way round on purpose.
+         * `currencyrate` stores base CAD against transaction USD with the rate
+         * NetSuite puts on the sales order, 1.3906 today, which is CAD per USD.
+         * So the multiplier this function returns is its reciprocal.
+         */
+        try {
+            /*
+             * 🔴 JOINS THE CURRENCY CODE. This used to LIKE against the display
+             * NAME with the caller's string wrapped in wildcards, which had two
+             * defects in one line. The wildcards survived binding, so a currency
+             * of "%" built LIKE '%%%' and handed back another currency's rate as
+             * a success. And matching a three-letter code against an English name
+             * worked by luck: USD needed a special case, EUR matched "Euro" by
+             * accident, and the first currency whose code is not inside its name
+             * would have been reported as having no rate while its row sat in the
+             * table. `currency.symbol` is the ISO code, so the join says what was
+             * meant, and the shape check above makes the wildcard unreachable.
+             */
+            const rows = query.runSuiteQL({
+                query:
+                    "SELECT cr.exchangerate, TO_CHAR(cr.effectivedate, 'YYYY-MM-DD') AS eff " +
+                    'FROM currencyrate cr ' +
+                    'JOIN currency bc ON bc.id = cr.basecurrency ' +
+                    'JOIN currency tc ON tc.id = cr.transactioncurrency ' +
+                    'WHERE UPPER(bc.symbol) = ? ' +
+                    '  AND UPPER(tc.symbol) = ? ' +
+                    "  AND cr.effectivedate <= TO_DATE(?, 'YYYY-MM-DD') " +
+                    'ORDER BY cr.effectivedate DESC',
+                params: [COST_CURRENCY, target, isoDay(effective)],
+            }).asMappedResults();
+            if (rows && rows.length) {
+                const quoted = parseFloat(rows[0].exchangerate);
+                if (isFinite(quoted) && quoted > 0) {
+                    /* This path DOES know the row's own date, because it read
+                     * it, so both are carried and the client can say the stronger
+                     * thing when it has it. */
+                    return {
+                        rate: 1 / quoted,
+                        quotedRate: quoted,
+                        source: COST_CURRENCY,
+                        target: target,
+                        asOf: isoDay(effective),
+                        effectiveDate: rows[0].eff || null,
+                        via: 'currencyrate',
+                        error: null,
+                    };
+                }
+            }
+        } catch (e) {
+            return { rate: null, error: 'No exchange rate could be read for ' +
+                COST_CURRENCY + ' to ' + target + ': ' + (e.message || String(e)) };
+        }
+
+        return { rate: null, error: 'No exchange rate exists for ' + COST_CURRENCY +
+            ' to ' + target + ' on or before ' + isoDay(effective) + '.' };
+    };
+
+    /**
+     * The milling rates, read from the record Mo built rather than from constants.
+     *
+     * Feedback 6 item 10c, Marc-Antoine 2026-09-14: "Pour le Split/Cut/PLaning on
+     * pourrait feeder les taux à partir du `customrecord_milling_rate` que Mo a
+     * créé pour que ce soit dynamique."
+     *
+     * Three rows exist, created 2026-09-08. They agreed with the screen's
+     * constants on two of three and disagreed on planing, 0.25 against 0.20,
+     * which is the figure he confirmed in writing. He edited that row to 0.20
+     * himself on 2026-09-15, so the record and the code now agree on all three
+     * and switching the source changes no number today. That is the safest moment
+     * to switch it.
+     *
+     * 🔴 THE UNIT IS CHECKED, NOT ASSUMED. A per-BF rate applied as a flat fee, or
+     * a flat fee applied per board foot, is a 600x error on a normal bundle. A row
+     * whose unit is not the one the caller expects is refused and the caller keeps
+     * its own constant, which is the only safe direction.
+     *
+     * Dates are honoured: a row applies when it started on or before the order
+     * date and has not ended before it. The Cut row carries an end date of
+     * 2026-12-31 today, so this is not theoretical.
+     */
+    const getMillingRates = (dateIso) => {
+        const out = { rates: {}, rows: [], error: null };
+        /*
+         * 🔴 THE SAME PARSER AS EVERY OTHER DATE IN THIS FILE. This used to keep
+         * the caller's string and compare it lexicographically, so `2026-99-99`
+         * was accepted, sorted after the Cut row's end date of 2026-12-31, and
+         * reported that rate as expired: measured live, the endpoint answered
+         * `ok: true` with cutting missing, and the screen then charged its own
+         * constant while the legend said the sources were mixed. Harmless only
+         * while the record and the constants agree, which is precisely what item
+         * 10c exists to stop relying on.
+         */
+        const parsed = parseIsoDate(dateIso);
+        if (dateIso && !parsed) {
+            return { rates: {}, rows: [], asOf: null, error: 'Ship date "' + String(dateIso) +
+                '" is not a real date, so no milling rates were read.' };
+        }
+        const asked = isoDay(parsed || new Date());
+        let rows;
+        try {
+            rows = query.runSuiteQL({
+                query:
+                    'SELECT id, name, ' +
+                    '  BUILTIN.DF(custrecord_mcgi_mr_feetype) AS feetype, ' +
+                    '  BUILTIN.DF(custrecord_mcgi_mr_unit)    AS unit, ' +
+                    '  custrecord_mcgi_mr_rate                AS rate, ' +
+                    "  TO_CHAR(custrecord_mcgi_mr_startdate, 'YYYY-MM-DD') AS startdate, " +
+                    "  TO_CHAR(custrecord_mcgi_mr_enddate,   'YYYY-MM-DD') AS enddate " +
+                    'FROM customrecord_milling_rate ' +
+                    "WHERE isinactive = 'F' " +
+                    // Deterministic. Without it two rows sharing a fee type came
+                    // back in whatever order NetSuite chose, and the tiebreak below
+                    // then depended on that order.
+                    'ORDER BY custrecord_mcgi_mr_startdate, id',
+            }).asMappedResults();
+        } catch (e) {
+            return { rates: {}, rows: [], error: 'The milling rate record could not be ' +
+                'read: ' + (e.message || String(e)) };
+        }
+
+        /* feetype and unit are list values, so they are matched on their LABEL.
+         * The internal ids are 1/2/3 today and would move with any list edit,
+         * while the labels are what a human reads on the record. */
+        const KEY = { split: 'split', planning: 'planing', planing: 'planing', cut: 'cut', cutting: 'cut' };
+        const PER_BF = 'par bf';
+        const FLAT = 'fixe';
+
+        for (let i = 0; i < (rows || []).length; i++) {
+            const r = rows[i];
+            const label = String(r.feetype || '').trim().toLowerCase();
+            // Own property only: a fee type named "constructor" or "toString"
+            // would otherwise resolve to an inherited function and pass the
+            // truthiness check below.
+            const key = Object.prototype.hasOwnProperty.call(KEY, label) ? KEY[label] : undefined;
+            const rate = parseFloat(r.rate);
+            const unit = String(r.unit || '').trim().toLowerCase();
+            const started = !r.startdate || r.startdate <= asked;
+            const ended = !!r.enddate && r.enddate < asked;
+            const unitOk = key === 'split'
+                ? unit.indexOf(FLAT) !== -1
+                : unit.indexOf(PER_BF) !== -1;
+
+            out.rows.push({
+                id: r.id, name: r.name, feetype: r.feetype, unit: r.unit, rate: r.rate,
+                startdate: r.startdate || null, enddate: r.enddate || null,
+                used: !!(key && isFinite(rate) && rate >= 0 && started && !ended && unitOk),
+                why: !key ? 'fee type not recognised'
+                    : !isFinite(rate) || rate < 0 ? 'rate is not a usable number'
+                    : !started ? 'starts after ' + asked
+                    : ended ? 'ended before ' + asked
+                    : !unitOk ? 'unit does not match what the screen applies'
+                    : null,
+            });
+            if (!key || !isFinite(rate) || rate < 0 || !started || ended || !unitOk) continue;
+            /* Latest start wins when two rows overlap, so a newer rate supersedes
+             * an older one without anyone having to inactivate the old row. */
+            const prev = out.rates[key];
+            if (!prev || String(r.startdate || '') >= String(prev.startdate || '')) {
+                out.rates[key] = { rate: rate, startdate: r.startdate || null, enddate: r.enddate || null, id: r.id };
+            }
+        }
+        out.asOf = asked;
+        return out;
+    };
+
     const listIncoterms = () => {
         let rec;
         try {
@@ -2959,7 +3229,11 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                     '       BUILTIN.DF(t.custbody_incoterms)   AS incoterms, ' +
                     '       t.shipdate                         AS shipdate, ' +
                     '       t.foreigntotal                     AS total, ' +
-                    '       c.symbol                           AS iso ' +
+                    '       c.symbol                           AS iso, ' +
+                    // Feedback 6 item 7b. Read back off the SAVED order like every
+                    // other fact in this email, so what it prints is the note the
+                    // order actually carries rather than the one that was sent.
+                    '       t.memo                             AS memo ' +
                     'FROM transaction t ' +
                     '  LEFT JOIN currency c ON c.id = t.currency ' +
                     'WHERE t.id = ?',
@@ -3120,6 +3394,9 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                         ['Customer', summary ? summary.customer : null],
                         ['Total', total],
                         ['Incoterms', summary ? summary.incoterms : null],
+                        // Omitted entirely when there is none: `summaryBlock` drops
+                        // an empty row rather than printing a bare label.
+                        ['Note', summary ? summary.memo : null],
                         ['Ship date', summary ? summary.shipdate : null],
                         [lots.length === 1 ? 'Bundle' : 'Bundles', lots.join(', ') || null],
                     ]);
@@ -3277,10 +3554,55 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             // set currency to null. Not hypothetical: ArchOrderHeader.currency is
             // typed as a string and carries a code, so it would have fired the
             // moment the wizard was wired up.
-            const currencyId = int(h.currencyId);
             const termsId    = int(h.termsId);
+            /*
+             * 🔴 RESOLVE THE CODE, AND REFUSE RATHER THAN FALL BACK.
+             *
+             * The screen sends an id (since 2026-09-16) and a code. If the id is
+             * missing but a code is present, the code is resolved here; if THAT
+             * fails, the order is refused. Falling through to the customer's primary
+             * currency is what made this dangerous in the first place: the screen
+             * priced, converted and quoted in the currency a trader clicked while
+             * NetSuite silently created the order in a different one, 39% out at
+             * today's rate on a CAD pick against a USD-primary customer, and nothing
+             * in the response said so.
+             */
+            let currencyId = int(h.currencyId);
+            if (!currencyId && h.currency && /^[A-Z]{3}$/.test(String(h.currency).toUpperCase())) {
+                const code = String(h.currency).toUpperCase();
+                const rows = query.runSuiteQL({
+                    query: 'SELECT id FROM currency WHERE UPPER(symbol) = ?',
+                    params: [code],
+                }).asMappedResults();
+                currencyId = rows.length === 1 ? int(rows[0].id) : null;
+                if (!currencyId) {
+                    throw refusal('The order is priced in ' + code + ', which does not resolve to a ' +
+                                  'currency in NetSuite, so it cannot be created without billing the ' +
+                                  'customer in a different one. Nothing was saved.');
+                }
+            }
             if (currencyId) so.setValue({ fieldId: 'currency', value: currencyId });
             if (termsId)    so.setValue({ fieldId: 'terms',    value: termsId });
+
+            /*
+             * Feedback 6 item 7b: "Ajouter le champ customer notes (memo). Parfois les
+             * users veulent inscrire une note pour leur client sur la commande."
+             *
+             * 🔴 THE NATIVE `memo`, not a new custom field, because that is where this
+             * note already goes. SO-CWP-001369 and -001370 both read "thank you for your
+             * business", written by Marc-Antoine on 2026-09-11, and 73 of 1,270 ARCH
+             * orders carry one. A custom field beside it would have split the same note
+             * across two places and left every note he has already written invisible.
+             *
+             * Truncated rather than refused: NetSuite caps this at 999 and drops the
+             * rest without a word, so an over-long note would lose its tail either way.
+             * The wizard counts down from the same number, so this is the backstop for a
+             * caller that is not the wizard.
+             */
+            if (h.customerNote) {
+                const note = String(h.customerNote).slice(0, 999);
+                so.setValue({ fieldId: 'memo', value: note });
+            }
 
             if (h.customerPO) setIfPresent(so, H_CUSTOMER_PO, String(h.customerPO), 'the customer PO');
             if (h.salesRep)   setIfPresent(so, H_SALES_REP,   String(h.salesRep),   'the sales rep name');
@@ -3892,19 +4214,31 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
          * world. Non-fatal by construction — see sendOrderPdf. */
         const saved = (function () {
             try {
+                /* The CURRENCY rides along on the query that was already being run.
+                 * `cur.symbol` is the ISO code, not the display name: BUILTIN.DF
+                 * gives "US Dollar", which is a label and throws RangeError the
+                 * moment it reaches a currency formatter. */
                 const r = query.runSuiteQL({
-                    query: 'SELECT tranid, custbody_mgsl_insurancerate AS rate ' +
-                           'FROM transaction WHERE id = ?',
+                    query: 'SELECT t.tranid, t.custbody_mgsl_insurancerate AS rate, ' +
+                           '       t.currency AS currencyid, cur.symbol AS currencycode ' +
+                           'FROM transaction t ' +
+                           'LEFT JOIN currency cur ON cur.id = t.currency ' +
+                           'WHERE t.id = ?',
                     params: [soId],
                 }).asMappedResults();
-                if (!r.length) return { tranId: 'SO ' + soId, rate: null };
+                if (!r.length) return { tranId: 'SO ' + soId, rate: null, currencyId: null, currencyCode: null };
                 /* `numOr`, not `num`: this account renders a Percent below 0.001
                  * in exponent form and `num`'s regex /^-?\d+(\.\d+)?$/ rejects
                  * it. Measured 2026-09-03: SO-CWP-001344/45/46 read their own
                  * custbody_mgsl_insurancerate back as the string "3.0E-5". */
-                return { tranId: String(r[0].tranid), rate: numOr(r[0].rate, null) };
+                return {
+                    tranId: String(r[0].tranid),
+                    rate: numOr(r[0].rate, null),
+                    currencyId: r[0].currencyid ? String(r[0].currencyid) : null,
+                    currencyCode: r[0].currencycode ? String(r[0].currencycode) : null,
+                };
             } catch (e) {
-                return { tranId: 'SO ' + soId, rate: null };
+                return { tranId: 'SO ' + soId, rate: null, currencyId: null, currencyCode: null };
             }
         }());
         const tranId = saved.tranId;
@@ -3929,6 +4263,44 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
              * honest answer is the order itself. */
             if (appending) rateSource = 'order';
         }
+        /* ── WHAT CURRENCY DID THIS ORDER ACTUALLY GET ──────────────────────
+         *
+         * 🔴 READ BACK, not assumed. Until 2026-09-16 the screen never sent a
+         * currency at all, so NetSuite sourced it from the customer while the
+         * trader priced, converted and quoted in whatever they had clicked. On a
+         * CAD pick against a USD-primary customer that is a CA$6,500 quote billed
+         * as US$6,500, 39% over at today's rate, and nothing in the response said
+         * so. 47 active non-industrial customers carry more than one currency.
+         *
+         * The request now carries the id and the header sets it, so this should
+         * always agree. "Should" is the reason to check: the one thing worse than
+         * a currency mismatch is a currency mismatch nobody can see. Reported on
+         * every order, so the confirmation can print what NetSuite actually used,
+         * and logged at ERROR when it differs, because that is money.
+         *
+         * An APPEND sets no header field by design, so its order keeps its own
+         * currency. Comparing it against what the screen believed is how a stale
+         * tab gets caught: the wizard prices an append in the currency the order
+         * carried when the list was fetched. */
+        let currencyMismatch = null;
+        if (saved.currencyCode) {
+            /* ⚠️ From `input.header`, NOT from `h`. `h` is scoped to the create and
+             * append branches above; reading it here threw `h is not defined` AFTER
+             * the order had already been saved, so the first test order came back
+             * reported as a failure it had not had. The header is the same object
+             * either way, so this reads it from the one name that is in scope. */
+            const reqHeader = (input && input.header) || {};
+            const wanted = String(reqHeader.currency || '').toUpperCase();
+            if (wanted && wanted !== saved.currencyCode.toUpperCase()) {
+                currencyMismatch = { expected: wanted, actual: saved.currencyCode };
+                log.error('ARCH Order — currency mismatch',
+                    tranId + ' was created in ' + saved.currencyCode + ' but the screen priced it in ' +
+                    wanted + '. Every figure the trader saw -- price, revenue, margin, the low-price ' +
+                    'check -- is in ' + wanted + ' and the customer will be billed in ' +
+                    saved.currencyCode + '. Check this order before it goes out.');
+            }
+        }
+
         /* The lots and the reman outcome are known HERE and nowhere else, so they
          * are passed rather than re-derived. Everything else in the email is read
          * back off the saved order. */
@@ -4044,6 +4416,13 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             // Non-empty means the order exists but those bundles are NOT locked.
             lotsNotAttributed: unplaced,
             formWarning: wrongForm,
+            /* What NetSuite actually stamped, so the confirmation states the order's
+             * own currency rather than the screen's memory of it. Null only when the
+             * read-back itself failed. */
+            currency: saved.currencyCode,
+            /* Non-null means the trader was quoted in one currency and the customer
+             * will be billed in another. See the read-back above. */
+            currencyMismatch: currencyMismatch,
         };
     };
 
@@ -4289,6 +4668,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         diagnoseDepartment: diagnoseDepartment,
         listSalesReps: listSalesReps,
         listIncoterms: listIncoterms,
+        getFxRate: getFxRate,
+        getMillingRates: getMillingRates,
         // Exported for the test runner.
         resolveLines: resolveLines,
         verifyAssignments: verifyAssignments,

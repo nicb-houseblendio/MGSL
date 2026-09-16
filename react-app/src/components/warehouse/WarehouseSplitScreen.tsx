@@ -15,7 +15,8 @@
  * ⚠️ THIS SCREEN POSTS REAL INVENTORY ADJUSTMENTS. Jobs come from
  * `useArchSplitQueue`, which reads SO lines carrying `custcol_mgsl_split` — a flag
  * that does exist and that the trader wizard writes. Saving a split moves the
- * remainder onto a new child bundle and marks the sales order line Done.
+ * customer's piece onto a new bundle number, leaves the wood staying in stock
+ * under the original one, and marks the sales order line Done.
  *
  * The previous version of this comment said "DEMO DATA … that flag does not exist
  * in NetSuite yet", which stopped being true when the split path shipped. Proven
@@ -220,7 +221,7 @@ export const WarehouseSplitScreen = () => {
     setSaving(true);
     const done: string[] = [];
     const failed: string[] = [];
-    /* The name NetSuite actually gave each remainder, keyed by the parent lot.
+    /* The name NetSuite actually gave the CUSTOMER's piece, keyed by the parent lot.
        The client cannot derive it: the server collision-checks against sibling
        lots at write time and appends a letter, while `-1` belongs to receiving.
        Anything not in this map has no created lot to name. */
@@ -859,10 +860,11 @@ const SplitResultDialog = ({
                   computed here as `<lot>-1`, which NetSuite never creates and which
                   receiving already uses for a second bundle on one PO line. */}
               <li>
-                Inventory adjustment splitting the lot: <strong className="font-mono">{o.lotNo}</strong> becomes{' '}
-                <strong className="font-mono">{formatQty(o.originalLotBF, o.unit)}</strong>, and a new bundle{' '}
+                Inventory adjustment splitting the lot: <strong className="font-mono">{o.lotNo}</strong> stays in
+                stock at <strong className="font-mono">{formatQty(o.stockLotBF, o.unit)}</strong>, and the
+                customer&rsquo;s piece goes onto a new bundle{' '}
                 {o.newLotNo && <><strong className="font-mono">{o.newLotNo}</strong>{' '}</>}
-                is created at <strong className="font-mono">{formatQty(o.newLotBF, o.unit)}</strong>.
+                at <strong className="font-mono">{formatQty(o.customerLotBF, o.unit)}</strong>.
                 {!o.newLotNo && ' NetSuite assigns its lot number when the split is recorded.'}
               </li>
               {o.systemVarianceBF !== 0 && (
@@ -902,10 +904,11 @@ const SplitResultDialog = ({
                 panel renders on the LIVE path, after a real inventory adjustment has posted
                 and the SO line has been trued up, so the old text told a warehouse worker
                 their completed job had not happened. */}
-            The inventory adjustment has posted and the sales order line is updated. Two things
-            are still worth knowing: the child lot naming is a working assumption, not a
-            confirmed rule, and the tally for these lots is now out of date until somebody
-            attaches a new one.
+            The inventory adjustment has posted and the sales order line is updated. The
+            customer's piece is on a new bundle number and the wood staying in stock keeps the
+            original, which is the rule Marc-Antoine confirmed. One thing is still worth
+            knowing: the tally for these lots is now out of date until somebody attaches a
+            new one.
           </span>
         </div>
       </div>

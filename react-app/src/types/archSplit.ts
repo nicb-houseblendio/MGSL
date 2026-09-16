@@ -112,12 +112,24 @@ export interface ArchSplitOutcome {
   unit: ArchUnit;
   /** Sales order line quantity corrected from the placeholder to the real figure. */
   soLineBF: number;
-  /** Board feet remaining on the original lot after the split. */
-  originalLotBF: number;
-  /** Board feet on the newly created bundle. */
-  newLotBF: number;
   /**
-   * The lot number NetSuite created for the remainder, as returned by the server.
+   * Board feet left on the lot that KEEPS the parent's number, which since
+   * Feedback 6 item 16 is the wood going back into stock.
+   *
+   * 🔴 NAMED FOR THE PIECE, NOT FOR THE LOT RECORD, and deliberately so. These were
+   * `originalLotBF` and `newLotBF`, which stayed accurate only while the parent
+   * number followed the customer's wood. Item 16 reversed that and the two fields
+   * silently began describing the opposite bundles, in the panel a warehouse worker
+   * reads to label physical wood, while the banner below it stated the new rule
+   * correctly in prose. A name that survives the next reversal is worth more than a
+   * name that matches the old comment.
+   */
+  stockLotBF: number;
+  /** Board feet on the newly minted bundle, which is the customer's piece. */
+  customerLotBF: number;
+  /**
+   * The lot number NetSuite minted for the CUSTOMER's piece, as returned by the
+   * server. It named the remainder until Feedback 6 item 16.
    *
    * 🔴 `null` until the split has actually run. The client does NOT derive this.
    * The server mints it with a collision check at write time (`nextChildLotNumber`

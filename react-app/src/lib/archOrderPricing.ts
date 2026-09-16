@@ -113,7 +113,25 @@ export const SPLIT_FEE_PLACEHOLDER = 200;
  * covers it and the cost is genuinely MGSL's — which is why deducting it from
  * profit here is right, and why there is no separate charge line to create.
  */
-/** Surfacing, $ per board foot. Client-confirmed 2026-08-21. */
+/**
+ * The currency every COST on this screen is in, and every service rate with it.
+ *
+ * Two independent reasons, both measured 2026-09-15. The lot cost comes from the
+ * ARCH cache, which costs against accounting book 1, and subsidiaries 1, 5 and 9
+ * are all based in Canadian dollars. The service rates are Canadian because the
+ * client said so: "Le service cost sera toujours en CAD, même si le SO est en
+ * USD", Feedback 6 item 9b, and his own worked example prices the split at
+ * `(200) CAD` beside a US sale.
+ *
+ * ⚠️ It is a constant, not a reading. A USD accounting book exists in this
+ * account, so if `custscript_ts_arch_cost_book` is ever pointed at one, the lot
+ * costs change currency and this label does not follow them. The fix that day is
+ * to emit the book's currency in the cache meta and label from that. Named here
+ * so there is one line to change rather than nine literals in the wizard.
+ */
+export const COST_CURRENCY = 'CAD';
+
+/** Surfacing, $ per board foot. Client-confirmed 2026-08-21. In COST_CURRENCY. */
 export const PLANING_RATE = 0.2;
 /** Cutting to length, $ per board foot. Client-confirmed 2026-08-21 — was 0.15. */
 export const CUT_RATE = 0.2;
@@ -202,6 +220,12 @@ export interface ArchLineEconomics {
    * yet, but it is the identical bug in the identical feature.
    */
   costKnown: boolean;
+  /**
+   * What the costs above were multiplied by to reach the order's currency.
+   * 1 means they are still in COST_CURRENCY, either because the order is
+   * Canadian or because no rate was available. See `lineEconomics`.
+   */
+  costFx: number;
   splitCost: number;
   planingCost: number;
   cuttingCost: number;
@@ -211,12 +235,73 @@ export interface ArchLineEconomics {
   marginPct: number;
 }
 
+/**
+ * Is this line priced under the floor the screen warns about?
+ *
+ * 🔴 THE TWO SIDES ARE IN DIFFERENT CURRENCIES UNLESS ONE IS CONVERTED, which is
+ * the defect this function exists to stop repeating. The price a trader types is
+ * in the ORDER's currency; `costPerBF` comes from accounting book 1 and is
+ * Canadian. Compared raw on a US order they sit 1.39 apart, so a line at US$4.00
+ * against a CA$3.72 cost, which is US$2.67 and a 50% margin, was flagged as
+ * underpriced. The false band ran US$2.94 to US$4.09, most of where ARCH trades.
+ *
+ * Found 2026-09-15 reviewing Feedback 6 item 11, in the one pricing notice the
+ * client deliberately did not ask to remove. Lives here rather than inside the
+ * wizard so it can be tested against the boundary rather than pinned by a regex.
+ *
+ * `costFx` is the same multiplier the margins use. A line with no known cost is
+ * never flagged: an unknown cost is not a low price.
+ */
+export const LOW_PRICE_TRIGGER = 1.1;
+
+export const isLowPricedAt = (
+  pricePerBF: number,
+  costPerBF: number | null | undefined,
+  costFx: number = 1
+): boolean => {
+  const p = Number(pricePerBF);
+  const c = Number(costPerBF);
+  if (!Number.isFinite(p) || p <= 0) return false;
+  if (costPerBF === null || costPerBF === undefined || !Number.isFinite(c) || c <= 0) return false;
+  const fx = Number.isFinite(costFx) && costFx > 0 ? costFx : 1;
+  return p < c * fx * LOW_PRICE_TRIGGER;
+};
+
 export const lineEconomics = (
   line: ArchCartLine,
   split: ArchSplitIntent | undefined,
   reman: ArchRemanIntent | undefined,
-  pricePerBF: number
+  pricePerBF: number,
+  /**
+   * Multiplier from COST_CURRENCY into the currency the order is billed in.
+   *
+   * Feedback 6 item 10b. Every cost on this screen is Canadian and the revenue is
+   * the customer's, so a profit computed without this is a subtraction across two
+   * currencies. On a US order at today's rate the answer came out about a third
+   * too low, which flatters nobody: it understates the margin.
+   *
+   * 1 means no conversion, which is correct for a Canadian order and is also the
+   * honest default when no rate could be read. The screen says which of those two
+   * it is; this function will not guess.
+   */
+  costFx: number = 1,
+  /**
+   * Service rates as `customrecord_milling_rate` holds them, Feedback 6 item 10c:
+   * "on pourrait feeder les taux à partir du customrecord_milling_rate que Mo a
+   * créé pour que ce soit dynamique."
+   *
+   * Per service, and per service OPTIONAL. A row that has expired, carries the
+   * wrong unit or is not a number never reaches here, and the constant is used
+   * for that service alone. Losing the charge entirely would understate the cost,
+   * which is the failure this screen is repeatedly corrected for.
+   */
+  rates?: { planing?: number | null; cut?: number | null }
 ): ArchLineEconomics => {
+  const fx = Number.isFinite(costFx) && costFx > 0 ? costFx : 1;
+  const rate = (given: number | null | undefined, fallback: number): number =>
+    typeof given === 'number' && Number.isFinite(given) && given >= 0 ? given : fallback;
+  const planingRate = rate(rates?.planing, PLANING_RATE);
+  const cuttingRate = rate(rates?.cut, CUT_RATE);
   const bf = orderedBF(line, split);
   const revenue = bf * (pricePerBF || 0);
   /*
@@ -229,9 +314,9 @@ export const lineEconomics = (
    * print a figure when it is false. Same split the Open SO tab uses.
    */
   const costKnown = line.costPerBF !== null && line.costPerBF !== undefined;
-  const lotCost = bf * (line.costPerBF || 0);
+  const lotCost = bf * (line.costPerBF || 0) * fx;
 
-  const splitCost = split?.on ? splitFee() : 0;
+  const splitCost = (split?.on ? splitFee() : 0) * fx;
   /*
    * The reman rates are BOARD FOOT rates. The client confirmed the unit
    * explicitly, which is what makes this a real constraint rather than a
@@ -249,8 +334,8 @@ export const lineEconomics = (
    * The split fee is untouched -- it is a flat charge per split, not per unit.
    */
   const remanChargeable = line.unit === 'BF';
-  const planingCost = reman?.planing && remanChargeable ? bf * PLANING_RATE : 0;
-  const cuttingCost = reman?.cutting && remanChargeable ? bf * CUT_RATE : 0;
+  const planingCost = (reman?.planing && remanChargeable ? bf * planingRate : 0) * fx;
+  const cuttingCost = (reman?.cutting && remanChargeable ? bf * cuttingRate : 0) * fx;
   const processingCost = splitCost + planingCost + cuttingCost;
   /* Charged on MATERIAL COST, not revenue. The prototype is explicit about this
    * (`opIns = l.mbf * l.avgPriceMBF * OPINS_RATE` -- quantity x lot cost), and the
@@ -285,6 +370,7 @@ export const lineEconomics = (
     revenue,
     lotCost,
     costKnown,
+    costFx: fx,
     splitCost,
     planingCost,
     cuttingCost,

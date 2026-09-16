@@ -138,8 +138,16 @@ export const splitOutcome = (
     lotNo: bundle.lotNo,
     unit: bundle.unit,
     soLineBF: s.customer,
-    originalLotBF: s.customer,
-    newLotBF: s.inventory,
+    /*
+     * 🔴 THE CUSTOMER'S PIECE IS THE ONE THAT GETS THE NEW NUMBER. Feedback 6 item
+     * 16 reversed this on the server (`archSplitExecute.js`, `lot: divides ? 'child'
+     * : 'parent'` on the customer line), and these two assignments were left as they
+     * were, so the completion panel put each quantity on the wrong bundle: it told a
+     * worker the parent held the customer's board feet while the banner underneath
+     * said the opposite in words.
+     */
+    stockLotBF: s.inventory,
+    customerLotBF: s.customer,
     newLotNo: childLotNo,
     systemVarianceBF: s.discrepancy,
   };

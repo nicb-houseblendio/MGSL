@@ -1159,7 +1159,19 @@ export const ArchLotTable = ({
                           </td>
                         )}
                         <td style={{ ...cellStyle, textAlign: 'right' }} className="font-mono">
-                          {formatCostPerUnit(row.avgCostPerUnit, row.unit)}
+                          {/* 🔴 THIS BUNDLE'S cost, Feedback 6 item 18. Every lot row
+                              printed `row.avgCostPerUnit` here, so the column read the
+                              same number down the whole drawer whatever the bundles
+                              actually cost: 12.76 against a lot that cost 14.15. The
+                              row average is still the fallback for a lot with no
+                              posting history, because it is the best honest estimate
+                              available and it is what this cell has always shown. */}
+                          {formatCostPerUnit(
+                            lot.costPerUnit === null || lot.costPerUnit === undefined
+                              ? row.avgCostPerUnit
+                              : lot.costPerUnit,
+                            row.unit
+                          )}
                         </td>
                         <td style={{ ...cellStyle, textAlign: 'center', paddingLeft: 6, paddingRight: 10 }}>
                           <TallyButton

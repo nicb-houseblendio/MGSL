@@ -302,8 +302,9 @@ export const SplitCompletionDialog = ({
               attempt, so the stock is safe -- but the message was recruiting
               users into testing that guard.
             */}
-            <strong>Saving posts a real inventory adjustment.</strong> It moves the remainder onto a new
-            child bundle, releases the hold, and marks the sales order line Done. This cannot be undone
+            <strong>Saving posts a real inventory adjustment.</strong> It moves the customer's piece onto a
+            new bundle number, leaves the wood staying in stock under the original one, points the sales
+            order at the new bundle, releases the hold, and marks the line Done. This cannot be undone
             from here — deleting the adjustment afterwards would reverse it and re-merge the bundles.
           </div>
         </div>

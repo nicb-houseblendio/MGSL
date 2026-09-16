@@ -71,6 +71,8 @@
 define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
 
     const STATUS_PENDING = 'Pending';
+    /** Claimed by the split endpoint before it posts. See archSplitExecute. */
+    const STATUS_INPROGRESS = 'In progress';
 
     /**
      * NetSuite's unit name → the canonical code the React app uses.
@@ -287,7 +289,18 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
      */
 
     const getPendingSplits = () => {
-        const rows = fetchRows().filter((r) => String(r.splitstatus || '') === STATUS_PENDING);
+        const allRows = fetchRows();
+        const rows = allRows.filter((r) => String(r.splitstatus || '') === STATUS_PENDING);
+        /*
+         * CLAIMED AND NOT FINISHED. `In progress` is written before the inventory
+         * adjustment is posted, so a line sitting in it is a split that started and
+         * stopped: the wood may already have moved and it needs a person, not another
+         * attempt. The Pending filter above drops it from the queue automatically,
+         * which is right -- and silent, which is not. Counted here so the screen can
+         * say the queue is short for a reason rather than just looking empty.
+         */
+        const stuck = allRows.filter((r) => String(r.splitstatus || '') === STATUS_INPROGRESS);
+        const stuckLines = [...new Set(stuck.map((r) => String(r.sono || r.soid)))];
         const units = unitsByItem([...new Set(rows.map((r) => String(r.itemid)))].filter(Boolean));
 
         const bySo = {};
@@ -375,7 +388,19 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
             // short rather than leaving it looking empty or broken.
             notReadyToBuild:    notReadyToBuildCount,
             readyToBuildKnown:  rtb.available,
+            /*
+             * Splits that were claimed and never finished. Not work the warehouse can
+             * pick up: each one needs somebody to look at the lot and the order line.
+             */
+            inProgress:         stuckLines.length,
+            inProgressOrders:   stuckLines,
         };
+        if (stuckLines.length) {
+            log.error('ARCH Split Queue — splits claimed and not finished',
+                stuckLines.length + ' order(s) carry a line marked In progress, so a split started and ' +
+                'did not complete. The wood may already have moved. They are excluded from the queue ' +
+                'and need checking by hand: ' + stuckLines.join(', '));
+        }
         if (rateless.length) {
             log.error('ARCH Split Queue — no conversion rate',
                 rateless.length + ' bundle(s) have no usable stock-unit rate; their system quantity is ' +

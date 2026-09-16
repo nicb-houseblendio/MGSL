@@ -35,6 +35,22 @@ export interface ArchCustomer {
    * unmounts the whole app.
    */
   currencyCode?: string | null;
+  /**
+   * Every currency this customer can be billed in, from their currency sublist.
+   *
+   * `currencyCode` above is the PRIMARY only, and 50 customers in this account
+   * hold two. Null when the service did not send a list, which is the signal to
+   * fall back to the primary rather than to assume there is only one.
+   */
+  currencyCodes?: string[] | null;
+  /**
+   * Internal ids matching `currencyCodes` position for position.
+   *
+   * 🔴 The order endpoint sets the header currency by ID and ignores a code, so
+   * without this the screen can price an order in a currency NetSuite will not
+   * create it in. Absent on a payload built before 2026-09-16.
+   */
+  currencyIds?: string[] | null;
   currencyName?: string | null;
   termsId?: string | null;
   termsName?: string | null;

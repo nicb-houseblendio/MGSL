@@ -20,6 +20,7 @@ import { ArchScreen } from '@/components/ArchScreen';
 import { WarehouseSplitScreen } from '@/components/warehouse/WarehouseSplitScreen';
 import { ARCH_UOMS } from '@/lib/archUom';
 import { archFreshness } from '@/lib/archFreshness';
+import { defaultViewFor } from '@/lib/traderDefaultView';
 import type { ArchDataSource, ArchCacheMeta } from '@/hooks/useArchSummaryData';
 
 // ARCH is board-foot native: no packs, no PPP, no MBF. Cubic metres exist only
@@ -44,25 +45,29 @@ const getSuiteletUrl = () => {
 };
 
 function TraderScreenContent() {
-  const { subsidiaryId, uomConfig: contextUomConfig } = useNetSuite();
+  const {
+    subsidiaryId,
+    roleId,
+    roleScriptId,
+    roleName,
+    uomConfig: contextUomConfig,
+  } = useNetSuite();
   const uomConfig = contextUomConfig && Object.keys(contextUomConfig).length > 0
     ? contextUomConfig
     : DEFAULT_UOM_CONFIG;
   const CWP_VIEWS = Object.keys(uomConfig);
 
-  // Map subsidiary to default view tab.
-  // Verified against NetSuite 2026-08-12 — CWP MTL (5) is the parent of IND (7),
-  // PBF (8), ARC (9), ELIM (10) and 9501 (11); ARC is a SIBLING of IND, not a
-  // child of it. 9 previously landed on the IND view, which showed a trader IND
-  // data under an ARCH label.
-  const SUBSIDIARY_TO_VIEW: Record<string, string> = {
-    '5': 'CWP MTL', '8': 'CWP MTL', '10': 'CWP MTL', '11': 'CWP MTL',
-    '7': 'CWP IND', '14': 'CWP IND', '15': 'CWP IND', '16': 'CWP IND', '17': 'CWP IND', '18': 'CWP IND',
-    '9': 'CWP ARCH',
-  };
-  const defaultView = SUBSIDIARY_TO_VIEW[subsidiaryId] && CWP_VIEWS.includes(SUBSIDIARY_TO_VIEW[subsidiaryId])
-    ? SUBSIDIARY_TO_VIEW[subsidiaryId]
-    : CWP_VIEWS[0] || 'CWP IND';
+  // Which view to open on. The role decides first and the subsidiary is the
+  // fallback: every holder of a hardwood role sits on subsidiary 5 today, so
+  // subsidiary alone opened them on the CWP MTL softwood view. The rules and
+  // the measurements behind them are in lib/traderDefaultView.ts.
+  const defaultView = defaultViewFor({
+    subsidiaryId,
+    roleId,
+    roleScriptId,
+    roleName,
+    views: CWP_VIEWS,
+  });
   const [activeView, setActiveView] = React.useState(defaultView);
   const isMTL = activeView === 'CWP MTL';
   const isARCH = activeView === 'CWP ARCH';

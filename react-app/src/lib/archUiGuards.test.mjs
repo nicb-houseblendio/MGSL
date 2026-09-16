@@ -953,5 +953,555 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /const repId = namedTeam \? null : resolveSalesRep\(/.test(s), null);
 }
 
+// Wizard navigation, Feedback 6 items 6a and 6b. Both are one-line behaviours that a
+// later refactor could quietly revert, and neither is reachable by a unit test: the
+// rule they rest on is tested in wizardNav.test.mjs, what is pinned here is that the
+// component actually uses it.
+{
+  const w = src('components/arch/SOWizard.tsx');
+
+  // 6b. The rail used to read `i < stepIndex && setStepIndex(i)`, backwards only.
+  ok('rail: navigation goes through canJumpToStep, not an inline backwards-only test',
+    /canJumpToStep\(stepIndex, i, stepValidList\)/.test(w) &&
+      !/onClick=\{\(\) => i < stepIndex && setStepIndex\(i\)\}/.test(w), null);
+  ok('  ...and a step that cannot be reached says so rather than sitting silently inert',
+    /aria-disabled=\{!on && !canJump \? true : undefined\}/.test(w), null);
+  // 🔴 NOT `disabled`. Chrome suppresses mouse events on a disabled button, so its
+  // title never renders, and the tooltip would be invisible on exactly the tabs that
+  // need to explain themselves.
+  ok('  ...without using the disabled attribute, which would hide that explanation',
+    !/\sdisabled=\{!on && !canJump\}/.test(w), null);
+  ok('  ...and says which step is blocking it',
+    /firstBlockingStep\(i, stepValidList\)/.test(w) && /Finish ' \+ STEPS\[blocker\]\.label/.test(w), null);
+  ok('  ...with a hover state, because an inline style carries no :hover',
+    /hoverStep/.test(w) && /onMouseEnter=\{\(\) => setHoverStep\(i\)\}/.test(w), null);
+  ok('  ...fed by the same validity the Continue button uses',
+    /const stepValidList = STEPS\.map\(\(s\) => stepValid\[s\.key\]\)/.test(w), null);
+
+  // 6a. Clicking the "Create sales order" card advances. ONLY that card: the other
+  // one reveals an order picker, so advancing from it would skip the question.
+  const startCard = w.slice(w.indexOf('const startBody'), w.indexOf('const startBody') + 7000);
+  ok('start: the Create sales order card moves to the next step by itself',
+    /setStepIndex\(1\);/.test(startCard), null);
+  ok('  ...and only from the new-order branch',
+    /if \(m === 'new'\) \{[\s\S]*?setStepIndex\(1\);[\s\S]*?\}/.test(startCard), null);
+
+  // 🔴 The pair 6a and 6b created between them. Clicking this card clears the whole
+  // header, which was survivable while Start was six Back clicks from Review and
+  // nobody went there. With the rail one click away and this card the way forward, an
+  // unguarded reset loses a header the trader filled in three steps earlier.
+  ok('start: the header reset fires only when the mode actually changes',
+    /const changed = mode !== m;/.test(startCard) &&
+      /if \(changed\) \{[\s\S]*?setCustomer\(''\);/.test(startCard), null);
+  ok('  ...and so does clearing the sales team',
+    /if \(changed\) setSalesTeamId\(''\);/.test(startCard), null);
+  ok('  ...while the advance itself is NOT conditional, or the card stops answering',
+    /\}\s*\/\*[\s\S]*?THE CARD IS THE ANSWER[\s\S]*?\*\/\s*setStepIndex\(1\);/.test(startCard), null);
+}
+
+// Feedback 6 item 9. The banner is gone from the Remanufacturing step, and every
+// figure that is a SERVICE or a COST prints Canadian dollars whatever the order is
+// billed in: "Le service cost sera toujours en CAD, même si le SO est en USD."
+{
+  const w = src('components/arch/SOWizard.tsx');
+  const remanStep = w.slice(w.indexOf('const remanBody'), w.indexOf('const priceBody'));
+  ok('reman step: the warning banner is gone', remanStep.length > 500 && !/<ProvisionalNote>/.test(remanStep), null);
+  ok('reman step: the per-line service cost follows the conversion, never the raw order currency',
+    /fmtMoney\(e\.planingCost \+ e\.cuttingCost, costShown\)/.test(w) &&
+      !/fmtMoney\(e\.planingCost \+ e\.cuttingCost, currency/.test(w), null);
+  // The constant that every cost label now routes through, and what it holds.
+  ok('  ...and that currency is Canadian, named once in the pricing module',
+    /export const COST_CURRENCY = 'CAD';/.test(src('lib/archOrderPricing.ts')), null);
+  ok('  ...so the reman rate legend is Canadian too, rather than falling back to USD',
+    /fmtMoney\(planingRate, COST_CURRENCY\)/.test(w) && /fmtMoney\(cuttingRate, COST_CURRENCY\)/.test(w), null);
+  // Item 10c: the rate the legend prints is the one the maths uses, record first.
+  ok('  ...and both come from the record when it has a usable row',
+    /const planingRate = liveRates\.planing \?\? PLANING_RATE;/.test(w) &&
+      /const cuttingRate = liveRates\.cut \?\? CUT_RATE;/.test(w), null);
+  ok('review strip: the cost side follows the conversion',
+    /fmtMoney\(totals\.lotCost, costShown, 0\)/.test(w) &&
+      /fmtMoney\(totals\.processingCost \+ totals\.opsInsuranceCost, costShown, 0\)/.test(w), null);
+  // 🔴 Item 10b. A converted figure must say the currency it was converted INTO,
+  // and an unconverted one must keep saying CAD. One derivation, both cases.
+  ok('  ...and that label is derived from the rate, not chosen by hand',
+    /const costShown = costFx === 1 \? COST_CURRENCY : orderCurrency;/.test(w), null);
+  ok('  ...with a missing rate treated as not converted rather than as parity',
+    /const costFx = fx && fx\.status === 'ok' && fx\.rate \? fx\.rate : 1;/.test(w) &&
+      /fx !== null && costFx === 1;/.test(w), null);
+  // 🔴 Three states. Loading is not failing: the first render of every non-Canadian
+  // order has no rate yet, and saying "NOT converted" there trains a trader to
+  // ignore the line that matters when it is true.
+  ok('  ...and loading is distinguished from failing',
+    /const fxLoading = currency !== '' && currency !== COST_CURRENCY && fx === null;/.test(w) &&
+      /const fxNote = fxLoading/.test(w), null);
+  // Items 9b and 10b disagree on the reman step without this: a Canadian rate above
+  // a converted column.
+  ok('  ...and the reman step says its service cost column was converted',
+    /The <strong>Service cost<\/strong> column is converted into \{orderCurrency\}/.test(w), null);
+  // Items 5 and 12: a role that may read but not write learns it before the work.
+  ok('order wizard: a role that cannot create is stopped before it fills the form',
+    /const writeRefused = !!writeAuth && writeAuth\.status === 'ok' && !writeAuth\.allowed;/.test(w) &&
+      /priceOk && !writeRefused;/.test(w) &&
+      /cannot create orders with it/.test(w), null);
+  ok('  ...and the rate is stated on screen whenever one was applied',
+    /\{fxNote &&/.test(w) && /Costs converted from/.test(w) && /Costs are NOT converted/.test(w), null);
+  ok('  ...and the confirmation totals use the same rate and rates as the screen',
+    /writableLines\.map\(\(l\) => lineEconomics\(l, sp\(l\.key\), rm\(l\.key\), parseFloat\(pr\(l\.key\)\) \|\| 0, costFx, liveRates\)\)/.test(w), null);
+  // Item 10a: the two columns he ringed say which currency they are in.
+  ok('pricing table: Cost/BF and Price/BF name their currencies in the header',
+    /Cost \/ BF \(\{COST_CURRENCY\}\)/.test(w) && /Price \/ BF \(\{orderCurrency\}\) \*/.test(w), null);
+  // 🔴 Every fmtMoney call names a currency. Its default is USD, so an unlabelled
+  // call is a silent claim that the figure is American, which is how the reman rate
+  // legend and the Review price column came to be wrong. Scanned rather than
+  // regexed in one shot: a call like fmtMoney(parseFloat(pr(l.key)) || 0, cur)
+  // carries nested parentheses that a single pattern reads badly.
+  {
+    const bare = [];
+    let at = 0;
+    for (;;) {
+      const i = w.indexOf('fmtMoney(', at);
+      if (i === -1) break;
+      at = i + 9;
+      const window = w.slice(i, i + 170);
+      if (!/COST_CURRENCY|orderCurrency|costShown|currency \|\| 'USD'/.test(window)) bare.push(window.slice(0, 60));
+    }
+    ok('  ...and every money cell names its currency rather than defaulting to USD',
+      bare.length === 0, bare);
+  }
+  // 🔴 The other half of the rule. Revenue and profit are the ORDER's currency, and
+  // a later pass that relabels everything CAD would be just as wrong in the other
+  // direction. The mixing itself is item 10b and is not solved by a label.
+  ok('review strip: revenue and profit stay in the order currency',
+    /fmtMoney\(totals\.revenue, currency \|\| 'USD', 0\)/.test(w) &&
+      /fmtMoney\(totals\.profit, currency \|\| 'USD', 0\)/.test(w), null);
+  ok('the profit formula quotes the service rates in CAD',
+    /Services = CA\$/.test(w) && /CA\$\{cuttingRate\.toFixed\(2\)\}\/BF cutting/.test(w), null);
+}
+
+// Feedback 6 item 11. The two panels he ringed at the foot of Review are gone, and
+// the ones he did not ring are still there. Both halves matter: the append notices
+// are the difference between updating an order and silently not updating it.
+{
+  const w = src('components/arch/SOWizard.tsx');
+  const review = w.slice(w.indexOf('const reviewBody'), w.indexOf('const bodies:'));
+  ok('review: the source slice was found', review.length > 1000, review.length);
+  // Every remaining panel on Review must be CONDITIONAL. An unconditional one is
+  // what he ringed: a box that is there on every order whatever it says.
+  {
+    const unconditional = [];
+    let at = 0;
+    for (;;) {
+      const i = review.indexOf('<ProvisionalNote>', at);
+      if (i === -1) break;
+      at = i + 17;
+      if (!/&& \(\s*$/.test(review.slice(Math.max(0, i - 120), i))) {
+        unconditional.push(review.slice(i, i + 70));
+      }
+    }
+    ok('review: every remaining panel is conditional', unconditional.length === 0, unconditional);
+  }
+  ok('review: the "this writes a real sales order" panel is gone',
+    !/This writes a real sales order/.test(w), null);
+  ok('review: the reman panel is gone, and its derived state with it',
+    !/Remanufacturing on \{remanLines\.length\}/.test(w) &&
+      !/const remanLines = React\.useMemo/.test(w) &&
+      !/const remanTotalCost = React\.useMemo/.test(w), null);
+  // 🔴 NOT removed, and not his to lose. An append that writes nothing, or writes
+  // only some of what is on screen, is the one thing Review has to say.
+  ok('review: the append-mode notices survive',
+    /Nothing would be written to \{existingSO\}/.test(review) &&
+      /written to \{existingSO\}/.test(review) &&
+      /Lines already on the order are shown for context/.test(review), null);
+  ok('review: the under-trigger pricing notice survives, he left it unringed',
+    /priced under the trigger/.test(review), null);
+  // 🔴 And it compares like with like. The typed price is the ORDER's currency and
+  // costPerBF is Canadian, so without costFx the notice fired on healthy US prices
+  // between 2.94 and 4.09 against a CA$3.72 cost. Same multiplier as the margins.
+  ok('review: the low-price trigger is the tested rule, with the same rate as the margins',
+    /isLowPricedAt\(parseFloat\(pr\(l\.key\)\) \|\| 0, l\.costPerBF, costFx\)/.test(w) &&
+      !/p < \(l\.costPerBF \|\| 0\) \* LOW_PRICE_TRIGGER/.test(w), null);
+}
+
+// Feedback 6 item 12. The order endpoint authorises READS by the deployment
+// audience and WRITES by its own allowlist. Pinned on the server file because the
+// difference between the two is the difference between a trader being able to load
+// the wizard and a trader being able to commit stock with it.
+{
+  const sl = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/sl/mcgi_sl_arch_order_create.js');
+  ok('order endpoint: the role allowlist applies to writes only',
+    /const isWrite = context\.request\.method !== 'GET';/.test(sl) &&
+      /if \(isWrite && allowed\.indexOf\(Number\(user\.role\)\) === -1\)/.test(sl), null);
+  // 🔴 The load-bearing half. Opening GET is only safe while every write action is
+  // behind the POST guard; a write reachable from the GET branch would have handed
+  // three roles the ability to change an order.
+  {
+    const postGuard = sl.indexOf("context.request.method !== 'POST'");
+    const setRtb = sl.indexOf("input.action === 'setReadyToBuild'");
+    ok('order endpoint: every write action sits behind the POST guard',
+      postGuard > 0 && setRtb > postGuard, { postGuard, setRtb });
+  }
+  ok('order endpoint: the runasrole is not described as Administrator, because it is not',
+    /runasrole` is `customrole2184`/.test(sl) && !/runs as an administrator/.test(sl), null);
+}
+
+// The cross-point pass over items 6 to 12. Each of these is a defect two correct
+// changes produced between them, so each guard names the pair.
+{
+  const w = src('components/arch/SOWizard.tsx');
+  const d = src('components/arch/ArchOrderDraftDialog.tsx');
+  const sl = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/sl/mcgi_sl_arch_order_create.js');
+  const lib = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js');
+
+  // 10b + the open-orders service: an existing line arrives already converted.
+  ok('append: an existing line is put back into the cost currency before the one conversion',
+    /costPerBF: l\.costPerBF \* rate/.test(w) && /exchangeRate/.test(src('hooks/useArchOpenOrders.ts')), null);
+  // 10c: the rates the screen prints are the rates the money used.
+  ok('economics recompute when the milling rates change',
+    /\[lines, split, reman, price, costFx, liveRates\]/.test(w), null);
+  // 9b + 10c: no literal rate anywhere in the prose.
+  ok('the pricing note reads the live rates rather than a literal',
+    !/reman rates are confirmed at \$0\.20/.test(w) &&
+      /The reman rates are \{fmtMoney\(planingRate, COST_CURRENCY\)\}/.test(w), null);
+  // 10b + 11: the rate is stated on the step that commits, not only on Pricing.
+  ok('review states the conversion and the availability consequence',
+    /\{fxNote &&[\s\S]{0,400}reviewBody|reviewBody[\s\S]{0,900}\{fxNote &&/.test(w) &&
+      /bundles leave availability on save/.test(w), null);
+  // Append: steps are validated on what the save writes.
+  ok('step validity follows writableLines, not the lines on screen',
+    /const splitOk = writableLines\.every/.test(w) &&
+      /const remanOk = writableLines\.every/.test(w) &&
+      /const priceOk = writableLines\.every/.test(w), null);
+  // The confirmation dialog is the last thing seen before a write.
+  ok('confirm dialog names its currency and refuses to invent a margin',
+    /fmtMoney\(l\.pricePerBF, cur\)/.test(d) &&
+      /draft\.totals\.allCostsKnown \? fmtMoney\(draft\.totals\.profit, cur, 0\)/.test(d), null);
+  // 12: a refusal is now an ordinary outcome, so it cannot be an error line.
+  ok('a role refusal is audited, not logged as an error, and says what it refused',
+    /log\.audit\('ARCH Order Create',/.test(sl) &&
+      /open the ARCH screen but not change orders with it/.test(sl), null);
+  // 12: the diagnostics stayed where they were, on the write list.
+  ok('the developer probes are gated on the write list, not on the audience',
+    /const mayDiagnose = allowed\.indexOf\(Number\(user\.role\)\) !== -1;/.test(sl) &&
+      /mayDiagnose \? \(context\.request\.parameters \|\| \{\}\)\.probeDeptCustomer : null/.test(sl) &&
+      /if \(!mayDiagnose\) return undefined;/.test(sl), null);
+  // 10b + 10c: one date parser, and a currency code rather than a LIKE pattern.
+  ok('both new endpoint actions use the one date parser in that file',
+    /const asked = parseIsoDate\(dateIso\);/.test(lib) && /const parsed = parseIsoDate\(dateIso\);/.test(lib) &&
+      !/\/\^\d\{4\}-\d\{2\}-\d\{2\}\$\/\.test\(String\(dateIso\)\)/.test(lib), null);
+  ok('  ...and the rate is looked up by ISO code, with no wildcard surface',
+    /\/\^\[A-Z\]\{3\}\$\/\.test\(target\)/.test(lib) &&
+      /UPPER\(tc\.symbol\) = \?/.test(lib) && !/LIKE \?/.test(lib), null);
+  ok('  ...and today is the account day, not UTC',
+    /const isoDay =/.test(lib) && !/toISOString\(\)\.slice\(0, 10\)/.test(lib), null);
+}
+
+// 🔴 THE TEMPORAL DEAD ZONE GUARD. `isLowPriced` reads `costFx`, and for about an
+// hour on 2026-09-15 it was declared 275 lines below it: the first lot a trader
+// added ran `lines.filter(isLowPriced)`, threw "Cannot access before
+// initialization", and React unmounted the entire screen to a white page. tsc does
+// not model this across a function boundary and no unit test renders the component,
+// so position is the only thing that can be asserted here.
+{
+  const w = src('components/arch/SOWizard.tsx');
+  const decl = w.indexOf('const costFx = fx && fx.status');
+  const reader = w.indexOf('isLowPricedAt(parseFloat(pr(l.key))');
+  ok('costFx is declared before the low-price predicate that reads it',
+    decl > 0 && reader > 0 && decl < reader, { decl, reader });
+  const eco = w.indexOf('const economics = React.useMemo');
+  ok('  ...and before the economics memo that passes it', decl > 0 && decl < eco, { decl, eco });
+  const shown = w.indexOf('const costShown = costFx === 1');
+  ok('  ...and costShown follows costFx rather than preceding it',
+    shown > decl, { decl, shown });
+}
+
+// Feedback 6 item 13. The currency a customer is billed in comes from the customer
+// record, never from `currenciesFor`, which is a SEEDED RANDOM on the name: it
+// returns USD+CAD for exactly the customer he complained about, 84 Lumber Company.
+{
+  const w = src('components/arch/SOWizard.tsx');
+  ok('currency: the picker reads the live customer, not a fixture',
+    /const customerCurrencies = React\.useMemo<string\[\]>/.test(w) &&
+      /return hit\.currencyCode \? \[hit\.currencyCode\] : \[\];/.test(w), null);
+  // 🔴 The sublist BEFORE the primary field. 50 customers in this account hold two
+  // currencies, so reading only `customer.currency` would swap an invented choice
+  // for a missing one.
+  ok('  ...and it offers every currency the customer record allows',
+    /if \(hit\.currencyCodes && hit\.currencyCodes\.length\) return hit\.currencyCodes;/.test(w) &&
+      /currencyCodes/.test(src('hooks/useArchCustomers.ts')), null);
+  // An append is answered by the order, which carries its own stamped currency.
+  ok('  ...while an append reads the order rather than the customer record',
+    /if \(mode === 'existing'\) return currency \? \[currency\] : \[\];/.test(w) &&
+      /from the sales order itself/.test(w), null);
+  ok('  ...and the buttons and the sentence both read that list',
+    /\{customerCurrencies\.map\(\(c\) => \(/.test(w) &&
+      !/currenciesFor\(customer\)\.length > 1/.test(w), null);
+  ok('  ...and a live customer with no currency is never given one',
+    /setCurrency\(hit\?\.currencyCode \|\| ''\);/.test(w) &&
+      !/setCurrency\(hit\?\.currencyCode \|\| currenciesFor/.test(w), null);
+  // The fixture survives for the OFFLINE picker only, where a name is all there is.
+  ok('  ...while the offline path keeps the fixture, and says so',
+    /Fixture path only: this picker is reached when the live list is absent/.test(w), null);
+}
+
+// Feedback 6 item 14. The payment terms come from the customer record, which is
+// what the field's own caption has always claimed. `paymentTermsFor` is a seeded
+// random over five terms and returns "1% 15 Net 30 days" for 84 Lumber Company,
+// the exact string in his screenshot; the record says ".5% 20 net 21 days".
+{
+  const w = src('components/arch/SOWizard.tsx');
+  ok('terms: the field reads the customer record, not a fixture',
+    /const customerTerms = React\.useMemo<string>/.test(w) &&
+      /\(liveCustomer && liveCustomer\.termsName\) \|\| ''/.test(w) &&
+      /value=\{customerTerms\}/.test(w), null);
+  ok('  ...and Review and the draft read the same value',
+    /\['Payment terms', customerTerms \|\| '—'\]/.test(w) &&
+      /paymentTerms: customerTerms,/.test(w), null);
+  // 76 of 1,058 active customers carry no terms, so the empty case is real.
+  ok('  ...and a customer with no terms is not given some',
+    /None on the customer record/.test(w), null);
+  // One lookup feeds both the currency and the terms.
+  ok('  ...through a single live-customer lookup',
+    /const liveCustomer = React\.useMemo\(/.test(w), null);
+}
+
+// Item 14, adversarial pass. An append is answered by the ORDER: NetSuite stamps
+// terms on the sales order and they do not follow a later edit to the customer.
+// 2 of 1,269 ARCH orders already differ from their customer (2026-09-15), and the
+// picker hides subsidiary 7 on purpose, so reading the customer record would also
+// have said "None on the customer record" over 17 of 230 open orders.
+{
+  const w = src('components/arch/SOWizard.tsx');
+  ok('terms: an append reads the order, not the customer record',
+    /if \(mode === 'existing'\) return \(chosenOrder && chosenOrder\.termsName\) \|\| '';/.test(w), null);
+  ok('  ...and the caption names the source it is reading',
+    /From the sales order . read-only/.test(w) && /None on the order/.test(w), null);
+  // `customersAreLive` is false while the list LOADS, and an append fills a real
+  // customer before it lands; keying the fixture on the name alone flashed the
+  // seeded-random terms over a real order, which is the reported defect itself.
+  ok('  ...and the fixture is only for a demo name, never a real customer',
+    /if \(!customersAreLive\) return customerId \? '' : paymentTermsFor\(customer\);/.test(w), null);
+  // The order's own terms have to arrive for any of that to be true.
+  const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
+  ok("  ...and the service sends the order's own terms",
+    /BUILTIN\.DF\(t\.terms\)\s+AS termsname/.test(svc) && /termsName:\s+r\.termsname/.test(svc), null);
+  // The last screen before the write treated an absent value as a blank cell.
+  const dlg = src('components/arch/ArchOrderDraftDialog.tsx');
+  ok('  ...and the confirmation dialog shows an absent value as absent',
+    /\['Payment terms', draft\.header\.paymentTerms \|\| '—'\]/.test(dlg), null);
+}
+
+// Feedback 6 item 15. "Quand je clique sur Edit un existing SO, il y a un bon
+// delais (10 secondes) avant que l'info apparraisse." The tab and the wizard each
+// held their own copy of the hook, so Edit remounted the wizard and made it
+// re-fetch the list the tab was already showing. Measured 2026-09-15: 2.3s to
+// 11.9s per call. ONE fetch, held by the screen, and Edit waits for nothing.
+{
+  const scr = src('components/ArchScreen.tsx');
+  const wiz = src('components/arch/SOWizard.tsx');
+  const view = src('components/arch/ArchOpenOrdersView.tsx');
+  ok('edit speed: the screen owns the open-order list',
+    /const openOrdersState = useArchOpenOrders\(tab === 'orders' \|\| wizardOpen\);/.test(scr) &&
+      /ordersState=\{openOrdersState\}/.test(scr), null);
+  ok('  ...and both consumers take it from the screen',
+    /ordersState\?: ArchOpenOrdersState;/.test(wiz) &&
+      /ordersState\?: ArchOpenOrdersState;/.test(view), null);
+  // The own-hook fallback keeps each component usable alone, but it must be
+  // DISABLED when the parent supplies a list or there are two requests again.
+  ok('  ...and the fallback hook cannot run a second request',
+    /useArchOpenOrders\(!ordersState\)/.test(wiz) &&
+      /useArchOpenOrders\(!ordersState\)/.test(view), null);
+  // A trader who never opens an order must still not pay for the list.
+  ok('  ...and it is still not fetched for someone who never opens an order',
+    /tab === 'orders' \|\| wizardOpen/.test(scr), null);
+}
+
+// Item 15, the server half. `BUILTIN.DF(i.department) = ?` is a function over the
+// joined rows, so the optimiser cannot use the column. Best of four, same 42 rows:
+// open orders 2.14s -> 1.24s, item count 1.76s -> 0.54s. A subquery does not help
+// (2.10s); the optimiser needs a constant. The id is RESOLVED, never hardcoded:
+// department 11 is "Hardwood" in sandbox and does not exist in production.
+{
+  const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
+  ok('open orders: the department filter compares the column, not its label',
+    /const hardwoodDepartmentId = \(\) => \{/.test(svc) &&
+      /sql: 'i\.department = \?'/.test(svc), null);
+  ok('  ...and the id is resolved from the name, never hardcoded',
+    /SELECT id FROM department WHERE name = \?/.test(svc) &&
+      !/'i\.department = \d/.test(svc), null); // a literal id inside the SQL, not the comment
+  // A renamed or nested department must cost speed, never rows.
+  ok('  ...and it falls back to the old predicate when the lookup finds nothing',
+    /\? \{ sql: 'BUILTIN\.DF\(i\.department\) = \?', param: HARDWOOD_DEPARTMENT \}/.test(svc), null);
+}
+
+// Item 15, adversarial pass. Sharing one list removed an ACCIDENT: the wizard used
+// to remount and fetch its own copy, so an append at least saw its own result on the
+// next Edit. Nothing ever reloaded the list on a write, so without this the trader
+// can reopen the order they just appended to, not see those lines, and add them
+// twice -- a duplicate write, not a stale caption.
+{
+  const scr = src('components/ArchScreen.tsx');
+  ok('edit speed: a successful write refreshes the order list',
+    /reloadOpenOrders\(\);/.test(scr) &&
+      /const reloadOpenOrders = openOrdersState\.reload;/.test(scr), null);
+  ok('  ...and the callback declares it rather than closing over a stale one',
+    /\}, \[reloadOpenOrders\]\);/.test(scr), null);
+
+  const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
+  // BUILTIN.DF compares the LEAF name: dept 11 is "Hardwood", fullname
+  // "Trading : Hardwood". A second department with the same leaf would match the
+  // old predicate and both item sets would be in scope; one id cannot say that.
+  ok('  ...and two departments sharing a name do not narrow the tab',
+    /r\.length > 1/.test(svc) && /departments share that name/.test(svc), null);
+  // A silent fallback is an optimisation that can be inert in production forever.
+  ok('  ...and the slow path announces itself',
+    /department filtered by name, not id/.test(svc), null);
+}
+
+// Feedback 6 item 18. "IA-CWP-730. Le MBF price est 12.76 vs 14.15." Both figures
+// were right and they are different figures: 14.15 is what lot 316027-9 cost, 12.76
+// is the on-hand-weighted average of the 21 ZEB84KD bundles at CWP Prevost, which run
+// 12.25 to 14.15. The screen only ever carried the row average, and the margin and
+// profit are computed off it too, so this was never only cosmetic.
+{
+  const mr = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js');
+  ok("18: the cache emits the lot's own cost, which it already had",
+    /l\.costPerUnit = costed \? Math\.round\(perBase \* rate \* 100\) \/ 100 : null;/.test(mr), null);
+  // Base to display MULTIPLIES by rate for a cost and DIVIDES for a quantity. Three
+  // bugs on this screen have come from that asymmetry.
+  ok('18:  ...converted the same way the row average is, never divided',
+    /costVal \+= l\.onHand \* \(perBase \* rate\);/.test(mr), null);
+
+  const scr = src('components/ArchScreen.tsx');
+  const drw = src('components/arch/ArchLotTable.tsx');
+  ok('18: a cart line is priced at its own bundle, not the row',
+    /costPerBF: lot\.costPerUnit === null \|\| lot\.costPerUnit === undefined/.test(scr), null);
+  ok('18:  ...and so is the drawer column that used to repeat one number per row',
+    /lot\.costPerUnit === null \|\| lot\.costPerUnit === undefined/.test(drw), null);
+  // Null is not zero: an uncosted lot would otherwise price at free, and the row
+  // average has always excluded those from both sides rather than counting them.
+  ok('18:  ...and an uncosted lot falls back to the row, never to zero',
+    /\? row\.avgCostPerUnit/.test(scr) && /\? row\.avgCostPerUnit/.test(drw), null);
+}
+
+// Item 18, adversarial pass. The screen's costing book is a deployment parameter;
+// the write path's is not. `archSplitExecute` asks for no book on purpose, because
+// an inventory adjustment posts to the PRIMARY one. Book 1 is primary here, so they
+// agree today. The USD book (id 2) went live 2026-04-30 and carries a line for every
+// ARCH posting -- 175 in each book on ZEB84KD, measured -- so a parameter change
+// would put the screen on a basis the adjustment cannot follow, silently.
+{
+  const mr = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js');
+  ok('18adv: a costing book other than the primary says so, loudly',
+    /costing book is not the primary book/.test(mr) &&
+      /_costBookCached !== ARCH_COST_BOOK_DEFAULT/.test(mr), null);
+  const ex = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archSplitExecute.js');
+  ok('18adv:  ...and the split still asks for no book, which is what makes them agree',
+    /getLotCostsAtLocation\(\[String\(lotId\)\], locationId\)/.test(ex), null);
+}
+
+// Final cross-point pass, items 5 to 18. Item 18 put the per-lot cost on the grid
+// and in the wizard; leaving the open-orders tab on the row average would have been
+// item 18 again one surface across -- the same bundle reading 14.15 in the builder
+// and 12.76 on the tab, and an APPEND mixing both bases in one profit total, because
+// its existing lines come from that payload and its new ones from the grid.
+{
+  const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
+  ok('5-18: an open-order line is costed at its own bundle',
+    /const lotCostFor = /.test(svc) &&
+      /const rawCost = lotCost === null \? rowCost : lotCost;/.test(svc), null);
+  // The pair key holds `{ onHand: [lots] }`, not `{ lots }` -- the first version of
+  // this read looked for the wrong property and would have silently found nothing.
+  ok('5-18:  ...reading the shape the cache actually writes',
+    /parsed && parsed\.onHand/.test(svc) &&
+      /buildDetailBucketKey\(itemId, locationId, 'onHand'\)/.test(svc), null);
+  // One read per pair, and only for pairs on an open order.
+  ok('5-18:  ...memoised per pair rather than per line',
+    /const lotCostCache = \{\};/.test(svc), null);
+  ok('5-18:  ...and falling back to the row average, never to zero',
+    /lotCostCache\[pair\] = map;/.test(svc) && /if \(!hit\) return null;/.test(svc), null);
+}
+
+// Money audit, 2026-09-16. The order was created in the customer's PRIMARY currency
+// while the screen priced, converted and quoted in whatever the trader clicked. 47
+// active non-industrial customers carry more than one currency; on a CAD pick
+// against a USD-primary customer the invoice lands 39% over the quote.
+{
+  const api = src('lib/archOrderApi.ts');
+  const wiz = src('components/arch/SOWizard.tsx');
+  const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
+  const oc  = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js');
+  ok('money: the request carries the currency the trader priced in',
+    /currencyId: draft\.header\.currencyId \|\| undefined,/.test(api), null);
+  ok("money:  ...resolved from the customer's own sublist, positionally",
+    /const currencyIdFor = /.test(wiz) && /currencyId: currencyIdFor\(currency\),/.test(wiz), null);
+  ok('money:  ...which the service sends in the same ORDER BY as the codes',
+    /AS currencyids/.test(svc) && /currencyIds:   r\.currencyids/.test(svc), null);
+  // Falling back to the customer default is the behaviour that caused this.
+  ok('money:  ...and an unresolvable currency is refused, never defaulted',
+    /does not resolve to a /.test(oc) && /SELECT id FROM currency WHERE UPPER\(symbol\) = \?/.test(oc), null);
+}
+
+// The currency read-back, 2026-09-16. The order is now created in the currency the
+// trader priced in; this proves it afterwards rather than trusting it. The one thing
+// worse than a mismatch is a silent one.
+{
+  const oc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js');
+  const api = src('lib/archOrderApi.ts');
+  const dlg = src('components/arch/ArchOrderDraftDialog.tsx');
+  /*
+   * 🔴 SCOPE. The first version read `h.currency` at the result assembly, where `h`
+   * is not in scope: it belongs to the create and append branches. It threw
+   * `h is not defined` AFTER SO-CWP-001376 had already been saved, so the trader was
+   * told the order failed when it existed. A post-save block must not reference
+   * anything the branches above it own.
+   */
+  ok('readback: the header is read from a name that is in scope after the save',
+    /const reqHeader = \(input && input\.header\) \|\| \{\};/.test(oc) &&
+      !/String\(h\.currency \|\| ''\)/.test(oc), null);
+  ok('readback: the saved currency is read back after the save',
+    /cur\.symbol AS currencycode/.test(oc) && /currencyCode: saved\.currencyCode/.test(oc) === false, null);
+  ok('readback:  ...by ISO code, never the display name',
+    /cur\.symbol AS currencycode/.test(oc) && !/BUILTIN\.DF\(t\.currency\)/.test(oc), null);
+  ok('readback:  ...compared to what the screen priced in, and logged as an error',
+    /currencyMismatch = \{ expected: wanted, actual: saved\.currencyCode \}/.test(oc) &&
+      /ARCH Order . currency mismatch/.test(oc), null);
+  ok('readback:  ...and carried on the response',
+    /currencyMismatch: currencyMismatch,/.test(oc) &&
+      /currencyMismatch\?: \{ expected: string; actual: string \} \| null;/.test(api), null);
+  // It must not share a panel with the not-locked warning: this one is money.
+  ok('readback:  ...and the confirmation says so before anything else',
+    /if \(result\.currencyMismatch\) \{/.test(dlg) &&
+      /but it was priced in/.test(dlg), null);
+}
+
+// Feedback 6 item 7b. "Ajouter le champ customer notes (memo). Parfois les users
+// veulent inscrire une note pour leur client sur la commande." It writes the order's
+// NATIVE memo, because that is where the note already goes when a trader types one by
+// hand: SO-CWP-001369 and -001370 both read "thank you for your business", written by
+// Marc-Antoine on 2026-09-11, and 73 of 1,270 ARCH orders carry one.
+{
+  const wiz = src('components/arch/SOWizard.tsx');
+  const api = src('lib/archOrderApi.ts');
+  const dlg = src('components/arch/ArchOrderDraftDialog.tsx');
+  const oc  = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js');
+  ok('7b: the note reaches the order as its native memo',
+    /so\.setValue\(\{ fieldId: 'memo', value: note \}\);/.test(oc) &&
+      /customerNote: draft\.header\.customerNote \|\| undefined,/.test(api), null);
+  // NetSuite truncates past 999 without a word, which is a bad way to find out.
+  ok('7b:  ...capped on both sides rather than discovered at save',
+    /const MEMO_MAX = 999;/.test(wiz) && /slice\(0, 999\)/.test(oc), null);
+  // An append writes no header field at all, so an editable box would drop the note.
+  ok('7b:  ...and an append says the note belongs to the order, not the box',
+    /A note lives on the order header/.test(wiz), null);
+  // An empty row reads as a note that failed rather than one never written.
+  ok('7b:  ...shown on Review and the confirmation only when there is one',
+    /\['Note', customerNote\.trim\(\)\]/.test(wiz) &&
+      /\['Note on the order', draft\.header\.customerNote\]/.test(dlg), null);
+  // Read back off the saved order, like every other fact in that email.
+  ok('7b:  ...and the confirmation email prints what the order carries',
+    /t\.memo                             AS memo/.test(oc) &&
+      /\['Note', summary \? summary\.memo : null\]/.test(oc), null);
+}
+
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');
 process.exit(fail ? 1 : 0);

@@ -164,7 +164,18 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
                     dryRun: true,
                     alreadyDone: !!v.alreadyDone,
                     parentLot: v.lot ? v.lot.lotName : undefined,
-                    proposedChildLot: v.lot ? splitLib.nextChildLotNumber(v.lot.lotName, v.lot.siblings) : undefined,
+                    /*
+                     * Null when the bundle does not DIVIDE, which is the same rule
+                     * the write path applies (Feedback 6 item 16): a bundle sold
+                     * whole mints no child, so promising one here would print a lot
+                     * number on the work order that NetSuite is never going to
+                     * create. Written as both quantities to mirror the write path
+                     * exactly, though a customer quantity of zero is refused before
+                     * it reaches either.
+                     */
+                    proposedChildLot: (v.lot && input.customerQty > 0 && input.remainderQty > 0)
+                        ? splitLib.nextChildLotNumber(v.lot.lotName, v.lot.siblings)
+                        : undefined,
                     onHandDisplay: v.lot ? splitLib.toDisplay(v.lot.storedQty, v.rate) : undefined,
                 });
             }

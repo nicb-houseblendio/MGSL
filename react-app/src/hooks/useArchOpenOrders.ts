@@ -91,6 +91,13 @@ export interface ArchLiveOpenOrder extends ArchOpenOrder {
    */
   createdBy?: string;
   createdById?: string | null;
+  /**
+   * The order's OWN payment terms, stamped when NetSuite saved it. NOT the
+   * customer's current terms: 2 of 1,269 ARCH orders already differ from their
+   * customer today (measured 2026-09-15). Null on a fixture and on a response
+   * from a service older than 2026-09-15.
+   */
+  termsName?: string | null;
   customerPO?: string;
   shipToFull?: string;
   /** NetSuite's own status letter and label, kept because `status` is a projection. */
@@ -125,7 +132,26 @@ interface RawLine {
   /** NetSuite's own line amount, in the order's currency. */
   amount?: number;
   costPerBF: number | null;
-  costSource?: 'rowAverage' | 'unknown';
+  /**
+   * The SO's own stamped exchange rate, order currency to CAD.
+   *
+   * 🔴 IT IS NOT DECORATION, and dropping it caused a real defect. The service
+   * already divides the lot cost by this before sending it
+   * (`trader_screen_service_arch.js:1198`), so `costPerBF` above is in the
+   * ORDER's currency for an existing line, while a line picked off the grid
+   * carries a Canadian cost. The wizard converts everything once, so it has to
+   * know which of the two it is holding.
+   */
+  exchangeRate?: number;
+  /**
+   * WHICH cost this line carries: the bundle's own (`lot`), the item-and-location
+   * average standing in for it (`rowAverage`), or none at all (`unknown`).
+   *
+   * 🔴 'lot' since 2026-09-16. Before that every line said 'rowAverage' whether or
+   * not it was one, so a substituted average was indistinguishable from a measured
+   * bundle cost. That is Feedback 6 item 18 in miniature.
+   */
+  costSource?: 'lot' | 'rowAverage' | 'unknown';
   pricePerBF?: number;
   bucket: ArchCartLine['bucket'];
   existing?: boolean;
@@ -228,6 +254,9 @@ const toCartLine = (l: RawLine): ArchCartLine & { unattributed?: boolean; costSo
   preSplitQty: Number(l.bf) || 0,
   amount: l.amount === undefined ? undefined : Number(l.amount),
   costPerBF: l.costPerBF === null || l.costPerBF === undefined ? null : Number(l.costPerBF),
+  // Carried, NOT applied here. ArchOpenOrdersView subtracts this cost from a
+  // foreign-currency amount and depends on it staying in the order's currency.
+  exchangeRate: l.exchangeRate === undefined ? undefined : Number(l.exchangeRate),
   bucket: l.bucket,
   existing: true,
   lineStatus: l.lineStatus,

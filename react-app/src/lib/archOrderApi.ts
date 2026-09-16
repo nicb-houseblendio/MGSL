@@ -68,6 +68,23 @@ export interface ArchOrderResult {
   /** Set when the order landed on a form that cannot carry a lot. */
   formWarning?: string | null;
   /**
+   * The currency NetSuite actually stamped on the order, read back after the save.
+   *
+   * Not the screen's memory of it. The confirmation prints this, so what the trader
+   * is told at the end is the order's own answer.
+   */
+  currency?: string | null;
+  /**
+   * Set only when the order was created in a different currency from the one it was
+   * priced in.
+   *
+   * 🔴 This is a money defect, not a display one: price, revenue, margin and the
+   * low-price check were all computed in `expected` and the customer will be billed
+   * in `actual`. It should never appear now that the request carries the currency
+   * id; it exists because the one thing worse than a mismatch is a silent one.
+   */
+  currencyMismatch?: { expected: string; actual: string } | null;
+  /**
    * Whether a Sales Team was actually written to the sublist.
    *
    * 🔴 THESE EXIST BECAUSE THE RESPONSE COULD NOT SAY. Until 2026-09-14 a team
@@ -145,6 +162,19 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
     // so this is null until the customer picker returns an internal id — the
     // server refuses with "The order needs a customer" rather than guessing.
     customerId: draft.header.customerId || undefined,
+    /*
+     * 🔴 THE CURRENCY THE TRADER PRICED IN. Until 2026-09-16 this was not sent at
+     * all, so `archOrderCreate`'s `if (currencyId) so.setValue({fieldId:'currency'})`
+     * never fired and NetSuite used the customer's PRIMARY currency while the screen
+     * quoted, converted and margined in the one that had been clicked. Only a
+     * currency the customer record already allows can reach here -- the picker
+     * offers that customer's own sublist, Feedback 6 item 13 -- which is exactly why
+     * this is safe to send now and was not before.
+     */
+    currencyId: draft.header.currencyId || undefined,
+    /* Feedback 6 item 7b. The server writes it to the order's native memo, which is
+     * the field this note already lives in when a trader types one by hand. */
+    customerNote: draft.header.customerNote || undefined,
     shipAddressId: draft.header.shipAddressId || undefined,
     salesRepId: draft.header.salesRepId || undefined,
     /*
@@ -457,6 +487,165 @@ export const fetchIncoterms = async (): Promise<ArchIncotermsResult> => {
     return { status: 'ok', incoterms: body.incoterms, error: null };
   } catch (e) {
     return { status: 'failed', incoterms: [], error: e instanceof Error ? e.message : String(e) };
+  }
+};
+
+/**
+ * What the Pricing step multiplies costs by to reach the order's currency.
+ *
+ * Feedback 6 item 10b. `rate` converts FROM the cost currency TO the order's, so
+ * it is the number to multiply by; `quotedRate` is its reciprocal, the familiar
+ * figure NetSuite prints on the sales order itself (1.3906 CAD per USD today),
+ * and is for display only.
+ *
+ * 🔴 `rate: null` on any failure, never 1. A 1 would silently assert parity and
+ * the screen would show a margin it never converted. The caller is expected to
+ * say so rather than quietly carry on.
+ */
+export interface ArchFxResult {
+  status: 'ok' | 'failed' | 'offline';
+  rate: number | null;
+  quotedRate: number | null;
+  /** The date the rate was asked FOR, which is the date the order will carry. */
+  asOf: string | null;
+  /**
+   * The date of the rate row itself, when it is known. Null on the `N/currency`
+   * path, which answers with a rate but not with the row behind it, so the copy
+   * has to say "applies for" rather than "is dated".
+   */
+  effectiveDate: string | null;
+  target: string | null;
+  error: string | null;
+}
+
+export const fetchFxRate = async (
+  currency: string,
+  dateIso: string
+): Promise<ArchFxResult> => {
+  const empty = { rate: null, quotedRate: null, asOf: null, effectiveDate: null, target: currency || null };
+  const url = endpointUrl();
+  if (!url) return { status: 'offline', ...empty, error: 'No order endpoint is configured.' };
+  if (!currency) return { status: 'failed', ...empty, error: 'No order currency yet.' };
+  try {
+    const sep = url.indexOf('?') === -1 ? '?' : '&';
+    const r = await fetch(
+      url + sep + 'action=fxRate&currency=' + encodeURIComponent(currency) +
+        '&date=' + encodeURIComponent(dateIso || ''),
+      { method: 'GET', credentials: 'include' }
+    );
+    const body = (await r.json()) as {
+      ok?: boolean; rate?: number; quotedRate?: number;
+      asOf?: string; effectiveDate?: string; target?: string; error?: string;
+    };
+    const rate = body && typeof body.rate === 'number' ? body.rate : null;
+    if (!body || body.ok !== true || rate === null || !(rate > 0)) {
+      return { status: 'failed', ...empty, error: (body && body.error) || 'No rate was returned.' };
+    }
+    return {
+      status: 'ok',
+      rate,
+      quotedRate: typeof body.quotedRate === 'number' ? body.quotedRate : null,
+      asOf: body.asOf || null,
+      effectiveDate: body.effectiveDate || null,
+      target: body.target || currency,
+      error: null,
+    };
+  } catch (e) {
+    return { status: 'failed', ...empty, error: e instanceof Error ? e.message : String(e) };
+  }
+};
+
+/**
+ * The milling rates as `customrecord_milling_rate` holds them, item 10c.
+ *
+ * Marc-Antoine asked for the screen to feed from Mo's record "pour que ce soit
+ * dynamique". Each rate is optional on purpose: a row that has ended, carries
+ * the wrong unit or is not a number is left out by the endpoint, and the caller
+ * keeps its own constant for that service rather than losing the charge.
+ */
+export interface ArchMillingRates {
+  status: 'ok' | 'failed' | 'offline';
+  planing: number | null;
+  cut: number | null;
+  split: number | null;
+  asOf: string | null;
+  error: string | null;
+}
+
+export const fetchMillingRates = async (dateIso: string): Promise<ArchMillingRates> => {
+  const empty = { planing: null, cut: null, split: null, asOf: null };
+  const url = endpointUrl();
+  if (!url) return { status: 'offline', ...empty, error: 'No order endpoint is configured.' };
+  try {
+    const sep = url.indexOf('?') === -1 ? '?' : '&';
+    const r = await fetch(url + sep + 'action=millingRates&date=' + encodeURIComponent(dateIso || ''), {
+      method: 'GET',
+      credentials: 'include',
+    });
+    const body = (await r.json()) as {
+      ok?: boolean;
+      asOf?: string;
+      rates?: { planing?: { rate?: number }; cut?: { rate?: number }; split?: { rate?: number } };
+      error?: string;
+    };
+    if (!body || body.ok !== true || !body.rates) {
+      return { status: 'failed', ...empty, error: (body && body.error) || 'No rates were returned.' };
+    }
+    const pick = (v: { rate?: number } | undefined): number | null =>
+      v && typeof v.rate === 'number' && isFinite(v.rate) && v.rate >= 0 ? v.rate : null;
+    return {
+      status: 'ok',
+      planing: pick(body.rates.planing),
+      cut: pick(body.rates.cut),
+      split: pick(body.rates.split),
+      asOf: body.asOf || null,
+      error: null,
+    };
+  } catch (e) {
+    return { status: 'failed', ...empty, error: e instanceof Error ? e.message : String(e) };
+  }
+};
+
+/**
+ * Can THIS role create an order, asked before the trader fills the wizard in.
+ *
+ * 🔴 EXISTS BECAUSE ITEMS 5 AND 12 COMBINE BADLY. Item 5 lands three roles on the
+ * ARCH screen; item 12 lets all three READ the order endpoint while only the
+ * trader role may write. Without this, a logistics or AP/AR user picks bundles,
+ * fills a customer, prices every line, presses Create and only then learns their
+ * role is not permitted. The endpoint has always been able to answer the question
+ * up front: its GET health payload carries `role` and `permittedRoles`.
+ *
+ * Unknown is treated as ALLOWED. A screen that hides its own button because a
+ * health check failed would be a worse failure than the one it prevents, and the
+ * server refuses the write anyway.
+ */
+export interface ArchWriteAuth {
+  status: 'ok' | 'unknown';
+  allowed: boolean;
+  role: number | null;
+  permittedRoles: number[];
+}
+
+export const fetchWriteAuth = async (): Promise<ArchWriteAuth> => {
+  const unknown: ArchWriteAuth = { status: 'unknown', allowed: true, role: null, permittedRoles: [] };
+  const url = endpointUrl();
+  if (!url) return unknown;
+  try {
+    const sep = url.indexOf('?') === -1 ? '?' : '&';
+    const r = await fetch(url + sep + 'action=health', { method: 'GET', credentials: 'include' });
+    const body = (await r.json()) as { ok?: boolean; role?: number; permittedRoles?: number[] };
+    if (!body || body.ok !== true || typeof body.role !== 'number' || !Array.isArray(body.permittedRoles)) {
+      return unknown;
+    }
+    return {
+      status: 'ok',
+      allowed: body.permittedRoles.indexOf(body.role) !== -1,
+      role: body.role,
+      permittedRoles: body.permittedRoles,
+    };
+  } catch {
+    return unknown;
   }
 };
 

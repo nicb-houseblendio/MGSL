@@ -75,5 +75,11 @@ export interface NetSuiteContext {
   subsidiaryName: string;
   accountId: string;
   restletUrl: string;
+  /** Role internal id, from `runtime.getCurrentUser().role`. Decides the opening view. */
+  roleId?: string;
+  /** Role script id, e.g. `customrole2182`. Survives a move to another account. */
+  roleScriptId?: string;
+  /** Role display name. Looked up server side, so absent is normal. */
+  roleName?: string;
   uomConfig?: Record<string, string[]>;
 }

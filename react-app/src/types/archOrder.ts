@@ -85,6 +85,17 @@ export interface ArchCartLine {
    * with unknown cost reads as pure margin — see the note on `ArchOrderTotals`.
    */
   costPerBF: number | null;
+  /**
+   * Set ONLY on a line read back from an existing sales order: that order's own
+   * exchange rate, order currency to CAD.
+   *
+   * Its presence is the signal that `costPerBF` above arrived in the ORDER's
+   * currency rather than in Canadian dollars, because the open-orders service
+   * divides by this rate before sending. A line from the grid has no rate and a
+   * Canadian cost. The wizard normalises to CAD on the way in so one conversion
+   * rule can serve both.
+   */
+  exchangeRate?: number;
   bucket: ArchDetailKey;
   /** True when the line came from an existing SO rather than the grid. */
   existing?: boolean;
@@ -182,8 +193,35 @@ export interface ArchOrderHeader {
    */
   salesRepId?: string;
   customerPO: string;
+  /**
+   * The trader's note on the order, Feedback 6 item 7b: "Ajouter le champ customer
+   * notes (memo). Parfois les users veulent inscrire une note pour leur client sur
+   * la commande."
+   *
+   * 🔴 IT IS THE NATIVE `memo`, not a new custom field, because that is the field he
+   * already uses for this. SO-CWP-001369 and -001370 both read "thank you for your
+   * business", written by Marc-Antoine himself on 2026-09-11. 73 of 1,270 ARCH orders
+   * carry one. Adding a custom field beside it would have split the same note across
+   * two places and left his existing ones invisible to the screen.
+   */
+  customerNote: string;
   shipTo: string;
   currency: string;
+  /**
+   * The currency's NetSuite internal id, when the picker knew it.
+   *
+   * 🔴 THE ORDER IS CREATED IN THIS, not in `currency`. The endpoint sets the header
+   * by id and ignores a code, and until 2026-09-16 nothing sent either, so NetSuite
+   * fell back to the customer's PRIMARY currency while the screen priced, converted
+   * and quoted in whatever the trader had clicked. 47 active non-industrial
+   * customers carry more than one currency, and on a CAD pick against a USD-primary
+   * customer the invoice lands 39% over the quote at today's rate.
+   *
+   * Only ever a currency the customer record already allows: the picker offers the
+   * customer's own sublist and nothing else, which is Feedback 6 item 13. That is
+   * what makes sending it safe now when it was not before.
+   */
+  currencyId?: string;
   shipDate: string;
   /** Display text, for the Review row. */
   incoterms: string;

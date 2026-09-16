@@ -48,9 +48,18 @@ export const splitFeeState = (enabled: boolean, amount: number): SplitFeeState =
   return Number.isFinite(amount) && amount > 0 ? 'on' : 'onWithoutAmount';
 };
 
-/** Money for prose: `$200`, `$200.50`. Whole amounts keep no decimals. */
+/**
+ * Money for prose: `CA$200`, `CA$200.50`. Whole amounts keep no decimals.
+ *
+ * 🔴 CANADIAN, and that is the client's own figure rather than an assumption.
+ * Marc-Antoine's worked example on 2026-09-14 lists the split at `(200) CAD`
+ * beside a USD sale, and his item 9b states the rule for every service: "Le
+ * service cost sera toujours en CAD, même si le SO est en USD." A split fee is
+ * a service charge, so a bare `$200` beside a US-dollar order read as US
+ * dollars and was wrong by about 39% at today's rate.
+ */
 const money = (n: number): string =>
-  '$' + (Number.isInteger(n) ? String(n) : n.toFixed(2));
+  'CA$' + (Number.isInteger(n) ? String(n) : n.toFixed(2));
 
 /**
  * The sentence for the Pricing and Review steps, where a margin is on screen.
@@ -96,6 +105,14 @@ export const splitFeeMarginSentence = (
 /**
  * The shorter sentence for the Bundle split step, where there is no margin yet
  * and the trader is deciding whether to split at all.
+ *
+ * ⚠️ NO CALLER since 2026-09-15. Marc-Antoine asked for the warning box on that
+ * step to go (Feedback 6 item 8) and this sentence was inside it. Kept, tested
+ * and deliberately not deleted: the three-state logic below is the thing that
+ * stops a "$0 split fee comes from configuration" line appearing in the
+ * half-configured state, and whoever next puts a fee sentence on that step
+ * should use this rather than write a two-way branch again. Tree-shaken out of
+ * the bundle while unused, so it costs nothing to keep.
  */
 export const splitFeeStepSentence = (
   state: SplitFeeState,
