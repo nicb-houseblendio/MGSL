@@ -4,6 +4,7 @@ import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import {
   useArchCustomers,
+  ARCH_SUBSIDIARY_ID,
   fetchCustomerAddresses,
   fetchSalesReps,
   type ArchCustomer,
@@ -82,6 +83,7 @@ import { canJumpToStep, firstBlockingStep } from '@/lib/wizardNav';
 import type {
   ArchCartLine,
   ArchOrderDraft,
+  ArchChargeLine,
   ArchOrderMode,
   ArchRemanIntent,
   ArchSplitIntent,
@@ -303,7 +305,7 @@ const LotCell = ({ line }: { line: ArchCartLine }) => (
       {line.containerNo && (
         <span
           className="font-mono"
-          title="Container #"
+          title="Container / Vessel"
           style={{
             fontSize: 9.5,
             fontWeight: 700,
@@ -623,6 +625,15 @@ export const SOWizard = ({
   ordersState,
 }: SOWizardProps) => {
   const [stepIndex, setStepIndex] = React.useState(0);
+  /*
+   * Feedback 9 item 10: non-inventory charge lines, added from the Items step.
+   *
+   * 🔴 CREATE ONLY. The endpoint refuses charges on an append, because the
+   * order already carries whatever freight it was given, this wizard cannot show
+   * it, and a second line would silently double it. The affordance is hidden in
+   * 'existing' mode so a trader is never offered something that will be refused.
+   */
+  const [charges, setCharges] = React.useState<ArchChargeLine[]>([]);
   /** Hover on the step rail. Inline styles carry no :hover, and without a hover
    *  state the tabs gave no sign they could be clicked. */
   const [hoverStep, setHoverStep] = React.useState<number | null>(null);
@@ -662,7 +673,26 @@ export const SOWizard = ({
       customerOptions.map((c) => ({
         id: c.id || c.name,
         label: c.name,
-        hint: c.currencyName || undefined,
+        /*
+         * Feedback 9 item 6: the service now sorts ARC's customers to the top
+         * and keeps the rest selectable, so the row says when it is NOT ARC.
+         *
+         * 🔴 MARKED PER ROW, NOT WITH A DIVIDER, and that is not a style
+         * choice. This picker is a typeahead: the moment a trader types, the
+         * list is filtered and a divider drawn at the ARC/other boundary sits
+         * at a position that no longer means anything. A label travels with
+         * its row through any filter.
+         *
+         * Only the non-ARC rows carry it. ARC is the expected case and
+         * labelling all 786 would say nothing; labelling the 465 that are
+         * somewhere else is the whole signal.
+         */
+        hint: [
+          c.currencyName || null,
+          c.subsidiaryName && String(c.subsidiaryId) !== String(ARCH_SUBSIDIARY_ID)
+            ? c.subsidiaryName
+            : null,
+        ].filter(Boolean).join(' \u00b7 ') || undefined,
       })),
     [customerOptions]
   );
@@ -1729,6 +1759,9 @@ export const SOWizard = ({
       // profit from the one the trader just approved.
       writableLines.map((l) => lineEconomics(l, sp(l.key), rm(l.key), parseFloat(pr(l.key)) || 0, costFx, liveRates))
     ),
+    /* Feedback 9 item 10. Create only, and belt-and-braces: the endpoint refuses
+     * charges on an append, and this makes sure the request never carries any. */
+    charges: mode === 'existing' ? undefined : charges,
     lines: writableLines.map((l) => ({
       lotNo: l.lotNo,
       // Internal ids, threaded through from the cart so the write path is given
@@ -2250,6 +2283,88 @@ export const SOWizard = ({
             }}
           >
             Undo
+          </button>
+        </div>
+      )}
+      {/* ── Non-inventory charges, Feedback 9 item 10 ──────────────────────
+          « Permet d'ajouter une ligne à la création du SO avec des
+          non-inventory items (freight, milling charges, etc.). Dans la
+          section 2 (items) » — this IS section 2.
+
+          🔴 MILLING IS NOT OFFERED, deliberately. The Remanufacturing step
+          already prices planing and cutting at $0.20/BF each and records them
+          on the lot line, with MGSL posting a journal entry at invoicing. A
+          milling line here would be the same money twice, so it is a question
+          for Marc-Antoine rather than something to ship on a guess.
+
+          The list comes from the server's allowlist; the four names are read
+          live from NetSuite. Hidden entirely on an append. */}
+      {mode !== 'existing' && writeAuth && writeAuth.chargeItems.length > 0 && (
+        <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid ' + ARCH_SURFACE.border }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: ARCH_SURFACE.text }}>
+              Freight and other charges
+            </span>
+            <span style={{ fontSize: 11.5, color: ARCH_SURFACE.textLight }}>
+              Optional. Not counted in margin, added to the order total.
+            </span>
+          </div>
+
+          {charges.map((c, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+              <select
+                value={c.itemId}
+                onChange={(e) => {
+                  const hit = writeAuth.chargeItems.find((x) => x.id === e.target.value);
+                  setCharges((prev) => prev.map((row, j) => (j === i
+                    ? { ...row, itemId: e.target.value, itemName: hit ? hit.name : '' }
+                    : row)));
+                }}
+                style={{ flex: 1, fontSize: 12.5, padding: '5px 7px', border: '1px solid ' + ARCH_SURFACE.border, borderRadius: 4 }}
+              >
+                {writeAuth.chargeItems.map((x) => (
+                  <option key={x.id} value={x.id}>{x.name}</option>
+                ))}
+              </select>
+              <input
+                type="number" min="0" step="any" value={c.quantity}
+                aria-label="Charge quantity"
+                onChange={(e) => setCharges((prev) => prev.map((row, j) => (
+                  j === i ? { ...row, quantity: parseFloat(e.target.value) || 0 } : row)))}
+                style={{ width: 84, fontSize: 12.5, padding: '5px 7px', textAlign: 'right', border: '1px solid ' + ARCH_SURFACE.border, borderRadius: 4 }}
+              />
+              <input
+                type="number" min="0" step="any" value={c.rate}
+                aria-label="Charge rate"
+                onChange={(e) => setCharges((prev) => prev.map((row, j) => (
+                  j === i ? { ...row, rate: parseFloat(e.target.value) || 0 } : row)))}
+                style={{ width: 104, fontSize: 12.5, padding: '5px 7px', textAlign: 'right', border: '1px solid ' + ARCH_SURFACE.border, borderRadius: 4 }}
+              />
+              <button
+                type="button"
+                onClick={() => setCharges((prev) => prev.filter((_, j) => j !== i))}
+                style={{ fontSize: 11.5, color: ARCH_SURFACE.textLight, background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+
+          <button
+            type="button"
+            onClick={() => setCharges((prev) => [...prev, {
+              itemId: writeAuth.chargeItems[0].id,
+              itemName: writeAuth.chargeItems[0].name,
+              quantity: 1,
+              /* Rate 0, not a guessed freight price. Zero is a legitimate stored
+                 value -- 3 of the 6 real ARC freight lines carry it -- and a
+                 plausible-looking default is how an unreviewed number reaches a
+                 customer-facing order. */
+              rate: 0,
+            }])}
+            style={{ fontSize: 12, fontWeight: 600, color: ARCH_SURFACE.navyMid, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0' }}
+          >
+            + Add a charge line
           </button>
         </div>
       )}
@@ -3116,7 +3231,11 @@ export const SOWizard = ({
    * landed, naming them when they did not.
    *
    * What went with it: that the dressed-thickness list is ours rather than the
-   * client's, which is a note to us and belongs in the tracking doc, and that
+   * client's, which is a note to us and belongs in the tracking doc -- it is now
+   * in `Feedback 9 - tracking.md` section 11, because Marc-Antoine asked the
+   * question directly on 2026-09-17 ("Dressed To et length list. Elles sont
+   * feedees par quoi?") and the honest answer is that the values are ours and
+   * computed -- and that
    * ARCH reman creates no SKU and no inventory adjustment, which is explanation
    * rather than instruction. The rates stay visible where they matter, as money
    * on each line below.
@@ -3909,6 +4028,56 @@ export const SOWizard = ({
         </tbody>
       </table>
 
+      {/* 🔴 THE CHARGE LINES, ON THE SCREEN THE TRADER CONFIRMS FROM.
+
+          Found by putting a real order through the wizard on 2026-09-21: the
+          Items step offers freight and the request carries it, but Review showed
+          only the wood. A trader approved "Revenue $1,655" while the payload was
+          about to write $1,655 of wood plus $250 of freight, and the Items step
+          says in as many words that charges are "added to the order total".
+          Review contradicted it.
+
+          ⚠️ Confirming a write means SEEING what is written. This is the last
+          screen before `Create sales order`, so anything the request carries and
+          this omits is something nobody agreed to. */}
+      {charges.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: ARCH_SURFACE.text }}>
+              Freight and other charges
+            </span>
+            <span style={{ fontSize: 11.5, color: ARCH_SURFACE.textLight }}>
+              Written to the order. Not counted in the margin below.
+            </span>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <tbody>
+              {charges.map((c, i) => (
+                <tr key={i} style={{ borderTop: '1px solid ' + ARCH_SURFACE.border }}>
+                  {/* ⚠️ EXPLICIT COLOUR, from the palette. With none set these cells
+                      inherited a lighter tone than the lot rows above and read as
+                      disabled -- on the screen a trader confirms a write from. This
+                      file already carries a scar from a hard-coded #7A8FA3 that
+                      measured 3.34:1 and missed the AA fix; the token cannot. */}
+                  <td style={{ padding: '7px 8px', fontSize: 12.5, color: ARCH_SURFACE.text }}>
+                    {c.itemName}
+                  </td>
+                  <td className="font-mono" style={{ padding: '7px 8px', fontSize: 12.5, textAlign: 'right', width: 90, color: ARCH_SURFACE.text }}>
+                    {c.quantity}
+                  </td>
+                  <td className="font-mono" style={{ padding: '7px 8px', fontSize: 12.5, textAlign: 'right', color: ARCH_SURFACE.text, width: 110 }}>
+                    {fmtMoney(c.rate, currency || 'USD', 2)}
+                  </td>
+                  <td className="font-mono" style={{ padding: '7px 8px', fontSize: 12.5, textAlign: 'right', color: ARCH_SURFACE.text, width: 120, fontWeight: 700 }}>
+                    {fmtMoney(c.quantity * c.rate, currency || 'USD', 2)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {/*
         `justifyContent: 'space-between'`, not the default flex-start.
 
@@ -3961,6 +4130,25 @@ export const SOWizard = ({
           ['Margin',
             totals.allCostsKnown ? fmtPct(totals.marginPct) : '— unknown',
             totals.allCostsKnown ? (totals.marginPct < 0 ? '#FCA5A5' : '#A5D6A7') : '#CBD5E1'],
+          /* 🔴 REVENUE IS THE WOOD; ORDER TOTAL IS WHAT NETSUITE WILL SHOW.
+
+             Added 2026-09-21 with the charge block above. `Revenue` feeds margin
+             and therefore EXCLUDES charges, which is correct -- freight is revenue
+             with no cost and folding it in would flatter every margin on the
+             screen. But the saved order's total DOES include it, so a Review that
+             shows only Revenue quietly disagrees with the document it is about to
+             create.
+
+             Shown ONLY when charges exist, so an order without freight keeps
+             exactly the six figures this strip has always had and nobody has to
+             read a duplicate of Revenue under another name. */
+          ...(charges.length > 0
+            ? [['Order total',
+                fmtMoney(
+                  totals.revenue + charges.reduce((sum, c) => sum + c.quantity * c.rate, 0),
+                  currency || 'USD', 0),
+                '#fff'] as [string, string, string]]
+            : []),
         ].map(([k, v, col]) => (
           <div key={k}>
             <div

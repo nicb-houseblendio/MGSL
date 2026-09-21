@@ -109,6 +109,61 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * `BUILTIN.DF(i.department)`, a string, not the raw id.
      */
     const HARDWOOD_DEPARTMENT = 'Hardwood';
+    /* 🔴 AND THE SUBSIDIARY ARM, WITHOUT WHICH THIS ENDPOINT REFUSES 95% OF THE
+     * STOCK THE SCREEN DISPLAYS.
+     *
+     * Feedback 7 moved the cache builder's scope to
+     * `(department = 'Hardwood' OR subsidiary = 'ARC')` because Marc-Antoine's
+     * inventory arrived in subsidiary ARC carrying department "Trading", not
+     * "Hardwood". THIS MODULE NEVER GOT THAT CHANGE, and the comment on the
+     * check in `resolveLines` still claims "Same scope as the cache MR uses for
+     * display" -- an assertion that silently stopped being true and is what kept
+     * the divergence invisible.
+     *
+     * Measured 2026-09-21, on-hand lots inside the ARCH scope:
+     *
+     *     ARC      / Trading    99 items   1,048 lots   <- every one REFUSED
+     *     CWP MTL  / Hardwood   15 items      51 lots   <- the only sellable set
+     *
+     * So the grid offered 132 rows and this endpoint would reject 95% of them
+     * with "X is not an ARCH hardwood item and cannot be ordered from the ARCH
+     * screen".
+     *
+     * 🔴 AND IT WAS PROVEN RATHER THAN INFERRED, because the obvious check says
+     * the opposite. 33 sales orders on ARC/Trading items exist, the newest created
+     * the same day, which reads as "creation works fine". It does not: every one
+     * was made by hand in the NetSuite UI -- Mohamed Chraiet, Lucas Gibb,
+     * Marc-Antoine -- and NOT ONE carries the `ARCH-` externalid this endpoint
+     * stamps for idempotency. The external ids that are there read
+     * `SAP-ARC-SO-*`, a migration prefix. This endpoint has created zero.
+     *
+     * ⚠️ THE DECKING EXCLUSION APPLIES TO BOTH ARMS, and that is the trap in
+     * widening this. `NON_ARCH_DEPARTMENT_ITEMS` is the one real product-line
+     * split inside the scope; hanging it off the department arm alone would make
+     * IPE and the other decking SKUs orderable from the ARCH screen the moment
+     * they sit in ARC.
+     *
+     * ONE predicate, used by every site, so the next divergence is a compile-time
+     * concern rather than an invisible one. Drop the department arm when the CWP
+     * MTL hardwood items and their open POs finish moving to ARC -- the same exit
+     * condition Feedback 7 recorded for the cache.
+     */
+    const ARCH_SUBSIDIARY_NAME = 'ARC';
+
+    /**
+     * Is this item inside the ARCH scope, by department OR subsidiary, and not a
+     * decking SKU? `subsidiary` may be undefined on a caller that has not been
+     * updated to select it, in which case this degrades to the old
+     * department-only behaviour rather than throwing.
+     */
+    const inArchScope = (department, subsidiary, itemCode) => {
+        const dept = String(department == null ? '' : department).trim();
+        const sub  = String(subsidiary == null ? '' : subsidiary).trim();
+        const code = String(itemCode == null ? '' : itemCode).trim();
+        // Decking is out regardless of which arm matched.
+        if (NON_ARCH_DEPARTMENT_ITEMS.indexOf(code) !== -1) return false;
+        return dept === HARDWOOD_DEPARTMENT || sub === ARCH_SUBSIDIARY_NAME;
+    };
     const NON_ARCH_DEPARTMENT_ITEMS = [
         'IPE44DECKD', 'IPE54DECKD', 'IPE54DECKDDNU',
         'NRM44DECKDS4S', 'NRM44DECKDTNG',
@@ -942,12 +997,23 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 return 'CALLER_NOT_A_REP';
             }
 
-            // The customer leg, which the old version ignored entirely.
+            /* The customer leg, which the old version ignored entirely.
+             *
+             * 🔴 READS THE SAME TWO COLUMNS AS `resolveSalesRep`, IN THE SAME
+             * ORDER. This function exists only to explain why the resolver returned
+             * nothing, so the moment the two disagree about where a rep comes from,
+             * the refusal starts naming the wrong cause -- it would say
+             * NO_CUSTOMER_REP about a customer that has one. They were already
+             * split once (see the header on `diagnoseSalesRep`) and this is the
+             * pair that has to move together.
+             */
             const cust = query.runSuiteQL({
-                query: 'SELECT salesrep FROM customer WHERE id = ?',
+                query: 'SELECT custentity_mgsl_sales_rep AS mgslrep, salesrep ' +
+                       'FROM customer WHERE id = ?',
                 params: [customerId],
             }).asMappedResults();
-            const custRep = cust.length ? int(cust[0].salesrep) : 0;
+            const custRep = cust.length
+                ? (int(cust[0].mgslrep) || int(cust[0].salesrep)) : 0;
             if (!custRep) return 'NO_CUSTOMER_REP';
             return 'CUSTOMER_REP_UNUSABLE';
         } catch (e) {
@@ -997,16 +1063,66 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             }
         }
 
-        // Fall back to whoever covers the customer.
-        const rows = query.runSuiteQL({
-            query:
-                'SELECT c.salesrep AS repid FROM customer c ' +
-                'JOIN employee e ON e.id = c.salesrep ' +
-                "WHERE c.id = ? AND e.issalesrep = 'T' AND e.isinactive = 'F'",
-            params: [customerId],
-        }).asMappedResults();
+        /* ── Fall back to whoever covers the customer ─────────────────────
+         *
+         * 🔴 THIS LEG READ A FIELD THAT IS POPULATED ON ONE CUSTOMER IN THE
+         * ACCOUNT, so it could never fire. Measured 2026-09-21 across all 1,127
+         * customers:
+         *
+         *     custentity_mgsl_sales_rep   498
+         *     salesrep                      1   <- the only one this used to read
+         *
+         * The single `salesrep` is Julie Munger on customer 1913. So for 1,126 of
+         * 1,127 customers the customer leg returned null and the endpoint refused
+         * with NO_CUSTOMER_REP, which reads as "this customer has no rep" when the
+         * customer record plainly names one.
+         *
+         * Feedback 9 item 7 is Marc-Antoine asking exactly this: « Sales Rep :
+         * possible de le populer à partir du champs suivant? custentity_mgsl_sales_rep
+         * ou est-ce qu'on devrait utiliser salesrep ». The data answers it. On the
+         * 321 active ARC customers, 264 carry the MGSL field and 0 carry `salesrep`.
+         *
+         * BOTH are read, MGSL field first, because the change has to be strictly
+         * additive: customer 1913 keeps resolving off `salesrep`, and no case that
+         * works today can stop working.
+         *
+         * ⚠️ WRAPPED, AND THAT IS NOT DECORATION. This function's only caller
+         * does not catch (`const repId = namedTeam ? null : resolveSalesRep(...)`),
+         * so an unknown-identifier error on a custom field would propagate out of
+         * order creation as an exception instead of the refusal the caller is built
+         * to report. `customer.custentity_mgsl_insurancerate` is already read
+         * through N/query in this same file, so the shape is proven, but REST
+         * SuiteQL and N/query are different dialects on this tenant and this field
+         * has only been verified through the REST endpoint. Degrading to null is
+         * exactly today's behaviour, so the wrap cannot make anything worse.
+         *
+         * ⚠️ AND THE REP IS NOT THE TEAM. Marc-Antoine, 2026-09-08: « le rep
+         * permet d'identifier qui est le owner du SO. Le sales team définit le split
+         * commission ». On ARC customers the two happen to name the same person
+         * (263 agree, 0 disagree, measured), but they answer different questions and
+         * must not be collapsed into one lookup.
+         */
+        const customerRep = (column) => {
+            try {
+                const rows = query.runSuiteQL({
+                    query:
+                        'SELECT c.' + column + ' AS repid FROM customer c ' +
+                        'JOIN employee e ON e.id = c.' + column + ' ' +
+                        "WHERE c.id = ? AND e.issalesrep = 'T' AND e.isinactive = 'F'",
+                    params: [customerId],
+                }).asMappedResults();
+                return rows.length ? int(rows[0].repid) : null;
+            } catch (e) {
+                log.error('ARCH Order Create — customer sales rep unreadable',
+                    'Column ' + column + ' could not be read, so the customer leg was ' +
+                    'skipped and the request falls back to the refusal it would have ' +
+                    'given before this field was consulted. ' +
+                    (e.name || '') + ': ' + (e.message || String(e)));
+                return null;
+            }
+        };
 
-        return rows.length ? int(rows[0].repid) : null;
+        return customerRep('custentity_mgsl_sales_rep') || customerRep('salesrep');
     };
 
     /**
@@ -1738,7 +1854,9 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         try {
             const rows = query.runSuiteQL({
                 query:
-                    'SELECT BUILTIN.DF(i.department) AS dept, i.itemid AS itemcode ' +
+                    'SELECT BUILTIN.DF(i.department) AS dept, ' +
+                    // Same reason as `readLotStates`: the union needs both arms.
+                    '       BUILTIN.DF(i.subsidiary) AS sub, i.itemid AS itemcode ' +
                     'FROM transactionline tl ' +
                     '  JOIN item i ON i.id = tl.item ' +
                     "WHERE tl.transaction = ? AND tl.mainline = 'F'",
@@ -1750,7 +1868,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             for (let i = 0; i < rows.length; i++) {
                 const dept = String(rows[i].dept || '').trim();
                 const code = String(rows[i].itemcode || '').trim();
-                if (dept === HARDWOOD_DEPARTMENT && NON_ARCH_DEPARTMENT_ITEMS.indexOf(code) === -1) {
+                if (inArchScope(dept, rows[i].sub, code)) {
                     hardwood++;
                 } else if (!sample) {
                     sample = code || '(unnamed item)';
@@ -1972,6 +2090,9 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 '  inv.item              AS itemid, ' +
                 '  i.itemid              AS itemcode, ' +
                 '  BUILTIN.DF(i.department) AS department, ' +
+                // Feedback 7's subsidiary arm. Without this column the union in
+                // `inArchScope` cannot be evaluated and every ARC lot is refused.
+                '  BUILTIN.DF(i.subsidiary) AS subsidiary, ' +
                 '  inl.location          AS locationid, ' +
                 '  inl.quantityonhand    AS storedqty, ' +
                 '  i.stockunit           AS stockunit, ' +
@@ -1993,6 +2114,10 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 itemId:     int(r.itemid),
                 itemCode:   String(r.itemcode),
                 department: String(r.department || ''),
+                // Feedback 7's subsidiary arm. Selected AND mapped: selecting the
+                // column without carrying it here would leave `inArchScope` reading
+                // undefined and every ARC lot refused, exactly as before the fix.
+                subsidiary: String(r.subsidiary || ''),
                 locationId: int(r.locationid),
                 storedQty:  numOr(r.storedqty, 0),
                 // Both units, because the rate below is keyed on the STOCK unit
@@ -2193,6 +2318,162 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * Each problem is phrased as something the trader can act on, because the
      * wizard shows these verbatim.
      */
+    /* 🔴 NON-INVENTORY CHARGE LINES (Feedback 9 item 10) ══════════════
+     *
+     * Marc-Antoine, 2026-09-17, and he re-sent this line on its own at 10:18 so
+     * it is the one he most wants moved: « Permet d'ajouter une ligne à la
+     * création du SO avec des non-inventory items (freight, milling charges,
+     * etc.). Dans la section 2 (items) ».
+     *
+     * 🔴 A SEPARATE CHANNEL, NOT A RELAXATION OF `resolveLines`. That function
+     * refuses any line without a lot and a location, and it is right to: every
+     * guard behind it -- the oversell check, active holds, unattributed
+     * commitments, the `claimed` accumulator that stops two lines jointly
+     * overselling one bundle -- keys off the lot. Making those conditional so a
+     * freight line could pass would put the bundle-level protections one bad
+     * request away from being skipped. A charge has no lot by nature, so it gets
+     * its own resolver and its own validation, and the lot path is untouched.
+     *
+     * ⚠️ AN ALLOWLIST, BY INTERNAL ID, AND DELIBERATELY SHORT. The account has 31
+     * active non-inventory items and they are not all sellable: `Temp Migration
+     * AP`, `Temp Migration AR`, `Credit Memo Customer`, `Prepaids`, `Duty` and
+     * `Export Tax` are accounting artifacts that must never reach a
+     * customer-facing sales order. Offering the whole table with a search box
+     * would put them one keystroke away.
+     *
+     * These four are the freight-shaped ones. `Freight/Transport` is the only one
+     * with proven ARC usage -- 6 ARC sales orders and 2 invoices, all created by
+     * hand by Marc-Antoine and Mohamed Chraiet -- which is also the evidence that
+     * a parent-subsidiary (MGSL) item is accepted on an ARC order at all. None of
+     * the 31 is mapped to ARC itself, so that mattered.
+     *
+     * 🔴 MILLING IS DELIBERATELY ABSENT, and this is not an oversight. It already
+     * has a mechanism: the Remanufacturing step prices planing and cutting at
+     * $0.20/BF EACH (`archOrderPricing.ts`), writes them as line fields on the lot
+     * line (`F_REMAN_PLANE` / `F_REMAN_CUT` in `addLine`), and MGSL post a journal
+     * entry at invoicing. A `Milling Charges` line item would be a second,
+     * competing representation of the same money, so a trader could fold milling
+     * into the wood price AND add a milling line, charging the customer twice with
+     * nothing on screen saying so. Asked of Marc-Antoine rather than guessed.
+     */
+    const ARCH_CHARGE_ITEMS = [
+        { id: 2089, label: 'Freight/Transport' },
+        { id: 1859, label: 'Freight' },
+        { id: 3541, label: 'Freight Charges' },
+        { id: 1874, label: 'Drop Charges' },
+    ];
+
+    /**
+     * The charge items the screen may offer, re-read from NetSuite so a label
+     * cannot drift from the record and an item that has been inactivated or
+     * retyped stops being offered.
+     *
+     * Wrapped: this feeds a diagnostic GET, and a read failure must not take the
+     * endpoint's health report down with it.
+     */
+    const chargeItemList = () => {
+        try {
+            const ids = ARCH_CHARGE_ITEMS.map((c) => c.id);
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT id, itemid, itemtype FROM item ' +
+                    'WHERE id IN (' + ids.join(',') + ') ' +
+                    "  AND isinactive = 'F' AND itemtype = 'NonInvtPart'",
+            }).asMappedResults();
+            return rows.map((r) => ({ id: String(int(r.id)), name: String(r.itemid) }));
+        } catch (e) {
+            return { error: (e.name || '') + ': ' + (e.message || String(e)) };
+        }
+    };
+
+    /**
+     * Validates the charge lines a request asked for. Same shape as
+     * `resolveLines` -- `{ charges, problems }` -- so the caller refuses the whole
+     * order the same way and a bad charge can never half-write one.
+     */
+    const resolveCharges = (rawCharges) => {
+        const problems = [];
+        const charges = [];
+        if (rawCharges === undefined || rawCharges === null) return { charges: [], problems: [] };
+        if (!Array.isArray(rawCharges)) {
+            return { charges: [], problems: ['`charges` must be an array.'] };
+        }
+
+        const allowed = {};
+        ARCH_CHARGE_ITEMS.forEach((c) => { allowed[String(c.id)] = c.label; });
+
+        rawCharges.forEach((raw, idx) => {
+            const label = 'Charge line ' + (idx + 1);
+            const itemId = int(raw && raw.itemId);
+            if (!itemId) {
+                problems.push(label + ': no item was chosen.');
+                return;
+            }
+            /* 🔴 THE ALLOWLIST IS ENFORCED HERE, NOT IN THE BROWSER. The screen only
+             * offers four items; a hand-made POST can name any of the 31, including
+             * the accounting artifacts. The server is the only place this can be
+             * refused. */
+            if (!Object.prototype.hasOwnProperty.call(allowed, String(itemId))) {
+                problems.push(label + ': item ' + itemId + ' is not a charge item this ' +
+                              'screen may add. Allowed: ' +
+                              ARCH_CHARGE_ITEMS.map((c) => c.label).join(', ') + '.');
+                return;
+            }
+
+            /* Quantity POSITIVE on the way in. `transactionline.quantity` reads back
+             * NEGATIVE for a sales order -- measured on order 115751, where the three
+             * Assembly lot lines are -0.826, -0.409 and -0.816 and the freight line
+             * is -1. That is NetSuite's storage convention for every outbound line,
+             * not something peculiar to freight, so a charge is written exactly the
+             * way `addLine` already writes wood and needs no sign handling. */
+            const qty = numOr(raw && raw.quantity, NaN);
+            if (!isFinite(qty) || qty <= 0) {
+                problems.push(label + ': quantity must be a positive number.');
+                return;
+            }
+
+            /* Rate MAY be zero and that is legitimate, not a mistake to reject: 3 of
+             * the 6 hand-made ARC freight lines carry rate 0, which is how a
+             * prepaid or absorbed charge is recorded. Negative is refused, because a
+             * negative charge on a sales order is a credit and belongs on a credit
+             * memo. */
+            const rate = numOr(raw && raw.rate, NaN);
+            if (!isFinite(rate) || rate < 0) {
+                problems.push(label + ': the rate must be zero or more.');
+                return;
+            }
+
+            charges.push({
+                itemId: itemId,
+                itemCode: allowed[String(itemId)],
+                quantity: qty,
+                rate: rate,
+                description: raw && raw.description
+                    ? String(raw.description).slice(0, 300) : '',
+            });
+        });
+
+        return { charges: charges, problems: problems };
+    };
+
+    /**
+     * Writes one charge line. No location, no inventory detail, no reman, no
+     * split: a charge is not stock and must not acquire any of the machinery that
+     * belongs to stock.
+     */
+    const addChargeLine = (so, charge, index) => {
+        const set = (fieldId, value) =>
+            so.setSublistValue({ sublistId: 'item', fieldId: fieldId, line: index, value: value });
+        set('item',     charge.itemId);
+        set('quantity', charge.quantity);
+        set('rate',     charge.rate);
+        if (charge.description) {
+            // Best-effort: the field is standard, but a form could hide it and a
+            // missing note must never cost the order its freight line.
+            try { set('description', charge.description); } catch (e) { /* kept */ }
+        }
+    };
+
     const resolveLines = (rawLines) => {
         const problems = [];
         const lines = [];
@@ -2246,10 +2527,16 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 return;
             }
 
-            if (st.department !== HARDWOOD_DEPARTMENT || NON_ARCH_DEPARTMENT_ITEMS.indexOf(st.itemCode) !== -1) {
+            if (!inArchScope(st.department, st.subsidiary, st.itemCode)) {
                 // Not a caller mistake to explain away. This endpoint exists for
-                // hardwood and must refuse anything else outright. Same scope as
-                // the cache MR uses for display — see the header comment above.
+                // hardwood and must refuse anything else outright.
+                //
+                // 🔴 READS THE SHARED PREDICATE NOW. This line used to compare the
+                // department alone and carried a comment claiming parity with the
+                // cache MR. The cache moved to the subsidiary union in Feedback 7
+                // and this did not, so the claim went stale and the endpoint
+                // refused every ARC lot -- 1,048 of 1,099 on hand. See
+                // `inArchScope`.
                 problems.push(label + ': ' + st.itemCode + ' is not an ARCH hardwood item and cannot be ' +
                               'ordered from the ARCH screen.');
                 return;
@@ -3458,6 +3745,34 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         if (resolved.problems.length) {
             throw refusal(resolved.problems.join(' '));
         }
+        /* Feedback 9 item 10. Resolved BEFORE the record is touched, exactly like
+         * the sales team below, so a bad charge refuses the request without
+         * leaving a half-built order behind. An absent `charges` resolves to []
+         * and every path below runs precisely as it did. */
+        const resolvedCharges = resolveCharges(
+            (input.header || {}).charges || input.charges);
+        if (resolvedCharges.problems.length) {
+            throw refusal(resolvedCharges.problems.join(' '));
+        }
+        /* ⚠️ CHARGES COUNT TOWARD THE LINE CAP. `resolveLines` enforces MAX_LINES
+         * over the stock lines alone, so without this a request could carry 200
+         * stock lines plus any number of charges and walk straight past a limit
+         * that exists because NetSuite crawls on very long orders. */
+        if (resolved.lines.length + resolvedCharges.charges.length > MAX_LINES) {
+            throw refusal('This order has ' + resolved.lines.length + ' stock line(s) and ' +
+                          resolvedCharges.charges.length + ' charge line(s), which is past ' +
+                          'the ' + MAX_LINES + '-line limit. Split it into several orders.');
+        }
+        /* ⚠️ CHARGES ARE CREATE-ONLY, because he asked for this at SO CREATION.
+         * On an append the order already carries whatever freight it was given,
+         * this wizard cannot show it, and a second line would silently double it.
+         * Refused rather than quietly dropped, so nobody is told a charge was
+         * added that was not. */
+        if (appending && resolvedCharges.charges.length) {
+            throw refusal('Charge lines can only be added when a NEW order is created, ' +
+                          'not when adding bundles to an existing one. Add the freight ' +
+                          'line on the order itself.');
+        }
 
         /* ── The Sales Team the caller NAMED, or null ─────────────────────────
          *
@@ -4088,6 +4403,24 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         const lineWrites = resolved.lines.map(
             (line, i) => addLine(so, line, firstNewLine + i, remanOk, splitOk));
 
+        /* 🔴 CHARGES LAST, AFTER EVERY STOCK LINE, AND THAT ORDER IS LOAD-BEARING.
+         *
+         * `assignLots` runs after the save, RELOADS the order and finds each lot's
+         * line by matching item + location + quantity while skipping lines it has
+         * already used. A charge line can never match a stock line's triple -- its
+         * item is a NonInvtPart from the allowlist and every ARCH stock item is an
+         * Assembly, so the ids cannot collide -- but keeping charges at the end of
+         * the sublist means the matcher never has to walk past one to reach a lot,
+         * and the printed order reads the way a reader expects with freight last.
+         *
+         * ⚠️ On an APPEND `firstNewLine` is the existing line count, so charges
+         * still land after this call's own stock lines rather than among the
+         * order's earlier ones. Appending charges is refused outright anyway -- see
+         * the append path -- because he asked for this « à la création du SO ». */
+        resolvedCharges.charges.forEach((charge, j) => {
+            addChargeLine(so, charge, firstNewLine + resolved.lines.length + j);
+        });
+
         let soId;
         try {
             soId = so.save({ enableSourcing: true, ignoreMandatoryFields: false });
@@ -4610,6 +4943,103 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         return out;
     };
 
+    /* 🔴 READ-ONLY: WHAT THIS DEPLOYMENT'S runasrole CAN ACTUALLY SEE ════
+     *
+     * Feedback 9 items 6 and 8 both hinge on one unknown, and it cannot be read
+     * from outside NetSuite. Marc-Antoine asked to feed customers, Sales Rep and
+     * Sales Team from sub ARC, « Si possible de prendre les employés qui sont
+     * attitrés à la Sub ARC ». Whether that is even reachable depends on what
+     * role 2184 is scoped to, and:
+     *
+     *   - `listSalesReps` carries NO subsidiary predicate, yet the note above it
+     *     records 15 reps measured live on 2026-08-25. CWP MTL has exactly 15
+     *     active reps and the account has 32, so the ROLE is doing the filtering.
+     *   - role 2184 is "MGSL - CWP MTL - Hardwood AP/AR Analyst", ACCOUNTCENTER,
+     *     subsidiaryoption SELECTED. Which subsidiaries are selected is NOT
+     *     readable: `rolesubsidiaries`, `rolesubsidiary` and `subsidiaryrole` are
+     *     all invalid search types on this tenant.
+     *   - the health GET authenticates as Administrator, so asking from there
+     *     answers a different question.
+     *
+     * So the question has to be asked from INSIDE, which is what this does. It
+     * writes nothing and returns ids and counts, never names beyond entityid.
+     *
+     * 🔴 `entityGroupControl` IS THE VALIDITY CHECK, NOT A CURIOSITY. `entitygroup`
+     * is documented four times over as unreachable from this role, and granting
+     * LIST_CRMGROUP changed nothing. So it MUST come back refused here. If it
+     * reads, this probe is running with wider scope than the create path and every
+     * other number in this object is answering the wrong question. Check that
+     * field first; the rest is only meaningful when it says refused.
+     */
+    const roleVisibility = () => {
+        const out = {};
+
+        try {
+            const u = runtime.getCurrentUser();
+            out.reportedRole = u ? u.role : null;
+        } catch (e) {
+            out.reportedRole = 'ERROR: ' + (e.message || String(e));
+        }
+
+        // The list `listSalesReps` serves, broken down the way the answer needs.
+        // 15 CWP MTL only means role-scoped; 32 across three subsidiaries means
+        // this is running as Administrator and the control below will say so.
+        try {
+            out.repsBySubsidiary = query.runSuiteQL({
+                query:
+                    'SELECT BUILTIN.DF(e.subsidiary) AS sub, COUNT(*) AS n ' +
+                    'FROM employee e ' +
+                    "WHERE e.issalesrep = 'T' AND e.isinactive = 'F' " +
+                    'GROUP BY BUILTIN.DF(e.subsidiary)',
+            }).asMappedResults().map((r) => ({
+                subsidiary: r.sub ? String(r.sub) : null,
+                count: parseInt(r.n, 10) || 0,
+            }));
+        } catch (e) {
+            out.repsBySubsidiary = 'ERROR: ' + (e.message || String(e));
+        }
+
+        /* The five ARCH traders BY ID, because a count cannot answer item 6.
+         * Measured as Administrator on 2026-09-21: all five are issalesrep = T,
+         * active, subsidiary ARC. If this comes back empty the role cannot see
+         * them, and "prefer ARC employees" is not a filter change at all. */
+        try {
+            out.arcTradersVisible = query.runSuiteQL({
+                query: 'SELECT id, entityid FROM employee ' +
+                       'WHERE id IN (3268, 3296, 3297, 3298, 3299)',
+            }).asMappedResults().map((r) => String(r.entityid || r.id));
+        } catch (e) {
+            out.arcTradersVisible = 'ERROR: ' + (e.message || String(e));
+        }
+
+        /* Item 8: « est-ce qu'on peut faire en sorte qu'il suive ce qu'il y a sur
+         * la fiche client? ». `customersalesteam` is the sublist behind that, 634
+         * rows account-wide and 264 ARC customers as Administrator, every one a
+         * single employee at contribution 1. Readable from here or not is what
+         * decides whether item 8 can be built the obvious way. */
+        try {
+            const cst = query.runSuiteQL({
+                query: 'SELECT COUNT(*) AS n FROM customersalesteam',
+            }).asMappedResults();
+            out.customerSalesTeamRows = cst.length ? (parseInt(cst[0].n, 10) || 0) : 0;
+        } catch (e) {
+            out.customerSalesTeamRows = 'REFUSED: ' + (e.message || String(e));
+        }
+
+        // THE CONTROL. Must be refused. See the block header.
+        try {
+            query.runSuiteQL({ query: 'SELECT COUNT(*) AS n FROM entitygroup' })
+                .asMappedResults();
+            out.entityGroupControl =
+                'READABLE — THIS PROBE IS NOT ROLE-SCOPED, IGNORE THE FIGURES ABOVE';
+        } catch (e) {
+            out.entityGroupControl = 'refused as expected (' +
+                String(e.message || e).slice(0, 80) + ')';
+        }
+
+        return out;
+    };
+
     const fieldReadiness = () => {
         try {
             const so = record.create({ type: record.Type.SALES_ORDER, isDynamic: false });
@@ -4676,6 +5106,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         sendOrderPdf: sendOrderPdf,
         resolveRepRecipients: resolveRepRecipients,
         pdfEmailReadiness: pdfEmailReadiness,
+        roleVisibility: roleVisibility,
+        chargeItemList: chargeItemList,
         resolveSalesTeam: resolveSalesTeam,
         writeSalesTeam: writeSalesTeam,
         verifySalesTeam: verifySalesTeam,

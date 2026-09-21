@@ -145,13 +145,51 @@ export interface ArchLot {
    */
   costPerUnit?: number | null;
   /**
+   * The same cost converted to USD at the rate on THIS lot's receipt date,
+   * Feedback 9 item 1. Marc-Antoine asked for BF cost in USD at the
+   * inventory-receipt rate, and the rate is per lot because the receipt date
+   * is per lot: two bundles of the same item bought four months apart
+   * convert at different rates and should.
+   *
+   * 🔴 NULL MEANS NO RATE, WHICH IS NOT THE SAME AS NO COST. `costPerUnit`
+   * being null means the lot has no posting history; this being null means it
+   * has a cost that could not be converted, because its receipt date falls
+   * outside what the NetSuite rate table covers (it begins 2025-03-26) or
+   * because the lot carries no receipt date at all. Those lots keep showing
+   * their CAD figure LABELLED CAD. Loading historical rates into NetSuite is
+   * what fixes them, not a change here.
+   *
+   * ⚠️ Do not convert this back, or convert the CAD one, anywhere near the
+   * order wizard. The wizard does its own CAD-to-order-currency conversion at
+   * the ORDER's stamped rate, which is a different rate for a different
+   * question, and doing both is the 11-margin-point error `SOWizard.tsx`
+   * documents. Absent on a payload built before 2026-09-21.
+   */
+  costPerUnitUsd?: number | null;
+  /**
    * Shipping container, and it is NOT the lot prefix.
    *
    * A container can cover more than one PO, so the prefix that yields `po`
-   * cannot yield a container in either direction. There is no source for this in
-   * NetSuite today — it needs the packing-list lot → container capture — so it
-   * is empty on every lot and the detail tables render an em dash. Container is
-   * mostly a decking/IPE concern rather than a hardwood one.
+   * cannot yield a container in either direction.
+   *
+   * 🔴 CORRECTED 2026-09-21. This said "There is no source for this in
+   * NetSuite today" and was wrong on two counts. Two sources exist:
+   *
+   *   1. the packing-list capture's `custrecord_msl_plc_container_no`, which
+   *      holds a real ISO 6346 code (capture record 1 is "PL 314307 IPE
+   *      MEDU7574050"). Authoritative, and it wins.
+   *   2. `custbody5` (Lot Vessel) on the inventory adjustment, which is what
+   *      Marc-Antoine asked for in Feedback 9 item 2. Measured account-wide it
+   *      holds real ship names: ULTRA YORKSHIRE, SAGA ANDORINHA, SEA WAVE,
+   *      KARLINO, and "Inbound Truck".
+   *
+   * ⚠️ STILL EMPTY ON EVERY ARCH LOT, but now for a DATA reason rather than
+   * a missing-source one, and the distinction decides who fixes it. All 210
+   * vessel-bearing ARCH adjustments carry the lot's own prefix instead of a
+   * vessel (lot 314307-1535, vessel "314307"), and by Marc-Antoine's 2026-08-19
+   * answer that number is the PO. The builder refuses it rather than shipping a
+   * column headed Container full of PO numbers. Correcting the import is what
+   * fills this, not a change here.
    */
   containerNo: string;
   /** Physically on hand, in the parent row's `unit`. */
@@ -380,6 +418,27 @@ export interface ArchSummaryRow {
    * the same reason the empty quantity buckets are declared in `meta`.
    */
   avgCostPerUnit: number | null;
+
+  /**
+   * `avgCostPerUnit` converted to USD, Feedback 9 item 1.
+   *
+   * 🔴 NOT `avgCostPerUnit` divided by one rate. It is the on-hand-weighted
+   * average of the per-lot USD costs, because each lot converts at its own
+   * receipt-date rate. Dividing the CAD average by a single rate would be a
+   * different number whenever a row holds bundles received on different days,
+   * which is the normal case.
+   *
+   * Weighted over the lots that have BOTH a cost and a rate. `costUsdPartial`
+   * says when that is a strict subset of the lots behind `avgCostPerUnit`.
+   */
+  avgCostPerUnitUsd?: number | null;
+
+  /**
+   * True when some costed lot on this row had no convertible receipt date, so
+   * the CAD and USD averages describe different sets of lots and
+   * `avgCostPerUnitUsd * rate` will not reproduce `avgCostPerUnit`.
+   */
+  costUsdPartial?: boolean;
 
   /** Stable row identity: `${internalId}-${locationId}`. */
   detailKey: string;

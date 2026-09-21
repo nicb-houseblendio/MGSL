@@ -240,12 +240,42 @@ export interface ArchOrderHeader {
 
 export type ArchOrderMode = 'new' | 'existing';
 
+/**
+ * A non-inventory charge line, Feedback 9 item 10: freight and the like, added
+ * at SO creation from the Items step.
+ *
+ * 🔴 NOT an `ArchCartLine`. A cart line is a BUNDLE: it carries a lot, a
+ * location, a cost, a split intent and reman instructions, and every one of the
+ * order endpoint's stock guards keys off its lot. A charge has no lot by nature,
+ * so it travels in its own array and is validated by its own resolver. Folding
+ * the two together would mean making the oversell and hold checks conditional.
+ *
+ * ⚠️ Excluded from margin and from the low-price floor, included in the order
+ * total. Freight is revenue with no cost: counting it as a line would inflate
+ * margin, and dropping it from the total would understate the order.
+ */
+export interface ArchChargeLine {
+  /** NetSuite internal id, from the server's allowlist. */
+  itemId: string;
+  /** Label as NetSuite reports it, for display only. */
+  itemName: string;
+  quantity: number;
+  /** Per-unit, in the order's currency. Zero is legitimate: 3 of the 6 real ARC
+   * freight lines carry rate 0, which is how an absorbed charge is recorded. */
+  rate: number;
+}
+
 export interface ArchOrderDraft {
   mode: ArchOrderMode;
   /** Set when adding to an existing order. */
   existingSO: string | null;
   header: ArchOrderHeader;
   lines: ArchOrderDraftLine[];
+  /**
+   * Non-inventory charge lines, Feedback 9 item 10. Optional and absent by
+   * default, so a draft built before this existed is still a valid draft.
+   */
+  charges?: ArchChargeLine[];
   totals: ArchOrderTotals;
 }
 

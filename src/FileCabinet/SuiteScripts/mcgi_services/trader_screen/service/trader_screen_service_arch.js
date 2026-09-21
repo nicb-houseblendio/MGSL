@@ -232,6 +232,14 @@ define([
                 costBook:         meta.costBook || 0,
                 costedRowCount:   meta.costedRowCount == null ? null : meta.costedRowCount,
                 uncostedRowCount: meta.uncostedRowCount == null ? null : meta.uncostedRowCount,
+                // Feedback 9 item 1. The rows carry BOTH a CAD cost and a USD
+                // cost converted at each lot's receipt-date rate; these say
+                // which currency the CAD one is in and how many rows the USD
+                // one reaches. A row it does not reach has no lot whose receipt
+                // date the rate table covers, so the cell shows CAD and labels
+                // itself CAD rather than converting at a guessed rate.
+                costCurrency:      meta.costCurrency || 'CAD',
+                usdCostedRowCount: meta.usdCostedRowCount == null ? null : meta.usdCostedRowCount,
             };
         } catch (e) {
             log.error({ title: 'trader_screen_service_arch.getMeta', details: e.message });
@@ -346,6 +354,11 @@ define([
      * So this removes exactly the 342 Lucas named and leaves 465.
      */
     const INDUSTRIAL_CUSTOMER_SUBSIDIARY = 7;
+    /* Feedback 9 item 6: « Feed les champs suivants de la sub ARC (customers/...) ».
+     * ARC's customers sort FIRST in the picker and everything else stays
+     * selectable. See the ordering block in action=customers for why it is a sort
+     * and not a filter. */
+    const ARCH_CUSTOMER_SUBSIDIARY = 9;
 
     /**
      * Customers the wizard can raise an order for.
@@ -483,9 +496,41 @@ define([
                     'customer base moved subsidiary.');
             }
 
+            /* ── ARC FIRST, AND DELIBERATELY NOT ARC ONLY ─────────────────────
+             *
+             * Feedback 9 item 6. His sentence asks to feed customers from sub ARC,
+             * and taken literally that means dropping everything else: the picker
+             * would go from ~786 names to ARC's 321.
+             *
+             * 🔴 MEASURED FIRST, BECAUSE THE LITERAL READING HIDES CUSTOMERS HE IS
+             * ALREADY TRADING WITH. Of the 62 ARCH sales orders in this account, 30
+             * belong to CWP MTL customers, across 9 distinct companies. A hard
+             * filter removes those 9 from the picker while their orders stay on the
+             * screen, which is the same shape as the August scope collapse that
+             * froze this screen for 21 hours: a narrowing that was correct on paper
+             * and wrong against the data that was actually there.
+             *
+             * So ARC sorts to the top and the rest remains reachable. That satisfies
+             * "feed from sub ARC" for every practical purpose -- a trader types a
+             * name and ARC's are what they land on -- and costs nobody an order.
+             * Turning it into a filter later is one line, once his POs and customers
+             * have finished moving.
+             *
+             * ⚠️ STABLE SORT, not a comparator on the name. The query already
+             * ordered by the displayed label, so comparing only the subsidiary and
+             * leaving ties alone preserves that alphabetical order inside each
+             * group. A comparator that also compared names would re-sort on
+             * `companyname`, which is blank on some records and would float them to
+             * the top -- the exact defect the ORDER BY above carries a comment about.
+             */
+            const isArch = (r) =>
+                r.subsidiaryid !== null && r.subsidiaryid !== undefined &&
+                String(r.subsidiaryid) === String(ARCH_CUSTOMER_SUBSIDIARY);
+            const ordered = kept.filter(isArch).concat(kept.filter((r) => !isArch(r)));
+
             return {
                 success: true,
-                customers: kept.map((r) => ({
+                customers: ordered.map((r) => ({
                     id: String(r.id),
                     // companyname is blank on some records — County Line Materials
                     // LLC carries its name in entityid only — so neither field
@@ -502,6 +547,10 @@ define([
                     termsId: r.termsid ? String(r.termsid) : null,
                     termsName: r.termsname ? String(r.termsname) : null,
                     subsidiaryId: r.subsidiaryid ? String(r.subsidiaryid) : null,
+                    /* Carried since Feedback 9 item 6 so the picker can LABEL the
+                     * ARC group rather than silently reordering itself. A reordered
+                     * list with no explanation reads as a broken sort. */
+                    subsidiaryName: r.subsidiaryname ? String(r.subsidiaryname) : null,
                 })),
                 /* What the filter did, so the picker can say why it is short or
                  * empty instead of implying the account has no customers. */
@@ -509,6 +558,18 @@ define([
                 excludedIndustrialCount: excluded.length,
                 excludedSubsidiaryId: String(INDUSTRIAL_CUSTOMER_SUBSIDIARY),
                 excludedSubsidiaryName: excludedName,
+                /* How many of the returned rows are ARC, i.e. how many sit in the
+                 * first group.
+                 *
+                 * ⚠️ NOT for drawing a divider, which is what an earlier version of
+                 * this comment said. The picker is a TYPEAHEAD: the moment a trader
+                 * types, the list is filtered and a divider at the ARC/other boundary
+                 * sits at a position that means nothing. The client marks each non-ARC
+                 * ROW instead, which survives any filter. This count is here so the
+                 * ordering can be VERIFIED -- 321 against the 321 active ARC customers
+                 * SuiteQL reports -- rather than taken on trust. */
+                archCount: ordered.filter(isArch).length,
+                archSubsidiaryId: String(ARCH_CUSTOMER_SUBSIDIARY),
             };
         } catch (e) {
             // A failed customer list must not read as "this account has no
@@ -727,11 +788,43 @@ define([
      * The department filter and the parameter that goes with it, as one pair so
      * the two can never drift apart. `%DEPT%` appears once in each query.
      */
+    /* 🔴 THE SUBSIDIARY ARM, WITHOUT WHICH THE OPEN SALES ORDERS TAB IS EMPTY.
+     *
+     * Feedback 7 moved the cache builder to
+     * `(department = 'Hardwood' OR subsidiary = 'ARC')`, because Marc-Antoine's
+     * inventory arrived in ARC carrying department "Trading". This filter never
+     * got that change, so the tab reported, in its own words, "0 items in the
+     * Hardwood department" and showed nothing while the grid showed 132 rows.
+     * Observed in the browser 2026-09-21, which is the only way it surfaces: the
+     * RESTlet leg answers 7 orders from a command line, because that runs with
+     * Administrator scope, and the browser takes the endpoint leg.
+     *
+     * Measured items inside the ARCH scope:
+     *
+     *     ARC     / Trading   149 items
+     *     CWP MTL / Hardwood   25 items
+     *
+     * With the role scoped to ARC, the department arm alone intersects to zero.
+     *
+     * ⚠️ `BUILTIN.DF(i.subsidiary)`, NEVER the raw column. `i.subsidiary` is
+     * NOT_EXPOSED to search on this tenant and a bare comparison is a hard 400,
+     * not a null -- the same trap the cache builder documents.
+     *
+     * The department arm stays until the CWP MTL hardwood items and their open POs
+     * finish moving to ARC. Same exit condition Feedback 7 recorded.
+     */
+    const ARCH_SUBSIDIARY_NAME = 'ARC';
     const deptFilter = () => {
         const id = hardwoodDepartmentId();
         return id === null
-            ? { sql: 'BUILTIN.DF(i.department) = ?', param: HARDWOOD_DEPARTMENT }
-            : { sql: 'i.department = ?', param: id };
+            ? {
+                sql: '(BUILTIN.DF(i.department) = ? OR BUILTIN.DF(i.subsidiary) = ?)',
+                params: [HARDWOOD_DEPARTMENT, ARCH_SUBSIDIARY_NAME],
+            }
+            : {
+                sql: '(i.department = ? OR BUILTIN.DF(i.subsidiary) = ?)',
+                params: [id, ARCH_SUBSIDIARY_NAME],
+            };
     };
     const NON_ARCH_DEPARTMENT_ITEMS = [
         'IPE44DECKD', 'IPE54DECKD', 'IPE54DECKDDNU',
@@ -1054,7 +1147,12 @@ define([
             const dept = deptFilter();
             rows = query.runSuiteQL({
                 query: OPEN_ORDERS_SQL.replace('%DEPT%', dept.sql),
-                params: [dept.param],
+                // TWO params now, one per arm of the union. Passing [dept.param]
+                // here would bind the department and leave the subsidiary
+                // placeholder unfilled, which SuiteQL rejects outright rather than
+                // silently -- the failure would be loud, but it would still be a
+                // failure, so the two moved together.
+                params: dept.params,
             }).asMappedResults();
         } catch (e) {
             log.error('ARCH service — open orders failed',
@@ -1504,7 +1602,7 @@ define([
             const dept = deptFilter();
             const c = query.runSuiteQL({
                 query: HARDWOOD_ITEM_COUNT_SQL.replace('%DEPT%', dept.sql),
-                params: [dept.param],
+                params: dept.params,
             }).asMappedResults();
             const n = c && c.length ? parseInt(c[0].n, 10) : NaN;
             taggedItemCount = isFinite(n) ? n : null;

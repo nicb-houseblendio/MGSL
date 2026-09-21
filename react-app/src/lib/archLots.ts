@@ -5,7 +5,7 @@
  * on this screen — get it wrong and two traders sell the same bundle.
  */
 
-import type { ArchLot, ArchDetailKey } from '@/types/arch';
+import type { ArchLot, ArchDetailKey, ArchSummaryRow } from '@/types/arch';
 
 /* ── Deterministic RNG ──────────────────────────────────────────────────────
  * Used to derive stable demo detail (SO numbers, suppliers, ETAs) from a lot
@@ -262,4 +262,48 @@ export const availabilityStatus = (
 export const lotQuantity = (lot: ArchLot, bucket: ArchDetailKey): number => {
   if (bucket === 'available') return availabilityStatus(lot)?.qty ?? 0;
   return lot[bucket] || 0;
+};
+
+/* —— Which cost, in which currency ——————————————————————————
+ *
+ * Feedback 9 item 1: Marc-Antoine asked for BF cost in USD by default, at the
+ * inventory-receipt rate. The cache emits BOTH figures, so choosing between
+ * them is a pure function and lives here rather than being written twice in
+ * two components, which is how the AVG COST column and the lot drawer came to
+ * disagree about cost once already.
+ *
+ * 🔴 THE CURRENCY TRAVELS WITH THE NUMBER. Returning a bare number and
+ * labelling it somewhere else is exactly what produced the defect this screen
+ * already carries a comment about: a Canadian figure under a bare `$`. A
+ * caller cannot render this without also rendering what it is.
+ * ------------------------------------------------------------------------- */
+
+export type ArchCostDisplay = { value: number | null; currency: 'USD' | 'CAD' };
+
+const hasCost = (v: number | null | undefined): v is number =>
+  v !== null && v !== undefined && Number.isFinite(v);
+
+/** Row-level AVG COST: the USD average where it exists, else the CAD one. */
+export const rowCostDisplay = (row: ArchSummaryRow): ArchCostDisplay =>
+  hasCost(row.avgCostPerUnitUsd)
+    ? { value: row.avgCostPerUnitUsd, currency: 'USD' }
+    : { value: hasCost(row.avgCostPerUnit) ? row.avgCostPerUnit : null, currency: 'CAD' };
+
+/**
+ * One bundle's cost.
+ *
+ * The rungs, in order, and the middle one is the new and deliberate part:
+ *
+ *   1. this lot's USD cost;
+ *   2. this lot's CAD cost, labelled CAD. We know what THIS bundle cost and
+ *      only the conversion is missing, so falling through to the row's USD
+ *      average here would answer with another bundle's money;
+ *   3. the row average, for a lot with no posting history at all. That rung
+ *      predates this change and is kept: it is the best honest estimate
+ *      available and it is what this cell has always shown.
+ */
+export const lotCostDisplay = (lot: ArchLot, row: ArchSummaryRow): ArchCostDisplay => {
+  if (hasCost(lot.costPerUnitUsd)) return { value: lot.costPerUnitUsd, currency: 'USD' };
+  if (hasCost(lot.costPerUnit)) return { value: lot.costPerUnit, currency: 'CAD' };
+  return rowCostDisplay(row);
 };

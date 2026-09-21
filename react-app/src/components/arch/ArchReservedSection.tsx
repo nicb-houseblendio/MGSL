@@ -56,7 +56,7 @@ interface ArchReservedSectionProps {
    different names on one screen (this panel and ArchLotTable said Trader, the
    Open Orders tab said Sales rep). Marc-Antoine settled which one is the order's
    owner on the 2026-09-10 call at [32:53]. */
-const COLUMNS = ['Lot #', 'Container #', 'SO #', 'SO Creation Date', 'Reserved For', 'Ship Week', 'Customer', 'Sales rep'];
+const COLUMNS = ['Lot #', 'Container / Vessel', 'SO #', 'SO Creation Date', 'Reserved For', 'Ship Week', 'Customer', 'Sales rep'];
 
 export const ArchReservedSection = ({
   row, tallyImages, onUploadTally, allowFixture = false,

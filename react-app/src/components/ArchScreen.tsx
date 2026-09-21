@@ -123,11 +123,67 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
    * sandbox and the wizard's header cannot fill until it lands, which is the
    * "bon délais (10 secondes)" he reported. Shared, Edit has nothing to wait for.
    *
-   * Still gated: a trader who never opens an order never pays for the list. It is
-   * fetched when the orders tab is shown or the builder is opened, which is
-   * exactly when one of the two needs it.
+   * 🔴 NO LONGER GATED, Feedback 9 item 12: "Sales Order tab. Est-ce qu'on peut
+   * faire en sorte qu'elle popule directement (comme le TS)".
+   *
+   * It used to fetch only when the tab was shown or the builder opened, so that
+   * "a trader who never opens an order never pays for the list". That saved the
+   * request and spent the trader's time instead: arriving at the tab meant
+   * watching a spinner for the whole round trip.
+   *
+   * WHY THE TAB IS SLOW AND THE GRID IS NOT, measured 2026-09-21: the grid is
+   * served from the N/cache and answers in 358-599 ms. This list is queried LIVE
+   * and took 2,248-5,057 ms on the RESTlet leg. ⚠️ Treat those as a FLOOR: the
+   * browser calls the Suitelet leg FIRST, which the note above records as slower
+   * still, and a fallback pays both round trips. That is the same delay he
+   * reported as "bon delais (10 secondes)" in Feedback 6 item 15.
+   *
+   * So the fetch now starts with the screen. The cost does not go away, it moves
+   * OFF the critical path: it runs while the trader is reading the grid instead
+   * of while they wait on an empty tab. That serves his earlier complaint rather
+   * than contradicting it.
+   *
+   * ⚠️ WHAT THIS GIVES UP, stated plainly: every screen load now pays for a list
+   * many loads never look at. The page-load frequency has NOT been measured, so
+   * the justification is that the cost is off the critical path, not that it is
+   * small.
+   *
+   * 🔴 AND IT IS DELIBERATELY NOT CACHED LIKE THE GRID, which is what "comme le
+   * TS" would literally mean. Open orders change the moment a trader creates one,
+   * so a 15-minute cache would hide a just-created order for up to 15 minutes --
+   * and the builder's "add to existing order" mode decides which existing lines
+   * to keep or drop from `chosenOrder.lines`, so a stale list would feed the
+   * APPEND path's line arithmetic. The grid tolerates a cache because stock moves
+   * slowly and a shrink guard protects it; open orders have neither property. If
+   * this is ever cached it has to be invalidated ON WRITE by the order endpoint,
+   * not rebuilt on a timer.
    */
-  const openOrdersState = useArchOpenOrders(tab === 'orders' || wizardOpen);
+  const openOrdersState = useArchOpenOrders(true);
+
+  /*
+   * 🔴 AND REFRESHED WHEN THE TAB IS OPENED. The prefetch above is only a latency
+   * win; THIS is what keeps the change honest. Without it a trader who opens the
+   * tab forty minutes after loading the screen reads forty-minute-old orders, and
+   * a mount fetch that FAILED would show an error that may no longer be true.
+   *
+   * Safe to fire with rows on screen, verified rather than assumed: the blank
+   * state is gated `isLoading && orders.length === 0`, and the hook never clears
+   * `orders` at the start of a fetch -- it only ever calls `setOrders` with a
+   * result. So the prefetched rows stay visible while the refresh runs behind
+   * them, which is the whole point.
+   *
+   * `reload` is a `useCallback` with no deps, so it is stable and this cannot
+   * loop.
+   *
+   * Reads `.reload` off the state rather than destructuring the whole object,
+   * for the reason the existing alias below already records: the state object's
+   * identity changes every render, `reload` does not.
+   */
+  React.useEffect(() => {
+    if (tab !== 'orders') return;
+    openOrdersState.reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, openOrdersState.reload]);
 
   const handleEditOrder = React.useCallback((soNo: string) => {
     setEditingSO(soNo);

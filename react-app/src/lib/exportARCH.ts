@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import { convertQty, displaySuffix, unitListLabel, ARCH_UOM_M3 } from '@/lib/archUom';
 import type { ArchUnit } from '@/lib/archUom';
 import type { ArchSummaryRow, ArchTotals } from '@/types/arch';
+import { rowCostDisplay } from '@/lib/archLots';
 
 /**
  * Excel export for CWP ARCH.
@@ -69,6 +70,17 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
     'In Transit',
     'On Order',
     'Avg Cost/Unit',
+    /*
+     * 🔴 ADDED WITH Feedback 9 item 1, AND IT IS NOT DECORATION. The cost
+     * column is now USD on most rows and CAD on the rest, because a lot whose
+     * receipt date the NetSuite rate table does not cover cannot be converted.
+     * On screen each cell carries its own label and a tooltip. A spreadsheet has
+     * neither, and this file's own comment above says why that is worse rather
+     * than better: it gets forwarded and totalled by someone who never saw the
+     * screen. Two currencies in one unlabelled column is a wrong number waiting
+     * to be summed.
+     */
+    'Cost Currency',
   ];
 
   const dataRows: (string | number)[][] = rows.map((r) => [
@@ -93,7 +105,11 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
     // Empty cell, NOT 0. The grid already renders an em dash for an absent
     // cost; writing 0 into a spreadsheet would be worse, because a spreadsheet
     // gets forwarded and totalled by someone who never saw the screen.
-    r.avgCostPerUnit === null || r.avgCostPerUnit === undefined ? '' : r.avgCostPerUnit,
+    //
+    // Routed through the SAME selector the grid uses, so the sheet cannot drift
+    // from what the trader saw when they pressed export.
+    rowCostDisplay(r).value ?? '',
+    rowCostDisplay(r).value === null ? '' : rowCostDisplay(r).currency,
   ]);
 
   const totalsRow: (string | number)[] = [
@@ -122,6 +138,10 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
           qty(totals.inTransit, totalsUnit, uom),
           qty(totals.onOrder, totalsUnit, uom),
         ]),
+    // Avg Cost/Unit, then Cost Currency. Both blank: an average of per-unit
+    // costs across mixed species is not a number anyone should be handed, and
+    // it was blank before this change for the same reason.
+    '',
     '',
   ];
 

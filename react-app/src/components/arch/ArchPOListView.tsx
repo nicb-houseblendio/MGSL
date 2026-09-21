@@ -209,7 +209,7 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
       <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 12 }}>
         <thead>
           <tr>
-            {['PO #', 'Bundle', 'Supplier', 'Container #', 'ETA', `${label} (${displaySuffix(row.unit, uom)})`].map(
+            {['PO #', 'Bundle', 'Supplier', 'Container / Vessel', 'ETA', `${label} (${displaySuffix(row.unit, uom)})`].map(
               (h, i) => (
                 <th key={h} style={{ ...headerCell, textAlign: i >= 4 ? 'right' : 'left' }}>
                   {h}

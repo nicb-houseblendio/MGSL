@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { formatQty, formatCostPerUnit, displaySuffix, unitLabel } from '@/lib/archUom';
-import { isLotLocked, lockReason, lotQuantity, commitmentOn } from '@/lib/archLots';
+import { isLotLocked, lockReason, lotQuantity, commitmentOn, lotCostDisplay } from '@/lib/archLots';
 import { bucketLots, bucketGap, bucketGapReason, notSourcedNote } from '@/lib/archBuckets';
 import { lotAllocation, lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
 import {
@@ -550,7 +550,7 @@ export const ArchLotTable = ({
   /**
    * Width of the inline tally row, and it has to track the header cell for cell.
    *
-   * TEN are unconditional: caret, select, Lot #, Container #, Lengths, Grain, Avg
+   * TEN are unconditional: caret, select, Lot #, Container / Vessel, Lengths, Grain, Avg
    * width, Total/Avail., BF Cost, Tally. It was nine earlier on 2026-09-15 before the
    * caret column landed, seven before Lengths and Avg width, and six until
    * 2026-09-13, which is why the expanded panel once stopped a column short. `isOnHand`
@@ -836,7 +836,12 @@ export const ArchLotTable = ({
                     />
                   </th>
                   <th style={headerCellStyle}>Lot #</th>
-                  <th style={headerCellStyle}>Container #</th>
+                  {/* Feedback 9 item 2 let this cell hold a Lot Vessel as well as
+                      an ISO container code, so the header stops promising a
+                      number. Feeding a ship name into a column headed
+                      "Container #" is the same mislabel this screen already
+                      carries two comments about. */}
+                  <th style={headerCellStyle}>Container / Vessel</th>
                   {isOnHand && <th style={headerCellStyle}>Res.</th>}
                   {leadColumns.map((c) => (
                     <th key={c.label} style={headerCellStyle}>
@@ -1166,12 +1171,15 @@ export const ArchLotTable = ({
                               row average is still the fallback for a lot with no
                               posting history, because it is the best honest estimate
                               available and it is what this cell has always shown. */}
-                          {formatCostPerUnit(
-                            lot.costPerUnit === null || lot.costPerUnit === undefined
-                              ? row.avgCostPerUnit
-                              : lot.costPerUnit,
-                            row.unit
-                          )}
+                          {/* Feedback 9 item 1 moved the three-rung fallback into
+                              `lotCostDisplay`, which now also decides the currency.
+                              The rungs are unchanged; what is new is that rung 2
+                              keeps this bundle's own CAD figure rather than
+                              reaching for the row's USD average. */}
+                          {(() => {
+                            const cost = lotCostDisplay(lot, row);
+                            return formatCostPerUnit(cost.value, row.unit, cost.currency);
+                          })()}
                         </td>
                         <td style={{ ...cellStyle, textAlign: 'center', paddingLeft: 6, paddingRight: 10 }}>
                           <TallyButton

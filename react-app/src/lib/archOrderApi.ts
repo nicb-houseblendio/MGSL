@@ -233,6 +233,21 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
     incotermsId: draft.header.incotermsId || undefined,
     shipDate: draft.header.shipDate || undefined,
   },
+  /*
+   * Feedback 9 item 10. Sent as its own array, never merged into `lines`: the
+   * endpoint's `resolveLines` refuses anything without a lot and a location, and
+   * that refusal is what keeps the bundle guards unconditional.
+   *
+   * Omitted entirely when empty, so an order with no freight sends exactly the
+   * payload it sent before this existed.
+   */
+  charges: draft.charges && draft.charges.length
+    ? draft.charges.map((c) => ({
+        itemId: c.itemId,
+        quantity: c.quantity,
+        rate: c.rate,
+      }))
+    : undefined,
   lines: draft.lines.map((l) => ({
     itemId: l.itemId,
     locationId: l.locationId,
@@ -620,21 +635,44 @@ export const fetchMillingRates = async (dateIso: string): Promise<ArchMillingRat
  * health check failed would be a worse failure than the one it prevents, and the
  * server refuses the write anyway.
  */
+export interface ArchChargeItem {
+  id: string;
+  name: string;
+}
+
 export interface ArchWriteAuth {
   status: 'ok' | 'unknown';
   allowed: boolean;
   role: number | null;
   permittedRoles: number[];
+  /**
+   * Non-inventory charge items the Items step may add, Feedback 9 item 10.
+   *
+   * 🔴 THE SERVER'S ALLOWLIST IS THE AUTHORITY, not this list. The endpoint
+   * refuses any item outside it, because the browser can be bypassed and the
+   * account holds 31 active non-inventory items including `Temp Migration AP`,
+   * `Credit Memo Customer`, `Duty` and `Export Tax`. This is here so the picker
+   * shows the live NAMES rather than a hardcoded copy that can drift.
+   *
+   * Empty when the probe could not read them, which disables the affordance
+   * rather than offering an item the server would reject.
+   */
+  chargeItems: ArchChargeItem[];
 }
 
 export const fetchWriteAuth = async (): Promise<ArchWriteAuth> => {
-  const unknown: ArchWriteAuth = { status: 'unknown', allowed: true, role: null, permittedRoles: [] };
+  const unknown: ArchWriteAuth = {
+    status: 'unknown', allowed: true, role: null, permittedRoles: [], chargeItems: [],
+  };
   const url = endpointUrl();
   if (!url) return unknown;
   try {
     const sep = url.indexOf('?') === -1 ? '?' : '&';
     const r = await fetch(url + sep + 'action=health', { method: 'GET', credentials: 'include' });
-    const body = (await r.json()) as { ok?: boolean; role?: number; permittedRoles?: number[] };
+    const body = (await r.json()) as {
+      ok?: boolean; role?: number; permittedRoles?: number[];
+      chargeItems?: ArchChargeItem[] | { error?: string };
+    };
     if (!body || body.ok !== true || typeof body.role !== 'number' || !Array.isArray(body.permittedRoles)) {
       return unknown;
     }
@@ -643,6 +681,11 @@ export const fetchWriteAuth = async (): Promise<ArchWriteAuth> => {
       allowed: body.permittedRoles.indexOf(body.role) !== -1,
       role: body.role,
       permittedRoles: body.permittedRoles,
+      /* 🔴 ARRAY OR NOTHING. `chargeItemList` returns `{ error }` when the read
+       * failed, and that object is truthy: spreading it into a list would give
+       * the picker an entry with no id that the server would then refuse. An
+       * empty list disables the affordance instead, which is the honest state. */
+      chargeItems: Array.isArray(body.chargeItems) ? body.chargeItems : [],
     };
   } catch {
     return unknown;

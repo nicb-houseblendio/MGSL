@@ -463,6 +463,25 @@ define([
                  * empty one: the runtime cannot, because param() turns a missing
                  * parameter into null. Check it here after any object deploy. */
                 pdfEmail: orderLib.pdfEmailReadiness(),
+                /* Feedback 9 item 10: the non-inventory charge items the Items
+                 * step may offer, re-read from NetSuite so a label cannot drift
+                 * from the record and an inactivated item stops being offered.
+                 *
+                 * NOT gated on `mayDiagnose`, unlike the probes around it: this
+                 * one IS screen data. The wizard already calls this GET for
+                 * `role` and `permittedRoles`, so the list rides along rather
+                 * than needing a second round trip, and the server allowlist
+                 * stays the single source of what may be added. */
+                chargeItems: orderLib.chargeItemList(),
+                /* Read-only, Feedback 9 items 6 and 8: what this deployment's
+                 * runasrole can actually SEE. Gated on the write list like the
+                 * other probes, because it is a developer tool and the screen
+                 * calls none of them. Writes nothing.
+                 *
+                 * Read `entityGroupControl` FIRST: it must say refused, or this
+                 * probe ran with wider scope than the create path and the rest of
+                 * the object is answering the wrong question. */
+                roleVisibility: mayDiagnose ? orderLib.roleVisibility() : undefined,
                 /* Read-only probe: which sales reps SALESREP would mail for a given
                  * saved order. `?probeSo=<id>`, and it returns employee IDS only,
                  * never addresses.

@@ -447,6 +447,14 @@ export const marginColor = (pct: number): string =>
  * ⚠️ PLACEHOLDER FORMULA, same provenance as the rates. Three notional passes —
  * light (~4% off), standard (~12.5%), heavy (~20%) — proportional to nominal
  * thickness. Real dressing tables have to come from the client.
+ *
+ * ⚠️ AND `CUSTOMLISTPLANNAGE` IS NOT THE MISSING SOURCE, though the name says
+ * otherwise. Measured 2026-09-21: it holds `RO - ROUGH`, `S3S - PLANNE 3 FACES`,
+ * `S4S - PLANNE 4 FACES` and `S4S PW`, and it feeds `CUSTITEM_PLANNAGE`, an ITEM
+ * field. That is a SURFACING SPEC describing what a SKU is, not a target
+ * thickness for an order. Wiring it here would put four surfacing codes where a
+ * fraction belongs. Feedback 9 item 11 asked where these come from; the answer is
+ * this function, and the fix is the client's real dressing table.
  */
 export const planingOptions = (thickness: string): string[] => {
   // NOT anchored. This is called with the item DESCRIPTION ("Sapele 6/4 KD") as

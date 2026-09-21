@@ -181,6 +181,17 @@ export interface ArchCacheMeta {
   /** Rows carrying a cost, and rows showing an em dash because none was found. */
   costedRowCount?: number | null;
   uncostedRowCount?: number | null;
+  /**
+   * Currency the CAD cost figures are in. Not a display preference: it is what
+   * accounting book `costBook` is denominated in, and ARC is base CAD.
+   */
+  costCurrency?: string;
+  /**
+   * Rows that also carry a USD cost, Feedback 9 item 1. Lower than
+   * `costedRowCount` means some rows hold only lots whose receipt date the
+   * NetSuite rate table does not cover, and those cells show CAD.
+   */
+  usdCostedRowCount?: number | null;
 }
 
 interface ArchSummaryResponse {

@@ -1053,10 +1053,25 @@ define([
              *
              * Point this at anything else and they diverge silently, which is
              * precisely the shape of Feedback 6 item 18: two costs, both correct, for
-             * different questions. It is not theoretical. The USD Accounting Book
-             * (id 2) went live 2026-04-30 and carries a line for every ARCH posting:
-             * measured 2026-09-16 on ZEB84KD, 175 accounting lines in book 1 and 175
-             * in book 2.
+             * different questions. It is not theoretical.
+             *
+             * 🔴 CORRECTED 2026-09-21, AND THE CORRECTION MATTERS MORE THAN THE
+             * ORIGINAL WARNING. This block used to say the USD Accounting Book (id 2)
+             * "carries a line for every ARCH posting: measured 2026-09-16 on ZEB84KD,
+             * 175 accounting lines in book 1 and 175 in book 2". That measurement was
+             * real, but ZEB84KD is a CWP MTL item and it does NOT generalise. Read as
+             * though it did, it makes pointing this parameter at book 2 look like a
+             * free way to show cost in USD, which is exactly what Feedback 9 item 1
+             * asked for.
+             *
+             * Measured across every ARCH inventory adjustment: subsidiary ARC has
+             * 1,037 book-1 lines and ZERO book-2 lines. The 143/143 pair is all CWP
+             * MTL. So book 2 would not merely put the screen on a basis the split
+             * cannot follow, it would show NO COST AT ALL on the entire migrated
+             * inventory, which is the only inventory the client is looking at.
+             *
+             * The USD answer is the receipt-date conversion in `loadLotUsdFx` below,
+             * not this parameter.
              */
             if (_costBookCached !== ARCH_COST_BOOK_DEFAULT) {
                 log.error('ARCH cache — costing book is not the primary book',
@@ -1092,6 +1107,197 @@ define([
             log.error('ARCH cache lot costing failed',
                 'location=' + locationId + ' book=' + costBookId() + ' — the row keeps its ' +
                 'quantities and reports no cost. ' + e.message);
+            return {};
+        }
+    };
+
+    /* ══ USD cost at the receipt-date rate (Feedback 9 item 1) ═════════════
+     *
+     * Marc-Antoine, 2026-09-17: « BF cost : Est-ce qu'on peut afficher par
+     * defaut en USD? Au taux de la reception en inventaire ». This answers the
+     * question the cost-book block above left open ("the question to settle is
+     * the CONVERSION RULE and the rate, not the currency") and the one
+     * `archUom.ts` parks on `formatCostPerUnit`'s currency argument.
+     *
+     * 🔴 THE STORED COST IS CAD, AND THAT WAS MEASURED, NOT ASSUMED. His own
+     * rule names `custbody_lot_currency`, which would only matter if the figure
+     * were denominated in it. It is not, three independent ways (sandbox,
+     * 2026-09-21):
+     *
+     *   1. ARC is base CAD and `item.averagecost` is kept in base currency. The
+     *      IA line rate equals it to the decimal on 5 of 5 items sampled
+     *      (WOA441CKD 2314.785 vs 2314.785058; SAP54QCKD 3908.068 vs
+     *      3908.0665), so the adjustments booked at CAD average cost.
+     *   2. The same numeral appears under different currency tags. SAP54QCKD
+     *      carries 3908.068 on 13 Euro lots, 2 US Dollar lots and 10 untagged
+     *      lots across ten months of receipt dates; SAP84QCKD carries 5003.743
+     *      on both its CAD lot and its USD lots. One number cannot be
+     *      denominated in two currencies at once.
+     *   3. On the ONE path that does carry a real conversion, the inverse is
+     *      exact: an IR line's CAD `rate` divided by the receipt's own stamped
+     *      `exchangerate` returns the USD invoice price to the cent, 4 of 4
+     *      (BOC44KD 5547.72 / 1.38693 = 4000.00, which is the PO price).
+     *
+     * So `custbody_lot_currency` records the original PURCHASE currency and is
+     * NOT an input here. One formula covers all three branches he wrote: divide
+     * the CAD cost by the CAD-per-USD rate on the lot's receipt date. Test 3 is
+     * the proof that it reproduces his « prix du IR » exactly rather than
+     * approximating it.
+     *
+     * WHERE THE RECEIPT DATE COMES FROM. `custbody4` ("Lot_creation_date") on
+     * the adjustment that created the lot, which is the field he pointed at, and
+     * the IR's own `trandate` for a received lot, where `custbody4` is never set
+     * (0 of 2,051 item receipts carry it). Both mean "when this wood arrived",
+     * which is what he asked to convert at.
+     *
+     * ⚠️ EXACT DATE EQUALITY, NOT `effectivedate <= ?`. `archOrderCreate.js`
+     * reads the table the second way and is right to: it always asks about
+     * today. Asking about a HISTORICAL date that way is a trap. The table
+     * carries a 1970-01-01 stub row per currency, `fxsourcemethod = 'N/A'`, USD
+     * at 1.101. A 2023 receipt would match only that stub and convert at 1.101
+     * instead of ~1.35 — a silent 20% error wearing the face of a real rate.
+     * Exact equality cannot reach it.
+     *
+     * Exactness costs nothing because coverage is complete: 545 distinct
+     * effective dates across a 544-day span, 2025-03-26 to 2026-09-21, i.e.
+     * every calendar day. A receipt date inside that window always hits.
+     *
+     * A lot whose receipt date predates 2025-03-26 (70 of 1,060 on hand) or has
+     * no date at all (24) therefore gets NO USD figure, and the screen keeps
+     * showing its CAD cost LABELLED CAD rather than a converted guess. Loading
+     * historical rates into NetSuite is what fixes those, not code.
+     */
+    const USD_SYMBOL = 'USD';
+    const CAD_SYMBOL = 'CAD';
+
+    /**
+     * lotId -> CAD-per-USD rate on that lot's receipt date. A lot absent from
+     * the map has no convertible rate and must keep its CAD cost.
+     *
+     * One query per reduce call, mirroring `loadLotCosts`, and wrapped for the
+     * same reason: a conversion failure must degrade to "cost shown in CAD" and
+     * must never cost the row its quantities.
+     */
+    /**
+     * The Lot Vessel, or '' when the stored value is really the lot's own
+     * reference. Pure: no closure, no query, so a test can call it directly.
+     *
+     * Feedback 9 item 2. `custbody5` is genuinely a vessel field (ULTRA
+     * YORKSHIRE, SAGA FRAM, SEA WAVE, "Inbound Truck" on adjustments elsewhere
+     * in the account), but every ARCH row carries the lot's own prefix instead,
+     * and by Marc-Antoine's 2026-08-19 answer that number is the PO. Passing it
+     * through would ship a column headed Container holding PO numbers, which
+     * `poFromLotNo` forbids in capitals.
+     */
+    const vesselOrBlank = (lotNo, vessel) => {
+        const v = String(vessel == null ? '' : vessel).trim();
+        if (!v) return '';
+        const ln = String(lotNo == null ? '' : lotNo).trim().toUpperCase();
+        const vu = v.toUpperCase();
+        // The plain prefix case, which is all 210 of today's ARCH rows.
+        if (ln.indexOf(vu) === 0) return '';
+        /*
+         * 🔴 AND AN ALL-DIGIT VALUE ANYWHERE IN THE LOT NUMBER, because a prefix
+         * test alone has a hole today's data happens not to show: lot `001326-2`
+         * against vessel `1326` matches at position 2, so the prefix test would
+         * pass it and a PO number would reach the Container column after all.
+         * Measured 210 of 210 at position 1 and 0 elsewhere, but the leading-zero
+         * lot family exists in this account and one import away this is live.
+         *
+         * Restricted to all-digit values on purpose. A vessel is a NAME. Refusing
+         * every numeric value outright would also refuse `55946`, which sits on a
+         * real adjustment elsewhere and may be legitimate when it has nothing to
+         * do with the lot number.
+         */
+        if (/^[0-9]+$/.test(vu) && ln.indexOf(vu) !== -1) return '';
+        return v;
+    };
+
+    const loadLotReceiptFacts = (lotList) => {
+        if (!lotList || !lotList.length) return {};
+        const ids = [];
+        for (let i = 0; i < lotList.length; i++) {
+            if (lotList[i].lotId) ids.push(lotList[i].lotId);
+        }
+        if (!ids.length) return {};
+        try {
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT ia.inventorynumber AS lotid, ' +
+                    "  TO_CHAR(t.custbody4, 'YYYY-MM-DD') AS lotdt, " +
+                    '  t.custbody5           AS vessel, ' +
+                    '  crr.exchangerate       AS fxrec, ' +
+                    '  crt.exchangerate       AS fxtran ' +
+                    'FROM inventoryassignment ia ' +
+                    'JOIN transactionline tl ON tl.id = ia.transactionline ' +
+                    '                       AND tl.transaction = ia.transaction ' +
+                    'JOIN transaction t ON t.id = ia.transaction ' +
+                    'JOIN currency bc ON UPPER(bc.symbol) = ? ' +
+                    'JOIN currency tc ON UPPER(tc.symbol) = ? ' +
+                    'LEFT JOIN currencyrate crr ON crr.basecurrency = bc.id ' +
+                    '                          AND crr.transactioncurrency = tc.id ' +
+                    '                          AND crr.effectivedate = t.custbody4 ' +
+                    'LEFT JOIN currencyrate crt ON crt.basecurrency = bc.id ' +
+                    '                          AND crt.transactioncurrency = tc.id ' +
+                    '                          AND crt.effectivedate = t.trandate ' +
+                    'WHERE ia.inventorynumber IN (' + ids.map(() => '?').join(',') + ') ' +
+                    "  AND t.type IN ('InvAdjst', 'ItemRcpt') " +
+                    'ORDER BY ia.inventorynumber, t.trandate',
+                params: [CAD_SYMBOL, USD_SYMBOL].concat(ids),
+            }).asMappedResults() || [];
+            /*
+             * EARLIEST inbound wins. A lot can be touched by more than one
+             * adjustment (1,176 assignments over 1,096 lots), and the one that
+             * brought it in is the one whose rate he asked for. `ORDER BY` puts
+             * it first, so the first row per lot is kept and later ones ignored.
+             *
+             * 🔴 THE FALLBACK MEANS "THIS LOT HAS NO DATE", NOT "THIS LOT'S DATE
+             * HAS NO RATE". Those are different, and conflating them was a real
+             * defect caught on 2026-09-21 by recomputing every lot independently
+             * instead of reading the cache's own answer back:
+             *
+             *   lot 214065, custbody4 = 2023-03-29, adjustment posted 2026-09-16.
+             *   The old `fxrec > 0 ? fxrec : fxtran` found no 2023 rate (the table
+             *   starts 2025-03-26) and quietly used the 2026 rate, 1.3927, so a
+             *   2023 receipt was priced three years late. CA$31.07 became
+             *   US$22.31 with nothing on screen saying the rate was from another
+             *   year, and 70 lots were doing it.
+             *
+             * That is not what he asked for (« au taux de la réception ») and the
+             * error runs in the direction that understates cost and flatters
+             * margin: 2023 was about 1.34, so dividing by 1.39 is ~4% light.
+             *
+             * So: a lot that HAS a date is priced at that date's rate or not at
+             * all. Only a lot with NO date falls back to the transaction's own
+             * date, which is the receipt date on an IR and the import date on an
+             * adjustment that never got one. A refusal here is visible, because
+             * the cell then shows CAD and says so; a wrong rate is not.
+             *
+             * `seen` is tracked separately from `out` on purpose. Keying the
+             * dedupe off `out` would let a LATER adjustment supply a rate the
+             * earliest one was refused, which is the same substitution by
+             * another route.
+             */
+            const out = {};
+            const seen = {};
+            rows.forEach((r) => {
+                const id = String(r.lotid);
+                if (seen[id]) return;
+                seen[id] = true;
+                const fx = r.lotdt ? num(r.fxrec) : num(r.fxtran);
+                out[id] = {
+                    fx: fx > 0 ? fx : 0,
+                    // Raw. The prefix test that decides whether this is really a
+                    // vessel needs the lot NUMBER, which this query does not carry,
+                    // so it happens where the lot is emitted.
+                    vessel: String(r.vessel || '').trim(),
+                };
+            });
+            return out;
+        } catch (e) {
+            log.error('ARCH cache USD cost conversion failed',
+                'Every row keeps its CAD cost and reports no USD figure. ' +
+                (e.name || '') + ': ' + (e.message || String(e)));
             return {};
         }
     };
@@ -2995,6 +3201,27 @@ define([
             const tallies  = loadTallies();
             // Same one-query-per-run shape as loadTallies. See loadSplitEvents.
             const splits   = loadSplitEvents();
+            // One query per pair, carrying BOTH the receipt-date USD rate
+            // (Feedback 9 item 1) and the Lot Vessel (item 2). Loaded here rather
+            // than in the cost block below because the lot map needs the vessel.
+            const lotFacts = loadLotReceiptFacts(pair.lots);
+
+            /**
+             * The Lot Vessel for a lot, or '' when the stored value is really the
+             * lot's own reference rather than a vessel. See the containerNo comment
+             * below for why that distinction is load-bearing.
+             *
+             * 🔴 THE RULE IS `vesselOrBlank`, DELIBERATELY PURE AND AT MODULE SCOPE,
+             * so it can be executed by a test instead of only asserted on as text.
+             * The refusal path has 210 real rows behind it; the ACCEPT path has none,
+             * because no ARCH adjustment carries a genuine vessel yet, and a rule
+             * whose accept path has never run is a rule nobody has tested. There is
+             * no record-write tooling here to seed one (SuiteQL is SELECT-only in
+             * both accounts), and seeding it by deploying a writer into a sandbox the
+             * client is testing in is a worse trade than making this callable.
+             */
+            const vesselFor = (l) => vesselOrBlank(
+                l.lotNo, (lotFacts[String(l.lotId)] || {}).vessel);
 
             const lots = pair.lots.map((l) => {
                 const lotKey = String(l.lotNo || '').trim().toUpperCase();
@@ -3073,13 +3300,37 @@ define([
                     // Derived from the lot-number prefix, which IS the PO by
                     // Marc-Antoine's own bundle nomenclature — see poFromLotNo.
                     po:            poFromLotNo(l.lotNo),
-                    // A container can span several POs (2026-08-19), so the lot-number
-                    // prefix that gives `po` above can never give a container. The only
-                    // route is the packing-list capture, and as of 2026-09-07 that route
-                    // EXISTS: custrecord_msl_plc_container_no was created 09-03 and
-                    // loadTallies reads it. Empty where no capture matches the lot, which
-                    // is still most lots.
-                    containerNo:   (tally && tally.container) || '',
+                    /*
+                     * A container can span several POs (2026-08-19), so the lot-number
+                     * prefix that gives `po` above can never give a container. The
+                     * packing-list capture is the authoritative route and stays FIRST:
+                     * custrecord_msl_plc_container_no was created 09-03, loadTallies
+                     * reads it, and it holds a real ISO 6346 code (capture record 1 is
+                     * "PL 314307 IPE MEDU7574050").
+                     *
+                     * SECOND RUNG, Feedback 9 item 2: Marc-Antoine asked to feed this
+                     * from `custbody5` (Lot Vessel) on an inventory adjustment. He is
+                     * right about the field. Measured account-wide, it holds real ship
+                     * names on other adjustments: ULTRA YORKSHIRE, SAGA ANDORINHA, SAGA
+                     * FRAM, SEA WAVE, JNS LAKE, KARLINO, and "Inbound Truck".
+                     *
+                     * 🔴 BUT IT IS REFUSED WHEN IT IS MERELY THIS LOT'S OWN PREFIX,
+                     * AND THAT IS THE WHOLE POINT OF THE RUNG. On the ARCH import it was
+                     * populated with the lot group rather than a vessel: 210 of 210 ARCH
+                     * adjustments carry a value that is exactly the prefix of the lot
+                     * they assign (lot 314307-1535, vessel "314307"). By his OWN earlier
+                     * answer that number is the PO -- « le 316027 c'est le numéro du PO
+                     * qu'on utilise dans notre nomenclature du bundle », 2026-08-19 --
+                     * so passing it through would ship a column headed Container holding
+                     * PO numbers, which is exactly what `poFromLotNo` above forbids in
+                     * capitals. Two of his instructions collide and the prefix test is
+                     * what satisfies both.
+                     *
+                     * A real vessel can never be a prefix of the lot number, so this
+                     * costs nothing and self-heals: the day the import carries ULTRA
+                     * YORKSHIRE instead of 314307, it appears with no redeploy.
+                     */
+                    containerNo:   (tally && tally.container) || vesselFor(l) || '',
                     onHand:        l.storedQty / rate,
                     // Per-lot figures exist ONLY where the order line carries an
                     // inventory-detail assignment. A line without one contributes
@@ -3206,6 +3457,18 @@ define([
             const lotCosts = loadLotCosts(pair.lots, pair.locationId);
             let costQty = 0;
             let costVal = 0;
+            /*
+             * The USD average is weighted over the lots that have BOTH a cost
+             * and a rate, which is the rule `costQty` already applies to
+             * costing: a lot that cannot be converted is excluded from both
+             * sides rather than counted at zero. `costUsdPartial` says when the
+             * two averages therefore describe different lot sets, so the cell
+             * can mark itself instead of quietly implying that
+             * avgCostPerUnitUsd * fx == avgCostPerUnit.
+             */
+            let costQtyUsd = 0;
+            let costValUsd = 0;
+            let costUsdMissing = 0;
             lots.forEach((l) => {
                 const perBase = lotCosts[l.lotId];
                 const costed = perBase !== null && perBase !== undefined && isFinite(perBase);
@@ -3231,12 +3494,37 @@ define([
                  * to make it too, or an uncosted bundle prices at free.
                  */
                 l.costPerUnit = costed ? Math.round(perBase * rate * 100) / 100 : null;
+                /*
+                 * DIVIDE, because `lotFx` is CAD per USD (1.39434 on 2026-08-10,
+                 * proven against the rate NetSuite itself stamped on IR406). The
+                 * direction is the whole risk in this line: multiplying turns a
+                 * CA$2.31 cost into US$3.22 instead of US$1.66, and US$3.22 is
+                 * just as plausible a number to look at.
+                 *
+                 * Null, never zero, and null for a DIFFERENT reason than
+                 * `costPerUnit`: no rate, rather than no posting history. Both
+                 * render an em dash, and the CAD figure is still there to show.
+                 */
+                const fxf = lotFacts[String(l.lotId)];
+                const fx = fxf ? fxf.fx : 0;
+                l.costPerUnitUsd = (costed && fx > 0)
+                    ? Math.round((perBase * rate / fx) * 100) / 100
+                    : null;
                 if (!costed) return;
                 if (!(l.onHand > 0)) return;
                 costQty += l.onHand;
                 costVal += l.onHand * (perBase * rate);
+                if (fx > 0) {
+                    costQtyUsd += l.onHand;
+                    costValUsd += l.onHand * (perBase * rate / fx);
+                } else {
+                    costUsdMissing += 1;
+                }
             });
             const avgCostPerUnit = costQty > 0 ? Math.round((costVal / costQty) * 100) / 100 : null;
+            const avgCostPerUnitUsd = costQtyUsd > 0
+                ? Math.round((costValUsd / costQtyUsd) * 100) / 100 : null;
+            const costUsdPartial = costUsdMissing > 0 && costQtyUsd > 0;
 
             const onHand = lots.reduce((s, l) => s + l.onHand, 0);
             // Quantity sitting on a held lot, in display units. Reported, not
@@ -3420,6 +3708,17 @@ define([
                 // nothing. null is self-describing: the formatter shows an em
                 // dash, so an absent cost can never be read as a measured one.
                 avgCostPerUnit: avgCostPerUnit,
+                // Same figure at the receipt-date USD rate, and null on the
+                // same terms. Emitted BESIDE the CAD number rather than
+                // replacing it: the SO wizard converts CAD to the order's
+                // currency itself, at the ORDER's stamped rate, and an
+                // already-converted cost arriving there would be converted a
+                // second time. `SOWizard.tsx` measured that mistake once at 11
+                // margin points, in the direction that hides a loss.
+                avgCostPerUnitUsd: avgCostPerUnitUsd,
+                // True when SOME costed lot in this row had no rate, so the two
+                // averages cover different lots and the cell should say so.
+                costUsdPartial: costUsdPartial,
                 detailKey:    pair.itemId + '-' + pair.locationId,
             };
 
@@ -3595,6 +3894,13 @@ define([
             // does not reliably survive between stages (see `skippedLots`).
             const costedRows = rows.filter((r) =>
                 r.avgCostPerUnit !== null && r.avgCostPerUnit !== undefined).length;
+            // Counted the same way and for the same reason. This one also
+            // answers a question only the client can otherwise guess at: how
+            // much of the grid the USD column actually covers. A row is
+            // uncovered when no lot on it has a receipt date the rate table
+            // reaches, which is data to load, not a bug to fix.
+            const usdCostedRows = rows.filter((r) =>
+                r.avgCostPerUnitUsd !== null && r.avgCostPerUnitUsd !== undefined).length;
 
             const payload = JSON.stringify(rows);
             const payloadBytes = utf8Bytes(payload);
@@ -3851,6 +4157,11 @@ define([
                     costBook:        costBookId(),
                     costedRowCount:  costedRows,
                     uncostedRowCount: rows.length - costedRows,
+                    // Feedback 9 item 1. `costCurrency` is what the CAD figures
+                    // are in and does not change; `usdCostedRowCount` is how many
+                    // rows carry the converted figure too.
+                    costCurrency:       CAD_SYMBOL,
+                    usdCostedRowCount:  usdCostedRows,
                 }),
                 ttl: CacheKeys.TTL_SUMMARY,
             });

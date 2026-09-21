@@ -55,6 +55,16 @@ export interface ArchCustomer {
   termsId?: string | null;
   termsName?: string | null;
   subsidiaryId?: string | null;
+  /**
+   * Subsidiary label, carried since Feedback 9 item 6 so the picker can say
+   * which customers are NOT ARC.
+   *
+   * The service sorts ARC's 321 to the top and leaves the other 465
+   * selectable, because 30 of the 62 ARCH sales orders in this account belong
+   * to CWP MTL customers across 9 companies, and a hard filter would drop
+   * those 9 out of the picker while their orders stayed on the screen.
+   */
+  subsidiaryName?: string | null;
 }
 
 export type ArchCustomerSource = 'loading' | 'netsuite' | 'fixtures';
@@ -74,7 +84,7 @@ export interface ArchCustomersState {
 }
 
 /** Selects the ARCH service on the shared RESTlet. Mirrors useArchSummaryData. */
-const ARCH_SUBSIDIARY_ID = 9;
+export const ARCH_SUBSIDIARY_ID = 9;
 
 const asFixtures = (): ArchCustomer[] =>
   FIXTURE_CUSTOMERS.map((name) => ({ id: null, name }));

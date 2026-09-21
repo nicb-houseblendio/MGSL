@@ -26,6 +26,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { formatQty, formatCostPerUnit, displaySuffix, unitListLabel } from '@/lib/archUom';
+import { rowCostDisplay } from '@/lib/archLots';
 import { ARCH_METRIC_COLORS, ARCH_FOOTER_COLORS } from '@/components/arch/archColors';
 import type { ArchSummaryRow, ArchDetailKey, ArchTotals } from '@/types/arch';
 
@@ -361,11 +362,29 @@ export const InventoryTableARCH = ({
         // The header can no longer name the unit — one column spans rows priced
         // per BF, per SQFT and per piece — so each cell carries its own suffix.
         header: ({ column }) => <SortHeader label="AVG COST" column={column} align="right" />,
-        cell: ({ row }) => (
-          <span className="tabular-nums font-mono text-xs text-right block">
-            {formatCostPerUnit(row.original.avgCostPerUnit, row.original.unit)}
-          </span>
-        ),
+        // Feedback 9 item 1: USD at each lot's receipt-date rate where the rate
+        // table reaches it, CAD otherwise, and the cell says which. A row can
+        // legitimately differ from the row above it here, so the currency
+        // cannot move up into the header.
+        cell: ({ row }) => {
+          const cost = rowCostDisplay(row.original);
+          return (
+            <span
+              className="tabular-nums font-mono text-xs text-right block"
+              title={
+                cost.currency === 'CAD'
+                  ? 'Shown in CAD: no lot on this row has a receipt date covered by '
+                    + 'the NetSuite exchange rate table.'
+                  : row.original.costUsdPartial
+                    ? 'USD at each lot\u2019s receipt-date rate. Some lots on this row '
+                      + 'could not be converted and are excluded from this average.'
+                    : 'USD at each lot\u2019s receipt-date rate.'
+              }
+            >
+              {formatCostPerUnit(cost.value, row.original.unit, cost.currency)}
+            </span>
+          );
+        },
         size: 115,
       },
     ];

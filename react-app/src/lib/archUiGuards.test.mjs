@@ -846,8 +846,13 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
         s.indexOf("so = record.load({ type: record.Type.SALES_ORDER"), null);
   ok('  ...testing the department BY NAME, never the internal id',
     /dept === HARDWOOD_DEPARTMENT/.test(s) && !/department === 11/.test(s), null);
+  // 🔴 RELOCATED 2026-09-21, not removed. The exclusion moved into the shared
+  // `inArchScope`, which refuses decking BEFORE testing either arm of the
+  // department/subsidiary union -- a stronger form of the same rule, because it
+  // cannot be forgotten on the new arm.
   ok('  ...and honouring the same decking exclusions as the line check',
-    /NON_ARCH_DEPARTMENT_ITEMS\.indexOf\(code\) === -1/.test(s), null);
+    /if \(NON_ARCH_DEPARTMENT_ITEMS\.indexOf\(code\) !== -1\) return false;/.test(s) &&
+      /if \(inArchScope\(dept, rows\[i\]\.sub, code\)\)/.test(s), null);
 
   // The distinction that matters: a read that FAILED must not be reported as a
   // business rule about the order. Three separate refusals, three separate causes.
@@ -1299,8 +1304,12 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   const scr = src('components/ArchScreen.tsx');
   const wiz = src('components/arch/SOWizard.tsx');
   const view = src('components/arch/ArchOpenOrdersView.tsx');
+  // 🔴 THE GATE TEXT THIS USED TO MATCH IS GONE, ON PURPOSE. Feedback 9 item 12
+  // asked the tab to populate on arrival, so the fetch is no longer gated. What
+  // item 15 actually bought is UNCHANGED and is what is asserted now: ONE hook,
+  // owned by the screen, handed to both consumers, so Edit waits for nothing.
   ok('edit speed: the screen owns the open-order list',
-    /const openOrdersState = useArchOpenOrders\(tab === 'orders' \|\| wizardOpen\);/.test(scr) &&
+    /const openOrdersState = useArchOpenOrders\(true\);/.test(scr) &&
       /ordersState=\{openOrdersState\}/.test(scr), null);
   ok('  ...and both consumers take it from the screen',
     /ordersState\?: ArchOpenOrdersState;/.test(wiz) &&
@@ -1310,9 +1319,39 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('  ...and the fallback hook cannot run a second request',
     /useArchOpenOrders\(!ordersState\)/.test(wiz) &&
       /useArchOpenOrders\(!ordersState\)/.test(view), null);
-  // A trader who never opens an order must still not pay for the list.
-  ok('  ...and it is still not fetched for someone who never opens an order',
-    /tab === 'orders' \|\| wizardOpen/.test(scr), null);
+  /* 🔴 THIS GUARD IS RETIRED, AND DELIBERATELY REPLACED RATHER THAN DELETED.
+   *
+   * It read: "A trader who never opens an order must still not pay for the
+   * list", and it pinned the lazy gate. Feedback 9 item 12 reverses that
+   * decision on purpose -- "Sales Order tab. Est-ce qu'on peut faire en sorte
+   * qu'elle popule directement (comme le TS)" -- so every screen load now pays
+   * for a list many loads never look at.
+   *
+   * That is a real cost and it is not pretended away. What justifies it is that
+   * the cost moves OFF the critical path: the request runs while the trader
+   * reads the grid rather than while they wait on an empty tab, which serves the
+   * very complaint item 15 came from ("bon delais (10 secondes)"). Page-load
+   * frequency has NOT been measured, so that is the argument, not smallness.
+   *
+   * Two things now protect the trader in its place, and they are what this
+   * block asserts.
+   */
+  // 1. The prefetch must be paired with a refresh when the tab opens. Without
+  //    it, a trader arriving forty minutes later reads forty-minute-old orders,
+  //    and a mount fetch that FAILED shows an error that may no longer be true.
+  //    The prefetch is only the latency win; this is what keeps it honest.
+  ok('  ...and the prefetch is paired with a refresh when the tab is opened',
+    /if \(tab !== 'orders'\) return;/.test(scr) &&
+      /openOrdersState\.reload\(\);/.test(scr), null);
+  // 2. 🔴 AND IT IS NOT CACHED ON A TIMER, which is what "comme le TS" would
+  //    literally mean and is the one option that is unsafe. Open orders change
+  //    the moment a trader creates one, so a 15-minute cache hides a
+  //    just-created order -- and the builder decides which existing lines to
+  //    keep or drop from `chosenOrder.lines`, so a stale list would feed the
+  //    APPEND path's arithmetic. The grid tolerates a cache because stock moves
+  //    slowly and a shrink guard protects it; this has neither property.
+  ok('  ...and the reason it is NOT cached like the grid is written down',
+    /invalidated ON WRITE by the order endpoint/.test(scr), null);
 }
 
 // Item 15, the server half. `BUILTIN.DF(i.department) = ?` is a function over the
@@ -1322,15 +1361,29 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
 // department 11 is "Hardwood" in sandbox and does not exist in production.
 {
   const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
+  // 🔴 THE OPTIMISATION SURVIVES INSIDE THE UNION. Feedback 9 added the
+  // subsidiary arm because the department alone matched 25 items against the
+  // union's 168, leaving the tab empty. The indexed `i.department = ?` comparison
+  // is still there and still first; what is new is an OR beside it.
+  //
+  // 🔴 AND THE NEW ARM IS THE PATTERN THIS BLOCK OPTIMISED AWAY -- a function
+  // over the joined rows. It is unavoidable: `i.subsidiary` is NOT_EXPOSED on this
+  // tenant and a raw comparison is a hard 400, on `item` as well as on
+  // `transaction`. Measured cost of the extra arm on the item count: 305ms -> 384ms
+  // and 541ms -> 614ms, about 75ms. Paid deliberately, because the alternative
+  // measured is a tab that shows nothing.
   ok('open orders: the department filter compares the column, not its label',
     /const hardwoodDepartmentId = \(\) => \{/.test(svc) &&
-      /sql: 'i\.department = \?'/.test(svc), null);
+      /sql: '\(i\.department = \? OR BUILTIN\.DF\(i\.subsidiary\) = \?\)'/.test(svc), null);
   ok('  ...and the id is resolved from the name, never hardcoded',
     /SELECT id FROM department WHERE name = \?/.test(svc) &&
       !/'i\.department = \d/.test(svc), null); // a literal id inside the SQL, not the comment
   // A renamed or nested department must cost speed, never rows.
+  // Same fallback, now carrying both arms. A renamed or nested department must
+  // still cost speed rather than rows.
   ok('  ...and it falls back to the old predicate when the lookup finds nothing',
-    /\? \{ sql: 'BUILTIN\.DF\(i\.department\) = \?', param: HARDWOOD_DEPARTMENT \}/.test(svc), null);
+    /sql: '\(BUILTIN\.DF\(i\.department\) = \? OR BUILTIN\.DF\(i\.subsidiary\) = \?\)'/.test(svc) &&
+      /params: \[HARDWOOD_DEPARTMENT, ARCH_SUBSIDIARY_NAME\]/.test(svc), null);
 }
 
 // Item 15, adversarial pass. Sharing one list removed an ACCIDENT: the wizard used
@@ -1375,20 +1428,35 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   const drw = src('components/arch/ArchLotTable.tsx');
   ok('18: a cart line is priced at its own bundle, not the row',
     /costPerBF: lot\.costPerUnit === null \|\| lot\.costPerUnit === undefined/.test(scr), null);
+  // 🔴 RELOCATED, NOT REMOVED, by Feedback 9 item 1. The drawer used to inline
+  // the fallback chain; it now delegates to `lotCostDisplay`, which applies the
+  // same rungs AND picks the currency. These two assertions follow the invariant
+  // to where it lives instead of asserting on text that no longer exists, which
+  // would have been the easy and wrong way to make this file green.
+  const lots = src('lib/archLots.ts');
   ok('18:  ...and so is the drawer column that used to repeat one number per row',
-    /lot\.costPerUnit === null \|\| lot\.costPerUnit === undefined/.test(drw), null);
+    /lotCostDisplay\(lot, row\)/.test(drw) &&
+      /if \(hasCost\(lot\.costPerUnit\)\) return \{ value: lot\.costPerUnit/.test(lots), null);
   // Null is not zero: an uncosted lot would otherwise price at free, and the row
   // average has always excluded those from both sides rather than counting them.
   ok('18:  ...and an uncosted lot falls back to the row, never to zero',
-    /\? row\.avgCostPerUnit/.test(scr) && /\? row\.avgCostPerUnit/.test(drw), null);
+    /\? row\.avgCostPerUnit/.test(scr) && /return rowCostDisplay\(row\);/.test(lots), null);
 }
 
 // Item 18, adversarial pass. The screen's costing book is a deployment parameter;
 // the write path's is not. `archSplitExecute` asks for no book on purpose, because
 // an inventory adjustment posts to the PRIMARY one. Book 1 is primary here, so they
-// agree today. The USD book (id 2) went live 2026-04-30 and carries a line for every
-// ARCH posting -- 175 in each book on ZEB84KD, measured -- so a parameter change
-// would put the screen on a basis the adjustment cannot follow, silently.
+// agree today. A parameter change would put the screen on a basis the adjustment
+// cannot follow, silently.
+//
+// 🔴 CORRECTED 2026-09-21. This comment used to say the USD book (id 2) "carries
+// a line for every ARCH posting -- 175 in each book on ZEB84KD, measured". That
+// measurement was real but it does NOT generalise, and reading it as though it did
+// made flipping the cost book look like a free way to answer Feedback 9 item 1.
+// ZEB84KD is a CWP MTL item. Measured across every ARCH inventory adjustment:
+// 1,037 book-1 lines for subsidiary ARC and ZERO book-2 lines; the 143/143 pair is
+// all CWP MTL. So pointing the screen at book 2 would blank the cost on the whole
+// migrated inventory, which is the only inventory the client is looking at.
 {
   const mr = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js');
   ok('18adv: a costing book other than the primary says so, loudly',
@@ -1419,6 +1487,347 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /const lotCostCache = \{\};/.test(svc), null);
   ok('5-18:  ...and falling back to the row average, never to zero',
     /lotCostCache\[pair\] = map;/.test(svc) && /if \(!hit\) return null;/.test(svc), null);
+}
+
+// Feedback 9 item 1, 2026-09-21. « BF cost : Est-ce qu'on peut afficher par défaut
+// en USD? Au taux de la réception en inventaire ». The stored cost is CAD (proven
+// three ways in `archCostCurrency.test.mjs`), so this is a conversion, and the
+// conversion has three ways to go wrong that no type checker can see.
+{
+  const mr = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js');
+  const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
+  const scr = src('components/ArchScreen.tsx');
+  const grid = src('components/InventoryTableARCH.tsx');
+  const drw = src('components/arch/ArchLotTable.tsx');
+
+  // DIRECTION. `lotFx` is CAD per USD, so cost DIVIDES. Multiplying turns CA$2.31
+  // into US$3.22 rather than US$1.66 -- an equally plausible number to look at.
+  ok('f9-1: the per-lot USD cost divides by the rate, never multiplies',
+    /perBase \* rate \/ fx/.test(mr) && !/perBase \* rate \* fx/.test(mr), null);
+
+  // 🔴 EXACT DATE EQUALITY. `currencyrate` carries a 1970-01-01 stub row per
+  // currency, fxsourcemethod 'N/A', USD at 1.101. An `effectivedate <= ?` lookup
+  // for a 2023 receipt matches ONLY that stub and converts at 1.101 instead of
+  // ~1.35: a silent 20% error wearing the face of a real rate. `archOrderCreate`
+  // reads the table the other way and is right to, because it only ever asks
+  // about today. This one asks about history and must not.
+  ok('f9-1: the receipt-date rate is read by exact date, so the 1970 stub is unreachable',
+    /crr\.effectivedate = t\.custbody4/.test(mr) &&
+      /crt\.effectivedate = t\.trandate/.test(mr) &&
+      // Alias-qualified, because real SQL here always writes `crr.`/`crt.`; a bare
+      // `effectivedate <= ?` also appears in the doc comment above the helper as the
+      // thing NOT to do, and the first version of this guard failed on that prose.
+      !/cr[a-z]*\.effectivedate <=/.test(mr), null);
+
+  // The row average is over per-lot USD, not the CAD average over one rate. A row
+  // holding bundles received on different days converts at different rates, which
+  // is the normal case, not an edge one.
+  ok('f9-1: the row USD average is weighted per lot, not the CAD average over one rate',
+    /costValUsd \+= l\.onHand \* \(perBase \* rate \/ fx\)/.test(mr) &&
+      /costValUsd \/ costQtyUsd/.test(mr), null);
+
+  // 🔴 THE CAD FIGURE IS ADDED TO, NOT REPLACED, AND THE CART MUST KEEP READING IT.
+  // `SOWizard` multiplies every line by `costFx` to reach the order's currency at
+  // the ORDER's stamped rate. Feed it an already-converted cost and it converts
+  // twice: measured once at 11 margin points, in the direction that hides a loss.
+  ok('f9-1: the cart still carries the CAD cost, so the wizard cannot convert twice',
+    !/costPerUnitUsd/.test(scr) && !/avgCostPerUnitUsd/.test(scr), null);
+  ok('f9-1:  ...and the builder still emits the CAD figure beside the USD one',
+    /avgCostPerUnit: avgCostPerUnit,/.test(mr) &&
+      /avgCostPerUnitUsd: avgCostPerUnitUsd,/.test(mr), null);
+
+  // The currency travels with the number. A bare `$` on a Canadian figure is the
+  // defect `formatCostPerUnit` already carries a comment about, and this change
+  // makes the column genuinely mixed, so neither cell may omit it.
+  ok('f9-1: both cost surfaces render the currency they were handed',
+    /formatCostPerUnit\(cost\.value, row\.original\.unit, cost\.currency\)/.test(grid) &&
+      /formatCostPerUnit\(cost\.value, row\.unit, cost\.currency\)/.test(drw), null);
+
+  // META IS AN ALLOWLIST and this has been missed twice before, per its own
+  // comment. A builder field absent here is invisible to the browser.
+  ok('f9-1: the new meta fields are named in the service allowlist',
+    /costCurrency:\s+meta\.costCurrency/.test(svc) &&
+      /usdCostedRowCount:\s+meta\.usdCostedRowCount/.test(svc), null);
+
+  // The spreadsheet must not drift from the screen. Found in the adversarial
+  // pass on this item: the export wrote `avgCostPerUnit` directly, so a sheet
+  // exported from a USD screen carried CAD numbers in an unlabelled column, and
+  // this file's own comment says a spreadsheet gets forwarded and totalled by
+  // someone who never saw the screen. It now routes through the same selector.
+  const exp = src('lib/exportARCH.ts');
+  ok('f9-1: the export uses the same selector as the grid, and names the currency',
+    /rowCostDisplay\(r\)\.value/.test(exp) &&
+      /rowCostDisplay\(r\)\.currency/.test(exp) &&
+      /'Cost Currency'/.test(exp) &&
+      !/r\.avgCostPerUnit/.test(exp), null);
+
+  // 🔴 THE FALLBACK MEANS "NO LOT DATE", NOT "NO RATE FOR THE LOT DATE".
+  // Caught in the adversarial pass by recomputing all 860 lots independently:
+  // lot 214065 carries custbody4 = 2023-03-29 and its adjustment posted
+  // 2026-09-16, so the old `fxrec > 0 ? fxrec : fxtran` found no 2023 rate and
+  // silently used the 2026 one. CA$31.07 became US$22.31 at a rate from another
+  // year, on 70 lots, and it runs ~4% light, which flatters margin.
+  ok('f9-1: a lot WITH a receipt date is priced at that date or not at all',
+    /const fx = r\.lotdt \? num\(r\.fxrec\) : num\(r\.fxtran\);/.test(mr) &&
+      !/num\(r\.fxrec\) > 0 \? num\(r\.fxrec\) : num\(r\.fxtran\)/.test(mr), null);
+  // And the dedupe cannot become the same substitution by another route: keying
+  // it off `out` would let a LATER adjustment supply a rate the earliest one was
+  // refused.
+  ok('f9-1:  ...and the earliest inbound decides, with seen tracked apart from out',
+    /const seen = \{\};/.test(mr) && /if \(seen\[id\]\) return;/.test(mr), null);
+
+  // A costing failure must cost the USD figure and nothing else. The row's
+  // quantities are the reason the screen exists.
+  ok('f9-1: a failed conversion degrades to CAD rather than losing the row',
+    /ARCH cache USD cost conversion failed/.test(mr) &&
+      /Every row keeps its CAD cost/.test(mr), null);
+}
+
+// Feedback 9 item 2, 2026-09-21. "Container : Sur un IA est-ce qu'on peut feed a
+// partir de custbody5 (lot Vessel)". He is right about the field -- account-wide it
+// holds real ship names (ULTRA YORKSHIRE, SAGA FRAM, SEA WAVE, "Inbound Truck") --
+// but on the ARCH import all 210 vessel-bearing adjustments carry the lot's own
+// prefix instead, and by his 2026-08-19 answer that number is the PO.
+{
+  const mr = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js');
+  const grid = src('components/InventoryTableARCH.tsx');
+  const drw = src('components/arch/ArchLotTable.tsx');
+  const cfg = src('config/businessConfig.ts');
+
+  // 🔴 THE PREFIX REFUSAL IS THE WHOLE ITEM. Without it this ships a column
+  // headed Container holding PO numbers, which `poFromLotNo` forbids in capitals
+  // and which is why the column was pulled off the main grid on 2026-08-19.
+  ok('f9-2: a Lot Vessel that is merely the lot prefix is refused',
+    /const vesselFor = \(l\) =>/.test(mr) &&
+      /if \(ln\.indexOf\(vu\) === 0\) return '';/.test(mr), null);
+  // The prefix test alone has a hole today's data does not show: lot `001326-2`
+  // against vessel `1326` matches at position 2, so a PO number would reach a
+  // column headed Container after all. Measured 210 of 210 at position 1 and 0
+  // elsewhere, but the leading-zero lot family exists in this account.
+  ok('f9-2:  ...and so is an all-digit value sitting anywhere in the lot number',
+    /if \(\/\^\[0-9\]\+\$\/\.test\(vu\) && ln\.indexOf\(vu\) !== -1\) return '';/.test(mr), null);
+
+  // The packing-list capture holds a real ISO 6346 code and must win over a
+  // vessel name. Order matters in the `||` chain, so it is asserted literally.
+  ok('f9-2:  ...and the packing-list container still wins over the vessel',
+    /containerNo:\s+\(tally && tally\.container\) \|\| vesselFor\(l\) \|\| ''/.test(mr), null);
+
+  // `po` is deliberately NOT changed by this item. The prefix is still reported as
+  // the PO, which is his own nomenclature, and repairing that column is a separate
+  // decision that has not been taken.
+  ok('f9-2:  ...and po is still the lot prefix, untouched by this item',
+    /po:\s+poFromLotNo\(l\.lotNo\)/.test(mr), null);
+
+  // The cell can now hold a ship name, so the header stops promising a number.
+  ok('f9-2: the detail header no longer promises a container NUMBER',
+    /Container \/ Vessel/.test(drw) && !/Container #<\/th>/.test(drw), null);
+
+  // 🔴 AND THE MAIN GRID STILL HAS NO CONTAINER COLUMN. He asked for it off on
+  // 2026-08-19 and that decision is not reopened by giving the field a source.
+  ok('f9-2: the main grid still carries no container column or filter',
+    !/id: 'containerNo'/.test(grid) && /CONTAINER # was a column here until 2026-08-19/.test(grid) &&
+      /NO CONTAINER FILTER, removed 2026-08-19/.test(cfg), null);
+}
+
+// Feedback 9 item 7, 2026-09-21. "Sales Rep : possible de le populer a partir du
+// champs suivant? custentity_mgsl_sales_rep ou est-ce qu'on devrait utiliser salesrep".
+// Measured across all 1,127 customers: the MGSL field is on 498, `salesrep` on ONE
+// (Julie Munger, customer 1913). On the 321 active ARC customers it is 264 and 0. So
+// the customer fallback leg read a field that could never fire, and the endpoint
+// refused with NO_CUSTOMER_REP about customers whose record plainly names a rep.
+{
+  const oc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js');
+
+  // Additive, not a swap: customer 1913 must keep resolving off `salesrep`, and no
+  // case that works today may stop working.
+  ok('f9-7: the customer leg reads the MGSL field FIRST, then salesrep',
+    /return customerRep\('custentity_mgsl_sales_rep'\) \|\| customerRep\('salesrep'\);/.test(oc), null);
+
+  // 🔴 WRAPPED. The only caller does not catch, so an unknown-identifier error
+  // on a custom field would leave order creation as an exception instead of the
+  // refusal the caller is built to report.
+  ok('f9-7:  ...inside a try/catch, because the caller does not catch',
+    /ARCH Order Create — customer sales rep unreadable/.test(oc), null);
+
+  // The diagnosis function exists only to explain why the resolver found nothing.
+  // If the two disagree about where a rep comes from, the refusal names the wrong
+  // cause. This is the pair that has to move together.
+  ok('f9-7: the diagnosis leg reads the same two columns in the same order',
+    /SELECT custentity_mgsl_sales_rep AS mgslrep, salesrep/.test(oc) &&
+      /int\(cust\[0\]\.mgslrep\) \|\| int\(cust\[0\]\.salesrep\)/.test(oc), null);
+
+  // Rep and team are different questions. Marc-Antoine, 2026-09-08: the rep is the
+  // SO owner, the team is the commission split. They agree on ARC customers today
+  // (263 agree, 0 disagree) and must not be collapsed into one lookup.
+  ok('f9-7: the rep is still resolved separately from the named team',
+    /const repId = namedTeam \? null : resolveSalesRep\(/.test(oc), null);
+}
+
+// Feedback 9 item 6, 2026-09-21. "Feed les champs suivants de la sub ARC
+// (customers/Sales Rep & Sales Team)". Taken literally the customer picker would go
+// from ~786 names to ARC's 321 -- and 30 of the 62 ARCH sales orders in this account
+// belong to CWP MTL customers across 9 companies, so a hard filter drops those 9 out
+// of the picker while their orders stay on the screen. Same shape as the August scope
+// collapse. So ARC sorts FIRST and the rest stays reachable.
+{
+  const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
+  const wiz = src('components/arch/SOWizard.tsx');
+
+  // A SORT, not a filter. Verified live: 786 returned, archCount 321, first 321 all ARC.
+  ok('f9-6: ARC sorts first and nothing is removed',
+    /const ordered = kept\.filter\(isArch\)\.concat\(kept\.filter\(\(r\) => !isArch\(r\)\)\);/.test(svc) &&
+      /customers: ordered\.map/.test(svc), null);
+
+  // 🔴 STABLE. The query already ordered by the displayed label, and re-sorting on
+  // companyname would float the records that have none to the top -- the defect the
+  // ORDER BY in that query carries its own comment about.
+  ok('f9-6:  ...preserving the alphabetical order inside each group',
+    /ORDER BY COALESCE\(c\.companyname, c\.entityid\)/.test(svc) &&
+      !/ordered\.sort\(/.test(svc), null);
+
+  // The count is for VERIFYING the ordering, not for drawing a divider: this picker
+  // is a typeahead and a positional divider stops meaning anything once it filters.
+  ok('f9-6:  ...and the non-ARC rows are marked per row, not with a divider',
+    /archCount: ordered\.filter\(isArch\)\.length/.test(svc) &&
+      /String\(c\.subsidiaryId\) !== String\(ARCH_SUBSIDIARY_ID\)/.test(wiz), null);
+
+  // The IND exclusion predates this and must survive it.
+  ok('f9-6: the industrial exclusion is untouched',
+    /const isIndustrial = \(r\) =>/.test(svc) &&
+      /customer list emptied by the industrial filter/.test(svc), null);
+}
+
+// Feedback 9 item 10, 2026-09-21, and he re-sent this line on its own at 10:18 so it
+// is the one he most wants moved: non-inventory lines (freight) at SO creation, in
+// section 2, which is the Items step.
+{
+  const oc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js');
+  const api = src('lib/archOrderApi.ts');
+  const wiz = src('components/arch/SOWizard.tsx');
+
+  // 🔴 A SEPARATE CHANNEL. `resolveLines` must keep refusing a line with no lot:
+  // the oversell check, active holds, unattributed commitments and the `claimed`
+  // accumulator all key off it, and making them conditional so freight could pass
+  // would put the bundle protections one bad request away from being skipped.
+  ok('f9-10: the lot path still refuses a line with no lot or location',
+    /the lot or location is missing\. Re-pick it from the grid/.test(oc), null);
+  ok('f9-10:  ...and charges travel in their own resolver',
+    /const resolveCharges = \(rawCharges\) =>/.test(oc) &&
+      /const addChargeLine = \(so, charge, index\) =>/.test(oc), null);
+
+  // The allowlist is the only thing standing between a hand-made POST and
+  // `Temp Migration AP` on a customer-facing order, so it is enforced server-side.
+  ok('f9-10: the allowlist is enforced on the SERVER, not just in the picker',
+    /is not a charge item this /.test(oc) &&
+      /Object\.prototype\.hasOwnProperty\.call\(allowed, String\(itemId\)\)/.test(oc), null);
+
+  // 🔴 MILLING IS DELIBERATELY ABSENT. The Remanufacturing step already prices
+  // planing and cutting at 0.20/BF each and records them on the lot line, with a JE
+  // at invoicing. A milling line item would be the same money twice.
+  ok('f9-10: milling is NOT in the allowlist, and the reason is written down',
+    !/Milling Charges' \}/.test(oc) &&
+      /MILLING IS DELIBERATELY ABSENT/.test(oc), null);
+
+  // Charges last, so the post-save lot matcher never walks past one to reach a lot.
+  ok('f9-10: charges are written after every stock line',
+    /addChargeLine\(so, charge, firstNewLine \+ resolved\.lines\.length \+ j\)/.test(oc), null);
+
+  // The cap exists because NetSuite crawls on very long orders; charges must count.
+  ok('f9-10: charges count toward the line cap',
+    /resolved\.lines\.length \+ resolvedCharges\.charges\.length > MAX_LINES/.test(oc), null);
+
+  // Create only. On an append the order already carries its freight and a second
+  // line would silently double it. Refused server-side AND hidden in the UI.
+  ok('f9-10: charges are refused on an append, not quietly dropped',
+    /if \(appending && resolvedCharges\.charges\.length\)/.test(oc) &&
+      /Charge lines can only be added when a NEW order is created/.test(oc), null);
+  ok('f9-10:  ...and the affordance is hidden in existing-order mode',
+    /charges: mode === 'existing' \? undefined : charges/.test(wiz) &&
+      /mode !== 'existing' && writeAuth && writeAuth\.chargeItems\.length > 0/.test(wiz), null);
+
+  // Sent as its own array, never merged into `lines`.
+  ok('f9-10: the request carries charges separately from the stock lines',
+    /charges: draft\.charges && draft\.charges\.length/.test(api), null);
+
+  // `chargeItemList` returns `{ error }` on a read failure, and that object is
+  // truthy: spreading it would give the picker an entry with no id that the server
+  // would then refuse. An empty list disables the affordance instead.
+  ok('f9-10: a failed charge-item read yields an empty list, not a broken option',
+    /Array\.isArray\(body\.chargeItems\) \? body\.chargeItems : \[\]/.test(api), null);
+
+  // 🔴 AND THE CHARGE LINES APPEAR ON REVIEW, which is the screen the trader
+  // confirms from. Found by putting a real order through the wizard: the Items
+  // step offered freight and the request carried it, but Review showed only the
+  // wood -- $1,655 approved while the payload was about to write $1,655 plus
+  // $250 of freight. Confirming a write means seeing what is written.
+  ok('f9-10: the charge lines are shown on the Review step',
+    /Freight and other charges/.test(wiz) &&
+      /charges\.map\(\(c, i\) => \(/.test(wiz) &&
+      /fmtMoney\(c\.quantity \* c\.rate, currency \|\| 'USD', 2\)/.test(wiz), null);
+  // Revenue drives margin and must EXCLUDE charges; the saved order's total
+  // includes them. Both figures, so Review cannot disagree with the document.
+  ok('f9-10:  ...with an order total that includes them, beside a margin that does not',
+    /'Order total',/.test(wiz) &&
+      /totals\.revenue \+ charges\.reduce\(\(sum, c\) => sum \+ c\.quantity \* c\.rate, 0\)/.test(wiz), null);
+  // Only when there are charges, so an order without freight keeps the six
+  // figures this strip has always had.
+  ok('f9-10:  ...and only when the order actually carries a charge',
+    /\.\.\.\(charges\.length > 0/.test(wiz), null);
+
+}
+
+// 🔴 THE SCOPE UNION MUST REACH EVERY MODULE, 2026-09-21. Feedback 7 moved the
+// cache builder to (department = 'Hardwood' OR subsidiary = 'ARC') because the
+// client's inventory arrived in ARC carrying department "Trading". TWO OTHER
+// MODULES NEVER GOT IT, and both failures were invisible:
+//
+//   archOrderCreate  refused every ARC lot at CREATION -- 1,048 of 1,099 on hand --
+//                    with "X is not an ARCH hardwood item". Its comment claimed
+//                    "Same scope as the cache MR uses for display", which had
+//                    silently stopped being true. Proven by externalid: 33 ARC
+//                    orders exist, all hand-made in the UI, NOT ONE carrying the
+//                    `ARCH-` key this endpoint stamps.
+//   the service      returned an EMPTY Open Sales Orders tab, reporting "0 items in
+//                    the Hardwood department" while the grid showed 132 rows.
+//
+// Measured: the union sees 168 items, department-only sees 25.
+{
+  const oc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js');
+  const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
+  const mr = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js');
+
+  // ONE predicate in the order endpoint, so a future divergence is a code change
+  // rather than a silent drift.
+  ok('scope: the order endpoint tests department OR subsidiary, in one place',
+    /const inArchScope = \(department, subsidiary, itemCode\) =>/.test(oc) &&
+      /return dept === HARDWOOD_DEPARTMENT \|\| sub === ARCH_SUBSIDIARY_NAME;/.test(oc), null);
+  // 🔴 AND DECKING IS EXCLUDED FROM BOTH ARMS. Hanging the exclusion off the
+  // department arm would make IPE orderable the moment it sits in ARC.
+  ok('scope:  ...with decking excluded regardless of which arm matched',
+    /if \(NON_ARCH_DEPARTMENT_ITEMS\.indexOf\(code\) !== -1\) return false;/.test(oc), null);
+  // Selecting the column is not enough: it has to reach the lot state, or the
+  // predicate reads undefined and every ARC lot is refused exactly as before.
+  ok('scope:  ...and the subsidiary is both SELECTED and mapped into the lot state',
+    /BUILTIN\.DF\(i\.subsidiary\) AS subsidiary/.test(oc) &&
+      /subsidiary: String\(r\.subsidiary \|\| ''\)/.test(oc), null);
+  // The creation gate and the Ready-to-Build scope read the same predicate.
+  ok('scope:  ...used by the creation gate AND the order-scope count',
+    /if \(!inArchScope\(st\.department, st\.subsidiary, st\.itemCode\)\)/.test(oc) &&
+      /if \(inArchScope\(dept, rows\[i\]\.sub, code\)\)/.test(oc), null);
+
+  // The service's open-orders and item-count queries share one filter.
+  ok('scope: the service filter carries both arms and binds both params',
+    /BUILTIN\.DF\(i\.department\) = \? OR BUILTIN\.DF\(i\.subsidiary\) = \?/.test(svc) &&
+      /i\.department = \? OR BUILTIN\.DF\(i\.subsidiary\) = \?/.test(svc) &&
+      !/params: \[dept\.param\]/.test(svc), null);
+  // BUILTIN.DF, never the raw column: `i.subsidiary` is NOT_EXPOSED on this tenant
+  // and a bare comparison is a hard 400.
+  ok('scope:  ...through BUILTIN.DF, because the raw column is a 400',
+    !/[^.]i\.subsidiary = /.test(svc), null);
+
+  // And the cache builder, which had it first, still has it.
+  ok('scope: the cache builder still carries the union it was given in Feedback 7',
+    /BUILTIN\.DF\(i\.department\) = \? OR BUILTIN\.DF\(i\.subsidiary\) = \?/.test(mr), null);
 }
 
 // Money audit, 2026-09-16. The order was created in the customer's PRIMARY currency
