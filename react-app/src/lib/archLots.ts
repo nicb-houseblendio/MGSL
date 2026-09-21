@@ -81,6 +81,17 @@ export const commitmentOn = (lot: ArchLot): number =>
  * On-hand minus what is already committed. Deliberately NOT `available`, which
  * spans buckets and counts incoming wood: this is the yard figure and nothing
  * else.
+ *
+ * ⚠️ NOTHING IN THE APP CALLS THIS, ON PURPOSE. It is exported for
+ * `archLotSellable.test.mjs`, where it exists to pin down the wrong fix: the
+ * tempting rewrite of `isLotLocked` is `sellableOn(lot) <= 0`, which reads like
+ * a tidy-up and silently unlocks every partially committed bundle (690 BF with
+ * 300 reserved has 390 free, so it would become sellable). The test asserts that
+ * this function and the lock predicate are NOT interchangeable.
+ *
+ * So do not wire it into a gate to "use it up". If you want a free-quantity
+ * figure on screen, that is a new decision about what the UI should say, not a
+ * cleanup of a dangling export.
  */
 export const sellableOn = (lot: ArchLot): number =>
   Math.max(0, (lot.onHand || 0) - commitmentOn(lot));

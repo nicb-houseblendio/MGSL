@@ -95,7 +95,16 @@ MSYS_NO_PATHCONV=1 npx @oracle/suitecloud-cli file:upload --paths /SuiteScripts/
 rewritten to `C:/Program Files/Git/SuiteScripts/...` and the upload fails. There
 is no `--authid` flag; auth comes from the scratch project's `project.json`.
 
-Auth IDs: `9448239_SB1-Adm-Sand` (sandbox), `9448239-Adm-Prod` (production).
+Auth IDs: `9448239_SB1-Adm-Sand` (sandbox), `9448239-Adm-Prod` (production). Both
+verified 2026-09-21; confirm yours with
+
+```
+npx @oracle/suitecloud-cli account:manageauth --list
+```
+
+which prints each id with the account it belongs to. The MGSL ones read
+`Administrator @ MCGILL ST-LAURENT INC.` and the machine may hold ids for other
+clients, so check the account name and not just the shape of the id.
 
 Objects deploy the same way, from a flat scratch project containing **only** the
 objects you intend to touch, and always with `--dryrun` first. The dry run prints

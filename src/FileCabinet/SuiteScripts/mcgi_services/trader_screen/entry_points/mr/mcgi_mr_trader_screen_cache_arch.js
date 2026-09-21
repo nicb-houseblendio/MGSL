@@ -556,15 +556,34 @@ define([
      * completely unaffected by this number. What this number changes is only the
      * count of REAL rebuilds: 24 a day at 60 minutes, 96 a day at 15. So the
      * chain's permanent ~6% tax on IND and MTL does not move, and what does move
-     * is four times the SuiteQL and four times the log volume on a screen that
-     * currently writes ~129 script notes per rebuild.
+     * is four times the SuiteQL and four times the log volume.
      *
-     * 15 is a testing-phase number chosen against that arithmetic, not a floor
-     * discovered by experiment. Going to 5 would be ~380 rebuilds a day and about
-     * 49,000 script notes, which is the volume at which `scriptnote` itself stops
-     * answering queries reliably (GROUP BY and aggregates silently return empty),
-     * i.e. it would degrade the tool used to diagnose this screen. Do not do it
-     * without moving LotCostLib's DEBUG lines behind a flag first.
+     * 🔴 RE-MEASURED 2026-09-21, AND THE FIGURE THIS NOTE ORIGINALLY CARRIED WAS
+     * WRONG BY 85%. It claimed ~129 script notes per rebuild and projected
+     * 12,384 a day. The real number is **239 per rebuild** — three consecutive
+     * rebuilds, identical — so 96 rebuilds a day is **~22,900 notes a day**. The
+     * method, for whoever checks it next:
+     *
+     *   SELECT DISTINCT TO_CHAR(date,'MM-DD HH24:MI') AS minute FROM scriptnote
+     *   WHERE scripttype = 6503 AND date > TO_DATE('<today>','YYYY-MM-DD')
+     *
+     * which also confirms the cadence is real: the minutes land on :05, :20, :35
+     * and :50, so the self-rescheduling chain is genuinely driving it.
+     *
+     * 15 is a testing-phase number, not a floor discovered by experiment, and the
+     * corrected arithmetic leaves it less headroom than this note used to imply.
+     * Going to 5 would be ~380 rebuilds a day and **~68,800 script notes**, not
+     * the ~49,000 first written here. That is the volume at which `scriptnote`
+     * itself stops answering queries reliably (GROUP BY and aggregates silently
+     * return empty), i.e. it would degrade the tool used to diagnose this screen,
+     * and at ~22,900 a day we are already about a third of the way there rather
+     * than a quarter. Do not lower it without moving LotCostLib's DEBUG lines
+     * behind a flag first — they are the bulk of the 239.
+     *
+     * ⚠️ Retention is the second cost and it is not visible in a rate. The log
+     * for this script spanned 2026-09-07 to 2026-09-21 at 120,899 rows when
+     * measured, so four times the volume buys roughly a quarter of the history,
+     * on the one table that makes this screen debuggable without the UI.
      *
      * ⚠️ `ARCH_REBUILD_MINUTES` in `react-app/src/lib/archFreshness.ts` is the
      * other half of this constant and MUST be changed with it. It drives the
@@ -1648,6 +1667,44 @@ define([
         "  AND NVL(BUILTIN.DF(i.subsidiary), '~none~') <> ?";
 
     /**
+     * ── 🔴 THE MIRROR OF THE WARNING ABOVE: IN SCOPE AND SHOULD NOT BE ──────────
+     *
+     * `UNTAGGED_SQL` catches hardwood the screen cannot see. This catches the
+     * opposite and newer risk: NON-hardwood the screen CAN see.
+     *
+     * `NON_ARCH_DEPARTMENT_ITEMS` is seven decking SKUs excluded by literal name,
+     * and until 2026-09-17 that list was only lightly loaded, because an item had
+     * to carry department Hardwood to be in scope at all. The scope union changed
+     * that: every item in subsidiary ARC is now in scope automatically, and MA is
+     * still importing. ARC held 98 items on 2026-09-17 and 149 on 2026-09-21, so
+     * the aperture is both wider and moving.
+     *
+     * It held, and it held by luck of implementation rather than design. Measured
+     * 2026-09-21: SIX of the seven decking SKUs have ALREADY migrated into ARC
+     * (IPE44DECKD, IPE54DECKD, NRM44DECKDS4S, NRM44DECKDTNG, RBL44DECKD,
+     * RBL54DECKD) and all six are still excluded — because the list keys on NAME,
+     * not on department. Had it been written as a department test it would have
+     * failed silently the day the migration ran, and decking sold by the linear
+     * foot would have appeared on a board-feet screen.
+     *
+     * So this is the tripwire for the next one. It does NOT gate anything: the
+     * explicit list stays the gate, deliberately, because an exclusion by name
+     * pattern would be a guess about every future SKU and `DEC` is three letters
+     * that a real species abbreviation could carry. It only means nobody has to
+     * REMEMBER the list exists.
+     *
+     * ⚠️ Scoped to the full ARCH_SCOPE_SQL rather than the subsidiary arm alone.
+     * A new decking SKU tagged department Hardwood leaks exactly as easily, and
+     * reusing the constant means this cannot drift away from what the real
+     * queries match. Expected result: zero rows.
+     */
+    const DECKING_LEAK_SQL =
+        'SELECT i.itemid FROM item i ' +
+        'WHERE ' + ARCH_SCOPE_SQL + ' ' +
+        '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
+        "  AND UPPER(i.itemid) LIKE '%DEC%'";
+
+    /**
      * ═══ THE FOUR SOURCED BUCKETS ════════════════════════════════════════════
      * Open sales and purchase order lines for hardwood items, with any lot
      * assignment attached.
@@ -2423,6 +2480,40 @@ define([
                 log.audit('ARCH cache', 'Untagged-hardwood check failed (non-fatal): ' + e.message);
             }
 
+            /*
+             * Tripwire for a decking SKU that has entered scope without being on
+             * the exclusion list — see DECKING_LEAK_SQL for why this exists and
+             * why it warns rather than excludes.
+             *
+             * AUDIT, not ERROR, for the same reason as its sibling above: once it
+             * fires it will fire on EVERY rebuild until someone edits the list,
+             * and at 96 rebuilds a day an error-level standing condition is the
+             * thing that trains people to ignore the error channel. The
+             * difference from the sibling is that this one is expected to be zero
+             * forever, so if it appears at all it is worth acting on rather than
+             * a known state of the account.
+             *
+             * Its own try/catch: a failure here must not cost the rebuild, and
+             * must not be mistaken for the untagged check failing.
+             */
+            try {
+                const leaked = query.runSuiteQL({
+                    query: DECKING_LEAK_SQL,
+                    params: ARCH_SCOPE_PARAMS,
+                }).asMappedResults();
+                if (leaked.length) {
+                    log.audit('ARCH cache — POSSIBLE NON-HARDWOOD ON THIS SCREEN',
+                        leaked.length + ' item(s) in ARCH scope look like decking by name but are ' +
+                        'NOT in NON_ARCH_DEPARTMENT_ITEMS, so their stock IS being shown and can be ' +
+                        'sold from this screen: ' + leaked.map((r) => r.itemid).join(', ') +
+                        '. Decking is a different product line sold by the linear foot, not in board ' +
+                        'feet. Add them to NON_ARCH_DEPARTMENT_ITEMS in this file, or confirm they ' +
+                        'really are hardwood.');
+                }
+            } catch (e) {
+                log.audit('ARCH cache', 'Decking-leak check failed (non-fatal): ' + e.message);
+            }
+
             const holds = loadActiveHolds();
             const buckets = loadBuckets();
 
@@ -2484,8 +2575,18 @@ define([
             /*
              * ── 🔴 PAIRS THAT HAVE A BUCKET BUT NO ON-HAND LOT ────────────────────
              *
+             * ⚠️ READ THE DATES: this block was written on 2026-09-09 against a
+             * LOT_SQL that no longer exists, and it is now a BACKSTOP rather than
+             * the route that carries incoming stock to the screen. On 2026-09-17
+             * that WHERE clause was widened to admit rows that are zero on hand
+             * but non-zero on order or in transit, so the pairs described below
+             * mostly arrive with real lots attached now. Kept because it still
+             * covers the case this cannot: a bucket key whose lot rows are zero in
+             * all three columns, which LOT_SQL correctly excludes (42 such rows
+             * measured 2026-09-17). See the note on LOT_SQL for the other half.
+             *
              * Added 2026-09-09. `byPair` above is built ONLY from LOT_SQL, whose WHERE
-             * ends `AND inl.quantityonhand <> 0`. `buckets` is keyed on the same
+             * ended `AND inl.quantityonhand <> 0` at the time. `buckets` is keyed on the same
              * itemId__locationId string but is read as a lookup, so any bucket key with
              * no on-hand lot produced NO ROW AT ALL: no On Order, no In Transit, no
              * unattributed, and not one line in the log. Stock on order simply was not
