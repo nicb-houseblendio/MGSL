@@ -75,7 +75,64 @@ export const seededRandom = (key: string) => {
 export const commitmentOn = (lot: ArchLot): number =>
   (lot.reserve || 0) + (lot.readyToBuild || 0);
 
-export const isLotLocked = (lot: ArchLot): boolean => commitmentOn(lot) > 0;
+/**
+ * Board feet of this bundle a trader could actually put on a sales order.
+ *
+ * On-hand minus what is already committed. Deliberately NOT `available`, which
+ * spans buckets and counts incoming wood: this is the yard figure and nothing
+ * else.
+ */
+export const sellableOn = (lot: ArchLot): number =>
+  Math.max(0, (lot.onHand || 0) - commitmentOn(lot));
+
+/**
+ * Is this bundle's wood actually in the yard?
+ *
+ * False for the on-order and in-transit bundles the cache started listing on
+ * 2026-09-17, which exist as inventory numbers on a purchase order and hold no
+ * stock anywhere yet.
+ */
+export const hasArrived = (lot: ArchLot): boolean => (lot.onHand || 0) > 0;
+
+/**
+ * Can this bundle go on a sales order? The single predicate every selection gate
+ * reads — the row checkbox, select-all, the Add to SO re-filter, the disabled
+ * state of the button and the "nothing sellable" notice.
+ *
+ * ── 🔴 IT IS NOT ONLY ABOUT COMMITMENTS, changed 2026-09-17 ──────────────────
+ *
+ * It used to be exactly `commitmentOn(lot) > 0`, which was correct for as long
+ * as the only bundles the screen could see were bundles with wood in the yard.
+ * That stopped being true the same day: the cache's lot universe now admits
+ * bundles that are minted on an open purchase order and have zero on hand, so
+ * the On Order drill-down can list them (`LOT_SQL` in the ARCH cache builder
+ * carries the matching note).
+ *
+ * Those bundles carry no commitment, so the old predicate called them sellable.
+ * They would not have appeared under On Hand, which filters on the bucket
+ * quantity, but they WOULD have appeared under Available and been tickable,
+ * because `availabilityStatus` has an On Order rung. A trader could have ticked
+ * wood that is still at the supplier and pushed it into the SO wizard.
+ *
+ * That is precisely what Marc-Antoine asked us to prevent, 2026-09-17: « Il
+ * faudrait présenter l'information, mais ne pas être capable de sélectionner des
+ * lots pour générer un SO. » Present it, do not sell it.
+ *
+ * ⚠️ THE COMMITMENT ARM IS STILL THE FIRST ONE, and it must stay. The rule it
+ * encodes is older and independent: a PARTIALLY committed bundle is locked
+ * because a bundle is the unit that ships, so a trader must not be able to sell
+ * round the part somebody else claimed. Rewriting this as "net sellable > 0"
+ * reads like a tidy-up and silently unlocks every part-reserved bundle on the
+ * screen. It is an OR of two separate rules, not one arithmetic test.
+ *
+ * The server refuses it too — `archOrderCreate.js` compares the wanted quantity
+ * against on-hand and rejects at 0 — so this is the honest half of a gate that
+ * already fails closed, not the only thing standing between a trader and a bad
+ * order. The difference is that the trader finds out by the checkbox being
+ * disabled with a reason on it, rather than by an error after building a cart.
+ */
+export const isLotLocked = (lot: ArchLot): boolean =>
+  commitmentOn(lot) > 0 || !hasArrived(lot);
 
 /**
  * Why a bundle is locked, for the tooltip and the row badge.
@@ -107,6 +164,42 @@ export const lockReason = (
       badge: 'Out',
       detail: `${Math.round(lot.outbound)} BF already picked for shipment`,
       color: '#880E4F',
+    };
+  }
+  /*
+   * Not committed to anyone, just not here yet. LAST, deliberately: a bundle can
+   * be both incoming and partly claimed, and the claim is the more useful thing
+   * to say. Colours match the two bucket inks so the badge names the same stage
+   * the column does.
+   */
+  if ((lot.onOrder || 0) > 0) {
+    return {
+      badge: 'Ord',
+      detail: `${Math.round(lot.onOrder)} BF still on order, not yet received`,
+      color: '#1565C0',
+    };
+  }
+  if ((lot.inTransit || 0) > 0) {
+    return {
+      badge: 'Trns',
+      detail: `${Math.round(lot.inTransit)} BF in transit, not yet received`,
+      color: '#6A3FA0',
+    };
+  }
+  /*
+   * No wood, and nothing incoming to explain it. `isLotLocked` still locks this
+   * bundle, so without this arm the checkbox would be disabled with no badge
+   * and no tooltip beside it — the shape that reads as a broken screen.
+   *
+   * Not reachable from the two drill-downs today, because both filter on a
+   * bucket quantity and this lot has none. Kept so the predicate and its
+   * explanation cannot disagree, which is the thing that actually rots.
+   */
+  if (!hasArrived(lot)) {
+    return {
+      badge: 'None',
+      detail: 'No stock on this bundle at this location',
+      color: '#64748B',
     };
   }
   return null;

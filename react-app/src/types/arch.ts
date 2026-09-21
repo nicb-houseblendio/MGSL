@@ -191,6 +191,43 @@ export interface ArchLot {
   onOrder: number;
   inTransit: number;
   /**
+   * Where this bundle is coming from and when it is expected, read from the open
+   * purchase-order line that carries it. Resolved server-side by the ARCH cache
+   * MR; added 2026-09-17.
+   *
+   * 🔴 NULL AND ABSENT MEAN DIFFERENT THINGS, the same distinction `orders`
+   * makes and for the same reason:
+   *
+   *   an object      this cache resolved a live PO line. Render it.
+   *   `null`         this cache looked and the bundle sits on no open PO line.
+   *                  Render nothing, not a guess.
+   *   `undefined`    fixtures, or a cache written before 2026-09-17. Only then
+   *                  may `lotIncomingInfo` invent one, and the view says so.
+   *
+   * Before this existed the On Order table printed a seeded-PRNG supplier and a
+   * seeded-PRNG date beside real lot numbers, with nothing on screen to say they
+   * were invented.
+   */
+  incoming?: {
+    /**
+     * The PO document number, e.g. "PO-CWP-001326". The REAL one off the order
+     * line, not the lot-number prefix that `po` above is derived from — which
+     * is a naming convention, can be wrong, and is empty on any bundle whose
+     * prefix is under five digits (`1333-1`).
+     */
+    poNumber: string;
+    /** Vendor name off the PO header. */
+    supplier: string;
+    /**
+     * `custbody_ship_week`, ISO `YYYY-MM-DD`, or '' where the PO carries none.
+     *
+     * ⚠️ Parse as LOCAL (`new Date(iso + 'T00:00:00')`). A bare `new Date(iso)`
+     * is UTC midnight, which is the previous day anywhere west of Greenwich,
+     * Montreal included.
+     */
+    eta: string;
+  } | null;
+  /**
    * An active Inventory Hold sits on this lot, so it is NOT sellable.
    *
    * Marc-Antoine creates holds to pull stock off the trader screen before

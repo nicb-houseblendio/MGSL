@@ -273,6 +273,54 @@ define([
      */
     const HARDWOOD_DEPARTMENT = 'Hardwood';
     /**
+     * ── 🔴 THE DEPARTMENT ALONE STOPPED BEING THE SCOPE ON 2026-09-16 ───────────
+     *
+     * Marc-Antoine's inventory re-import landed 98 hardwood items in the ARC
+     * subsidiary carrying department "Trading", not "Hardwood". Measured
+     * 2026-09-17: African Mahogany, Afrormosia, Bocote, Bolivian Rosewood,
+     * Canarywood, Curly Maple, Caribbean Rosewood and European White Oak, 1,037
+     * lot rows, every one of them with stock on hand. Under a department-only
+     * scope the screen saw NONE of them.
+     *
+     * The damage was not a missing row here and there, it was total. The pair
+     * count fell 105 -> 21 in one run, the shrink guard correctly refused a 0.200
+     * ratio, and the cache then froze on the previous payload for ~20 hours while
+     * every hourly rebuild recomputed the same 21 and was refused again. That is
+     * what Marc-Antoine reported as « est-ce possible d'accélérer le refresh » on
+     * 2026-09-17: the screen was not slow, it was stopped.
+     *
+     * So the scope is a UNION, deliberately, and not a swap to the subsidiary:
+     *
+     *   department = Hardwood  keeps the 17 items and 18 on-order bundles still
+     *                          sitting under CWP MTL, including PO-CWP-001326,
+     *                          which is the PO in his own screenshot.
+     *   subsidiary = ARC       picks up everything the migration has moved, and
+     *                          keeps picking it up as more arrives.
+     *
+     * It is also self-healing in both directions. If he sets department =
+     * Hardwood on the migrated items the union still matches them exactly once;
+     * if he never does, the subsidiary arm carries them forever. Measured after
+     * the change: 128 pairs from 1,107 lot rows, and the "miscategorized
+     * hardwood" warning that had been counting 143 items drops to 0, because
+     * every one of those 143 WAS the migration.
+     *
+     * ⚠️ BY NAME, for the same reason HARDWOOD_DEPARTMENT is by name. And note
+     * `i.subsidiary` raw is NOT_EXPOSED to search on this tenant (a bare
+     * `i.subsidiary = 9` is a hard 400), so `BUILTIN.DF` is not a stylistic
+     * match with the line above it, it is the only form that works.
+     */
+    const ARCH_SUBSIDIARY = 'ARC';
+    /**
+     * The scope predicate, one definition, four query sites.
+     *
+     * Binds in this order: department, then subsidiary. `ARCH_SCOPE_PARAMS` is
+     * the matching array and the two must be edited together — which is the
+     * whole reason they sit on adjacent lines rather than in the queries.
+     */
+    const ARCH_SCOPE_SQL =
+        '(BUILTIN.DF(i.department) = ? OR BUILTIN.DF(i.subsidiary) = ?)';
+    const ARCH_SCOPE_PARAMS = [HARDWOOD_DEPARTMENT, ARCH_SUBSIDIARY];
+    /**
      * The one real distinction inside Department 11: decking is a different
      * product line (sold by the linear foot, not board-feet lots) that shares
      * the trading department for accounting reasons only. Hardcoded rather
@@ -496,7 +544,44 @@ define([
      * silent, invisible to every automated check available here, and cannot be
      * undone except by stopping the script and starting one member again.
      */
-    const REBUILD_INTERVAL_MS = 60 * 60 * 1000;   // 1h, matching the old schedule
+    /**
+     * ── 15 MINUTES, LOWERED FROM 60 ON 2026-09-17 ───────────────────────────────
+     *
+     * Marc-Antoine, 2026-09-17: « On va bientôt rentrer dans la phase de testing.
+     * Est-ce possible d'accélérer le refresh de l'info? »
+     *
+     * ⚠️ READ THIS BEFORE LOWERING IT FURTHER, because the obvious reading of the
+     * cost is backwards. The expensive half of this chain is the NO-OP cycles,
+     * which run every 2.7 seconds (measured, see THE CHAIN above) and are
+     * completely unaffected by this number. What this number changes is only the
+     * count of REAL rebuilds: 24 a day at 60 minutes, 96 a day at 15. So the
+     * chain's permanent ~6% tax on IND and MTL does not move, and what does move
+     * is four times the SuiteQL and four times the log volume on a screen that
+     * currently writes ~129 script notes per rebuild.
+     *
+     * 15 is a testing-phase number chosen against that arithmetic, not a floor
+     * discovered by experiment. Going to 5 would be ~380 rebuilds a day and about
+     * 49,000 script notes, which is the volume at which `scriptnote` itself stops
+     * answering queries reliably (GROUP BY and aggregates silently return empty),
+     * i.e. it would degrade the tool used to diagnose this screen. Do not do it
+     * without moving LotCostLib's DEBUG lines behind a flag first.
+     *
+     * ⚠️ `ARCH_REBUILD_MINUTES` in `react-app/src/lib/archFreshness.ts` is the
+     * other half of this constant and MUST be changed with it. It drives the
+     * grid's freshness badge and the text of all three tooltips, so leaving it at
+     * 60 makes a healthy screen describe a schedule it is not on.
+     *
+     * PACE_TTL_SECONDS below is DERIVED from this, so lowering it is safe by
+     * construction. Raising it past 6 hours is not; see TTL_SUMMARY.
+     *
+     * 🔴 AND IT IS NOT WHAT HE WAS ACTUALLY SEEING. On the day he asked, the
+     * cache had been frozen for ~20 hours: the department scope had stopped
+     * matching his re-imported items, every rebuild computed 21 pairs against a
+     * cached 105, and the shrink guard refused all of them. A faster interval
+     * would have refused faster. The scope union at ARCH_SCOPE_SQL is that fix;
+     * this one is the answer to the question he asked.
+     */
+    const REBUILD_INTERVAL_MS = 15 * 60 * 1000;   // 15 min — see the note above
 
     /**
      * TTL for the pacing key, DERIVED from the interval and not configured
@@ -1490,9 +1575,46 @@ define([
         'JOIN inventorynumber inv ON inv.id = inl.inventorynumber ' +
         'JOIN item i              ON i.id  = inv.item ' +
         'LEFT JOIN unitstypeuom u ON u.internalid = i.stockunit ' +
-        'WHERE BUILTIN.DF(i.department) = ? ' +
+        'WHERE ' + ARCH_SCOPE_SQL + ' ' +
         '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
-        '  AND inl.quantityonhand <> 0';
+        /*
+         * ── 🔴 A BUNDLE ON ORDER HAS AN inventorynumberlocation ROW AT ZERO ─────
+         *
+         * This used to end `AND inl.quantityonhand <> 0`, and that single
+         * predicate is why Marc-Antoine's On Order drill-down was empty on
+         * 2026-09-17 while the column above it read 3,000 BF.
+         *
+         * He guessed the cause himself — « est-ce parce que nous n'avons pas
+         * encore de bundle? » — and he was half right. The bundles DO exist:
+         * PO-CWP-001326 carries 001326-1 and 001326-2, minted as inventory
+         * detail on the unreceived PO lines. What they do not have is stock, and
+         * that is the point of them. Measured 2026-09-17, lot 001326-2 at
+         * Bluelinx: quantityonhand 0, quantityonorder 3. The row exists,
+         * NetSuite tracks the on-order quantity on it, and this clause threw it
+         * away.
+         *
+         * The 2026-09-09 donor-recovery block downstream was the half fix. It
+         * rebuilt the missing PAIR so the row total appeared, and its own comment
+         * says it leaves `lots: []` because no on-hand lot exists. That is
+         * exactly the screenshot: a total with nothing under it. This is the
+         * other half, and it makes most of that recovery path redundant rather
+         * than wrong, so the path stays as the backstop it always was.
+         *
+         * Scope, measured 2026-09-17 across the union above: 1,089 rows on hand,
+         * 18 incoming-only, and 42 rows that are zero in all three columns —
+         * dead lot-location pairs that this clause still correctly excludes. So
+         * the universe grows by the 18 bundles a trader wants to see and by
+         * nothing else.
+         *
+         * ⚠️ ADMITTING THEM IS NOT MAKING THEM SELLABLE, and the two must not be
+         * conflated. `storedQty` is 0 for every one of these, so On Hand and the
+         * lock arithmetic are untouched; `archLots.ts` is what decides a bundle
+         * with no wood in the yard cannot go on a sales order, and it carries
+         * the matching note.
+         */
+        '  AND (inl.quantityonhand <> 0 ' +
+        '       OR inl.quantityonorder <> 0 ' +
+        '       OR inl.quantityintransit <> 0)';
 
     /**
      * Items that LOOK like hardwood by the old units-type heuristic but are NOT
@@ -1509,7 +1631,21 @@ define([
         'SELECT i.id, i.itemid FROM item i ' +
         'WHERE i.unitstype IS NOT NULL ' +
         '  AND i.unitstype NOT IN (' + EXCLUDED_UNITS_TYPES.map(() => '?').join(',') + ') ' +
-        '  AND (i.department IS NULL OR BUILTIN.DF(i.department) <> ?)';
+        '  AND (i.department IS NULL OR BUILTIN.DF(i.department) <> ?) ' +
+        /*
+         * The subsidiary arm of the scope, inverted, so this warning keeps
+         * meaning "ARCH-shaped and invisible" rather than drifting into "not in
+         * department 11", which the union above no longer makes a synonym.
+         *
+         * NVL rather than `i.subsidiary IS NULL`: the raw column is NOT_EXPOSED
+         * to search here, so only the BUILTIN.DF form is available, and a bare
+         * `<> ?` against a NULL would silently drop every item with no
+         * subsidiary — the rows most worth warning about.
+         *
+         * Measured 2026-09-17: this took the warning from 143 items to 0. All
+         * 143 were the ARC migration, i.e. the thing the union now shows.
+         */
+        "  AND NVL(BUILTIN.DF(i.subsidiary), '~none~') <> ?";
 
     /**
      * ═══ THE FOUR SOURCED BUCKETS ════════════════════════════════════════════
@@ -1591,6 +1727,21 @@ define([
          * open-orders service uses, so that the two cannot disagree if MGSL ever
          * turn Team Selling off. */
         '  t.tranid               AS docno, ' +
+        /* ── THE ETA, and it is a REAL field, added 2026-09-17 ────────────────
+         * `custbody_ship_week` is what MTL and IND already display in their own
+         * In Transit and On Order drawers (DetailDrawerMTL.tsx, DetailDrawer.tsx),
+         * so this is the house convention rather than a new idea.
+         *
+         * ⚠️ IT IS NOT `expectedreceiptdate` OR `duedate`. Both were checked on
+         * 2026-09-16 and both are empty on all 37 hardwood PO lines and all 13
+         * hardwood POs, which is how an earlier read of this concluded there was
+         * no ETA source at all and recommended shipping without one. Wrong field.
+         * Measured 2026-09-17: every open hardwood PO carrying bundles has a ship
+         * week, and so do 377 of 377 open production POs.
+         *
+         * Header-grain, like take ownership. One PO is one packing list is one
+         * container in Marc-Antoine's flow, so every bundle on the PO shares it. */
+        '  t.custbody_ship_week   AS shipweek, ' +
         '  t.trandate             AS trandate, ' +
         '  t.shipdate             AS shipdate, ' +
         '  t.entity               AS custid, ' +
@@ -1616,7 +1767,7 @@ define([
         // `unattributed` figure were.
         '       ON ia.transaction = t.id AND ia.transactionline = tl.id ' +
         'LEFT JOIN inventorynumber inv ON inv.id = ia.inventorynumber ' +
-        'WHERE BUILTIN.DF(i.department) = ? ' +
+        'WHERE ' + ARCH_SCOPE_SQL + ' ' +
         '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
         "  AND tl.mainline = 'F' " +
         "  AND tl.isclosed = 'F' " +
@@ -1679,7 +1830,7 @@ define([
         try {
             rows = query.runSuiteQL({
                 query: BUCKET_SQL,
-                params: [HARDWOOD_DEPARTMENT],
+                params: ARCH_SCOPE_PARAMS,
             }).asMappedResults();
         } catch (e) {
             // Buckets missing is bad; On Hand being wrong is worse. Return empty
@@ -1923,6 +2074,35 @@ define([
                     }
                 } else {
                     bucket.lots[r.lotno].onOrder += assigned * openShare;
+                    /* ── WHERE IT IS COMING FROM AND WHEN, added 2026-09-17 ───
+                     *
+                     * Marc-Antoine, 2026-09-17: « On order : aucun PO n'apparaît.
+                     * Il faudrait présenter l'information. » The drill-down had
+                     * nothing to present partly because the lot universe excluded
+                     * these bundles (see LOT_SQL) and partly because the only
+                     * supplier and ETA the table had were invented in the browser
+                     * by `lotIncomingInfo`, a seeded PRNG in archFixtures.ts.
+                     *
+                     * Both values are already on this row. `custid`/`customer` is
+                     * `t.entity`, which on a PURCHASE order is the VENDOR — the
+                     * alias is named for the sales-order case that needed it
+                     * first and is not wrong here, just badly named. So this
+                     * costs no extra query, no extra join and no extra row.
+                     *
+                     * LAST WRITE WINS, and that is deliberate rather than
+                     * accidental: a bundle appearing on two open PO lines is not
+                     * a case that exists (measured 2026-09-17, every hardwood
+                     * bundle sits on exactly one), and if it ever did, either
+                     * answer is honest and neither is worth a tiebreak rule
+                     * nobody can verify. */
+                    bucket.lots[r.lotno].incoming = {
+                        poNumber: String(r.docno || ''),
+                        supplier: String(r.customer || ''),
+                        // ISO, or empty. The browser must not be handed a NetSuite
+                        // date string to parse — `isoDate` is the one place this
+                        // file converts, and it already handles the null.
+                        eta:      isoDate(r.shipweek) || '',
+                    };
                 }
 
                 /* ── WHICH order, under the SAME guard as the quantity ────────
@@ -2171,14 +2351,14 @@ define([
 
             const rows = query.runSuiteQL({
                 query: LOT_SQL,
-                params: [HARDWOOD_DEPARTMENT],
+                params: ARCH_SCOPE_PARAMS,
             }).asMappedResults();
 
             // Early warning for ARCH-shaped SKUs outside Department 11 — see UNTAGGED_SQL.
             try {
                 const untagged = query.runSuiteQL({
                     query: UNTAGGED_SQL,
-                    params: EXCLUDED_UNITS_TYPES.concat([HARDWOOD_DEPARTMENT]),
+                    params: EXCLUDED_UNITS_TYPES.concat(ARCH_SCOPE_PARAMS),
                 }).asMappedResults();
                 if (untagged.length) {
                     /*
@@ -2671,6 +2851,12 @@ define([
                     outbound:      lb ? lb.outbound  / rate : 0,
                     onOrder:       lb ? lb.onOrder   / rate : 0,
                     inTransit:     lb ? lb.inTransit / rate : 0,
+                    /* Supplier and ETA for the On Order / In Transit drill-downs.
+                     * NULL rather than an empty object where the lot sits on no
+                     * open PO line, because the browser uses the distinction the
+                     * same way it uses `orders`: a value means this cache
+                     * resolved it, absent means fall back and say so. */
+                    incoming:      (lb && lb.incoming) || null,
                     readyToBuild:  lb ? (lb.readyToBuild || 0) / rate : 0,
                     /* ── THE SALES ORDERS THAT HOLD THIS BUNDLE ───────────────
                      *

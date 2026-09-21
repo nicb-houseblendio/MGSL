@@ -3,8 +3,10 @@
  *
  * ── Why ARCH needs its own thresholds ───────────────────────────────────────
  * The shared badge (`getLastUpdatedBadgeState` in useRefreshState) calls anything
- * over ONE HOUR "stale". The ARCH cache rebuilds on a one-hour schedule, so that
- * badge would turn amber at the end of every single cycle and mean nothing. It is
+ * over ONE HOUR "stale". That bound was meaningless against ARCH's old one-hour
+ * rebuild — amber at the end of every single cycle — and it is worse now the
+ * rebuild is every 15 minutes, because it would stay green through four missed
+ * cycles. Either way it does not describe this screen, which is
  * why the badge was suppressed for ARCH entirely (`!isARCH &&` in App.tsx) rather
  * than given a sensible bound, and suppressing it is what left the grid with no
  * indication of its own age at all.
@@ -16,13 +18,15 @@
  * genuinely does not move until the next rebuild.
  *
  * ── The bounds, and why these ───────────────────────────────────────────────
- * FRESH   under 75 min. One hour plus a quarter, because the rebuild takes real time
- *         and a run that starts on the hour finishes after it. Anything tighter
- *         reports the normal cycle as a problem, which is the defect being fixed.
- * DUE     75 min to 3 h. One cycle has been missed. Worth noticing, not alarming:
+ * FRESH   under 20 min. One cycle plus a quarter, because the rebuild takes real
+ *         time and a run that starts on the quarter hour finishes after it.
+ *         Anything tighter reports the normal cycle as a problem, which is the
+ *         defect being fixed.
+ * DUE     20 to 45 min. One cycle has been missed. Worth noticing, not alarming:
  *         a single skipped run is recoverable and the refresh button is right there.
- * OVERDUE past 3 h. Three cycles gone. On this screen that has meant a silently dead
- *         schedule for days, so it reads as an error rather than a shrug.
+ * OVERDUE past 45 min. Three cycles gone. On this screen that has meant a silently
+ *         dead schedule for days, and once a shrink guard refusing every rebuild
+ *         for 20 hours, so it reads as an error rather than a shrug.
  * UNKNOWN no timestamp. Distinct from fresh: `getLastUpdatedBadgeState` returns 'ok'
  *         for a null, which paints a green badge over "we have no idea".
  *
@@ -41,9 +45,19 @@ export interface ArchFreshnessReport {
   title: string;
 }
 
-export const ARCH_REBUILD_MINUTES = 60;
-export const ARCH_FRESH_LIMIT_MINUTES = 75;
-export const ARCH_OVERDUE_LIMIT_MINUTES = 180;
+/**
+ * ⚠️ THE MIRROR OF `REBUILD_INTERVAL_MS` IN THE CACHE BUILDER, and the two are
+ * one setting in two files. Lowered 60 -> 15 on 2026-09-17 with the builder.
+ *
+ * The two bounds below keep the ratios the doc comment above argues for rather
+ * than being re-picked: FRESH is one cycle plus a quarter, because a run that
+ * starts on the quarter hour finishes after it, and OVERDUE is three missed
+ * cycles. Changing the interval alone would leave a healthy screen claiming a
+ * schedule it is not on, in three tooltips.
+ */
+export const ARCH_REBUILD_MINUTES = 15;
+export const ARCH_FRESH_LIMIT_MINUTES = 20;
+export const ARCH_OVERDUE_LIMIT_MINUTES = 45;
 
 /** "12 min", "3 h 5 min", "2 days". Coarse on purpose past a day. */
 export const formatAge = (mins: number): string => {

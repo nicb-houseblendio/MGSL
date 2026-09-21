@@ -62,9 +62,23 @@ export const bucketGap = (row: ArchSummaryRow, bucket: ArchDetailKey): number =>
  */
 export const bucketGapReason = (bucket: ArchDetailKey): string | null => {
   switch (bucket) {
+    /*
+     * 🔴 THIS USED TO SAY "a PO has no inventory number until it is received".
+     *
+     * That was never true in this account and is now visibly false: a PO line
+     * can carry inventory detail before receipt, which is how Marc-Antoine's
+     * own bundles are minted (PO-CWP-001326 carries 001326-1 and 001326-2 on
+     * unreceived lines), and since 2026-09-17 those bundles are listed in this
+     * very drill-down. Leaving the string would have printed a denial directly
+     * underneath the thing it denies.
+     *
+     * The gap is real, the cause was wrong. What is left over is PO lines
+     * nobody has minted bundles for yet, which is a step someone has not taken
+     * rather than something the platform forbids.
+     */
     case 'onOrder':
     case 'inTransit':
-      return 'It sits on purchase-order lines whose bundles do not exist yet: a PO has no inventory number until it is received';
+      return 'It sits on purchase-order lines that have no bundle numbers on them yet, so it cannot be attributed to any bundle';
     case 'reserve':
     case 'readyToBuild':
       return 'It sits on sales-order lines written without inventory detail, so no bundle is named on them';
@@ -75,7 +89,7 @@ export const bucketGapReason = (bucket: ArchDetailKey): string | null => {
       // gap to be closed.
       return 'It has already shipped, so it is no longer on any bundle. This column is shipment history';
     case 'available':
-      return 'It is incoming stock on purchase-order lines whose bundles do not exist yet, and a PO has no inventory number until it is received';
+      return 'It is incoming stock on purchase-order lines that have no bundle numbers on them yet, so it cannot be attributed to any bundle';
     case 'onHand':
       // On Hand is summed FROM the lots, so a gap here is not a detail gap at
       // all. Naming a cause would be a guess; say only what is measured.

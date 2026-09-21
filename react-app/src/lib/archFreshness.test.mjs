@@ -22,13 +22,41 @@ const ago = (mins) => new Date(NOW - mins * 60000).toISOString();
 // ── the bound that matters: a full normal cycle is NOT stale ──────────────────
 ok('the fresh bound is above the rebuild interval, or the badge cries wolf every cycle',
   ARCH_FRESH_LIMIT_MINUTES > ARCH_REBUILD_MINUTES, { ARCH_FRESH_LIMIT_MINUTES, ARCH_REBUILD_MINUTES });
-ok('a cache that completed 59 minutes ago is fresh', archFreshness(ago(59), NOW).state === 'fresh');
-ok('a cache that completed 61 minutes ago is STILL fresh (the shared badge calls this stale)',
-  archFreshness(ago(61), NOW).state === 'fresh', archFreshness(ago(61), NOW));
-ok('a cache that completed 74 minutes ago is still fresh', archFreshness(ago(74), NOW).state === 'fresh');
-ok('76 minutes is due: one cycle has been missed', archFreshness(ago(76), NOW).state === 'due');
-ok('2 hours 59 is still only due', archFreshness(ago(179), NOW).state === 'due');
-ok('3 hours 1 is overdue', archFreshness(ago(181), NOW).state === 'overdue');
+/*
+ * ── DERIVED FROM THE CONSTANTS, not written out, changed 2026-09-17 ─────────
+ *
+ * These were six literals against the old 60/75/180 schedule. When the rebuild
+ * interval dropped to 15 minutes they all failed at once, and not one of them
+ * had found a bug: they were asserting the schedule rather than the boundary
+ * behaviour, so the only thing they could ever catch was somebody changing the
+ * interval on purpose.
+ *
+ * Phrased against the exported bounds they test what actually matters — that
+ * each band is closed on the right side and open on the left — and they keep
+ * working at any interval. The ONE literal left is deliberate: FRESH must stay
+ * above the rebuild interval or the badge cries wolf every single cycle, and
+ * that relationship is asserted directly above.
+ */
+const F = ARCH_FRESH_LIMIT_MINUTES;
+const O = ARCH_OVERDUE_LIMIT_MINUTES;
+
+ok(`a cache that completed ${ARCH_REBUILD_MINUTES} minutes ago, one whole cycle, is fresh`,
+  archFreshness(ago(ARCH_REBUILD_MINUTES), NOW).state === 'fresh',
+  archFreshness(ago(ARCH_REBUILD_MINUTES), NOW));
+ok(`${F - 1} minutes, just inside the fresh bound, is fresh`,
+  archFreshness(ago(F - 1), NOW).state === 'fresh', archFreshness(ago(F - 1), NOW));
+ok(`${F + 1} minutes is due: one cycle has been missed`,
+  archFreshness(ago(F + 1), NOW).state === 'due', archFreshness(ago(F + 1), NOW));
+ok(`${O - 1} minutes is still only due`,
+  archFreshness(ago(O - 1), NOW).state === 'due', archFreshness(ago(O - 1), NOW));
+ok(`${O + 1} minutes is overdue`,
+  archFreshness(ago(O + 1), NOW).state === 'overdue', archFreshness(ago(O + 1), NOW));
+// The shared badge (`getLastUpdatedBadgeState`) calls anything over an hour
+// stale and anything under it fine. Both readings are wrong for this screen now,
+// and this is the assertion that says so: at a 15 minute rebuild, an hour is
+// four missed cycles and must NOT read as healthy.
+ok('60 minutes is overdue, which is exactly where the shared badge would still say fine',
+  archFreshness(ago(60), NOW).state === 'overdue', archFreshness(ago(60), NOW));
 ok('4 days is overdue, not merely due', archFreshness(ago(4 * 24 * 60), NOW).state === 'overdue');
 ok('the overdue bound is above the due bound', ARCH_OVERDUE_LIMIT_MINUTES > ARCH_FRESH_LIMIT_MINUTES);
 
@@ -49,12 +77,13 @@ ok('an unreadable timestamp is quoted back so it can be diagnosed',
 }
 
 // ── every state explains itself and says what to do ──────────────────────────
-for (const [mins, expected] of [[10, 'fresh'], [90, 'due'], [600, 'overdue']]) {
+for (const [mins, expected] of [[5, 'fresh'], [F + 5, 'due'], [O * 10, 'overdue']]) {
   const r = archFreshness(ago(mins), NOW);
   ok(`${expected}: state and a non-empty label`, r.state === expected && r.label.length > 0, r);
   ok(`${expected}: the tooltip names the rebuild interval`, r.title.includes(String(ARCH_REBUILD_MINUTES)), r.title);
 }
-ok('due tells the trader to refresh', /refresh/i.test(archFreshness(ago(90), NOW).title));
+ok('due tells the trader to refresh', /refresh/i.test(archFreshness(ago(F + 5), NOW).title),
+  archFreshness(ago(F + 5), NOW).title);
 ok('overdue says the figures are out of date, not just old',
   /out of date/i.test(archFreshness(ago(600), NOW).title));
 ok('fresh warns that a just-sold bundle may not have moved yet',
