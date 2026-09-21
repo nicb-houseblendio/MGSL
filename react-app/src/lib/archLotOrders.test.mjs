@@ -564,9 +564,62 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
    * item unit columns so there is nothing to invent. Until then these quantities
    * are missing from the grid, 3187__9 at 20 stored units among them. */
   ok('C1: and that omission is reported, not silent',
-    c1b.audits.some((e) => /NO donor/.test(e)), c1b.audits);
+    c1b.audits.some((e) => /no usable stock-unit rate/i.test(e)), c1b.audits);
   ok('C1: …at AUDIT, because it is a standing data condition on every run',
-    !c1b.errors.some((e) => /NO donor/.test(e)), c1b.errors);
+    !c1b.errors.some((e) => /no usable stock-unit rate/i.test(e)), c1b.errors);
+
+  /* ── C1d. THE PAIR'S OWN RATE, WHICH IS WHAT MADE THE DONOR OPTIONAL ───────
+   *
+   * Added 2026-09-21 with the BUCKET_SQL unit columns. Before them, a pair with
+   * a bucket and no on-hand lot could only be built by copying a rate from a
+   * DONOR pair carrying the same item somewhere else, so an item with stock on
+   * order at its FIRST location and nowhere else was dropped entirely. That was
+   * discarding twelve pairs on every live rebuild, 3187__9 at 20 stored units
+   * among them, and the log line blamed untagged items — wrongly, since all
+   * eleven items were tagged and every one resolved BF at 0.001 off
+   * `item.stockunit`.
+   *
+   * Same NO_DONOR shape as above, with the one difference that matters: the
+   * bucket row now carries its own unitname and rate, the way the real query
+   * returns them. The row must build, and it must build at the row's OWN rate
+   * rather than at 1. */
+  const OWN_RATE = bkRow({
+    itemid: '7777', locationid: '778', locationname: 'First Delivery Ever',
+    trantype: 'PurchOrd', tranid: '999010', docno: 'PO-CWP-009998',
+    // 20 stored units, which is 3187__9 (OKO84KD at ARCH CLOUD) to the number —
+    // the largest of the twelve pairs this fix recovers on live data.
+    lineno: '98', qty: '20', shiprecv: '0', billed: '0',
+    lotno: null, assignedqty: null,
+    itemcode: 'OKO84KD', description: 'Okoume 8/4 KD', unitname: 'BF', rate: '0.001',
+  });
+  const c1d = runMr({ bucketRows: BUCKET_ROWS.concat([OWN_RATE]) });
+  const own = c1d.written.find((r) => String(r.internalId) === '7777');
+  ok('C1d: a pair with NO donor anywhere now builds from its own item row', !!own,
+    c1d.written.map((r) => r.internalId));
+  ok('C1d: …naming itself from its own row rather than adopting another item',
+    !!own && own.itemCode === 'OKO84KD', own && own.itemCode);
+  /* 20 stored units at rate 0.001 is 20,000 BF, because display = base / rate.
+   * This is the assertion that actually catches the old bug's twin: a defaulted
+   * rate of 1 would render 20 BF here, three orders of magnitude LOW, which is
+   * precisely the failure the builder refuses to risk by guessing. Pinned as the
+   * exact figure rather than "> 0" so a future default cannot slip through. */
+  ok('C1d: …and converting at ITS OWN rate, not at a defaulted 1',
+    !!own && Math.round(own.onOrder) === 20000, own && own.onOrder);
+  ok('C1d: nothing is on hand there, so On Hand is still 0',
+    !!own && Math.round(own.onHand) === 0, own && own.onHand);
+  ok('C1d: …with no lots, since no bundle exists yet',
+    !!own && Array.isArray(own.lots) && own.lots.length === 0, own && own.lots);
+  ok('C1d: and it is NOT reported as skipped, because nothing was skipped',
+    !c1d.audits.some((e) => /no usable stock-unit rate/i.test(e) && /7777__778/.test(e)),
+    c1d.audits.filter((e) => /stock-unit rate/i.test(e)));
+  /* The refusal must still bite when the rate is absent on BOTH paths — a zero
+   * rate is not a licence to guess 1. Same row, rate stripped. */
+  const c1e = runMr({ bucketRows: BUCKET_ROWS.concat([
+    Object.assign({}, OWN_RATE, { rate: null, unitname: null }),
+  ]) });
+  ok('C1d: a rate of null on both paths is still refused, not defaulted to 1',
+    !c1e.written.some((r) => String(r.internalId) === '7777'),
+    c1e.written.map((r) => r.internalId));
 }
 
 {

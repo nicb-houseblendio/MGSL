@@ -1806,10 +1806,51 @@ define([
         '  t.employee             AS hdrrepid, ' +
         '  BUILTIN.DF(t.employee) AS hdrrep, ' +
         '  inv.inventorynumber    AS lotno, ' +
-        '  ia.quantity            AS assignedqty ' +
+        '  ia.quantity            AS assignedqty, ' +
+        /* ── 🔴 THE ITEM'S OWN UNIT, SO A PAIR WITH NO LOT CAN STILL BE BUILT ───
+         *
+         * Added 2026-09-21. Everything below is a property of the ITEM, read off
+         * the `item i` join this query ALREADY had, plus one LEFT JOIN. No extra
+         * query, no extra row: these columns are functionally dependent on
+         * `tl.item`, so the fan-out and the line-level dedupe are unchanged.
+         *
+         * WHY IT WAS MISSING AND WHAT IT COST. The builder learned rates only
+         * from LOT_SQL, so an item/location pair with a bucket but no on-hand lot
+         * had no rate source. The 2026-09-09 recovery block worked around that by
+         * copying the rate from a DONOR pair carrying the same item somewhere
+         * else, and when no donor existed it dropped the row rather than default
+         * to rate 1 (correctly: Lumber is 0.001, so a default is wrong by three
+         * orders of magnitude). Measured 2026-09-21: that was discarding TWELVE
+         * pairs on every rebuild, 3187__9 at 20 stored units among them.
+         *
+         * And the diagnosis in that block's own log line was wrong. It said "the
+         * item appears nowhere else" and told the reader to tag the item. All
+         * eleven items behind those twelve pairs were already correctly tagged and
+         * in scope, and every one resolves BF at 0.001 through exactly the join
+         * below. The rate was never unknowable. Nobody asked for it.
+         *
+         * Aliases mirror LOT_SQL deliberately, so `normalizeUnit` and the
+         * `num(r.rate) > 0` guard apply unchanged on both paths.
+         *
+         * ⚠️ `i.itemid AS itemcode`, NOT `itemid`: `tl.item` is already aliased
+         * `itemid` at the top of this select and is the first half of every pair
+         * key. Selecting the SKU as `itemid` here would overwrite the internal id
+         * with a string and re-key every bucket. Same trap as `docno` vs `tranid`
+         * above. */
+        '  i.itemid               AS itemcode, ' +
+        '  i.description          AS description, ' +
+        '  BUILTIN.DF(i.cseg1)    AS species, ' +
+        '  BUILTIN.DF(i.csegitem_category) AS category, ' +
+        '  BUILTIN.DF(i.csegseg_thickness) AS thickness, ' +
+        '  u.unitname             AS unitname, ' +
+        '  u.conversionrate       AS rate ' +
         'FROM transactionline tl ' +
         'JOIN transaction t ON t.id = tl.transaction ' +
         'JOIN item i        ON i.id = tl.item ' +
+        // LEFT, not inner, and that matters: an item with a broken or absent unit
+        // record must still produce its bucket row with a null rate, which the
+        // consumer then reports rather than silently dropping the whole pair.
+        'LEFT JOIN unitstypeuom u ON u.internalid = i.stockunit ' +
         'LEFT JOIN inventoryassignment ia ' +
         // 🔴 tl.id, NOT tl.linesequencenumber. Measured in sandbox across every
         // transaction from 2026-08-01 to 08-19: joining assignments on
@@ -2012,6 +2053,28 @@ define([
                     itemId: String(r.itemid),
                     locationId: String(r.locationid),
                     locationName: r.locationname || '',
+                    /* ── THE ITEM'S OWN METADATA, added 2026-09-21 ─────────────
+                     * Read straight off this row rather than borrowed from a
+                     * donor pair elsewhere. `rate` is the load-bearing one: with
+                     * it here, a pair that has a bucket and no on-hand lot no
+                     * longer needs a donor to exist at all. See the note on these
+                     * columns in BUCKET_SQL.
+                     *
+                     * Left RAW and unvalidated on purpose. The `num(r.rate) > 0`
+                     * check and `normalizeUnit` live at the single consumer in
+                     * getInputData, so both query paths are guarded by the same
+                     * code rather than by two copies that can drift. A null rate
+                     * reaches that consumer as null and is reported, not defaulted. */
+                    itemCode: r.itemcode || '',
+                    // .trim() for the same reason as the lot path: three of the six
+                    // ARCH descriptions end in a real CRLF that Oracle's TRIM does
+                    // not strip, and it renders as a blank second line.
+                    description: String(r.description || '').trim() || r.itemcode || '',
+                    species: r.species || '',
+                    category: r.category || '',
+                    thickness: r.thickness || '',
+                    unitname: r.unitname || '',
+                    rate: r.rate,
                 };
             }
             const bucket = byPair[key];
@@ -2599,16 +2662,24 @@ define([
              * a location: nothing is on hand there yet, which is exactly when a trader
              * most wants to see what is coming.
              *
-             * ITEM-LEVEL metadata is adopted from any pair that already carries the
-             * same itemId, because itemCode, description, species, category, thickness,
-             * unit and RATE are properties of the ITEM, not of the location. The rate is
-             * the one that matters: it is load-bearing (Lumber is 0.001, and defaulting
-             * it to 1 is wrong by three orders of magnitude), so it is copied from a
-             * real row and never invented.
+             * ITEM-LEVEL metadata is a property of the ITEM, not of the location:
+             * itemCode, description, species, category, thickness, unit and RATE. The
+             * rate is the one that matters, because it is load-bearing (Lumber is
+             * 0.001, and defaulting it to 1 is wrong by three orders of magnitude), so
+             * it is read from a real row and never invented.
              *
-             * With NO donor there is nothing safe to do: the row cannot be built without
-             * a rate, and guessing one is the failure this file already refuses
-             * elsewhere. It is logged at ERROR and skipped, which is at least visible.
+             * ⚠️ WHERE IT COMES FROM CHANGED ON 2026-09-21. It used to be copied from a
+             * DONOR pair carrying the same item at some other location, because
+             * BUCKET_SQL selected no unit columns and LOT_SQL was the only rate source.
+             * BUCKET_SQL now carries the item's own unit, so the normal path needs no
+             * donor at all and the donor is a fallback. That change is what stopped
+             * twelve pairs a rebuild being dropped; see the column note in BUCKET_SQL.
+             *
+             * If NEITHER the pair's own row nor a donor yields a usable rate there is
+             * still nothing safe to do, and the row is skipped and named. That is the
+             * same refusal as before, now reached only when an item's unit record is
+             * genuinely broken everywhere rather than whenever a location happened to
+             * have no stock yet.
              */
             const bucketKeys = Object.keys(buckets);
             const donorFor = (itemId) => {
@@ -2625,19 +2696,40 @@ define([
                 const t = b.totals || {};
                 const carried = (num(t.onOrder) || 0) + (num(t.inTransit) || 0) +
                                 (num(t.reserve) || 0) + (num(t.outbound) || 0);
-                if (!donor) {
+
+                /* ── THE PAIR'S OWN RATE FIRST, THE DONOR ONLY AS A FALLBACK ────
+                 *
+                 * Changed 2026-09-21, when BUCKET_SQL started carrying the item's
+                 * unit columns. Before that a donor was the ONLY rate source and
+                 * no donor meant no row, which silently dropped twelve pairs on
+                 * every rebuild.
+                 *
+                 * Own rate first because it is read off this pair's own item row
+                 * and cannot be the wrong item's. The donor arm is kept rather
+                 * than deleted: it still covers an item whose unit record is
+                 * broken or absent here but readable on a pair elsewhere, which
+                 * is a real if rare shape and costs one `||`.
+                 *
+                 * The refusal stays for the case where NEITHER has a usable rate.
+                 * That is the original rule and it is still right: guessing 1 is
+                 * three orders of magnitude wrong for Lumber, and a row missing
+                 * with a log line is recoverable where a row present and wrong by
+                 * 1000x is not. What changed is only how rarely we get there. */
+                const ownRate = num(b.rate);
+                const rate = ownRate > 0 ? ownRate : (donor && num(donor.rate) > 0 ? num(donor.rate) : 0);
+                if (!(rate > 0)) {
                     unrecoverable.push(key + ' (' + carried.toFixed(3) + ' stored units)');
                     return;
                 }
                 byPair[key] = {
                     itemId:       itemId,
-                    itemCode:     donor.itemCode,
-                    description:  donor.description,
-                    species:      donor.species,
-                    category:     donor.category,
-                    thickness:    donor.thickness,
-                    unit:         donor.unit,
-                    rate:         donor.rate,
+                    itemCode:     b.itemCode     || (donor && donor.itemCode)    || '',
+                    description:  b.description  || (donor && donor.description) || '',
+                    species:      b.species      || (donor && donor.species)     || '',
+                    category:     b.category     || (donor && donor.category)    || '',
+                    thickness:    b.thickness    || (donor && donor.thickness)   || '',
+                    unit:         b.unitname ? normalizeUnit(b.unitname) : (donor && donor.unit) || '',
+                    rate:         rate,
                     locationId:   String(b.locationId || String(key).split('__')[1]),
                     locationName: b.locationName || KNOWN_LOCATIONS[String(b.locationId)] || '',
                     holds:        holds[key] || {},
@@ -2733,33 +2825,33 @@ define([
                  * standing state at error level 96 times a day is what trains people to
                  * ignore the error channel.
                  *
-                 * 🔴 BUT THE CONDITION ITSELF IS A REAL BUG AND IT IS NOT AN UNTAGGED
-                 * ITEM. That was the assumption behind "Fix by tagging the item", and
-                 * it is wrong. Measured 2026-09-21, all eleven items behind the twelve
-                 * pairs are correctly tagged and in scope — five in department Hardwood
-                 * under CWP MTL (BEM44KD, CUR84KD, PWA84KD, SAP84FCKD, WEN84KDSTM) and
-                 * six in subsidiary ARC (GEM44KD, GEM64KD, GEM84KD, OKO84KD, PUR84KD,
-                 * SAP104KD) — and EVERY ONE resolves a rate through the same join
-                 * LOT_SQL already uses:
+                 * ✅ THE CAUSE THIS USED TO REPORT IS FIXED, so reaching it now means
+                 * something different and rarer than it did before 2026-09-21.
                  *
-                 *   LEFT JOIN unitstypeuom u ON u.internalid = i.stockunit
-                 *   -> unitname 'BF', conversionrate 0.001
+                 * It used to say "the item appears nowhere else" and "Fix by tagging the
+                 * item", and both were wrong. It fired on twelve pairs every rebuild,
+                 * and all eleven items behind them were correctly tagged and in scope —
+                 * five in department Hardwood under CWP MTL (BEM44KD, CUR84KD, PWA84KD,
+                 * SAP84FCKD, WEN84KDSTM) and six in subsidiary ARC (GEM44KD, GEM64KD,
+                 * GEM84KD, OKO84KD, PUR84KD, SAP104KD) — every one resolving BF at
+                 * 0.001 through `LEFT JOIN unitstypeuom u ON u.internalid = i.stockunit`.
+                 * The rate was never unknowable; BUCKET_SQL simply never asked for it.
+                 * It does now, so those twelve pairs build normally and this block is
+                 * expected to be SILENT.
                  *
-                 * So the rate is not unknowable, it is merely not ASKED FOR: BUCKET_SQL
-                 * selects no unit columns, the builder learns rates only from LOT_SQL,
-                 * and a pair with no on-hand lot therefore has no rate source. The code
-                 * is then right to drop the row rather than default to 1 (three orders
-                 * of magnitude wrong for Lumber). The remaining half of the message is
-                 * the correct fix: give BUCKET_SQL the item columns. Until someone
-                 * does, these quantities are genuinely missing from the grid, including
-                 * 3187__9 at 20 stored units. NOT fixed here because it changes what
-                 * appears on the trader screen and that is a decision, not a cleanup. */
-                log.audit('ARCH cache — pair(s) with a bucket but NO on-hand lot and NO donor row',
-                    'Skipped because no stock-unit rate was available on this query path, and ' +
-                    'inventing one would be wrong by three orders of magnitude for Lumber: ' +
-                    unrecoverable.join('; ') + '. These quantities are missing from the grid. ' +
-                    'The items ARE tagged and their rate IS readable from item.stockunit — the fix ' +
-                    'is to give BUCKET_SQL the item unit columns, not to retag anything.');
+                 * ⚠️ So if it speaks again, do not reach for the old explanations. It
+                 * now means neither the pair's own item row NOR any donor yielded a
+                 * rate above zero, i.e. an item whose unit record is broken or absent
+                 * everywhere. Level stays AUDIT because it cannot demote itself (see
+                 * the dead latch above), but an occurrence is news — check the item's
+                 * stockunit and its `unitstypeuom` row before anything else. */
+                log.audit('ARCH cache — pair(s) with a bucket but NO usable stock-unit rate',
+                    'Skipped because neither the pair\'s own item row nor any donor pair ' +
+                    'yielded a conversion rate above zero, and inventing one would be wrong by ' +
+                    'three orders of magnitude for Lumber: ' + unrecoverable.join('; ') +
+                    '. These quantities are missing from the grid. Since 2026-09-21 BUCKET_SQL ' +
+                    'reads item.stockunit directly, so this is NOT the old "no lot at this ' +
+                    'location yet" case — check the item\'s unit record.');
             }
 
             const out = {};
