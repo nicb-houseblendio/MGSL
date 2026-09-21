@@ -2673,68 +2673,93 @@ define([
                 // drops to audit. The count and the pair list stay in the log either
                 // way, so nothing is hidden from the screen.
                 //
-                // ⚠️ THIS LATCH IS UNPROVEN END TO END, per adversarial review
-                // 2026-09-10. It depends on `recoveredCount` (a module-scope variable
-                // set here, in getInputData) surviving as live state into summarize,
-                // hundreds of lines below, which is where it is actually written to
-                // META. The file's own comment on `skippedLots` above already admits
-                // this is not guaranteed across Map/Reduce STAGES. That sibling
-                // mechanism (skippedLotCount, the "no conversion rate" line) is the
-                // ESTABLISHED CONVENTION this fix mirrors — and a live query
-                // (`SELECT COUNT(*) FROM scriptnote WHERE title LIKE '%no conversion
-                // rate%'`) returns ZERO rows in this account's entire history. So the
-                // exact mechanism being relied on here has never once been observed to
-                // actually latch in production. Before trusting this: let the
-                // condition fire on two consecutive real hourly runs and confirm via
-                // scriptnote that the SECOND run logs AUDIT, not ERROR. If it does
-                // not, module state is not surviving and this needs a mechanism
-                // Map/Reduce actually guarantees (e.g. summarize deriving the count
-                // itself from its own aggregated rows, rather than trusting a
-                // getInputData-scoped variable).
-                let alreadyReported = false;
-                try {
-                    const metaRaw = CacheClient.getCache().get({ key: CacheKeys.META });
-                    if (metaRaw) alreadyReported = (JSON.parse(metaRaw).recoveredCount || 0) > 0;
-                } catch (e) { /* unknown — treat as news and log loudly */ }
-
-                const logRecovered = alreadyReported ? log.audit : log.error;
-                logRecovered('ARCH cache — recovered ' + recovered.length + ' pair(s) that have stock ' +
+                // 🔴 THE LATCH THAT USED TO BE HERE NEVER ARMED. TEST PERFORMED
+                // 2026-09-21, RESULT: IT DOES NOT WORK. DO NOT RE-ADD IT.
+                //
+                // It read `META.recoveredCount` and dropped to audit once that was
+                // non-zero. The 2026-09-10 review that added it wrote down the exact
+                // experiment to run — "let the condition fire on two consecutive real
+                // runs and confirm via scriptnote that the SECOND run logs AUDIT, not
+                // ERROR. If it does not, module state is not surviving" — and nobody
+                // ran it. Ran now: FOUR consecutive rebuilds (07:35:44, 07:50:48,
+                // 08:05:55, 08:20:59 local) all logged ERROR with an identical
+                // four-pair payload. The latch is dead.
+                //
+                // WHY, precisely, because the reason is structural and will defeat
+                // any variant of the same idea: `recoveredCount` is a module-scope
+                // `let` (declared ~line 850) assigned ONLY here, in getInputData, and
+                // read ONLY in summarize, where META is written. Map/Reduce runs each
+                // stage as a SEPARATE EXECUTION with a fresh module instance, so
+                // summarize's copy is still the initializer 0. META therefore records
+                // `recoveredCount: 0` on every run no matter what getInputData saw,
+                // the latch reads 0, and `alreadyReported` is false forever. The
+                // review suspected exactly this and shipped it anyway.
+                //
+                // So: unconditional AUDIT, which is the same answer the untagged-items
+                // block above reached on 2026-08-25 for the same reason, and the level
+                // is right on the merits rather than as a workaround. This message
+                // reports a SUCCESS — the recovery worked, the rows are on the screen —
+                // and a success repeated 96 times a day does not belong in the channel
+                // where a failed rebuild appears. The count and the pair list are
+                // unchanged, so nothing is hidden.
+                //
+                // If it should ever shout again, the trigger is the SET CHANGING, not
+                // the set being non-empty, and it needs a carrier Map/Reduce actually
+                // guarantees across stages. META is not one from here. Do not reach
+                // for module state again.
+                log.audit('ARCH cache — recovered ' + recovered.length + ' pair(s) that have stock ' +
                     'on order or reserved but nothing on hand',
                     'These produced NO grid row at all before 2026-09-09: ' + recovered.join('; ') +
-                    '. Their quantities were absent from On Order and In Transit.' +
-                    (alreadyReported ? ' (STILL RECOVERING — first occurrence already logged at error level.)' : ''));
+                    '. Their quantities were absent from On Order and In Transit. This is the ' +
+                    'recovery WORKING; it is expected on every run for as long as these pairs have ' +
+                    'no on-hand lot.');
             }
             if (unrecoverable.length) {
                 unrecoverableCount = unrecoverable.length;
 
-                /* Same latch as `recovered` above, applied 2026-09-10 for the same
-                 * reason and with one honest difference: this block has NEVER fired.
-                 * A live query for its title returns zero rows in this account's whole
-                 * history, so unlike `recovered` (21 identical ERROR notes and
-                 * counting) there is no measured spam to fix here.
+                /* 🔴 SAME DEAD LATCH AS `recovered` ABOVE, REMOVED FOR THE SAME REASON.
+                 * Read that comment for why no variant of it can work from here.
                  *
-                 * It is latched anyway, deliberately, because the CONDITION is the same
-                 * standing kind: an item with a bucket but no donor row anywhere is an
-                 * untagged item, and that does not heal itself hour to hour any more
-                 * than recovered's did. Leaving one of two adjacent, identically-shaped
-                 * blocks unlatched is precisely the asymmetry that produced the
-                 * original bug - the untagged-items block above was fixed on 2026-08-25
-                 * and this family was missed. Since it has never fired, adding the
-                 * latch cannot change any behaviour anyone has observed; it is
-                 * insurance, not a fix, and it is recorded as such. */
-                let alreadyReported = false;
-                try {
-                    const metaRaw = CacheClient.getCache().get({ key: CacheKeys.META });
-                    if (metaRaw) alreadyReported = (JSON.parse(metaRaw).unrecoverableCount || 0) > 0;
-                } catch (e) { /* unknown — treat as news and log loudly */ }
-
-                const logUnrecoverable = alreadyReported ? log.audit : log.error;
-                logUnrecoverable('ARCH cache — pair(s) with a bucket but NO on-hand lot and NO donor row',
-                    'Skipped because the item appears nowhere else, so its stock-unit rate could ' +
-                    'not be read and inventing one would be wrong by three orders of magnitude for ' +
-                    'Lumber: ' + unrecoverable.join('; ') + '. These quantities are missing from ' +
-                    'the grid. Fix by tagging the item or by giving BUCKET_SQL the item columns.' +
-                    (alreadyReported ? ' (STILL SKIPPING — first occurrence already logged at error level.)' : ''));
+                 * ⚠️ AND THE COMMENT THAT USED TO SIT HERE WAS FACTUALLY WRONG BY THE
+                 * TIME ANYONE READ IT. It said "this block has NEVER fired", that a
+                 * live query for its title "returns zero rows in this account's whole
+                 * history", and therefore that latching it "cannot change any behaviour
+                 * anyone has observed". Measured 2026-09-21: it fires on EVERY rebuild,
+                 * at ERROR, with twelve pairs. It was insurance against a condition
+                 * that had already started happening.
+                 *
+                 * The level is AUDIT on the merits, not as a workaround: this is a
+                 * standing state of the data, identical on four consecutive runs, and a
+                 * standing state at error level 96 times a day is what trains people to
+                 * ignore the error channel.
+                 *
+                 * 🔴 BUT THE CONDITION ITSELF IS A REAL BUG AND IT IS NOT AN UNTAGGED
+                 * ITEM. That was the assumption behind "Fix by tagging the item", and
+                 * it is wrong. Measured 2026-09-21, all eleven items behind the twelve
+                 * pairs are correctly tagged and in scope — five in department Hardwood
+                 * under CWP MTL (BEM44KD, CUR84KD, PWA84KD, SAP84FCKD, WEN84KDSTM) and
+                 * six in subsidiary ARC (GEM44KD, GEM64KD, GEM84KD, OKO84KD, PUR84KD,
+                 * SAP104KD) — and EVERY ONE resolves a rate through the same join
+                 * LOT_SQL already uses:
+                 *
+                 *   LEFT JOIN unitstypeuom u ON u.internalid = i.stockunit
+                 *   -> unitname 'BF', conversionrate 0.001
+                 *
+                 * So the rate is not unknowable, it is merely not ASKED FOR: BUCKET_SQL
+                 * selects no unit columns, the builder learns rates only from LOT_SQL,
+                 * and a pair with no on-hand lot therefore has no rate source. The code
+                 * is then right to drop the row rather than default to 1 (three orders
+                 * of magnitude wrong for Lumber). The remaining half of the message is
+                 * the correct fix: give BUCKET_SQL the item columns. Until someone
+                 * does, these quantities are genuinely missing from the grid, including
+                 * 3187__9 at 20 stored units. NOT fixed here because it changes what
+                 * appears on the trader screen and that is a decision, not a cleanup. */
+                log.audit('ARCH cache — pair(s) with a bucket but NO on-hand lot and NO donor row',
+                    'Skipped because no stock-unit rate was available on this query path, and ' +
+                    'inventing one would be wrong by three orders of magnitude for Lumber: ' +
+                    unrecoverable.join('; ') + '. These quantities are missing from the grid. ' +
+                    'The items ARE tagged and their rate IS readable from item.stockunit — the fix ' +
+                    'is to give BUCKET_SQL the item unit columns, not to retag anything.');
             }
 
             const out = {};
@@ -2762,21 +2787,40 @@ define([
                 // codebase, and the exact bug that was just fixed in summarize.
                 // It was missed here while fixing it there.
                 //
-                // First occurrence is an error because it is news. Once META
-                // already records a non-zero skippedLotCount it is a known
-                // condition, so it drops to audit. The count stays in META
-                // either way, so nothing is hidden from the screen.
-                let alreadyReported = false;
-                try {
-                    const metaRaw = CacheClient.getCache().get({ key: CacheKeys.META });
-                    if (metaRaw) alreadyReported = (JSON.parse(metaRaw).skippedLotCount || 0) > 0;
-                } catch (e) { /* unknown — treat as news and log loudly */ }
-
-                const logSkipped = alreadyReported ? log.audit : log.error;
-                logSkipped('ARCH cache getInputData — lots SKIPPED, no conversion rate',
+                // 🔴 THE THIRD COPY OF THE DEAD LATCH, REMOVED 2026-09-21. It claimed
+                // "once META already records a non-zero skippedLotCount it drops to
+                // audit", and that is false for the same structural reason as its two
+                // siblings: `skippedLots` is a module-scope variable (line 843)
+                // assigned only here in getInputData and read only in summarize, and
+                // Map/Reduce gives each stage a fresh module instance. Line 3484 of
+                // this file already states the general fact. So summarize always sees
+                // the empty initializer.
+                //
+                // ⚠️ ERROR IS KEPT HERE, unlike the two siblings, and the difference is
+                // measured rather than stylistic: those two fire on every single
+                // rebuild, so error level was active spam. This block has never fired
+                // once in this account's history, so error costs nothing and the
+                // condition genuinely is news — a lot whose unit setup is broken means
+                // On Hand is silently LOW. If it ever does start firing every run,
+                // change it to audit by hand; it cannot demote itself and no mechanism
+                // reachable from getInputData will make it.
+                //
+                // 🔴 AND THE SAME BUG HAS A USER-VISIBLE CONSEQUENCE NOBODY HAS NOTICED.
+                // Because summarize reads the empty initializer, META's
+                // `skippedLotCount` is written as 0 on every run whatever the truth is.
+                // `trader_screen_service_arch.getMeta` forwards it to the browser with
+                // the comment ">0 means the On Hand figures are LOW", so that warning
+                // is structurally unreachable: the screen can never tell a trader its
+                // On Hand is understated. Same for `recoveredCount` and
+                // `unrecoverableCount`, which summarize also writes from module state
+                // — though those two never reach the browser anyway, being absent from
+                // that function's allowlist. Fixing this needs a carrier that survives
+                // stages, which is a design decision, not an edit.
+                log.error('ARCH cache getInputData — lots SKIPPED, no conversion rate',
                     rateless.length + ' lot row(s) had no usable stock-unit conversion rate and were ' +
                     'excluded rather than counted at rate 1: ' + rateless.join(', ') +
-                    (alreadyReported ? ' (STILL SKIPPING — first occurrence already logged at error level.)' : ''));
+                    '. On Hand is LOW by these quantities. NOTE: META.skippedLotCount will still ' +
+                    'read 0, so the screen will not show this — see the comment above.');
             }
 
             /*

@@ -510,8 +510,33 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
     !!orphan && Array.isArray(orphan.lots) && orphan.lots.length === 0, orphan && orphan.lots);
   ok('C1: nothing is on hand there, so On Hand reads 0',
     !!orphan && Math.round(orphan.onHand) === 0, orphan && orphan.onHand);
-  ok('C1: the recovery is logged at ERROR, because the row was MISSING before',
-    c1.errors.some((e) => /recovered/.test(e) && /nothing on hand/.test(e)), c1.errors);
+  /* ⚠️ THIS ASSERTED ERROR UNTIL 2026-09-21, AND THE CHANGE IS DELIBERATE.
+   *
+   * The original reasoning was sound when written: these rows were missing from
+   * the grid entirely until 2026-09-09, and an audit line on a slow job is how a
+   * four-day outage hid here once before. The builder paired that with a latch
+   * meant to demote repeats to audit, so only the FIRST occurrence shouted.
+   *
+   * Measured 2026-09-21: the latch never armed, not once. Four consecutive
+   * rebuilds (07:35:44, 07:50:48, 08:05:55, 08:20:59) logged this at ERROR with
+   * an identical four-pair payload, and the cause is structural — the count rides
+   * a module-scope variable from getInputData to summarize, and Map/Reduce gives
+   * each stage a fresh module instance, so META always records 0. The builder
+   * carries the full explanation.
+   *
+   * With the interval now at 15 minutes that is 96 error notes a day for a
+   * standing state of the data, which is the exact pattern this project already
+   * corrected twice (untagged items 2026-08-25, shrink guard before it). And the
+   * message reports a SUCCESS: the recovery worked and the rows are on screen.
+   *
+   * So the invariant worth pinning is that the condition is NOT SILENT, which is
+   * what the original test was really protecting. AUDIT satisfies that — scriptnote
+   * returns audit and error alike. If someone builds a carrier that survives
+   * stages, restore ERROR for the first occurrence and assert both halves here. */
+  ok('C1: the recovery is reported, not silent',
+    c1.audits.some((e) => /recovered/.test(e) && /nothing on hand/.test(e)), c1.audits);
+  ok('C1: …at AUDIT, because it fires on every run and reports the fix WORKING',
+    !c1.errors.some((e) => /recovered/.test(e) && /nothing on hand/.test(e)), c1.errors);
 
   /* A bucket for an item that appears in NO lot row has no donor, so its
    * stock-unit rate cannot be read. Inventing one is wrong by three orders of
@@ -524,8 +549,24 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   const c1b = runMr({ bucketRows: BUCKET_ROWS.concat([NO_DONOR]) });
   ok('C1: a bucket whose item appears nowhere else is NOT invented into a row',
     !c1b.written.some((r) => String(r.internalId) === '8888'), c1b.written.map((r) => r.internalId));
-  ok('C1: and that omission is logged at ERROR rather than being silent',
-    c1b.errors.some((e) => /NO donor/.test(e)), c1b.errors);
+  /* Same change as the recovery assertion above, same date, same measurement:
+   * this block also fires on every rebuild, with twelve real pairs, so ERROR was
+   * 96 notes a day for a standing condition.
+   *
+   * 🔴 BUT UNLIKE THE RECOVERY, THE UNDERLYING CONDITION IS A REAL BUG THAT IS
+   * STILL OPEN, so do not read a quieter log as the problem being solved. The
+   * comment above this block says the rate "cannot be read", and that turned out
+   * to be false. Measured 2026-09-21: all eleven items behind the twelve live
+   * pairs are correctly tagged and every one resolves BF at 0.001 through
+   * `LEFT JOIN unitstypeuom u ON u.internalid = i.stockunit`, the same join
+   * LOT_SQL already uses. The rate is not unknowable, BUCKET_SQL just never asks
+   * for it. Refusing to invent a rate is still right; the fix is to select the
+   * item unit columns so there is nothing to invent. Until then these quantities
+   * are missing from the grid, 3187__9 at 20 stored units among them. */
+  ok('C1: and that omission is reported, not silent',
+    c1b.audits.some((e) => /NO donor/.test(e)), c1b.audits);
+  ok('C1: …at AUDIT, because it is a standing data condition on every run',
+    !c1b.errors.some((e) => /NO donor/.test(e)), c1b.errors);
 }
 
 {
