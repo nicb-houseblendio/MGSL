@@ -40,3 +40,10 @@ test('the split queue reads the native ship date, ISO formatted, with the tranda
   assert.match(splitQueue, /TO_CHAR\(t\.shipdate, 'YYYY-MM-DD'\)\s+AS shipdate/);
   assert.match(splitQueue, /shipDate:\s+r\.shipdate \|\| r\.trandate \|\| ''/);
 });
+
+// Feedback 14 round-1 review: the split queue was the unscoped fourth ARCH site.
+// 32 of the 38 split-flagged lines in sandbox are CWP MTL items.
+test('the split queue is scoped to subsidiary ARC, like the other three sites', () => {
+  assert.match(splitQueue, /"  AND BUILTIN\.DF\(i\.subsidiary\) = 'ARC' " \+/);
+  assert.ok(splitQueue.indexOf("BUILTIN.DF(i.subsidiary) = 'ARC'") < splitQueue.indexOf("'ORDER BY t.tranid, tl.linesequencenumber'"));
+});

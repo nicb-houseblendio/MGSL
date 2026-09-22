@@ -261,6 +261,13 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
              */
             "  AND t.status NOT IN ('G','H','C','SalesOrd:G','SalesOrd:H','SalesOrd:C') " +
             '  AND ABS(NVL(tl.quantityshiprecv, 0)) = 0 ' +
+            // ARCH scope, the fourth site (Feedback 14, 2026-09-22). The other three
+            // (cache MR, service, order endpoint) scope items to subsidiary ARC;
+            // this queue had no scope at all, and 32 of the 38 split-flagged lines
+            // in sandbox are CWP MTL items. None reached the queue today only
+            // because the status filters above happened to drop them. By NAME, via
+            // BUILTIN.DF: raw i.subsidiary is NOT_EXPOSED on this tenant.
+            "  AND BUILTIN.DF(i.subsidiary) = 'ARC' " +
             'ORDER BY t.tranid, tl.linesequencenumber',
     }).asMappedResults();
 

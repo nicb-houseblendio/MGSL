@@ -108,7 +108,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * differing by environment. `readLotStates` below selects
      * `BUILTIN.DF(i.department)`, a string, not the raw id.
      */
-    const HARDWOOD_DEPARTMENT = 'Hardwood';
+    // HARDWOOD_DEPARTMENT ('Hardwood') was declared here and is gone since
+    // 2026-09-22: the scope is subsidiary ARC alone (Feedback 14, see below).
     /* 🔴 AND THE SUBSIDIARY ARM, WITHOUT WHICH THIS ENDPOINT REFUSES 95% OF THE
      * STOCK THE SCREEN DISPLAYS.
      *
@@ -2158,7 +2159,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      *
      * 🔴 ADDED 2026-09-14. `setReadyToBuild` accepted ANY sales order id, in a
      * module whose order-creation path refuses a non-ARCH item line by line
-     * (see the HARDWOOD_DEPARTMENT check in `validateLines`). So the one call
+     * (see the `inArchScope` check in `validateLines`). So the one call
      * that writes to an order it did not create was the least guarded one in
      * the file, and a mistyped or stale id could flip a flag on an Industriel
      * or MTL order that no ARCH screen will ever show again.
@@ -2166,8 +2167,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * The test is the SAME one every other ARCH module uses, and it is BY NAME:
      * subsidiary "ARC" since 2026-09-22 (department "Hardwood" before that),
      * minus the decking exclusions. Never the internal
-     * id — 11 does not exist in production at all, measured 2026-09-10, which is
-     * why `HARDWOOD_DEPARTMENT` is a string.
+     * id — 11 does not exist in production at all, measured 2026-09-10; the
+     * subsidiary is matched by NAME for the same reason.
      *
      * Returns `{ known, hardwoodLines, totalLines, sample }`. `known: false`
      * means the question could not be answered, which the caller treats
@@ -2182,12 +2183,11 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * order the trader can legitimately see on the screen. Worth one line of
      * confirmation from Marc-Antoine, and it changes one comparison here.
      *
-     * ⚠️ IN PRODUCTION THIS CURRENTLY REFUSES EVERYTHING. Measured 2026-09-13:
-     * prod has exactly one Trading department row, id 9, with no Hardwood child,
-     * so `BUILTIN.DF(i.department) = 'Hardwood'` matches zero items there. That
-     * is correct behaviour for an ARCH endpoint on an account with no ARCH data,
-     * but it must not be mistaken for a bug when prod cutover starts. The
-     * refusal text below names the department so the cause is readable.
+     * ⚠️ IN PRODUCTION THIS CURRENTLY REFUSES EVERYTHING, for a new reason since
+     * 2026-09-22: production has a subsidiary named ARC (id 9) but ZERO items in
+     * it, so `inArchScope` matches nothing. Correct behaviour for an ARCH
+     * endpoint on an account with no ARCH data; not a bug at prod cutover. The
+     * refusal text below names the subsidiary so the cause is readable.
      */
     const readOrderArchScope = (soId) => {
         try {

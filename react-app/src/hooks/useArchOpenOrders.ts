@@ -174,7 +174,7 @@ interface OpenOrdersResponse {
    */
   service?: string;
   orders?: RawOrder[];
-  /** How many items carry the Hardwood segment. Explains an empty tab. */
+  /** How many items are in the ARCH scope (subsidiary ARC since 2026-09-22). Explains an empty tab. */
   taggedItemCount?: number | null;
   /**
    * Whether the rep column can be trusted. ABSENT from any service deployed
@@ -188,9 +188,10 @@ export interface ArchOpenOrdersState {
   source: ArchOpenOrdersSource;
   error: string | null;
   /**
-   * Why the tab can be legitimately empty. Only six items in the sandbox carry
-   * the Hardwood segment, and every other CWP order runs on untagged SKUs, so a
-   * blank table is usually a tagging gap rather than a quiet day.
+   * Why the tab can be legitimately empty: how many items the request could see
+   * in the ARCH scope. Once six Hardwood-segment items; since 2026-09-22 the
+   * scope is subsidiary ARC (143 non-decking items in sandbox), so an empty tab
+   * now means "no open ARC orders this role can read", not a tagging gap.
    */
   taggedItemCount: number | null;
   /**

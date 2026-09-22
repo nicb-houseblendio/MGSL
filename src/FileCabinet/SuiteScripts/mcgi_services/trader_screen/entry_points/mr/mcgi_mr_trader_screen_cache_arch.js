@@ -1968,10 +1968,10 @@ define([
      * that a real species abbreviation could carry. It only means nobody has to
      * REMEMBER the list exists.
      *
-     * ⚠️ Scoped to the full ARCH_SCOPE_SQL rather than the subsidiary arm alone.
-     * A new decking SKU tagged department Hardwood leaks exactly as easily, and
-     * reusing the constant means this cannot drift away from what the real
-     * queries match. Expected result: zero rows.
+     * ⚠️ Scoped to ARCH_SCOPE_SQL itself, which since 2026-09-22 is subsidiary
+     * ARC alone (the department arm is gone). Reusing the constant means this
+     * cannot drift away from what the real queries match. Expected result: zero
+     * rows.
      */
     const DECKING_LEAK_SQL =
         'SELECT i.itemid FROM item i ' +
