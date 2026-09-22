@@ -1,0 +1,37 @@
+<itemnumbercustomfield scriptid="custitemnumber_arch_res_line">
+  <!--
+    CWP ARCH pre-arrival bundle reservation, part 2 of 2: transactionline.uniquekey
+    of the SO line that holds this lot (lineuniquekey in N/record). Integer,
+    because no List/Record type exists for a transaction line.
+
+    Globally unique and stable across SO edits (measured 2026-09-22 over 1,716
+    SOs: original lines keep their keys through later line adds, deletes and
+    reorders; linesequencenumber is renumbered and must never be used). Readers
+    still filter on custitemnumber_arch_res_so first: every transactionline read
+    is scoped by transaction, and a lookup by uniquekey alone is a global scan.
+
+    NetSuite assigns it only when the SO saves (archOrderCreate.js, append path),
+    so it cannot be written before the SO exists.
+  -->
+  <accesslevel>2</accesslevel>
+  <appliestoallitems>T</appliestoallitems>
+  <appliestogiftcerts>F</appliestogiftcerts>
+  <appliestolots>T</appliestolots>
+  <appliestoserialized>F</appliestoserialized>
+  <applyformatting>F</applyformatting>
+  <checkspelling>F</checkspelling>
+  <defaultchecked>F</defaultchecked>
+  <description>ARCH pre-arrival reservation: transactionline.uniquekey of the Sales Order line holding this bundle. Always read together with ARCH Reserved For SO.</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>INTEGER</fieldtype>
+  <globalsearch>F</globalsearch>
+  <help>Internal line key of the reserving Sales Order line. Set by the ARCH trader screen.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>ARCH Reserved SO Line Key</label>
+  <searchlevel>2</searchlevel>
+  <showhierarchy>F</showhierarchy>
+  <showinlist>F</showinlist>
+  <storevalue>T</storevalue>
+</itemnumbercustomfield>

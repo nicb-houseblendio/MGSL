@@ -1,0 +1,32 @@
+<customlist scriptid="customlist_arch_res_exception">
+  <name>ARCH Reservation Exception</name>
+  <description>Why a reserved ARCH bundle will not cover its Sales Order line. Written by the ARCH reservation reconciler (Feedback 8, step 2.7c). Supply-side failures only; an SO-side failure clears the reservation instead.</description>
+  <isinactive>F</isinactive>
+  <isordered>T</isordered>
+  <customvalues>
+    <customvalue scriptid="val_po_line_closed">
+      <value>PO line closed or reduced</value>
+      <isinactive>F</isinactive>
+    </customvalue>
+    <customvalue scriptid="val_removed_from_po">
+      <value>Bundle removed from PO line</value>
+      <isinactive>F</isinactive>
+    </customvalue>
+    <customvalue scriptid="val_received_without">
+      <value>PO received without this bundle</value>
+      <isinactive>F</isinactive>
+    </customvalue>
+    <customvalue scriptid="val_received_short">
+      <value>Received short</value>
+      <isinactive>F</isinactive>
+    </customvalue>
+    <customvalue scriptid="val_so_line_above_bundle">
+      <value>SO line above bundle quantity</value>
+      <isinactive>F</isinactive>
+    </customvalue>
+    <customvalue scriptid="val_location_changed">
+      <value>Location changed</value>
+      <isinactive>F</isinactive>
+    </customvalue>
+  </customvalues>
+</customlist>

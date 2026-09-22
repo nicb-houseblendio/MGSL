@@ -1,0 +1,37 @@
+<itemnumbercustomfield scriptid="custitemnumber_arch_res_exception">
+  <!--
+    CWP ARCH reservation exception report, Feedback 8 step 2.7c: why this reserved
+    bundle will not cover its SO line. Written ONLY by the reconciler MR; empty
+    means no exception. Never clears the reservation (MA 2026-09-22, no
+    auto-release). The saved search and the drill-down badge read this, because
+    a saved search cannot join a lot to an SO line by uniquekey and so cannot
+    compute the shortfall itself.
+
+    SELECT to a list rather than free text so the report can filter and group on
+    a fixed set of reasons. "Damaged at receipt" is deliberately absent: how a
+    damaged bundle is flagged is still an open question to Marc-Antoine.
+  -->
+  <accesslevel>2</accesslevel>
+  <appliestoallitems>T</appliestoallitems>
+  <appliestogiftcerts>F</appliestogiftcerts>
+  <appliestolots>T</appliestolots>
+  <appliestoserialized>F</appliestoserialized>
+  <applyformatting>F</applyformatting>
+  <checkspelling>F</checkspelling>
+  <defaultchecked>F</defaultchecked>
+  <description>ARCH reservation exception: why this reserved bundle will not cover its Sales Order line. Written by the ARCH reservation reconciler; empty means no exception.</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>SELECT</fieldtype>
+  <globalsearch>F</globalsearch>
+  <help>Set automatically when a reserved bundle is found unable to cover its Sales Order line. Cleared automatically once it can.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>ARCH Reservation Exception</label>
+  <onparentdelete>SET_NULL</onparentdelete>
+  <searchlevel>2</searchlevel>
+  <selectrecordtype>[scriptid=customlist_arch_res_exception]</selectrecordtype>
+  <showhierarchy>F</showhierarchy>
+  <showinlist>T</showinlist>
+  <storevalue>T</storevalue>
+</itemnumbercustomfield>

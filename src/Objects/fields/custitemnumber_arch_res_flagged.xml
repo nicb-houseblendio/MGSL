@@ -1,0 +1,32 @@
+<itemnumbercustomfield scriptid="custitemnumber_arch_res_flagged">
+  <!--
+    CWP ARCH reservation exception report, step 2.7c: the date the reconciler FIRST
+    detected the current exception. Kept while the exception persists, cleared with
+    it. DATE, not DATETIMETZ: the report needs a day, and a date-only value avoids
+    the UTC-7 versus UTC confusion already seen between scriptnote.date and the
+    cache. This is NOT "when the job last ran"; a clean lot carries no date, so the
+    report must show the last run from the job itself or a dead MR reads as
+    no exceptions.
+  -->
+  <accesslevel>2</accesslevel>
+  <appliestoallitems>T</appliestoallitems>
+  <appliestogiftcerts>F</appliestogiftcerts>
+  <appliestolots>T</appliestolots>
+  <appliestoserialized>F</appliestoserialized>
+  <applyformatting>F</applyformatting>
+  <checkspelling>F</checkspelling>
+  <defaultchecked>F</defaultchecked>
+  <description>ARCH reservation exception: date the current exception was first detected. Written by the ARCH reservation reconciler, cleared with the exception.</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>DATE</fieldtype>
+  <globalsearch>F</globalsearch>
+  <help>Date the reservation exception on this bundle was first detected. Set automatically.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>ARCH Reservation Exception Since</label>
+  <searchlevel>2</searchlevel>
+  <showhierarchy>F</showhierarchy>
+  <showinlist>T</showinlist>
+  <storevalue>T</storevalue>
+</itemnumbercustomfield>

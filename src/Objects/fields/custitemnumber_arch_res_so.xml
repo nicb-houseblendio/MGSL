@@ -1,0 +1,48 @@
+<itemnumbercustomfield scriptid="custitemnumber_arch_res_so">
+  <!--
+    CWP ARCH pre-arrival bundle reservation, part 1 of 2: the Sales Order that
+    holds this lot. Feedback 8, build step 2.1; decisions D1 and D3 (Nic and MA,
+    2026-09-16): the reservation lives on the LOT record and is whole-bundle.
+    Reserved means this field is non-empty. There is deliberately NO separate
+    checkbox; a third field would be a third thing to keep consistent.
+
+    SELECT to Transaction (-30), not Integer: a List/Record field is what lets an
+    Inventory Number saved search join through to the SO (number, status,
+    customer, sales rep) and what renders as a link on the lot. An Integer
+    stores the same id but joins to nothing. The line key stays Integer because
+    no List/Record type exists for a transaction LINE.
+
+    onparentdelete SET_NULL: deleting the SO clears this field instead of the
+    stamp blocking the delete. It does NOT clear custitemnumber_arch_res_line,
+    so the 2.7b reconciler must treat "line set, SO empty" as orphaned.
+
+    Element set and defaults: SDK schema for itemnumbercustomfield in
+    cli-2026.1.0.jar (sdf_metadata/sdf_metadata.xml), the jar CLI 3.2.0 pins.
+    The appliesto flags match every MGSL-owned lot field live in sandbox (SOAP
+    get, 2026-09-22): all items T, lots T, serialized F, gift certs F. SDF
+    defaults ALL FOUR to F, so omitting them is not neutral.
+  -->
+  <accesslevel>2</accesslevel>
+  <appliestoallitems>T</appliestoallitems>
+  <appliestogiftcerts>F</appliestogiftcerts>
+  <appliestolots>T</appliestolots>
+  <appliestoserialized>F</appliestoserialized>
+  <applyformatting>F</applyformatting>
+  <checkspelling>F</checkspelling>
+  <defaultchecked>F</defaultchecked>
+  <description>ARCH pre-arrival reservation: the Sales Order this whole bundle is reserved for. Written by the ARCH order endpoint, cleared by un-reserve and by the ARCH reservation reconciler. Non-empty means reserved.</description>
+  <displaytype>NORMAL</displaytype>
+  <encryptatrest>F</encryptatrest>
+  <fieldtype>SELECT</fieldtype>
+  <globalsearch>F</globalsearch>
+  <help>Sales Order this bundle is reserved for. Set by the ARCH trader screen. Clear it only through the trader screen so the Sales Order line is released too.</help>
+  <isformula>F</isformula>
+  <ismandatory>F</ismandatory>
+  <label>ARCH Reserved For SO</label>
+  <onparentdelete>SET_NULL</onparentdelete>
+  <searchlevel>2</searchlevel>
+  <selectrecordtype>-30</selectrecordtype>
+  <showhierarchy>F</showhierarchy>
+  <showinlist>T</showinlist>
+  <storevalue>T</storevalue>
+</itemnumbercustomfield>
