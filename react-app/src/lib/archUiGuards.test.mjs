@@ -1560,6 +1560,10 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
       /rowCostDisplay\(r\)\.currency/.test(exp) &&
       /'Cost Currency'/.test(exp) &&
       !/r\.avgCostPerUnit/.test(exp), null);
+  // A partial average is qualified on screen by a tooltip and a spreadsheet has
+  // none, so the qualification has to travel in the cell itself.
+  ok('f9-1:  ...and a partial average says so in the sheet, not only in a tooltip',
+    /r\.costUsdPartial \? ' \(partial\)' : ''/.test(exp), null);
 
   // 🔴 THE FALLBACK MEANS "NO LOT DATE", NOT "NO RATE FOR THE LOT DATE".
   // Caught in the adversarial pass by recomputing all 860 lots independently:

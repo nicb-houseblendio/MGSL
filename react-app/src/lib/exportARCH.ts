@@ -109,7 +109,18 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
     // Routed through the SAME selector the grid uses, so the sheet cannot drift
     // from what the trader saw when they pressed export.
     rowCostDisplay(r).value ?? '',
-    rowCostDisplay(r).value === null ? '' : rowCostDisplay(r).currency,
+    /* 🔴 THE PARTIAL CASE HAS TO SURVIVE THE EXPORT, and it did not.
+
+       On screen a row whose USD average covers only SOME of its costed lots
+       carries a tooltip saying so. A spreadsheet has no tooltip, so the cell
+       read a flat "USD" and the figure looked like a complete average of the
+       row. Same reasoning as the Cost Currency column itself: the sheet gets
+       forwarded and totalled by someone who never saw the screen, so anything
+       the screen qualifies and the sheet does not is a number they will trust
+       further than it deserves. */
+    rowCostDisplay(r).value === null
+      ? ''
+      : rowCostDisplay(r).currency + (r.costUsdPartial ? ' (partial)' : ''),
   ]);
 
   const totalsRow: (string | number)[] = [
