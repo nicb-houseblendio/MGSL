@@ -267,8 +267,16 @@ export const ArchLotTable = ({
       lot.tallyState as Parameters<typeof demoTallyProps>[2],
       allowFixture,
     ).bundle ?? null;
-  /** Whether Lengths and Avg width have anything to read. Same source as their cells. */
-  const hasTallyShape = (lot: { lotNo: string; tally?: unknown; tallyState?: unknown }) => !!lotBundle(lot);
+  /** Whether Lengths / Avg width will render something, computed exactly as those cells do. */
+  const hasLengths = (lot: { lotNo: string; tally?: unknown; tallyState?: unknown }) => {
+    const b = lotBundle(lot);
+    const g = toLengthWidthGrid(b, GRID_OPTS);
+    return g ? g.rows.length > 0 : bundleLengthChips(b).length > 0;
+  };
+  const hasAvgWidth = (lot: { lotNo: string; tally?: unknown; tallyState?: unknown }) => {
+    const g = toLengthWidthGrid(lotBundle(lot), GRID_OPTS);
+    return !!g && g.avgWidth != null;
+  };
   const toggleTally = (lotNo: string) =>
     setToggledTally((cur) => {
       const next = new Set(cur);
@@ -467,7 +475,7 @@ export const ArchLotTable = ({
           label: 'Ship Week',
           render: (l) =>
             claims(l).length
-              ? joinValues(claims(l).map((o) => shipWeekCell(o.shipDate, o.created).text)).text
+              ? joinValues(claims(l).map((o) => shipWeekCell(o.shipDate, o.created).text).filter((t) => t !== NO_VALUE)).text
               : fallback(l, (f) => formatShortDate(f.shipWeek)),
           // A dash that is only NetSuite's default ship date says so (see shipWeekCell).
           title: (l) =>
@@ -916,7 +924,7 @@ export const ArchLotTable = ({
                     style={{ ...headerCellStyle, textAlign: 'right' }}
                     title={
                       bucket === 'available'
-                        ? "Uncommitted quantity this bundle can contribute: its on-hand less anything reserved or released to build"
+                        ? "What is left of this bundle after its reservations and Ready to Build. A bundle with ANY commitment is locked whole until it is split, so that remainder cannot be sold yet; only bundles with no commitment can be added to an order."
                         : undefined
                     }
                   >
@@ -925,7 +933,7 @@ export const ArchLotTable = ({
                   {isOnHand && (
                     <th
                       style={{ ...headerCellStyle, textAlign: 'right' }}
-                      title="Uncommitted board feet — this bundle's on-hand less anything reserved, released to build, or held for shipment"
+                      title="This bundle's on-hand less anything reserved or released to build. On a bundle with any commitment it is shown dimmed: the bundle is locked whole until it is split, so this remainder is not sellable yet."
                     >
                       Avail. {displaySuffix(row.unit, uom)}
                     </th>
@@ -992,7 +1000,9 @@ export const ArchLotTable = ({
                             </span>
                           ) : (
                             <span
-                              title="No system tally on this lot, open the attached tally image"
+                              title={hasImage
+                                ? 'No system tally on this lot, open the attached tally image'
+                                : 'No tally on this lot, neither a parsed one nor an attached image'}
                               style={{ color: '#CBD5E1', fontSize: 11 }}
                             >
                               {'—'}
@@ -1106,7 +1116,7 @@ export const ArchLotTable = ({
                             would be a measurement nobody took. */}
                         <td
                           style={{ ...cellStyle, color: ARCH_SURFACE.textMid }}
-                          title={hasTallyShape(lot) ? undefined : NO_TALLY_TITLE}
+                          title={hasLengths(lot) ? undefined : NO_TALLY_TITLE}
                         >
                           {(() => {
                             /* From the FILTERED grid, so a row never advertises
@@ -1148,7 +1158,7 @@ export const ArchLotTable = ({
                         <td
                           style={{ ...cellStyle, textAlign: 'right' }}
                           className="font-mono"
-                          title={hasTallyShape(lot) ? undefined : NO_TALLY_TITLE}
+                          title={hasAvgWidth(lot) ? undefined : NO_TALLY_TITLE}
                         >
                           {(() => {
                             const base = toLengthWidthGrid(lotBundle(lot), GRID_OPTS);
@@ -1210,6 +1220,13 @@ export const ArchLotTable = ({
                         })()}
                         {isOnHand && (
                           <td
+                            /* Round-2 review, Feedback 13: 127 BF printed GREEN on
+                               lot 315310-16, a bundle whose 300 BF Ready to Build
+                               locks all of it (whole-bundle rule, MA S3). Green
+                               said "sellable"; the order endpoint refuses it. */
+                            title={freeBF > 0 && commitmentOn(lot) > 0
+                              ? 'Locked until this bundle is split: it carries a commitment, so the remainder cannot be sold yet.'
+                              : undefined}
                             style={{
                               ...cellStyle,
                               textAlign: 'right',
@@ -1220,7 +1237,7 @@ export const ArchLotTable = ({
                               // a literal: this cell had #7A8FA3 hard-coded and so
                               // missed the AA fix, measuring 3.34:1 on the white rows
                               // and 3.21 on the #F8FAFC ones.
-                              color: freeBF > 0 ? '#1B5E20' : ARCH_SURFACE.textLight,
+                              color: freeBF > 0 && commitmentOn(lot) === 0 ? '#1B5E20' : ARCH_SURFACE.textLight,
                             }}
                             className="font-mono"
                           >

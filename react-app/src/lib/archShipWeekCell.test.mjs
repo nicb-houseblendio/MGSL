@@ -48,5 +48,29 @@ test('the four no-data columns explain their dash', () => {
   const lot = read('components/arch/ArchLotTable.tsx');
   assert.match(lot, /title=\{lot\.containerNo \? undefined : NO_CONTAINER_TITLE\}/);
   assert.match(lot, /title=\{row\.grain \? undefined : NO_GRAIN_TITLE\}/);
-  assert.equal((lot.match(/title=\{hasTallyShape\(lot\) \? undefined : NO_TALLY_TITLE\}/g) || []).length, 2);
+  // Each title is computed exactly as its own cell renders (round-2 review):
+  assert.match(lot, /title=\{hasLengths\(lot\) \? undefined : NO_TALLY_TITLE\}/);
+  assert.match(lot, /title=\{hasAvgWidth\(lot\) \? undefined : NO_TALLY_TITLE\}/);
+});
+
+test('round 2: a locked bundle does not print its remainder in green, and says why', () => {
+  const lot = read('components/arch/ArchLotTable.tsx');
+  assert.match(lot, /color: freeBF > 0 && commitmentOn\(lot\) === 0 \? '#1B5E20' : ARCH_SURFACE\.textLight,/);
+  assert.match(lot, /Locked until this bundle is split/);
+  assert.doesNotMatch(lot, /can contribute: its on-hand less anything reserved/);
+});
+
+test('round 2: the tally-image dash only mentions an image when there is one', () => {
+  const lot = read('components/arch/ArchLotTable.tsx');
+  assert.match(lot, /title=\{hasImage\s*\n?\s*\? 'No system tally on this lot, open the attached tally image'/);
+});
+
+test('round 2: a mix of a defaulted and a real ship date shows the real one', () => {
+  const lot = read('components/arch/ArchLotTable.tsx');
+  assert.match(lot, /\.filter\(\(t\) => t !== NO_VALUE\)\)\.text/);
+});
+
+test('round 2: the Reserved panel container dash explains itself too', () => {
+  const res = read('components/arch/ArchReservedSection.tsx');
+  assert.match(res, /No container or vessel is recorded on this bundle/);
 });

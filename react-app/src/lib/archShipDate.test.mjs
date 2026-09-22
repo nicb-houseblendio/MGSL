@@ -36,9 +36,11 @@ test('no executable code reads or writes custbody_mgsl_expectedshipdate any more
   assert.doesNotMatch(code(splitQueue), /custbody_mgsl_expectedshipdate/);
 });
 
-test('the split queue reads the native ship date, ISO formatted, with the trandate fallback kept', () => {
+test('the split queue reads the native ship date, and a defaulted one (== order date) is no date', () => {
   assert.match(splitQueue, /TO_CHAR\(t\.shipdate, 'YYYY-MM-DD'\)\s+AS shipdate/);
-  assert.match(splitQueue, /shipDate:\s+r\.shipdate \|\| r\.trandate \|\| ''/);
+  assert.match(splitQueue, /shipDate:\s+\(r\.shipdate && r\.shipdate !== r\.trandate\) \? r\.shipdate : '',/);
+  // the trandate fallback made "nobody entered a date" read as "13d late"
+  assert.doesNotMatch(splitQueue, /r\.shipdate \|\| r\.trandate/);
 });
 
 // Feedback 14 round-1 review: the split queue was the unscoped fourth ARCH site.

@@ -280,7 +280,13 @@ export const ArchReservedSection = ({
                       lot.lotNo
                     )}
                   </td>
-                  <td style={{ ...cell, fontSize: 11, color: ARCH_SURFACE.textMid }} className="font-mono">
+                  <td
+                    style={{ ...cell, fontSize: 11, color: ARCH_SURFACE.textMid }}
+                    className="font-mono"
+                    title={!continuation && !lot.containerNo
+                      ? 'No container or vessel is recorded on this bundle’s receipt in NetSuite.'
+                      : undefined}
+                  >
                     {continuation ? '' : lot.containerNo || NO_VALUE}
                   </td>
                   <td style={{ ...cell, fontWeight: 700, color: ink }} className="font-mono">

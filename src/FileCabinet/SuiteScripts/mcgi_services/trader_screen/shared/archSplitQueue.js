@@ -388,10 +388,13 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
                     customer:     r.customer || '',
                     trader:       (teamRep[String(r.soid)] && teamRep[String(r.soid)].rep) || r.trader || '',
                     locationName: r.locationname || '',
-                    // Fall back to the transaction date when no expected ship date is
-                    // set, so the queue's urgency pill always has something to sort on
-                    // rather than silently grouping every order as undated.
-                    shipDate:     r.shipdate || r.trandate || '',
+                    // 🔴 A ship date equal to the ORDER date is NetSuite's default, not
+                    // a plan (32 of 35 ARC orders), so it is served as '' and the pill
+                    // reads "No date" instead of "13d late" (round-2 review of
+                    // Feedback 13; the same rule as shipWeekCell on the trader screen).
+                    // The old fallback to trandate is gone for the same reason: it
+                    // turned "nobody entered a date" into an overdue deadline.
+                    shipDate:     (r.shipdate && r.shipdate !== r.trandate) ? r.shipdate : '',
                     bundles:      [],
                 };
             }
