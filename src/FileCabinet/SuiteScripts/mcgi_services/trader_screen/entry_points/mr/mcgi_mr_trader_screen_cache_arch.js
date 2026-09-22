@@ -166,7 +166,15 @@ define([
 ], (query, search, log, runtime, task, CacheKeys, CacheClient, LotCostLib, ArchSalesTeam) => {
 
     /**
-     * ⚠️ ARCH STOCK IS **NOT** SCOPED BY SUBSIDIARY OR LOCATION. Do not "fix"
+     * 🔴 SUPERSEDED 2026-09-22: ARCH stock IS now scoped by subsidiary ARC, see
+     * ARCH_SCOPE_SQL. What follows was true on 2026-08-17 and stopped being true
+     * when Marc-Antoine migrated hardwood into ARC with its own locations (9, 146,
+     * 148 to 152, 155 in sandbox). Kept as the record of why the department
+     * existed at all. Location is still NOT the filter: `location.subsidiary`
+     * comparisons are a 400 or a silent false zero depending on the form, while
+     * the item's subsidiary separates the two sides exactly.
+     *
+     * ⚠️ (historical) ARCH STOCK IS **NOT** SCOPED BY SUBSIDIARY OR LOCATION. Do not "fix"
      * this back to a subsidiary filter — it was tried on 2026-08-17 and it is
      * structurally wrong, not merely broken:
      *
@@ -312,15 +320,32 @@ define([
      */
     const ARCH_SUBSIDIARY = 'ARC';
     /**
-     * The scope predicate, one definition, four query sites.
+     * The scope predicate, one definition, three query sites (LOT_SQL,
+     * BUCKET_SQL, DECKING_LEAK_SQL). `ARCH_SCOPE_PARAMS` is the matching array and
+     * the two must be edited together, which is why they sit on adjacent lines.
      *
-     * Binds in this order: department, then subsidiary. `ARCH_SCOPE_PARAMS` is
-     * the matching array and the two must be edited together — which is the
-     * whole reason they sit on adjacent lines rather than in the queries.
+     * ── 🔴 SUBSIDIARY ALONE since 2026-09-22 (Feedback 14) ────────────────────
+     * The department arm described above was the transitional half of the union
+     * and it is gone. Marc-Antoine: « L'inventaire ici sont dans des reloads qui
+     * ne sont pas dans CWP ARC ». Measured that day, every row the arm added was a
+     * CWP MTL item at a CWP MTL location (Bluelinx 109, Buffalo 110, Ambassador
+     * 108, CWP Prevost 122, USL 135): 25 rows, 16,462 BF on hand and 54,180 BF on
+     * order, received on CWP MTL POs. The ARC side is 107 rows at ARC locations,
+     * and NO row pairs an ARC item with a non-ARC location or the reverse, so the
+     * item's subsidiary is an exact separator today. The shrink guard is not at
+     * risk: 111 of 136 rows is a 0.82 ratio against its 0.5 floor.
+     *
+     * The same predicate lives in the service's deptFilter and in
+     * archOrderCreate's inArchScope; archUiGuards.test.mjs pins all three.
+     *
+     * ⚠️ UNTAGGED_SQL does NOT use this pair. It binds its own two parameters
+     * (department, then subsidiary) and keeps its original meaning: ARCH-shaped
+     * items that are neither Hardwood nor ARC. Borrowing ARCH_SCOPE_PARAMS there
+     * would now under-bind it, and its catch would swallow that silently.
      */
-    const ARCH_SCOPE_SQL =
-        '(BUILTIN.DF(i.department) = ? OR BUILTIN.DF(i.subsidiary) = ?)';
-    const ARCH_SCOPE_PARAMS = [HARDWOOD_DEPARTMENT, ARCH_SUBSIDIARY];
+    const ARCH_SCOPE_SQL = 'BUILTIN.DF(i.subsidiary) = ?';
+    const ARCH_SCOPE_PARAMS = [ARCH_SUBSIDIARY];
+    const UNTAGGED_PARAMS = [HARDWOOD_DEPARTMENT, ARCH_SUBSIDIARY];
     /**
      * The one real distinction inside Department 11: decking is a different
      * product line (sold by the linear foot, not board-feet lots) that shares
@@ -2939,7 +2964,7 @@ define([
             try {
                 const untagged = query.runSuiteQL({
                     query: UNTAGGED_SQL,
-                    params: EXCLUDED_UNITS_TYPES.concat(ARCH_SCOPE_PARAMS),
+                    params: EXCLUDED_UNITS_TYPES.concat(UNTAGGED_PARAMS),
                 }).asMappedResults();
                 if (untagged.length) {
                     /*

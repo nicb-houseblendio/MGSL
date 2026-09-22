@@ -700,132 +700,36 @@ define([
         }
     };
 
-    /**
-     * ⚠️ SUPERSEDED 2026-09-10 — same switch as the cache MR and
-     * archOrderCreate, each of which holds its own copy for the same reason
-     * (kept local rather than a shared module, single value, no behavioural
-     * gain from an import here). Scoping is `department = "Hardwood"`, minus
-     * decking. See `mcgi_mr_trader_screen_cache_arch.js`'s header comment for
-     * the full reasoning — the segment kept failing silently on new items;
-     * department is what an item is set to at creation.
+    /* ── 🔴 ARCH IS SCOPED BY SUBSIDIARY ALONE, since 2026-09-22 (Feedback 14) ──
      *
-     * BY NAME, not internal id 11: that id does not exist at all in
-     * production (measured), the same class of trap this account has already
-     * been bitten by with status-list ids. Every WHERE clause below resolves
-     * it with `BUILTIN.DF(i.department) = ?`.
-     */
-    const HARDWOOD_DEPARTMENT = 'Hardwood';
-
-    /**
-     * Feedback 6 item 15: "il y a un bon delais (10 secondes) avant que l'info
-     * apparraisse". Part of that delay is this filter.
+     * This was `(department = 'Hardwood' OR subsidiary = 'ARC')`, the union
+     * Feedback 7 introduced so that CWP MTL items carrying department Hardwood
+     * stayed visible while the migration was under way. Marc-Antoine reported the
+     * result on 2026-09-22: « L'inventaire ici sont dans des reloads qui ne sont
+     * pas dans CWP ARC ». Every row he pointed at (Bluelinx, Buffalo, Ambassador)
+     * was a CWP MTL item at a CWP MTL location, received on a CWP MTL PO, reaching
+     * this screen only through the department arm. Measured that day: 25 CWP MTL
+     * rows, 107 ARC rows, and ZERO rows mixing an ARC item with a non-ARC location
+     * or the reverse, so the subsidiary alone is an exact separator.
      *
-     * 🔴 `BUILTIN.DF(i.department) = ?` is a FUNCTION over the joined rows, so the
-     * optimiser cannot use the column and evaluates the display name per row.
-     * Measured 2026-09-15, best of four runs each, same 42 rows every time:
-     *
-     *   open orders, BUILTIN.DF          2.14 s
-     *   open orders, i.department = 11   1.24 s
-     *   item count,  BUILTIN.DF          1.76 s
-     *   item count,  i.department = 11   0.54 s
-     *
-     * A SUBQUERY does not help (`i.department IN (SELECT id ...)` measured 2.10 s,
-     * no better than the original): the optimiser needs a constant, so the id is
-     * resolved here, once, and bound.
-     *
-     * Resolved rather than hardcoded, which is the point: the cache MR's own note
-     * records that department id 11 is "Hardwood" in sandbox and DOES NOT EXIST AT
-     * ALL in production, so a literal 11 would silently match nothing there. The
-     * NAME stays the source of truth; only the comparison is by id. It also FALLS
-     * BACK to the old predicate when the lookup finds nothing, so a renamed or
-     * nested department costs speed and never rows.
-     */
-    let deptIdCache; // undefined = not looked up yet, null = looked up and unusable
-    const hardwoodDepartmentId = () => {
-        if (deptIdCache !== undefined) return deptIdCache;
-        deptIdCache = null;
-        let why = '';
-        try {
-            const r = query.runSuiteQL({
-                query: 'SELECT id FROM department WHERE name = ?',
-                params: [HARDWOOD_DEPARTMENT],
-            }).asMappedResults();
-            /*
-             * MORE THAN ONE is a real possibility and it must not narrow the tab.
-             * `BUILTIN.DF` compares the LEAF name -- department 11 is "Hardwood"
-             * with fullname "Trading : Hardwood", and the old predicate matches it
-             * on "Hardwood" -- so a second department with the same leaf under a
-             * different parent would match the old filter and both sets of items
-             * would be in scope. One id cannot express that, so the slow, correct
-             * predicate is used instead. One department is named Hardwood today,
-             * of 11 in the account.
-             */
-            if (!r || !r.length) why = 'no department is named "' + HARDWOOD_DEPARTMENT + '"';
-            else if (r.length > 1) why = r.length + ' departments share that name';
-            else {
-                const n = parseInt(r[0].id, 10);
-                if (isFinite(n)) deptIdCache = n;
-                else why = 'the id did not parse: ' + String(r[0].id);
-            }
-        } catch (e) {
-            why = (e.name || '') + ': ' + (e.message || String(e));
-        }
-        /*
-         * SAID OUT LOUD, because a silent fallback is an optimisation that can be
-         * inert in production forever with nothing to show for it. Audit, not error:
-         * the tab still returns the right rows, only slower.
-         */
-        if (deptIdCache === null) {
-            log.audit('ARCH service — department filtered by name, not id',
-                'The faster filter needs one department id and could not get it (' + why +
-                '), so the tab falls back to BUILTIN.DF. Rows are unaffected; the query is ' +
-                'roughly a second slower. See Feedback 6 item 15.');
-        }
-        return deptIdCache;
-    };
-
-    /**
-     * The department filter and the parameter that goes with it, as one pair so
-     * the two can never drift apart. `%DEPT%` appears once in each query.
-     */
-    /* 🔴 THE SUBSIDIARY ARM, WITHOUT WHICH THE OPEN SALES ORDERS TAB IS EMPTY.
-     *
-     * Feedback 7 moved the cache builder to
-     * `(department = 'Hardwood' OR subsidiary = 'ARC')`, because Marc-Antoine's
-     * inventory arrived in ARC carrying department "Trading". This filter never
-     * got that change, so the tab reported, in its own words, "0 items in the
-     * Hardwood department" and showed nothing while the grid showed 132 rows.
-     * Observed in the browser 2026-09-21, which is the only way it surfaces: the
-     * RESTlet leg answers 7 orders from a command line, because that runs with
-     * Administrator scope, and the browser takes the endpoint leg.
-     *
-     * Measured items inside the ARCH scope:
-     *
-     *     ARC     / Trading   149 items
-     *     CWP MTL / Hardwood   25 items
-     *
-     * With the role scoped to ARC, the department arm alone intersects to zero.
+     * The same predicate is held in three places, deliberately local rather than
+     * a shared module: here, the cache MR's ARCH_SCOPE_SQL, and archOrderCreate's
+     * inArchScope. archUiGuards.test.mjs pins all three to the same shape.
      *
      * ⚠️ `BUILTIN.DF(i.subsidiary)`, NEVER the raw column. `i.subsidiary` is
      * NOT_EXPOSED to search on this tenant and a bare comparison is a hard 400,
-     * not a null -- the same trap the cache builder documents.
+     * not a null. By NAME for the same reason the department was: ids differ
+     * between accounts.
      *
-     * The department arm stays until the CWP MTL hardwood items and their open POs
-     * finish moving to ARC. Same exit condition Feedback 7 recorded.
+     * Speed: the department-id fast path this replaced (Feedback 6 item 15) had
+     * already stopped paying off, because the OR arm put a BUILTIN.DF back into
+     * the same WHERE. One BUILTIN.DF alone is no slower than that union.
      */
     const ARCH_SUBSIDIARY_NAME = 'ARC';
-    const deptFilter = () => {
-        const id = hardwoodDepartmentId();
-        return id === null
-            ? {
-                sql: '(BUILTIN.DF(i.department) = ? OR BUILTIN.DF(i.subsidiary) = ?)',
-                params: [HARDWOOD_DEPARTMENT, ARCH_SUBSIDIARY_NAME],
-            }
-            : {
-                sql: '(i.department = ? OR BUILTIN.DF(i.subsidiary) = ?)',
-                params: [id, ARCH_SUBSIDIARY_NAME],
-            };
-    };
+    const deptFilter = () => ({
+        sql: 'BUILTIN.DF(i.subsidiary) = ?',
+        params: [ARCH_SUBSIDIARY_NAME],
+    });
     const NON_ARCH_DEPARTMENT_ITEMS = [
         'IPE44DECKD', 'IPE54DECKD', 'IPE54DECKDDNU',
         'NRM44DECKDS4S', 'NRM44DECKDTNG',

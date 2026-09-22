@@ -144,25 +144,32 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * they sit in ARC.
      *
      * ONE predicate, used by every site, so the next divergence is a compile-time
-     * concern rather than an invisible one. Drop the department arm when the CWP
-     * MTL hardwood items and their open POs finish moving to ARC -- the same exit
-     * condition Feedback 7 recorded for the cache.
+     * concern rather than an invisible one.
+     *
+     * 🔴 THE DEPARTMENT ARM WAS DROPPED 2026-09-22 (Feedback 14). Marc-Antoine:
+     * « L'inventaire ici sont dans des reloads qui ne sont pas dans CWP ARC ».
+     * Every row the arm added was a CWP MTL item at a CWP MTL location, so the
+     * scope is now subsidiary ARC alone, the same as the cache MR's
+     * ARCH_SCOPE_SQL and the service's deptFilter. An item that is not on the
+     * grid must be refused here, and CWP MTL hardwood no longer is on the grid.
      */
     const ARCH_SUBSIDIARY_NAME = 'ARC';
 
     /**
-     * Is this item inside the ARCH scope, by department OR subsidiary, and not a
-     * decking SKU? `subsidiary` may be undefined on a caller that has not been
-     * updated to select it, in which case this degrades to the old
-     * department-only behaviour rather than throwing.
+     * Is this item inside the ARCH scope, i.e. in subsidiary ARC, and not a
+     * decking SKU? The `department` argument is kept so every caller's signature
+     * stays valid, and is deliberately ignored since 2026-09-22.
+     *
+     * ⚠️ FAILS CLOSED on a missing subsidiary. It used to fall back to the
+     * department there; now an unselected column refuses the item, which is the
+     * safe direction for a gate on order creation.
      */
     const inArchScope = (department, subsidiary, itemCode) => {
-        const dept = String(department == null ? '' : department).trim();
         const sub  = String(subsidiary == null ? '' : subsidiary).trim();
         const code = String(itemCode == null ? '' : itemCode).trim();
-        // Decking is out regardless of which arm matched.
+        // Decking is out even inside ARC.
         if (NON_ARCH_DEPARTMENT_ITEMS.indexOf(code) !== -1) return false;
-        return dept === HARDWOOD_DEPARTMENT || sub === ARCH_SUBSIDIARY_NAME;
+        return sub === ARCH_SUBSIDIARY_NAME;
     };
     const NON_ARCH_DEPARTMENT_ITEMS = [
         'IPE44DECKD', 'IPE54DECKD', 'IPE54DECKDDNU',
@@ -2157,7 +2164,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * or MTL order that no ARCH screen will ever show again.
      *
      * The test is the SAME one every other ARCH module uses, and it is BY NAME:
-     * department "Hardwood", minus the decking exclusions. Never the internal
+     * subsidiary "ARC" since 2026-09-22 (department "Hardwood" before that),
+     * minus the decking exclusions. Never the internal
      * id — 11 does not exist in production at all, measured 2026-09-10, which is
      * why `HARDWOOD_DEPARTMENT` is a string.
      *
@@ -2236,8 +2244,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                           'build and Ready to Build was not changed.');
         }
         if (!scope.hardwoodLines) {
-            throw refusal('Sales order ' + id + ' carries no ' + HARDWOOD_DEPARTMENT +
-                          ' line' + (scope.sample ? ' (for example ' + scope.sample + ')' : '') +
+            throw refusal('Sales order ' + id + ' carries no ' + ARCH_SUBSIDIARY_NAME +
+                          ' item line' + (scope.sample ? ' (for example ' + scope.sample + ')' : '') +
                           ', so it is not an ARCH order and Ready to Build was not changed.');
         }
 

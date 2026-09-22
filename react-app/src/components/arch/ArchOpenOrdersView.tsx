@@ -549,11 +549,13 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
         tab away from genuine live inventory. MGSL are working in this sandbox, so
         invented orders reading as real is a live hazard, not a cosmetic one.
 
-        The third state is the interesting one. Live and EMPTY is the normal case
-        today and it is not a quiet day: only a handful of items carry the Hardwood
-        segment, and every other CWP order runs on untagged SKUs, so the orders
-        exist and this query cannot see them. A blank table would read as "no open
-        orders", which is the wrong conclusion to hand somebody.
+        The third state is the interesting one. Live and EMPTY used to be the
+        normal case, because the scope was a Hardwood segment and then a Hardwood
+        department that most real orders did not carry. Since 2026-09-22 the scope
+        is subsidiary ARC (Feedback 14) and 28 open orders show in sandbox, but an
+        empty tab can still mean "orders you cannot read", so it still says why.
+        A blank table would read as "no open orders", which is the wrong
+        conclusion to hand somebody.
       */}
       {isLoading && orders.length === 0 ? (
         /*
@@ -613,38 +615,31 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
           <span style={{ fontSize: 13, lineHeight: 1 }}>ℹ️</span>
           <span>
             <strong>Live, and nothing to show.</strong> No open sales order that this
-            request could read carries a Hardwood-department item.
+            request could read carries an item in subsidiary ARC.
             {taggedItemCount !== null ? (
               <> This request could see {taggedItemCount} item
-                {taggedItemCount === 1 ? '' : 's'} in the Hardwood department, so orders
-                on items outside it cannot appear here.</>
+                {taggedItemCount === 1 ? '' : 's'} in subsidiary ARC, so orders on items
+                outside it cannot appear here.</>
             ) : (
-              <> The Hardwood item count could not be read, so this banner cannot say
-                how many items are in scope.</>
+              <> The ARC item count could not be read, so this banner cannot say how many
+                items are in scope.</>
             )}{' '}
             {/*
-              🔴 THE TAGGING ADVICE IS NOT UNCONDITIONAL, and it used to be. On the
-              RESTlet leg the banner says in the next breath that the orders may
-              exist and be unreadable -- so promising that tagging "will populate
-              this tab" both overstates a remedy and sends the client off to do
-              work that would not fix it. That is the exact error this banner was
-              rewritten to remove, left standing one sentence below the removal.
+              Feedback 12, 2026-09-22: the "tag the remaining hardwood items" advice
+              is gone. The scope is subsidiary ARC (Feedback 14), so there is nothing
+              to tag; that sentence sent the client to do work that fixes nothing.
+              Each leg still names only the cause that can apply to it.
             */}
             {transport === 'restlet' ? (
               <> This list was read under <strong>your own role</strong>, and a role scoped
-                to its own transactions returns nothing here even when the orders exist.
-                So there are two possible causes and this banner cannot tell them apart:
-                tagging the remaining hardwood items may populate the tab, and so would
-                reading it under a role that is not scoped that way.</>
+                to its own transactions returns nothing here even when the orders exist,
+                so this banner cannot tell "no ARC orders" from "orders you cannot read".</>
             ) : transport === 'endpoint' ? (
-              <> Tagging the remaining hardwood items will populate this tab. This list was
-                read by the order endpoint rather than under your own role, so being scoped
-                to your own transactions is <em>not</em> the cause. The endpoint is scoped
-                to selected subsidiaries, so an order booked outside them would also not
-                appear.</>
-            ) : (
-              <> Tagging the remaining hardwood items will populate this tab.</>
-            )}
+              <> This list was read by the order endpoint rather than under your own role,
+                so being scoped to your own transactions is <em>not</em> the cause. The
+                endpoint is scoped to selected subsidiaries, so an order booked outside
+                them would also not appear.</>
+            ) : null}
           </span>
         </div>
       ) : attNotice ? (

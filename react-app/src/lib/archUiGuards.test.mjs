@@ -908,8 +908,9 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     s.indexOf('const scope = readOrderArchScope(id);') > 0 &&
       s.indexOf('const scope = readOrderArchScope(id);') <
         s.indexOf("so = record.load({ type: record.Type.SALES_ORDER"), null);
-  ok('  ...testing the department BY NAME, never the internal id',
-    /dept === HARDWOOD_DEPARTMENT/.test(s) && !/department === 11/.test(s), null);
+  // Feedback 14 (2026-09-22): the scope is subsidiary ARC by NAME. Still never an id.
+  ok('  ...testing the subsidiary BY NAME, never an internal id',
+    /return sub === ARCH_SUBSIDIARY_NAME;/.test(s) && !/department === 11/.test(s) && !/subsidiary === 9/.test(s), null);
   // 🔴 RELOCATED 2026-09-21, not removed. The exclusion moved into the shared
   // `inArchScope`, which refuses decking BEFORE testing either arm of the
   // department/subsidiary union -- a stronger form of the same rule, because it
@@ -1418,36 +1419,17 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /invalidated ON WRITE by the order endpoint/.test(scr), null);
 }
 
-// Item 15, the server half. `BUILTIN.DF(i.department) = ?` is a function over the
-// joined rows, so the optimiser cannot use the column. Best of four, same 42 rows:
-// open orders 2.14s -> 1.24s, item count 1.76s -> 0.54s. A subquery does not help
-// (2.10s); the optimiser needs a constant. The id is RESOLVED, never hardcoded:
-// department 11 is "Hardwood" in sandbox and does not exist in production.
+// Item 15, the server half, RETIRED 2026-09-22 (Feedback 14). The department-id
+// fast path (open orders 2.14s -> 1.24s) had already stopped paying off once the
+// subsidiary arm put a BUILTIN.DF back into the same WHERE, and the department arm
+// itself is gone: every row it added was CWP MTL stock at CWP MTL locations. What is
+// pinned now is that the resolver is really gone and nothing hardcodes an id.
 {
   const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
-  // 🔴 THE OPTIMISATION SURVIVES INSIDE THE UNION. Feedback 9 added the
-  // subsidiary arm because the department alone matched 25 items against the
-  // union's 168, leaving the tab empty. The indexed `i.department = ?` comparison
-  // is still there and still first; what is new is an OR beside it.
-  //
-  // 🔴 AND THE NEW ARM IS THE PATTERN THIS BLOCK OPTIMISED AWAY -- a function
-  // over the joined rows. It is unavoidable: `i.subsidiary` is NOT_EXPOSED on this
-  // tenant and a raw comparison is a hard 400, on `item` as well as on
-  // `transaction`. Measured cost of the extra arm on the item count: 305ms -> 384ms
-  // and 541ms -> 614ms, about 75ms. Paid deliberately, because the alternative
-  // measured is a tab that shows nothing.
-  ok('open orders: the department filter compares the column, not its label',
-    /const hardwoodDepartmentId = \(\) => \{/.test(svc) &&
-      /sql: '\(i\.department = \? OR BUILTIN\.DF\(i\.subsidiary\) = \?\)'/.test(svc), null);
-  ok('  ...and the id is resolved from the name, never hardcoded',
-    /SELECT id FROM department WHERE name = \?/.test(svc) &&
-      !/'i\.department = \d/.test(svc), null); // a literal id inside the SQL, not the comment
-  // A renamed or nested department must cost speed, never rows.
-  // Same fallback, now carrying both arms. A renamed or nested department must
-  // still cost speed rather than rows.
-  ok('  ...and it falls back to the old predicate when the lookup finds nothing',
-    /sql: '\(BUILTIN\.DF\(i\.department\) = \? OR BUILTIN\.DF\(i\.subsidiary\) = \?\)'/.test(svc) &&
-      /params: \[HARDWOOD_DEPARTMENT, ARCH_SUBSIDIARY_NAME\]/.test(svc), null);
+  ok('open orders: the department-id resolver is removed, not left as dead code',
+    !/hardwoodDepartmentId/.test(svc) && !/SELECT id FROM department WHERE name/.test(svc), null);
+  ok('  ...and no literal id is compared inside the scope SQL',
+    !/'i\.department = \d/.test(svc) && !/i\.subsidiary = \d/.test(svc), null);
 }
 
 // Item 15, adversarial pass. Sharing one list removed an ACCIDENT: the wizard used
@@ -1462,16 +1444,8 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
       /const reloadOpenOrders = openOrdersState\.reload;/.test(scr), null);
   ok('  ...and the callback declares it rather than closing over a stale one',
     /\}, \[reloadOpenOrders\]\);/.test(scr), null);
-
-  const svc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js');
-  // BUILTIN.DF compares the LEAF name: dept 11 is "Hardwood", fullname
-  // "Trading : Hardwood". A second department with the same leaf would match the
-  // old predicate and both item sets would be in scope; one id cannot say that.
-  ok('  ...and two departments sharing a name do not narrow the tab',
-    /r\.length > 1/.test(svc) && /departments share that name/.test(svc), null);
-  // A silent fallback is an optimisation that can be inert in production forever.
-  ok('  ...and the slow path announces itself',
-    /department filtered by name, not id/.test(svc), null);
+  // Two guards on the department-id fallback lived here. Retired with the
+  // department arm itself on 2026-09-22 (Feedback 14); see "Item 15, the server half".
 }
 
 // Feedback 6 item 18. "IA-CWP-730. Le MBF price est 12.76 vs 14.15." Both figures
@@ -1934,9 +1908,13 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
 
   // ONE predicate in the order endpoint, so a future divergence is a code change
   // rather than a silent drift.
-  ok('scope: the order endpoint tests department OR subsidiary, in one place',
+  // 🔴 Feedback 14, 2026-09-22: subsidiary ARC ALONE. The department arm added only
+  // CWP MTL items at CWP MTL locations (Bluelinx, Buffalo, Ambassador, CWP Prevost,
+  // USL), which MA reported as « des reloads qui ne sont pas dans CWP ARC ».
+  ok('scope: the order endpoint tests subsidiary ARC alone, in one place',
     /const inArchScope = \(department, subsidiary, itemCode\) =>/.test(oc) &&
-      /return dept === HARDWOOD_DEPARTMENT \|\| sub === ARCH_SUBSIDIARY_NAME;/.test(oc), null);
+      /return sub === ARCH_SUBSIDIARY_NAME;/.test(oc) &&
+      !/dept === HARDWOOD_DEPARTMENT \|\|/.test(oc), null);
   // 🔴 AND DECKING IS EXCLUDED FROM BOTH ARMS. Hanging the exclusion off the
   // department arm would make IPE orderable the moment it sits in ARC.
   ok('scope:  ...with decking excluded regardless of which arm matched',
@@ -1952,18 +1930,35 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
       /if \(inArchScope\(dept, rows\[i\]\.sub, code\)\)/.test(oc), null);
 
   // The service's open-orders and item-count queries share one filter.
-  ok('scope: the service filter carries both arms and binds both params',
-    /BUILTIN\.DF\(i\.department\) = \? OR BUILTIN\.DF\(i\.subsidiary\) = \?/.test(svc) &&
-      /i\.department = \? OR BUILTIN\.DF\(i\.subsidiary\) = \?/.test(svc) &&
-      !/params: \[dept\.param\]/.test(svc), null);
+  ok('scope: the service filter is subsidiary ARC alone and binds exactly one param',
+    /sql: 'BUILTIN\.DF\(i\.subsidiary\) = \?',\s*params: \[ARCH_SUBSIDIARY_NAME\],/.test(svc) &&
+      !/i\.department = \?/.test(svc) && !/params: \[dept\.param\]/.test(svc), null);
   // BUILTIN.DF, never the raw column: `i.subsidiary` is NOT_EXPOSED on this tenant
   // and a bare comparison is a hard 400.
   ok('scope:  ...through BUILTIN.DF, because the raw column is a 400',
     !/[^.]i\.subsidiary = /.test(svc), null);
 
   // And the cache builder, which had it first, still has it.
-  ok('scope: the cache builder still carries the union it was given in Feedback 7',
-    /BUILTIN\.DF\(i\.department\) = \? OR BUILTIN\.DF\(i\.subsidiary\) = \?/.test(mr), null);
+  ok('scope: the cache builder is subsidiary ARC alone, bound with one param',
+    /const ARCH_SCOPE_SQL = 'BUILTIN\.DF\(i\.subsidiary\) = \?';/.test(mr) &&
+      /const ARCH_SCOPE_PARAMS = \[ARCH_SUBSIDIARY\];/.test(mr), null);
+  // 🔴 THE TRAP IN NARROWING IT. UNTAGGED_SQL has TWO placeholders of its own and
+  // used to borrow ARCH_SCOPE_PARAMS; one param would under-bind it, and its catch
+  // swallows the failure, so the miscategorisation warning would die silently.
+  {
+    const at = mr.indexOf('const UNTAGGED_SQL =');
+    const q = mr.slice(at, mr.indexOf('/**', at));
+    ok('scope:  ...and UNTAGGED_SQL binds its OWN department+subsidiary pair, not the scope params',
+      /params: EXCLUDED_UNITS_TYPES\.concat\(UNTAGGED_PARAMS\)/.test(mr) &&
+        /const UNTAGGED_PARAMS = \[HARDWOOD_DEPARTMENT, ARCH_SUBSIDIARY\];/.test(mr) &&
+        !/EXCLUDED_UNITS_TYPES\.concat\(ARCH_SCOPE_PARAMS\)/.test(mr) &&
+        /BUILTIN\.DF\(i\.department\) <> \?/.test(q) && /BUILTIN\.DF\(i\.subsidiary\), '~none~'\) <> \?/.test(q),
+      q.slice(0, 200));
+  }
+  // All three sites agree, so a fourth divergence is caught here.
+  ok('scope:  ...and all three sites use the same subsidiary name',
+    /const ARCH_SUBSIDIARY = 'ARC';/.test(mr) &&
+      /const ARCH_SUBSIDIARY_NAME = 'ARC';/.test(svc) && /const ARCH_SUBSIDIARY_NAME = 'ARC';/.test(oc), null);
 }
 
 // Money audit, 2026-09-16. The order was created in the customer's PRIMARY currency
@@ -2046,6 +2041,20 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('7b:  ...and the confirmation email prints what the order carries',
     /t\.memo                             AS memo/.test(oc) &&
       /\['Note', summary \? summary\.memo : null\]/.test(oc), null);
+}
+
+// Feedback 12, 2026-09-22. MA: « Ajuster la query des Open SOs svp », on a
+// screenshot of the empty-state banner claiming "0 items in the Hardwood
+// department" and advising him to tag hardwood items. The query was already fixed
+// (ef3f98f); the banner still named the old scope and a remedy that fixes nothing.
+{
+  const view = src('components/arch/ArchOpenOrdersView.tsx');
+  ok('open orders banner: names subsidiary ARC as the scope',
+    /carries an item in subsidiary ARC\./.test(view) && /in subsidiary ARC, so orders on items/.test(view), null);
+  ok('open orders banner: no longer names the Hardwood department as the scope',
+    !/carries a Hardwood-department item/.test(view) && !/in the Hardwood department, so orders/.test(view), null);
+  ok('open orders banner: and the tagging advice is gone from every leg',
+    !/Tagging the remaining hardwood items/i.test(view) && !/tagging the remaining hardwood items/.test(view), null);
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archUiGuards ok');
