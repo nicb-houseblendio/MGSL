@@ -2998,10 +2998,10 @@ define([
                      * not the account's normal state anymore.
                      */
                     log.audit('ARCH cache — POSSIBLE MISCATEGORIZED HARDWOOD, invisible to this screen',
-                        untagged.length + ' item(s) carry an ARCH-shaped units type but sit outside ' +
-                        'Department 11 (Hardwood), so their stock does NOT appear: ' +
-                        untagged.map((r) => r.itemid).join(', ') +
-                        '. Set Department = Hardwood on them, or confirm they are not hardwood.');
+                        untagged.length + ' item(s) carry an ARCH-shaped units type but are neither ' +
+                        'in Department 11 (Hardwood) nor in subsidiary ARC, so their stock does NOT ' +
+                        'appear: ' + untagged.map((r) => r.itemid).join(', ') +
+                        '. If they are ARCH stock, put them in subsidiary ARC; the screen shows ARC only.');
 
                     /* 🔴 CARRIED TO META, added 2026-09-10, and the reason is a real
                      * client report rather than tidiness.
@@ -3027,6 +3027,35 @@ define([
                 }
             } catch (e) {
                 log.audit('ARCH cache', 'Untagged-hardwood check failed (non-fatal): ' + e.message);
+            }
+
+            /*
+             * Tripwire for an item SHARED between ARC and another subsidiary.
+             *
+             * ARCH_SCOPE_SQL is an exact `BUILTIN.DF(i.subsidiary) = 'ARC'` since
+             * 2026-09-22 (Feedback 14). An item assigned to ARC and a second
+             * subsidiary would display as something other than the bare name and
+             * drop out of the grid, Open Orders and order creation together, with
+             * nothing saying so. None exists today (measured: ARC 149, CWP MTL 565,
+             * IND 1,733, MGSL 26, and 0 items whose name contains ARC without being
+             * exactly ARC), so this only speaks if the migration creates one.
+             * AUDIT, and its own try, so it can never cost a rebuild.
+             */
+            try {
+                const shared = query.runSuiteQL({
+                    query: 'SELECT i.itemid FROM item i ' +
+                           'WHERE BUILTIN.DF(i.subsidiary) LIKE ? AND BUILTIN.DF(i.subsidiary) <> ?',
+                    params: ['%' + ARCH_SUBSIDIARY + '%', ARCH_SUBSIDIARY],
+                }).asMappedResults();
+                if (shared.length) {
+                    log.audit('ARCH cache — item(s) shared with another subsidiary are NOT on this screen',
+                        shared.length + ' item(s) name ' + ARCH_SUBSIDIARY + ' among several subsidiaries, ' +
+                        'and the scope matches ' + ARCH_SUBSIDIARY + ' exactly: ' +
+                        shared.slice(0, 25).map((r) => r.itemid).join(', ') +
+                        (shared.length > 25 ? ' and ' + (shared.length - 25) + ' more' : '') + '.');
+                }
+            } catch (e) {
+                log.audit('ARCH cache', 'Shared-subsidiary check failed (non-fatal): ' + e.message);
             }
 
             /*

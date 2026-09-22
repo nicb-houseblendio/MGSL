@@ -439,8 +439,10 @@ define([
              * removing scope, and it is deliberately WIDER than the trader's own
              * role: the tab now shows every ARCH order in 2184's subsidiaries, not
              * only the trader's own. Same trade already accepted for the customer
-             * list. `OPEN_ORDERS_SQL` carries no subsidiary predicate of its own, so
-             * the tab's completeness IS the executing role's scope and nothing else.
+             * list. Since 2026-09-22 `OPEN_ORDERS_SQL` DOES scope items to subsidiary
+             * ARC (Feedback 14), so the tab is the intersection of that item scope
+             * and the executing role's subsidiary scope: a role narrower than ARC
+             * still hides orders, and nothing on the tab can tell.
              *
              * Unlike `salesTeams`, this one was checked BEFORE it shipped rather than
              * after. `handleGetOpenOrders` touches no `entitygroup`: the rep column

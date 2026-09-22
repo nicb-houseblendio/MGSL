@@ -960,7 +960,8 @@ define([
         '  AND t.status NOT IN (' + CLOSED_STATUSES.map((v) => "'" + v + "'").join(',') + ') ' +
         'ORDER BY t.trandate DESC, t.id DESC, tl.id';
 
-    /** Counts Department 11 (Hardwood) items, so an empty tab can explain itself. */
+    /** Counts the items in the ARCH scope (subsidiary ARC since 2026-09-22, Department 11
+     *  before that), so an empty tab can explain itself. The name is historical. */
     const HARDWOOD_ITEM_COUNT_SQL =
         'SELECT COUNT(*) AS n FROM item i WHERE %DEPT% ' +
         '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ')';
@@ -1051,11 +1052,10 @@ define([
             const dept = deptFilter();
             rows = query.runSuiteQL({
                 query: OPEN_ORDERS_SQL.replace('%DEPT%', dept.sql),
-                // TWO params now, one per arm of the union. Passing [dept.param]
-                // here would bind the department and leave the subsidiary
-                // placeholder unfilled, which SuiteQL rejects outright rather than
-                // silently -- the failure would be loud, but it would still be a
-                // failure, so the two moved together.
+                // ONE param since 2026-09-22 (subsidiary ARC, Feedback 14); it was
+                // two while the scope was a department/subsidiary union. Always
+                // pass dept.params rather than a literal, so the placeholder count
+                // and the bind list can never drift apart again.
                 params: dept.params,
             }).asMappedResults();
         } catch (e) {
@@ -1496,8 +1496,8 @@ define([
          *
          * ⚠️ SUPERSEDED 2026-09-10. Measured 2026-08-20 that only six items
          * carried the segment, and real orders were rare because of it. That
-         * scope is gone — see the cache MR's header comment. Department 11
-         * now covers ~142 real items, so this branch should fire far less
+         * scope is gone — see the cache MR's header comment. Subsidiary ARC
+         * (the scope since 2026-09-22) covers 143 non-decking items, so this branch should fire far less
          * often; when it does, `taggedItemCount` still lets the front end say
          * how many items were in scope for whichever role served the request.
          */

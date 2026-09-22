@@ -488,15 +488,17 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
             role="status"
           >
             <strong>{meta.untaggedItemCount} item{meta.untaggedItemCount === 1 ? '' : 's'} with stock are not on this
-            screen</strong>, because they carry no Hardwood segment. If you have just added bundles and nothing changed
-            here, this is almost certainly why, and nothing needs triggering: the cache rebuilds hourly on its own.
+            screen</strong>, because they are not in subsidiary ARC, which is what this screen shows. If you have just
+            added bundles and nothing changed here, this is almost certainly why, and nothing needs triggering: the
+            cache rebuilds every 15 minutes on its own.
             {meta.untaggedItemSample?.length
               ? <> For example <span className="font-mono">{meta.untaggedItemSample.join(', ')}</span>
                 {meta.untaggedItemCount > meta.untaggedItemSample.length
                   ? ' and ' + (meta.untaggedItemCount - meta.untaggedItemSample.length) + ' more'
                   : ''}.</>
               : null}
-            {' '}Set <span className="font-mono">Hardwood</span> on the item, or confirm it is not hardwood.
+            {' '}If it is ARCH stock, put the item in subsidiary <span className="font-mono">ARC</span>; otherwise
+            nothing needs doing.
           </p>
         </div>
       )}

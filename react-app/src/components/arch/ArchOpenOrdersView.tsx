@@ -553,7 +553,7 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
         The third state is the interesting one. Live and EMPTY used to be the
         normal case, because the scope was a Hardwood segment and then a Hardwood
         department that most real orders did not carry. Since 2026-09-22 the scope
-        is subsidiary ARC (Feedback 14) and 28 open orders show in sandbox, but an
+        is subsidiary ARC (Feedback 14) and the tab is populated in sandbox, but an
         empty tab can still mean "orders you cannot read", so it still says why.
         A blank table would read as "no open orders", which is the wrong
         conclusion to hand somebody.
@@ -611,6 +611,9 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
           Hardwood SEGMENT to Department 11 ("Hardwood") — see the cache MR's
           header comment. The count is therefore much larger now (~142, not 6)
           and that is expected, not a regression.
+
+          ⚠️ Updated again 2026-09-22 (Feedback 12/14): the scope is subsidiary
+          ARC, and the copy below says so. 143 items in sandbox today.
         */
         <div style={{ ...notice, background: '#EFF6FF', borderBottom: '1px solid #93C5FD', color: '#1E40AF' }}>
           <span style={{ fontSize: 13, lineHeight: 1 }}>ℹ️</span>
