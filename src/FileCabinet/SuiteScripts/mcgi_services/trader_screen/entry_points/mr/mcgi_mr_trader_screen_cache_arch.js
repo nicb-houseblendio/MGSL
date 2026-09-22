@@ -56,7 +56,8 @@
  *   reserve       ✅ open sales-order quantity — sold, still in the building
  *   outbound      ✅ shipped sales-order quantity
  *   onOrder       ✅ open purchase-order quantity — ordered, not received
- *   inTransit     ✅ purchase-order quantity billed but not received
+ *   inTransit     ✅ open PO quantity once ownership is taken (the transit
+ *                    journal), else the billed-not-received part. Changed 2026-09-22
  *   readyToBuild  ⏳ wired, self-activating; 0 until the field exists in NS
  *
  * `bucketsBuilt` / `bucketsEmpty` in META carry this to the browser, so the
@@ -1967,6 +1968,27 @@ define([
         '  tl.quantity            AS qty, ' +
         '  tl.quantityshiprecv    AS shiprecv, ' +
         '  tl.quantitybilled      AS billed, ' +
+        /* 🔴 THE TAKE-OWNERSHIP JOURNAL, WITHOUT WHICH IN TRANSIT CANNOT WORK ──
+         *
+         * Added 2026-09-22 for phase 1.2. Neither field appeared anywhere in an
+         * ARCH file before this, which is why open quantity on a PO whose
+         * ownership has been taken landed in On Order and In Transit read 0 on
+         * every row of the screen.
+         *
+         * Marc-Antoine, 2026-09-17 Slack: "Techniquement on le met en transit une
+         * fois qu'il est sur le bateau", and he confirmed ARCH follows the same
+         * rule the other screens use.
+         *
+         * ⚠️ BOTH ARE HEADER-GRAIN, functionally dependent on t.id, so they add
+         * no rows and change no fan-out. Same argument as the item columns below.
+         *
+         * ⚠️ REST SuiteQL reads both of these fine, measured 2026-09-22 in both
+         * accounts. This query runs through N/query, which is a DIFFERENT DIALECT,
+         * and a body field readable in one has been unreadable in the other before
+         * now. Check the post-deploy meta for a bucket error before trusting the
+         * first In Transit figure this produces. */
+        '  t.custbody_po_intransit_journal AS transitje, ' +
+        '  t.custbody_po_is_agency         AS agencyflag, ' +
         /* ── WHICH ORDER, added 2026-09-08 ────────────────────────────────────
          * Five header columns on a query that was ALREADY reading this exact row
          * for its quantity. They cost no extra query, no extra join and no extra
@@ -2328,18 +2350,80 @@ define([
                      * invoiced before delivering, which for imported hardwood on the
                      * water is the normal case, not an exotic one.
                      *
-                     * Now: `water` is the billed-not-received part, and `onOrder` is
-                     * what is left of the open quantity. The two sum to `open` by
-                     * construction, which is the invariant the grid's arithmetic wants.
+                     * Now: `water` is the in-transit part, and `onOrder` is what is
+                     * left of the open quantity. The two sum to `open` by construction,
+                     * which is the invariant the grid's arithmetic wants.
+                     *
+                     * ── 🔴 PHASE 1.2, 2026-09-22: BILLING IS NOT WHAT PUTS WOOD ON A BOAT ──
+                     *
+                     * Until today `water` was billed-not-received and nothing else, so
+                     * In Transit read 0 on every row of the screen. What actually moves
+                     * ownership here is the take-ownership journal, which is how MTL and
+                     * IND already decide it.
+                     *
+                     * 🔴 AND THE CLAMP BELONGS ON ONE BRANCH ONLY. The plan for this
+                     * step said to adopt the journal rule AND keep ARCH's
+                     * min(billed, ordered) clamp as the quantity. Those cancel each
+                     * other out. Measured 2026-09-22 on PO344950, the only sandbox
+                     * hardwood PO with both a transit journal and open lines: both its
+                     * lines read quantitybilled 0, so min(billed, ordered) - moved is 0
+                     * and the step would have shipped and changed nothing at all.
+                     *
+                     * The clamp exists to stop an over-billing supplier pushing more
+                     * into In Transit than the line has open. That can only happen on
+                     * the branch that reads `billed`, so that is the only branch it
+                     * guards. On the journal branch billing is irrelevant and the answer
+                     * is the whole open quantity. MTL agrees: its In Transit formula
+                     * ignores billing entirely once the journal is set.
+                     *
+                     * ⚠️ AN AGENCY PO WITH NO JOURNAL IS NOT IN TRANSIT. MTL's own
+                     * definition contradicts itself here: its quantity formula gives
+                     * agency POs the full-open branch, while its filter excludes
+                     * agency-without-journal from In Transit altogether, which makes
+                     * that half of the formula unreachable. We follow what MTL DOES, not
+                     * what its dead code says. Moot on ARCH today: all 56 ARCH-scope PO
+                     * lines across 25 POs read agency 'F', measured 2026-09-22, none
+                     * null and none 'T'.
+                     *
+                     * ⚠️ NVL, not a bare comparison. 284 open production PO lines have
+                     * this flag NULL rather than 'F'. ARCH has none today, but ARCH has
+                     * no production data at all yet, and a null read as agency would
+                     * silently zero the wood instead of erroring.
+                     *
+                     * NOT changed here, and deliberately: transfer orders. MTL and IND
+                     * both count TrnfrOrd as In Transit; this query admits only SalesOrd
+                     * and PurchOrd. Sandbox has zero ARCH transfer-order lines, so it is
+                     * not a live gap, and adopting it is a scope decision nobody has
+                     * made.
                      */
-                    const water = Math.max(0, Math.min(billed, ordered) - moved);
-                    // Billed but not received — it is on the water.
+                    // Ownership taken: NetSuite posted the in-transit journal against
+                    // this PO. Trim() because an empty body field arrives as '' and as
+                    // a string of spaces depending on the dialect, and both mean unset.
+                    const hasTransitJE = String(r.transitje || '').trim() !== '';
+                    const isAgency = String(r.agencyflag || 'F').toUpperCase() === 'T';
+                    const water = hasTransitJE
+                        // On the boat, all of it. `open` is already max(0, ordered - moved).
+                        ? open
+                        : (isAgency
+                            // Agency, no journal: not in transit at all, per MTL's filter.
+                            ? 0
+                            // Supplier invoiced ahead of delivery. Clamped, because an
+                            // over-billing supplier must not push In Transit above open.
+                            : Math.max(0, Math.min(billed, ordered) - moved));
                     bucket.totals.inTransit += water;
                     // Ordered from a supplier and not yet on the water.
                     bucket.totals.onOrder += Math.max(0, open - water);
                 }
             }
 
+            /* ⚠️ PER-LOT inTransit IS STILL NOT WRITTEN, which is build step 0.2.
+             *
+             * The row total above is now correct, but the attribution below never
+             * assigns inTransit to a bundle, so the whole figure lands in
+             * `unattributed` and the In Transit drill-down opens on a gap reason
+             * rather than on the bundles. 1.2 makes the column read a real number;
+             * 0.2 is what makes it clickable. They are two changes, not one.
+             */
             /* ── Lot attribution, only where an assignment exists ─────────────
              *
              * 🔴 ONLY THE OPEN SHARE OF THE LINE REACHES THE LOT.
