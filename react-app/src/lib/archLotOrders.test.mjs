@@ -284,7 +284,7 @@ const TEAM_ROWS = [
   { tranid: '126500', repid: '2090', rep: 'Justin Loveland', contribution: '0.5', isprimary: 'F' },
 ];
 
-const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [] } = {}) => {
+const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [], transitRows = [] } = {}) => {
   const sqlLog = [];
   const errors = [];
   const audits = [];
@@ -305,6 +305,9 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
       // The Ready to Build flag read. Returned [] by default, which is why nothing
       // here noticed the stamp never reached the payload (Feedback 13).
       else if (/custbody_arch_ready_to_build/.test(sql)) rows = flagIds.map((id) => ({ tranid: id }));
+      // The take-ownership journal / agency / status read (1.2). Returned [] by
+      // default, which kept every PO test on the billing branch.
+      else if (/custbody_po_intransit_journal/.test(sql)) rows = transitRows;
       else if (/FROM item i/.test(sql)) rows = [];                      // untagged check
       else if (/customrecord_msl_plc_capture/i.test(sql)) rows = [];     // tallies
       return { asMappedResults: () => rows };
@@ -739,9 +742,10 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   ok('H3 on a MIXED row, bundles + unbundled lines add up to the On Order column exactly',
     !!mixed && Math.abs(lotsOnOrder + unbOnOrder - mixed.onOrder) < 1e-6 && Math.round(mixed.onOrder) === 4000,
     mixed && { lotsOnOrder, unbOnOrder, onOrder: mixed.onOrder });
-  ok('H4 ...the partly bundled line contributes only its UNbundled 2,000, the other line its 1,000',
-    mu.length === 2 && mu.map((x) => Math.round(x.onOrder)).sort((a, b) => a - b).join() === '1000,2000' &&
-      mu.every((x) => x.arm === 'none'), mu);
+  // Both lines are in the same state on the same PO, so they merge (H11): the
+  // partly bundled line contributes only its UNbundled 2,000, the other its 1,000.
+  ok('H4 ...the partly bundled line contributes only its UNbundled part: one merged entry, 2 lines, 3,000',
+    mu.length === 1 && mu[0].lineCount === 2 && Math.round(mu[0].onOrder) === 3000 && mu[0].arm === 'none', mu);
   ok('H5 ...and agrees with the row-level unattributed figure',
     !!mixed && Math.abs(unbOnOrder - mixed.unattributed.onOrder) < 1e-6, mixed && mixed.unattributed);
 
@@ -749,6 +753,75 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
     .written.find((r) => String(r.internalId) === '2915');
   ok('H6 a fully bundled line publishes NO unbundled entry',
     !!bundled && Array.isArray(bundled.unbundled) && bundled.unbundled.length === 0, bundled && bundled.unbundled);
+
+  /* ── Round-1 review of 6210842 ── */
+  const one = (res) => res.written.find((r) => String(r.internalId) === '2915');
+
+  // Take ownership AND a supplier invoice: arm 'journal', but still billed ahead.
+  const jb = one(runMr({
+    bucketRows: [po({ tranid: '999105', docno: 'PO-JB', lineno: '41', qty: '2', billed: '2' })],
+    transitRows: [{ tranid: '999105', transitje: '555', agencyflag: 'F', tstatus: 'B' }],
+  }));
+  const ju = jb && jb.unbundled ? jb.unbundled : [];
+  ok('H7 a journal line that is ALSO billed ahead keeps billedAhead, so it is flagged',
+    ju.length === 1 && ju[0].arm === 'journal' && ju[0].billedAhead === true && Math.round(ju[0].inTransit) === 2000, ju);
+
+  // Journal, not billed: in transit, not his case.
+  const jn = one(runMr({
+    bucketRows: [po({ tranid: '999106', docno: 'PO-JN', lineno: '42', qty: '2', billed: '0' })],
+    transitRows: [{ tranid: '999106', transitje: '556', agencyflag: 'F', tstatus: 'B' }],
+  }));
+  const jnu = jn && jn.unbundled ? jn.unbundled : [];
+  ok('H8 a journal line NOT billed is in transit without the billed flag',
+    jnu.length === 1 && jnu[0].arm === 'journal' && jnu[0].billedAhead === false && Math.round(jnu[0].inTransit) === 2000, jnu);
+
+  // Closed PO with an open line: its own arm, never billed-ahead.
+  const cl = one(runMr({
+    bucketRows: [po({ tranid: '999107', docno: 'PO-CL', lineno: '43', qty: '2', billed: '2' })],
+    transitRows: [{ tranid: '999107', transitje: '', agencyflag: 'F', tstatus: 'H' }],
+  }));
+  const clu = cl && cl.unbundled ? cl.unbundled : [];
+  ok('H9 a closed PO line is arm "closed" and never flagged as billed ahead',
+    clu.length === 1 && clu[0].arm === 'closed' && clu[0].billedAhead === false, clu);
+
+  // Partly received, the remainder with no bundle (PO344951's live shape: 12 ordered, 10 received).
+  const pr = one(runMr({ bucketRows: [po({ tranid: '999108', docno: 'PO-PR', lineno: '44', qty: '12', shiprecv: '10', billed: '0' })] }));
+  const pru = pr && pr.unbundled ? pr.unbundled : [];
+  ok('H10 a partly received line lists only its OPEN remainder, marked partlyReceived',
+    pru.length === 1 && pru[0].partlyReceived === true && Math.round(pru[0].onOrder) === 2000, pru);
+
+  // Two lines of one PO in the same state merge into one entry with a count.
+  const mg = one(runMr({ bucketRows: [
+    po({ tranid: '999109', docno: 'PO-MG', lineno: '45', qty: '0.45', billed: '0' }),
+    po({ tranid: '999109', docno: 'PO-MG', lineno: '46', qty: '0.45', billed: '0' }),
+  ] }));
+  const mgu = mg && mg.unbundled ? mg.unbundled : [];
+  ok('H11 two identical-state lines of one PO are ONE entry with lineCount 2 and the summed quantity',
+    mgu.length === 1 && mgu[0].lineCount === 2 && Math.round(mgu[0].onOrder) === 900, mgu);
+
+  // ETA: a ship week equal to the PO date is the default and is not an ETA.
+  const ed = one(runMr({ bucketRows: [po({ tranid: '999110', docno: 'PO-ED', lineno: '47', qty: '1', billed: '0',
+    trandate: '9/21/2026', shipweek: '9/21/2026' })] }));
+  const edu = ed && ed.unbundled ? ed.unbundled : [];
+  ok('H12 a ship week equal to the PO date gives NO ETA (it is the field default)',
+    edu.length === 1 && edu[0].eta === '', edu);
+
+  // Partly billed: only the billed part is in transit; the rest is On Order.
+  const pb = one(runMr({ bucketRows: [po({ tranid: '999111', docno: 'PO-PB', lineno: '48', qty: '2', billed: '1' })] }));
+  const pbu = pb && pb.unbundled ? pb.unbundled : [];
+  ok('H13 a partly billed line splits 1,000 in transit / 1,000 on order, flagged billed ahead',
+    pbu.length === 1 && pbu[0].billedAhead === true &&
+      Math.round(pbu[0].inTransit) === 1000 && Math.round(pbu[0].onOrder) === 1000, pbu);
+
+  // The openShare factor must be applied to what bundles claim (a mutation the
+  // review showed H1-H6 did not catch): half-received line, bundle assigned for all of it.
+  const os = one(runMr({ bucketRows: [po({ tranid: '999112', docno: 'PO-OS', lineno: '49', qty: '2', shiprecv: '1',
+    billed: '0', lotno: '316027-12', assignedqty: '1' })] }));
+  const osu = os && os.unbundled ? os.unbundled : [];
+  const osLots = os ? os.lots.reduce((t, l) => t + (l.onOrder || 0), 0) : 0;
+  ok('H14 bundles claim assigned x openShare, so lots + unbundled still equal the row',
+    !!os && Math.abs(osLots + osu.reduce((t, x) => t + x.onOrder, 0) - os.onOrder) < 1e-6,
+    os && { osLots, osu, onOrder: os.onOrder });
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archLotOrders ok');

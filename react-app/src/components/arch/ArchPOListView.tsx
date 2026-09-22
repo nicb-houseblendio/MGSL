@@ -2,7 +2,8 @@ import * as React from 'react';
 import { formatQty, displaySuffix } from '@/lib/archUom';
 import { lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
 import { ARCH_BUCKET_META, ARCH_SURFACE } from '@/components/arch/archColors';
-import type { ArchSummaryRow, ArchLot, ArchDetailKey, ArchUnbundledLine } from '@/types/arch';
+import type { ArchSummaryRow, ArchLot, ArchDetailKey } from '@/types/arch';
+import { poListTotals, unbundledBadge } from '@/lib/archUnbundled';
 
 /**
  * On Order / In Transit view — purchase orders, not tallies.
@@ -132,36 +133,16 @@ const resolveIncoming = (
   };
 };
 
-/**
- * The badge for a PO line with no bundles, Feedback 8 step 2.8c: « on présentera
- * la ligne dans le TS sans le détail des bundles. Ce sera un flag pour l'équipe. »
- * 'billed' is exactly his case (invoiced before receipt, so no packing list yet).
- */
-export const unbundledBadge = (arm: ArchUnbundledLine['arm']): { text: string; title: string } =>
-  arm === 'billed'
-    ? {
-        text: 'No packing list',
-        title: 'Billed before receipt and no packing list yet, so this line has no bundle numbers. ' +
-          'Back office: enter the packing list and generate the bundles on the PO.',
-      }
-    : {
-        text: 'No bundles yet',
-        title: 'This PO line has no bundle numbers yet, so it cannot be listed bundle by bundle. ' +
-          'They are created with Generate Tags on the PO.',
-      };
-
 export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewProps) => {
   const meta = ARCH_BUCKET_META[bucket];
-  const lots = row.lots.filter((l) => (l[bucket] || 0) > 0);
-  /* PO lines with no bundles (2.8c). Listed in the same table, so the footer
-     adds up to the tab. A payload older than the field has no `unbundled`, and
-     then any shortfall is shown as a gap line instead of silently dropped. */
-  const unbundled = (row.unbundled || []).filter((u) => (u[bucket] || 0) > 1e-9);
-  const hasUnbundledField = Array.isArray(row.unbundled);
+  /* Bundles, then PO lines with no bundles (2.8c), then whatever NEITHER list can
+     show (a bundle on an open line the lot query did not return, or a payload
+     older than `unbundled`). The footer is always the row's own figure. */
+  const { lots, unbundled, residual, total } = poListTotals(row, bucket);
 
   const label = bucket === 'onOrder' ? 'On Order' : 'In Transit';
 
-  if (lots.length === 0 && unbundled.length === 0) {
+  if (lots.length === 0 && unbundled.length === 0 && residual <= 0) {
     /*
      * The row total that no bundle claims. Saying "no purchase orders" while the
      * header above reads 3,000 BF is the exact shape Marc-Antoine reported, so
@@ -190,16 +171,16 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
     );
   }
 
-  const lotTotal = lots.reduce((s, l) => s + (l[bucket] || 0), 0);
-  const unbundledTotal = unbundled.reduce((s, u) => s + (u[bucket] || 0), 0);
-  // Only on an old payload: what the row carries that neither list explains.
-  const legacyGap = hasUnbundledField ? 0 : Math.max(0, (row[bucket] ?? 0) - lotTotal);
-  const total = lotTotal + unbundledTotal + legacyGap;
   const anyInvented = lots.some((l) => l.incoming === undefined);
+  const lineCount = unbundled.reduce((n, u) => n + (u.lineCount || 1), 0);
   const poCount = new Set([
     ...lots.map((l) => resolveIncoming(l, bucket).po),
     ...unbundled.map((u) => u.poNumber || '—'),
   ]).size;
+  const footerLabel = [
+    lots.length ? `${lots.length} bundle${lots.length === 1 ? '' : 's'}` : '',
+    lineCount ? `${lineCount} line${lineCount === 1 ? '' : 's'} without bundles` : '',
+  ].filter(Boolean).join(' and ') + ` on ${poCount} purchase order${poCount === 1 ? '' : 's'}`;
 
   const headerCell: React.CSSProperties = {
     padding: '8px 10px',
@@ -286,7 +267,7 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
             );
           })}
           {unbundled.map((u, i) => {
-            const badge = unbundledBadge(u.arm);
+            const badge = unbundledBadge(u, bucket);
             const etaDate = parseIsoLocal(u.eta || '');
             return (
               <tr
@@ -295,6 +276,9 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
               >
                 <td style={{ ...cell, fontWeight: 700, color: meta.color }} className="font-mono">
                   {u.poNumber || '—'}
+                  {(u.lineCount || 1) > 1 && (
+                    <span style={{ fontWeight: 500, color: ARCH_SURFACE.textMid, fontSize: 10.5 }}> ×{u.lineCount} lines</span>
+                  )}
                 </td>
                 <td style={cell} title={badge.title}>
                   <span
@@ -324,13 +308,18 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
               </tr>
             );
           })}
-          {legacyGap > 1e-9 && (
+          {residual !== 0 && (
             <tr>
-              <td colSpan={5} style={{ ...cell, color: ARCH_SURFACE.textMid, fontStyle: 'italic' }}>
-                On purchase order lines with no bundle numbers yet
+              <td
+                colSpan={5}
+                style={{ ...cell, color: residual < 0 ? '#8B1A1A' : ARCH_SURFACE.textMid, fontStyle: 'italic' }}
+              >
+                {residual > 0
+                  ? 'On purchase order lines this list cannot show bundle by bundle'
+                  : 'The bundles above claim more than this column carries; check the PO lines'}
               </td>
               <td style={{ ...cell, textAlign: 'right', fontWeight: 700, color: ARCH_SURFACE.navy }} className="font-mono">
-                {formatQty(legacyGap, row.unit, uom)}
+                {formatQty(residual, row.unit, uom)}
               </td>
             </tr>
           )}
@@ -338,11 +327,7 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
         <tfoot>
           <tr style={{ background: '#F1F5FA' }}>
             <td colSpan={5} style={{ ...cell, borderBottom: 'none', fontWeight: 700, color: ARCH_SURFACE.textMid }}>
-              {lots.length} bundle{lots.length === 1 ? '' : 's'}
-              {unbundled.length > 0
-                ? ` and ${unbundled.length} line${unbundled.length === 1 ? '' : 's'} without bundles`
-                : ''}{' '}
-              on {poCount} purchase order{poCount === 1 ? '' : 's'}
+              {footerLabel}
             </td>
             <td
               style={{ ...cell, borderBottom: 'none', textAlign: 'right', fontWeight: 800, color: ARCH_SURFACE.navy }}

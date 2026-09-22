@@ -2429,6 +2429,14 @@ define([
             poIdsForTransit.length + ' PO(s) in scope, ' + transitJournalCount +
             ' carrying a journal, sourced=' + transitSourced);
 
+        /* The ETA a PO line can honestly claim: its ship week, UNLESS that equals the
+         * PO date, which is the field's default (176 of 352 open prod POs; 5 of 6
+         * ARC POs checked). Same rule as shipWeekCell on the sales-order side. */
+        const poEta = (r) => {
+            const sw = isoDate(r.shipweek) || '';
+            return sw && sw !== (isoDate(r.trandate) || '') ? sw : '';
+        };
+
         rows.forEach((r) => {
             const key = String(r.itemid) + '__' + String(r.locationid);
             if (!byPair[key]) {
@@ -2528,10 +2536,16 @@ define([
                 bucket.poLines[lineKey] = {
                     poNumber: String(r.docno || ''),
                     supplier: String(r.customer || ''),
-                    eta:      isoDate(r.shipweek) || '',
-                    // Which In Transit rule put it on the water, so the screen can
-                    // say "billed, no packing list" rather than a generic gap.
-                    arm:      water > 0 ? (hasTransitJE ? 'journal' : 'billed') : 'none',
+                    eta:      poEta(r),
+                    // Which In Transit rule applies. 'closed' first: a closed PO
+                    // keeps open lines on this account and they are not coming.
+                    arm:      closedOrder ? 'closed' : (water > 0 ? (hasTransitJE ? 'journal' : 'billed') : 'none'),
+                    /* Billed ahead of receipt, SEPARATELY from the arm (round-1
+                     * review): a line with take ownership AND a supplier invoice
+                     * is arm 'journal', but it is still MA's "facturé avant
+                     * réception, pas de packing list" case and gets the flag. */
+                    billedAhead: !isAgency && !closedOrder && Math.min(billed, ordered) - moved > 0,
+                    partlyReceived: moved > 0,
                     open:     open,
                     waterShare: waterShare,
                     assignedOpen: 0,
@@ -2736,7 +2750,7 @@ define([
                         // ISO, or empty. The browser must not be handed a NetSuite
                         // date string to parse — `isoDate` is the one place this
                         // file converts, and it already handles the null.
-                        eta:      isoDate(r.shipweek) || '',
+                        eta:      poEta(r),
                     };
                 }
 
@@ -2882,15 +2896,27 @@ define([
              * lots + unbundled = the row's inTransit and onOrder exactly. A tiny
              * epsilon drops float dust from fully bundled lines. BASE units here;
              * reduce converts. */
-            b.unbundled = Object.keys(b.poLines || {}).map((lk) => {
+            // Lines of one PO in the same state are ONE entry with a count: two
+            // identical "PO-ARC-000007 450" rows read as a duplicate (round-1 review).
+            const merged = {};
+            Object.keys(b.poLines || {}).forEach((lk) => {
                 const p = b.poLines[lk];
                 const left = Math.max(0, p.open - p.assignedOpen);
-                return {
-                    poNumber: p.poNumber, supplier: p.supplier, eta: p.eta, arm: p.arm,
-                    inTransit: left * p.waterShare,
-                    onOrder:   left * (1 - p.waterShare),
-                };
-            }).filter((u) => u.inTransit + u.onOrder > 1e-9);
+                if (left <= 1e-9) return;
+                const mk = [p.poNumber, p.arm, p.eta, p.billedAhead, p.partlyReceived].join('|');
+                if (!merged[mk]) {
+                    merged[mk] = {
+                        poNumber: p.poNumber, supplier: p.supplier, eta: p.eta, arm: p.arm,
+                        billedAhead: p.billedAhead, partlyReceived: p.partlyReceived,
+                        lineCount: 0, inTransit: 0, onOrder: 0,
+                    };
+                }
+                merged[mk].lineCount += 1;
+                merged[mk].inTransit += left * p.waterShare;
+                merged[mk].onOrder   += left * (1 - p.waterShare);
+            });
+            b.unbundled = Object.keys(merged).map((mk) => merged[mk]);
+            delete b.poLines;   // served its purpose; keep the stage payload small
         });
 
         return byPair;
@@ -4056,6 +4082,8 @@ define([
                 // Transit rule, so the drill-down can list it (Feedback 8, 2.8c).
                 unbundled: ((bk && bk.unbundled) || []).map((u) => ({
                     poNumber: u.poNumber, supplier: u.supplier, eta: u.eta, arm: u.arm,
+                    billedAhead: !!u.billedAhead, partlyReceived: !!u.partlyReceived,
+                    lineCount: u.lineCount || 1,
                     inTransit: u.inTransit / rate,
                     onOrder:   u.onOrder / rate,
                 })),

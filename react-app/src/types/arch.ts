@@ -496,14 +496,20 @@ export interface ArchUnbundledLine {
   /** The PO document number, e.g. "PO-ARC-000007". */
   poNumber: string;
   supplier: string;
-  /** `custbody_ship_week` as `YYYY-MM-DD`, or ''. */
+  /** `custbody_ship_week` as `YYYY-MM-DD`, or '' when unset or equal to the PO date (its default). */
   eta: string;
   /**
    * Why it is on the water, if it is: 'billed' = invoiced before receipt (the
    * client's "no packing list" case), 'journal' = take ownership done, 'none' =
    * still only on order.
    */
-  arm: 'billed' | 'journal' | 'none';
+  arm: 'billed' | 'journal' | 'none' | 'closed';
+  /** Invoiced before receipt (non-agency), whatever the arm: the flag's trigger. */
+  billedAhead?: boolean;
+  /** Part of the line is already received. */
+  partlyReceived?: boolean;
+  /** How many PO lines in the same state this entry merges. */
+  lineCount?: number;
   /** Display units, like every other bucket. */
   inTransit: number;
   onOrder: number;
