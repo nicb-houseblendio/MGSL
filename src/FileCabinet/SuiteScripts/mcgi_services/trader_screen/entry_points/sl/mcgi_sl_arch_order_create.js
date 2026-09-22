@@ -292,6 +292,26 @@ define([
                 });
             }
 
+            if (action === 'equipment') {
+                /* The wizard's Equipment picker, Feedback 10 item 1.
+                 *
+                 * Same shape and the same reasons as the incoterms handler above.
+                 * ⚠️ One difference that matters downstream: equipment is
+                 * OPTIONAL on the ARC form, so an empty list or an error here must
+                 * not stop an order being created. The wizard is told so and simply
+                 * leaves the field out. */
+                const eq = orderLib.listEquipment();
+                return respond(context, 200, {
+                    ok: !eq.error,
+                    service: 'arch-order-create',
+                    action: 'equipment',
+                    callerRole: user.role,
+                    count: eq.equipment.length,
+                    equipment: eq.equipment,
+                    error: eq.error || undefined,
+                });
+            }
+
             if (action === 'fxRate') {
                 /*
                  * The rate the Pricing step converts costs with, Feedback 6 item

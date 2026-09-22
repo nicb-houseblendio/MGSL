@@ -234,6 +234,17 @@ export interface ArchOrderHeader {
    * account (`action=incoterms`), not from a fixtures array.
    */
   incotermsId?: string;
+  /**
+   * Logistics equipment, Feedback 10 item 1.
+   *
+   * ⚠️ BOTH OPTIONAL, unlike incoterms above. `custbody_equipment` is not
+   * mandatory on the ARC sales-order form and 59 of the 60 form-386 orders in the
+   * account saved with it blank, so an order that names no equipment must stay
+   * valid. Making it required in the wizard would refuse orders NetSuite accepts.
+   */
+  equipment?: string;
+  /** The list INTERNAL ID, for the same reason incotermsId is sent as an id. */
+  equipmentId?: string;
   salesTeam: string;
   paymentTerms: string;
 }

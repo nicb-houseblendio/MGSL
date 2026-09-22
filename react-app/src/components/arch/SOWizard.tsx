@@ -13,11 +13,13 @@ import {
 } from '@/hooks/useArchCustomers';
 import {
   fetchIncoterms,
+  fetchEquipment,
   fetchFxRate,
   fetchMillingRates,
   fetchWriteAuth,
   fetchCustomerSalesRep,
   type ArchIncotermsResult,
+  type ArchEquipmentResult,
   type ArchFxResult,
   type ArchMillingRates,
   type ArchWriteAuth,
@@ -846,9 +848,14 @@ export const SOWizard = ({
   const [incoterms, setIncoterms] = React.useState('');
   const [incotermsId, setIncotermsId] = React.useState('');
   const [incotermsOpts, setIncotermsOpts] = React.useState<ArchIncotermsResult | null>(null);
+  /* Feedback 10 item 1. Optional field, so a failed read must not block the step. */
+  const [equipment, setEquipment] = React.useState('');
+  const [equipmentId, setEquipmentId] = React.useState('');
+  const [equipmentOpts, setEquipmentOpts] = React.useState<ArchEquipmentResult | null>(null);
   React.useEffect(() => {
     let live = true;
     fetchIncoterms().then((r) => { if (live) setIncotermsOpts(r); });
+    fetchEquipment().then((r) => { if (live) setEquipmentOpts(r); });
     return () => { live = false; };
   }, []);
 
@@ -1806,6 +1813,8 @@ export const SOWizard = ({
       shipDate,
       incoterms,
       incotermsId: incotermsId || undefined,
+      equipment: equipment || undefined,
+      equipmentId: equipmentId || undefined,
       /*
        * 🔴 THE REP'S NAME, not a team name.
        *
@@ -1963,6 +1972,10 @@ export const SOWizard = ({
                       setCurrency('');
                       setIncoterms('');
                       setIncotermsId('');
+                      // Equipment is a per-shipment choice, so a new customer
+                      // clears it exactly as incoterms is cleared.
+                      setEquipment('');
+                      setEquipmentId('');
                       // Rep AND split. Switching away from an order must not leave
                       // that order's commission split on a blank new one.
                       setRepTeam(emptyRepTeam());
@@ -2828,6 +2841,54 @@ export const SOWizard = ({
             onChange={(e) => setShipDate(e.target.value)}
             style={{ ...field(!!shipDate), cursor: 'pointer' }}
           />
+        </div>
+        {/*
+          Feedback 10 item 1: "Ajout du field : custbody_equipment (entre Ship date
+          et Pmt terms)". Literally here, between the two.
+
+          🔴 A SELECT, NOT the Incoterms button row below. Incoterms has 6 options and
+          renders as flex buttons; this list has 15, which would blow the step apart.
+          Marc-Antoine's own mockup shows a dropdown reading "— Logistics equipment —",
+          so that string is the empty option.
+
+          ⚠️ OPTIONAL, and deliberately NOT in `headerOk`. The field is not mandatory
+          on the ARC form and 59 of the 60 form-386 orders in the account saved with it
+          blank, so gating the step on it would refuse orders NetSuite accepts.
+
+          ⚠️ EDITABLE, unlike Payment terms beside it. Terms is read-only because
+          NetSuite sources it from the customer record; there is no customer-level
+          equipment field anywhere in the account to source from, and the live data
+          shows it varies per shipment. So it is the trader's choice, every time.
+        */}
+        <div style={{ flex: '1 1 200px' }}>
+          <label style={label} htmlFor="arch-equipment">Equipment</label>
+          {equipmentOpts !== null && equipmentOpts.status === 'failed' ? (
+            <div style={{ fontSize: 11, color: '#92400E', padding: '8px 0' }}>
+              The equipment list could not be read from NetSuite, so this is left blank.
+              The order can still be created.
+              {equipmentOpts.error ? ' ' + equipmentOpts.error : ''}
+            </div>
+          ) : (
+            <select
+              id="arch-equipment"
+              value={equipmentId}
+              onChange={(e) => {
+                const id = e.target.value;
+                setEquipmentId(id);
+                const hit = (equipmentOpts && equipmentOpts.equipment || []).find((x) => x.id === id);
+                setEquipment(hit ? hit.name : '');
+              }}
+              disabled={equipmentOpts === null}
+              style={{ ...field(!!equipmentId), cursor: equipmentOpts === null ? 'wait' : 'pointer' }}
+            >
+              <option value="">
+                {equipmentOpts === null ? 'Reading the list from NetSuite…' : '— Logistics equipment —'}
+              </option>
+              {(equipmentOpts && equipmentOpts.equipment || []).map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+          )}
         </div>
         <div style={{ flex: '1 1 220px' }}>
           <label style={label}>Payment terms</label>
@@ -4090,6 +4151,7 @@ export const SOWizard = ({
           ['Ship to', shipTo || '—'],
           ['Ship date', shipDate || '—'],
           ['Incoterms', incoterms || '—'],
+          ['Equipment', equipment || '—'],
           ['Currency', currency || '—'],
           ['Payment terms', customerTerms || '—'],
           // Only when there is one. An empty row here would read as a note that

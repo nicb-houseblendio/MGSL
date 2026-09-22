@@ -231,6 +231,8 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
     incoterms: draft.header.incoterms || undefined,
     // The ID is what the server prefers; the text stays for an older script.
     incotermsId: draft.header.incotermsId || undefined,
+    equipment: draft.header.equipment || undefined,
+    equipmentId: draft.header.equipmentId || undefined,
     shipDate: draft.header.shipDate || undefined,
   },
   /*
@@ -327,6 +329,22 @@ export interface ArchSalesRepDTO {
  * Suitelet degrades to exactly today's behaviour instead of breaking.
  */
 export interface ArchIncotermDTO { id: string; name: string }
+
+export interface ArchEquipmentDTO { id: string; name: string }
+
+/**
+ * The logistics equipment options, from NetSuite.
+ *
+ * ⚠️ Same three states as incoterms, treated differently in one respect: a
+ * 'failed' equipment list must NOT stop an order. The field is optional, so the
+ * wizard says the list could not be read and carries on, where a failed incoterms
+ * list blocks the step because that field is mandatory.
+ */
+export interface ArchEquipmentResult {
+  status: 'ok' | 'failed' | 'offline';
+  equipment: ArchEquipmentDTO[];
+  error: string | null;
+}
 
 export interface ArchIncotermsResult {
   /**
@@ -480,6 +498,36 @@ export const fetchOpenOrdersFromEndpoint = async (
     return { outcome: 'ok', body };
   } catch {
     return { outcome: 'failed' };
+  }
+};
+
+/**
+ * The REAL equipment options, from NetSuite, read through the same deployment as
+ * incoterms so the screen cannot offer a value the write path would refuse.
+ *
+ * 🔴 Not hardcoded, and the list itself proves why: three of its fifteen
+ * values were added on 2026-04-24 against 2025-03-26 for the rest, so MGSL grow
+ * it. That is the argument Marc-Antoine made himself when he withdrew the request
+ * to hardcode the Incoterms list on 2026-09-21.
+ */
+export const fetchEquipment = async (): Promise<ArchEquipmentResult> => {
+  const url = endpointUrl();
+  if (!url) return { status: 'offline', equipment: [], error: 'No order endpoint is configured.' };
+  try {
+    const sep = url.indexOf('?') === -1 ? '?' : '&';
+    const r = await fetch(url + sep + 'action=equipment', { method: 'GET', credentials: 'include' });
+    // A Suitelet answers 200 to everything, so branch on the payload, never r.status.
+    const body = (await r.json()) as { ok?: boolean; equipment?: ArchEquipmentDTO[]; error?: string };
+    if (!body || body.ok !== true || !Array.isArray(body.equipment)) {
+      return {
+        status: 'failed',
+        equipment: [],
+        error: (body && body.error) || 'The endpoint did not return a list.',
+      };
+    }
+    return { status: 'ok', equipment: body.equipment, error: null };
+  } catch (e) {
+    return { status: 'failed', equipment: [], error: e instanceof Error ? e.message : String(e) };
   }
 };
 

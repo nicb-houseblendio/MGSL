@@ -248,6 +248,10 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
     const H_CUSTOMER_PO = 'otherrefnum';
     const H_INCOTERMS   = 'custbody_incoterms';
     const H_SHIP_DATE   = 'custbody_mgsl_expectedshipdate';
+    /* Feedback 10 item 1. Exists in BOTH accounts as id 6218, already on the ARC
+     * sales-order form, in the Logistics group, and OPTIONAL there. Nothing had
+     * to be created in NetSuite; this is wiring only. */
+    const H_EQUIPMENT   = 'custbody_equipment';
     const H_SALES_REP   = 'custbody_sales_rep';
     const H_INSURANCE   = 'custbody_mgsl_insurancerate';
 
@@ -904,6 +908,65 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             return { incoterms: out, error: null };
         } catch (e) {
             return { incoterms: [], error: (e.name || '') + ': ' + (e.message || String(e)) };
+        }
+    };
+
+    /**
+     * The logistics equipment the screen may offer.
+     *
+     * Marc-Antoine, Feedback 10 item 1: *"Ajout du field : custbody_equipment (entre
+     * Ship date et Pmt terms)"*.
+     *
+     * 🔴 READ THROUGH getSelectOptions, NOT with a SELECT over the custom list,
+     * and there are two independent reasons.
+     *
+     * The first is the one `listIncoterms` already gives: the list and the write
+     * path must run under the same role, so the screen cannot offer a value the
+     * write path then refuses.
+     *
+     * The second is specific to this list and was measured 2026-09-22. The list is
+     * `isordered = T`, so NetSuite holds a display order, but SuiteQL exposes no
+     * sort column at all: `SELECT sortorder FROM CUSTOMLIST1443` returns a 400,
+     * *Unknown identifier*. A query could return the 15 values but not the order
+     * MGSL actually see, and getSelectOptions can.
+     *
+     * ⚠️ AND THE LIST GROWS. Three of its 15 values were added on 2026-04-24
+     * (Flat Bed, Step Back, Conestoga) against 2025-03-26 for the original twelve.
+     * Hardcoding it would rot, which is the argument Marc-Antoine himself made on
+     * the 2026-09-21 call when he WITHDREW the request to hardcode the Incoterms
+     * list: "si on met quelque chose dans le code puis plus tard on rajoute un
+     * incoterm, il faut aller dans le code". The same reasoning binds here.
+     */
+    const listEquipment = () => {
+        let rec;
+        try {
+            rec = record.create({ type: record.Type.SALES_ORDER, isDynamic: true });
+        } catch (e) {
+            return { equipment: [], error: 'Could not open a sales order to read the ' +
+                'equipment list: ' + (e.message || String(e)) };
+        }
+        try {
+            const fld = rec.getField({ fieldId: H_EQUIPMENT });
+            if (!fld) {
+                return { equipment: [], error: 'Field ' + H_EQUIPMENT + ' is not on the ' +
+                    'sales-order form this role uses, so its options cannot be read.' };
+            }
+            const opts = fld.getSelectOptions({ filter: '', operator: 'contains' }) || [];
+            const out = [];
+            for (let i = 0; i < opts.length; i++) {
+                const v = opts[i] ? opts[i].value : null;
+                const t = opts[i] ? opts[i].text : null;
+                // The blank option NetSuite prepends is not a choice. Unlike
+                // incoterms, equipment is OPTIONAL, so the wizard renders its own
+                // empty placeholder and this list carries only real values.
+                if (v === null || v === undefined) continue;
+                const id = String(v).trim();
+                if (!id || id === '0' || id === '-1') continue;
+                out.push({ id: id, name: String(t === null || t === undefined ? '' : t) });
+            }
+            return { equipment: out, error: null };
+        } catch (e) {
+            return { equipment: [], error: (e.name || '') + ': ' + (e.message || String(e)) };
         }
     };
 
@@ -4545,6 +4608,25 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 // setValue with a real Date, NOT setText. setText parses against
                 // the executing user's date-format preference, so an ISO string
                 // throws, and the old catch swallowed it at audit level — the
+                /* Feedback 10 item 1, "entre Ship date et Pmt terms".
+                 *
+                 * ⚠️ OPTIONAL, and written only when the request names it. The
+                 * field is not mandatory on the ARC form and 59 of the 60 form-386
+                 * orders in this account saved with it blank, so an order that says
+                 * nothing about equipment must save exactly as it does today.
+                 *
+                 * 🔴 NO DEFAULT ARM, unlike incoterms. The 🔴 note at
+                 * applyIncoterms records the real bug that shape caused on
+                 * SO-CWP-001371: a default fired on an APPEND and overwrote a value
+                 * the order already carried. Equipment is a per-shipment choice with
+                 * no customer-level source to fall back on, so there is nothing to
+                 * default it to and guessing one would be worse than leaving it.
+                 *
+                 * setIfPresent rather than setValue, for the reason the scar above it
+                 * gives: being selectable in SuiteQL is not proof of being writable. */
+                if (h.equipmentId) {
+                    setIfPresent(so, H_EQUIPMENT, int(h.equipmentId), 'the logistics equipment');
+                }
                 // order saved with the field silently empty.
                 const d = parseIsoDate(h.shipDate);
                 if (d) {
@@ -4727,6 +4809,25 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             if (h.customerPO) setIfPresent(so, H_CUSTOMER_PO, String(h.customerPO), 'the customer PO');
             applyIncoterms(so, h);
 
+            /* Feedback 10 item 1, "entre Ship date et Pmt terms".
+             *
+             * ⚠️ OPTIONAL, and written only when the request names it. The
+             * field is not mandatory on the ARC form and 59 of the 60 form-386
+             * orders in this account saved with it blank, so an order that says
+             * nothing about equipment must save exactly as it does today.
+             *
+             * 🔴 NO DEFAULT ARM, unlike incoterms. The 🔴 note at
+             * applyIncoterms records the real bug that shape caused on
+             * SO-CWP-001371: a default fired on an APPEND and overwrote a value
+             * the order already carried. Equipment is a per-shipment choice with
+             * no customer-level source to fall back on, so there is nothing to
+             * default it to and guessing one would be worse than leaving it.
+             *
+             * setIfPresent rather than setValue, for the reason the scar above it
+             * gives: being selectable in SuiteQL is not proof of being writable. */
+            if (h.equipmentId) {
+                setIfPresent(so, H_EQUIPMENT, int(h.equipmentId), 'the logistics equipment');
+            }
             if (h.shipDate) {
                 const d = parseIsoDate(h.shipDate);
                 if (d) {
@@ -5602,6 +5703,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         listSalesReps: listSalesReps,
         customerSalesRep: customerSalesRep,
         listIncoterms: listIncoterms,
+        listEquipment: listEquipment,
         getFxRate: getFxRate,
         getMillingRates: getMillingRates,
         // Exported for the test runner.
