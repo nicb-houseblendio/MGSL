@@ -102,7 +102,9 @@ test('suitelet: the refusal carries the role id and logs at AUDIT, not ERROR', (
   assert.match(block, /role: Number\(user\.role\)/);
 });
 
-test('suitelet: roles match by internal id OR script id, so the SDF can ship a portable script id', () => {
+// NOT "portable": a hand-made role's script id is customrole<internal id>. The
+// mechanism is right; the production preflight is pinned in the SDF test below.
+test('suitelet: roles match by internal id OR script id', () => {
   assert.match(suitelet, /const rolePermitted = \(user, allowed\) =>/);
   assert.match(suitelet, /String\(user\.roleId \|\| ''\)\.toLowerCase\(\)/);
   assert.match(suitelet, /if \(!rolePermitted\(user, allowed\)\) \{/);
@@ -136,4 +138,70 @@ test('SDF: the Logistics Coordinator role is in BOTH the parameter and the audie
   assert.match(dep, /<audslctrole>ADMINISTRATOR\|\[scriptid=customrole2183\]<\/audslctrole>/);
   assert.match(dep, /<allroles>F<\/allroles>/);
   assert.match(dep, /<runasrole>ADMINISTRATOR<\/runasrole>/);
+  // The production preflight must stay next to the value it protects.
+  assert.match(dep, /SELECT scriptid, name FROM role WHERE scriptid = 'customrole2183'/);
+});
+
+/* ── Round-2 review, 2026-09-22: honesty AFTER a write ──────────────────────
+ * A split whose adjustment POSTED and whose SO true-up then failed was answered
+ * CONFLICT (its wording matched "already") and shown as "Nothing was saved",
+ * while the line left the queue as In progress. Pinned end to end below. */
+const execLib = readFileSync(join(here,
+  '../../../src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archSplitExecute.js'), 'utf8');
+const queueLib = readFileSync(join(here,
+  '../../../src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archSplitQueue.js'), 'utf8');
+
+test('server: the post-write failure is TAGGED with posted + the adjustment id', () => {
+  assert.match(execLib, /posted\.posted = true;\s*\n\s*posted\.inventoryAdjustmentId = adjustmentId;\s*\n\s*throw posted;/);
+});
+
+test('suitelet: POSTED_INCOMPLETE is decided BEFORE the expected-refusal regex, at ERROR', () => {
+  const at = suitelet.indexOf('if (e.posted) {');
+  const rx = suitelet.indexOf('const expected = /');
+  assert.ok(at > -1 && at < rx, 'posted must be checked first');
+  const block = suitelet.slice(at, rx);
+  assert.match(block, /code: 'POSTED_INCOMPLETE'/);
+  assert.match(block, /inventoryAdjustmentId: e\.inventoryAdjustmentId/);
+  assert.match(block, /log\.error\(/);
+});
+
+test('hook: a POST with no JSON answer, or no answer, is UNKNOWN, never "nothing was written"', () => {
+  // From the POST onward: before it, "nothing was written" is true (no request left).
+  const post = hook.slice(hook.indexOf('const r = await fetch(url, {'));
+  assert.ok(post.length > 0 && hook.indexOf('const r = await fetch(url, {') > -1);
+  assert.doesNotMatch(post, /so nothing was written/);
+  assert.equal((post.match(/unknown: true/g) || []).length, 2);
+  assert.match(post, /posted: !!\(body && body\.posted\)/);
+});
+
+test('screen: posted or unknown results go to a persistent alert, never the "Nothing was saved" toast', () => {
+  assert.match(screen, /\} else if \(res\.posted\) \{/);
+  assert.match(screen, /\} else if \(res\.unknown\) \{/);
+  const alertAt = screen.indexOf('if (needsHands.length) {');
+  const nothingAt = screen.indexOf('setToast(`Nothing was saved. ${failed[0]}`)');
+  assert.ok(alertAt > -1 && alertAt < nothingAt, 'the alert must be decided before the refusal toast');
+  assert.match(screen, /saveAlert && \(\s*<div\s+role="alert"/);
+});
+
+test('screen + hook: splits claimed and never finished are shown, not silently dropped', () => {
+  assert.match(hook, /setInProgressOrders\(body\.counts\?\.inProgressOrders \|\| \[\]\)/);
+  assert.match(screen, /inProgressOrders\.length > 0 &&/);
+  // and the standing condition is no longer an ERROR on every queue load
+  const block = queueLib.slice(queueLib.indexOf('if (stuckLines.length) {'), queueLib.indexOf('if (stuckLines.length) {') + 900);
+  assert.match(block, /log\.audit\('ARCH Split Queue — splits claimed and not finished'/);
+});
+
+test('hook: a NetSuite-served page with no endpoint is an ERROR, never fixtures', () => {
+  const at = hook.indexOf('if (!url && servedByNetSuite()) {');
+  const fx = hook.indexOf('setJobs(getSplitJobs())');
+  assert.ok(at > -1 && at < fx);
+  assert.match(hook.slice(at, fx), /setSource\('error'\)/);
+});
+
+test('server: a line reserving NO bundle, or a lot of another item, is refused before anything moves', () => {
+  assert.match(execLib, /if \(!reserved\.length\) \{\s*\n\s*throw new Error\('That order line does not reserve any bundle/);
+  assert.match(execLib, /if \(lineItemId && String\(lot\.itemId\) !== lineItemId\) \{/);
+  assert.doesNotMatch(execLib, /if \(reserved\.length && !reserved\.some/);
+  // both are classified as refusals, not faults
+  assert.match(suitelet, /\|does not reserve\|different item\//);
 });

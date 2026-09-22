@@ -48,6 +48,12 @@ export interface ArchSplitQueueState {
    * as "this feature is unbuilt".
    */
   readyToBuildKnown: boolean;
+  /**
+   * Orders with a split claimed and never finished (line In progress). The
+   * server always sent this and nothing read it, so a split that posted and
+   * then failed simply vanished from the worker's queue. Each needs a human.
+   */
+  inProgressOrders: string[];
   reload: () => void;
   /**
    * Completes one bundle in NetSuite. Resolves to the server's own account of
@@ -70,6 +76,18 @@ export interface CompleteRequest {
 export interface CompleteResult {
   ok: boolean;
   error?: string;
+  /**
+   * The adjustment POSTED and a later step failed (server code
+   * POSTED_INCOMPLETE). The wood has moved; the order line needs a human.
+   * Never report this as "nothing was saved".
+   */
+  posted?: boolean;
+  /**
+   * The request went out and no readable answer came back, so whether anything
+   * was written is not known. Reload before retrying; the queue will show it as
+   * In progress if it did post.
+   */
+  unknown?: boolean;
   alreadyDone?: boolean;
   inventoryAdjustmentId?: number;
   parentLot?: string;
@@ -104,6 +122,7 @@ interface QueueResponse {
   counts?: {
     orders: number; bundles: number; lotMissing: number;
     notReadyToBuild?: number; readyToBuildKnown?: boolean;
+    inProgress?: number; inProgressOrders?: string[];
   };
   error?: string;
   code?: string;
@@ -120,6 +139,15 @@ const endpointUrl = (): string | null => {
   return cfg?.splitEndpointUrl || null;
 };
 
+/** True when a NetSuite Suitelet served this page, i.e. MCGI_CONFIG exists at all. */
+const servedByNetSuite = (): boolean =>
+  !!(window as unknown as { MCGI_CONFIG?: unknown }).MCGI_CONFIG;
+
+const ENDPOINT_MISSING_MESSAGE =
+  'This page could not find the split endpoint in NetSuite (the "MCGI SL ARCH Split Execute" ' +
+  'deployment may be missing, renamed or undeployed), so no orders are shown. An administrator ' +
+  'needs to check that deployment.';
+
 export const useArchSplitQueue = (): ArchSplitQueueState => {
   const [jobs, setJobs] = React.useState<ArchSplitJob[]>([]);
   const [source, setSource] = React.useState<SplitQueueSource>('loading');
@@ -130,6 +158,7 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
   // only a live answer of `false` means the field genuinely isn't set up yet.
   const [notReadyToBuildCount, setNotReadyToBuildCount] = React.useState(0);
   const [readyToBuildKnown, setReadyToBuildKnown] = React.useState(true);
+  const [inProgressOrders, setInProgressOrders] = React.useState<string[]>([]);
   const [nonce, setNonce] = React.useState(0);
 
   const reload = React.useCallback(() => setNonce((n) => n + 1), []);
@@ -141,9 +170,22 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
       setLotMissingCount(0);
       setNotReadyToBuildCount(0);
       setReadyToBuildKnown(true);
+      setInProgressOrders([]);
     };
 
     const url = endpointUrl();
+    // Served by the warehouse Suitelet (MCGI_CONFIG present) but with NO endpoint:
+    // the Suitelet could not resolve the split deployment. That is a live page
+    // failing, not a preview, so it must never fall through to fixtures, which
+    // is exactly the Feedback 11 symptom by another route (round-2 review).
+    if (!url && servedByNetSuite()) {
+      setJobs([]);
+      setSource('error');
+      setError(ENDPOINT_MISSING_MESSAGE);
+      setFailure('server');
+      clearCounts();
+      return;
+    }
     if (!url) {
       // Not served by the warehouse Suitelet: a local preview. Fixtures are the point here.
       setJobs(getSplitJobs());
@@ -185,6 +227,7 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
         setLotMissingCount(body.counts?.lotMissing || 0);
         setNotReadyToBuildCount(body.counts?.notReadyToBuild || 0);
         setReadyToBuildKnown(body.counts?.readyToBuildKnown !== false);
+        setInProgressOrders(body.counts?.inProgressOrders || []);
         setSource('netsuite');
         setError(null);
         setFailure(null);
@@ -220,21 +263,38 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
       });
       // The Suitelet answers 200 to everything — NetSuite gives no way to set a
       // status code — so branch on the payload, never on r.status.
+      /* No JSON back from a POST: NetSuite answered with a page. That can be an
+         audience block (nothing ran) OR a script that crashed after posting, and
+         the page does not say which. So it is UNKNOWN, never "nothing was
+         written" (round-2 review, 2026-09-22). */
       if (!isJsonContentType(r.headers.get('content-type'))) {
-        return { ok: false, error: 'NetSuite refused this request before the split script ran, so nothing was written. Reload the page; if it happens again your role is not in the deployment audience.' };
+        return {
+          ok: false, unknown: true,
+          error: 'NetSuite answered with a page instead of a result, so it is not known whether this bundle was split. Reload the page before retrying: if it posted, the order shows as In progress.',
+        };
       }
       const body = await r.json();
       if (!body || body.ok !== true) {
-        return { ok: false, error: (body && body.error) || 'The split could not be completed.' };
+        return {
+          ok: false,
+          posted: !!(body && body.posted),
+          inventoryAdjustmentId: body && body.inventoryAdjustmentId,
+          error: (body && body.error) || 'The split could not be completed.',
+        };
       }
       return body as CompleteResult;
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : 'NetSuite could not be reached.' };
+      // The request may or may not have reached NetSuite.
+      return {
+        ok: false, unknown: true,
+        error: 'No answer came back from NetSuite (' + (e instanceof Error ? e.message : 'network error') +
+          '), so it is not known whether this bundle was split. Reload the page before retrying.',
+      };
     }
   }, []);
 
   return {
     jobs, source, error, failure, lotMissingCount, notReadyToBuildCount, readyToBuildKnown,
-    reload, completeBundle,
+    inProgressOrders, reload, completeBundle,
   };
 };

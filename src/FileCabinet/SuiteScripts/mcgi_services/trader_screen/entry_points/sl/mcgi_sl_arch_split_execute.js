@@ -56,11 +56,16 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
      * Roles permitted to complete a split. Empty parameter = Administrator only.
      *
      * Each entry is an internal id (`2183`) OR a role SCRIPT id (`customrole2183`).
-     * Script ids are the portable form and what the SDF ships: an internal id is
-     * assigned per account, so `2183` in production would name whichever role
-     * happens to be created 2183rd there and hand it Administrator IA writes
-     * (production has no such role today; its newest is 2181, an MTL role). A
-     * script id travels with the role object itself.
+     *
+     * 🔴 CORRECTED in round-2 review, 2026-09-22: a script id is portable ONLY if
+     * the role was created with a chosen one. A role made by hand in the UI gets
+     * `customrole<internal id>`, so `customrole2183` is exactly as account-bound as
+     * `2183`: in production it would name whichever role is created 2183rd there
+     * (`customrole2181` is already a different role in each account). Matching by
+     * script id is still the right mechanism; the fix for production is a role
+     * with a DESCRIPTIVE script id shipped as an SDF object, or a preflight that
+     * `SELECT scriptid, name FROM role WHERE scriptid = 'customrole2183'` names the
+     * Hardwood Logistics Coordinator before any deploy of this deployment.
      */
     const permittedRoles = () => {
         const raw = runtime.getCurrentScript().getParameter({ name: 'custscript_arch_split_roles' });
@@ -218,6 +223,20 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
             // its job, and logging them as errors would bury the real failures —
             // the same mistake that once put hundreds of lines a day in the log.
             const message = e.message || String(e);
+            /* The adjustment committed and a later step failed. NOT a refusal and
+               NOT "nothing happened": its own code, the adjustment id, and ERROR,
+               because somebody has to finish the order line by hand. Checked
+               before the expected-refusal regex, which its wording would match. */
+            if (e.posted) {
+                log.error('ARCH Split Execute', 'POSTED BUT INCOMPLETE for user ' + user.id + ': ' + message);
+                return respond(context, 500, {
+                    ok: false,
+                    code: 'POSTED_INCOMPLETE',
+                    posted: true,
+                    inventoryAdjustmentId: e.inventoryAdjustmentId,
+                    error: message,
+                });
+            }
             // "That record does not exist" is NetSuite's own wording when the
             // Sales Order or lot has been deleted since the queue was drawn.
             // That is the guard working, not a system fault, so it must not be
@@ -225,7 +244,9 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
             // `different units` is the UOM guard in archSplitExecute.checkedStockUnitRate. It is
             // a data-setup refusal like the others here, so it must not log as a system
             // fault. The item-record error is logged separately, at ERROR, where it happens.
-            const expected = /no longer|already|more than|greater than|nothing on hand|cannot be negative|does not exist|different units/i.test(message);
+            // `does not reserve` and `different item` are the reservation and item
+            // guards in revalidate: refusals of a request, not system faults.
+            const expected = /no longer|already|more than|greater than|nothing on hand|cannot be negative|does not exist|different units|does not reserve|different item/i.test(message);
             if (expected) {
                 log.audit('ARCH Split Execute', 'Refused for user ' + user.id + ': ' + message);
             } else {

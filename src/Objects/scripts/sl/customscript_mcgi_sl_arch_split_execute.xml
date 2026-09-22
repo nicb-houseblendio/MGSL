@@ -32,7 +32,7 @@
       <displaywidth></displaywidth>
       <dynamicdefault></dynamicdefault>
       <fieldtype>TEXT</fieldtype>
-      <help>Example: 1057,1063. Empty is safe and means Administrator only.</help>
+      <help>Role internal ids or role script ids, comma separated, e.g. customrole2183 or 1057,1063. Empty is safe and means Administrator only.</help>
       <isformula>F</isformula>
       <ismandatory>F</ismandatory>
       <label>Permitted Split Roles</label>
@@ -80,9 +80,12 @@
       <!-- 2183 = MGSL - Hardwood Logistics Coordinator, the warehouse role
            (Feedback 11, 2026-09-22: MA opened the split screen as this role and
            was refused 8 times, "Refused: user 3308 role 2183 is not in [3]").
-           By SCRIPT id, not internal id: internal ids are assigned per account
-           (production's newest role is 2181, an MTL role, so a future 2183 there
-           would be whatever gets created next). The script accepts either form. -->
+           🔴 NOT PORTABLE AS WRITTEN. A hand-made role's script id is
+           customrole<internal id>, so customrole2183 names a different role (or
+           none) in production. BEFORE deploying this to prod, run
+           SELECT scriptid, name FROM role WHERE scriptid = 'customrole2183'
+           there; it must be the Hardwood Logistics Coordinator. Durable fix: give
+           the role a descriptive script id and ship it as an SDF object. -->
       <custscript_arch_split_roles>customrole2183</custscript_arch_split_roles>
       <allemployees>F</allemployees>
       <allpartners>F</allpartners>

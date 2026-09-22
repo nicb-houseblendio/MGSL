@@ -549,7 +549,20 @@ define([
                    'WHERE ia.transaction = ? AND tl.uniquekey = ?',
             params: [input.soId, input.lineUniqueKey],
         }).asMappedResults();
-        if (reserved.length && !reserved.some((r) => String(r.lotid) === String(input.lotId))) {
+        /*
+         * 🔴 A line that reserves NO bundle is refused too (round-2 review,
+         * 2026-09-22). This was `reserved.length && ...`, so a line with zero
+         * assignments accepted ANY lotId at that location: a crafted POST, now
+         * reachable by a real warehouse role, could cut unrelated wood. The queue
+         * already marks such lines lotMissing and the screen will not send them,
+         * so the only request this refuses is one the screen never makes. Also the
+         * F8 plan's step 2.4b, for the pre-arrival reservation case.
+         */
+        if (!reserved.length) {
+            throw new Error('That order line does not reserve any bundle, so there is nothing to split. ' +
+                            'Assign the bundle on the Sales Order first. Nothing was adjusted.');
+        }
+        if (!reserved.some((r) => String(r.lotid) === String(input.lotId))) {
             throw new Error('That order line does not reserve lot ' + input.lotId +
                             ', so splitting it would cut a bundle the order has not asked for. ' +
                             'Nothing was adjusted.');
@@ -618,6 +631,14 @@ define([
         }
 
         const lot = readLotState(input.lotId, input.locationId);
+        // The lot must be the LINE's item. readLotState never compared them, so
+        // with the reservation check above as the only link, a mis-assigned lot of
+        // another item would be split and the order trued up against it.
+        const lineItemId = String(so.getSublistValue({ sublistId: 'item', fieldId: 'item', line: lineIndex }) || '');
+        if (lineItemId && String(lot.itemId) !== lineItemId) {
+            throw new Error('Lot ' + lot.lotName + ' is a different item from that order line, so ' +
+                            'splitting it would move the wrong wood. Nothing was adjusted.');
+        }
         const rate = checkedStockUnitRate(lot.itemId);
 
         const customerStored  = toStored(input.customerQty,  rate);
@@ -1288,11 +1309,19 @@ define([
             salesOrderId = trueUpSalesOrderLine(v, input, adjustmentId, childLotName);
         } catch (e) {
             log.error('ARCH Split', 'Adjustment ' + adjustmentId + ' posted but the Sales Order true-up failed: ' + e.message);
-            throw new Error(
+            /* Tagged, not just worded (round-2 review, 2026-09-22). The Suitelet's
+               expected-refusal regex matched "already" in this text and answered
+               CONFLICT, and the screen then told the worker "Nothing was saved"
+               about a split that HAD posted, while the line dropped out of the
+               queue as In progress. `posted` + the id make it its own case. */
+            const posted = new Error(
                 'The bundle was split (adjustment ' + adjustmentId + ') but the Sales Order could not be updated: ' +
                 e.message + ' The line is marked In progress and will not run again until somebody ' +
                 'corrects it, which is deliberate: the wood has already moved.'
             );
+            posted.posted = true;
+            posted.inventoryAdjustmentId = adjustmentId;
+            throw posted;
         }
 
         /*

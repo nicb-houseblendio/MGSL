@@ -62,8 +62,9 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/file', 'N/log', 'N/url'], (serverWi
         // Where the screen reads its queue and posts completions. Resolved rather
         // than hardcoded so the same bundle works in any account, and passed in
         // rather than derived in the browser: the front end has no business
-        // guessing a Suitelet URL, and if this is absent it correctly falls back
-        // to fixtures instead of firing requests at a URL it invented.
+        // guessing a Suitelet URL. If this is absent the screen shows an ERROR
+        // (since 2026-09-22), not fixtures: a live page with invented orders is
+        // the Feedback 11 symptom.
         let splitEndpointUrl = '';
         try {
             splitEndpointUrl = url.resolveScript({
@@ -73,7 +74,7 @@ define(['N/ui/serverWidget', 'N/runtime', 'N/file', 'N/log', 'N/url'], (serverWi
             });
         } catch (e) {
             log.error('Warehouse Screen',
-                'Could not resolve the split endpoint, the screen will fall back to demo data: ' + e.message);
+                'Could not resolve the split endpoint, so the screen shows an error and no orders: ' + e.message);
         }
 
         const configObj = {

@@ -108,9 +108,13 @@ export const WarehouseSplitScreen = () => {
   // if it were real is the one outcome worth designing against.
   const {
     jobs, source, error, failure, lotMissingCount, notReadyToBuildCount, readyToBuildKnown,
-    reload, completeBundle,
+    inProgressOrders, reload, completeBundle,
   } = useArchSplitQueue();
   const [saving, setSaving] = React.useState(false);
+  /* Outcomes a toast must not carry, because a toast is gone in 3 seconds: a
+     split that POSTED and then failed, or one whose result is unknown. Each needs
+     a person to act, so it stays on screen until dismissed (round-2 review). */
+  const [saveAlert, setSaveAlert] = React.useState<string[] | null>(null);
   // Colours assigned across the whole roster, so no two traders collide.
   const traderColors = React.useMemo(() => traderColorMap(jobs.map((j) => j.trader)), [jobs]);
 
@@ -231,6 +235,8 @@ export const WarehouseSplitScreen = () => {
     setSaving(true);
     const done: string[] = [];
     const failed: string[] = [];
+    /** Posted-but-incomplete, or unknown: never "nothing was saved". */
+    const needsHands: string[] = [];
     /* The name NetSuite actually gave the CUSTOMER's piece, keyed by the parent lot.
        The client cannot derive it: the server collision-checks against sibling
        lots at write time and appends a letter, while `-1` belongs to receiving.
@@ -255,6 +261,14 @@ export const WarehouseSplitScreen = () => {
       if (res.ok) {
         if (res.childLot) childByParent.set(b.lotNo, res.childLot);
         done.push(`${res.parentLot || b.lotNo} → ${res.childLot || ''}`.trim());
+      } else if (res.posted) {
+        needsHands.push(
+          `${b.lotNo} WAS split in NetSuite (inventory adjustment ${res.inventoryAdjustmentId ?? '?'}), ` +
+          `but the sales order line was not updated. Do not split it again: an administrator has to ` +
+          `finish ${job.soNo} by hand. ${res.error || ''}`.trim(),
+        );
+      } else if (res.unknown) {
+        needsHands.push(`${b.lotNo}: ${res.error}`);
       } else failed.push(`${b.lotNo}: ${res.error}`);
     }
 
@@ -262,6 +276,10 @@ export const WarehouseSplitScreen = () => {
     setOpenJob(null);
     reload();
 
+    if (needsHands.length) {
+      setSaveAlert(needsHands.concat(failed));
+      return;
+    }
     if (failed.length && !done.length) {
       setToast(`Nothing was saved. ${failed[0]}`);
     } else if (failed.length) {
@@ -719,6 +737,45 @@ export const WarehouseSplitScreen = () => {
             : 'Demo data'}
         </span>
       </div>
+
+      {saveAlert && (
+        <div
+          role="alert"
+          style={{
+            margin: '0 16px 12px', padding: '10px 14px', borderRadius: 8,
+            background: '#FDECEC', border: '1px solid #C62828', color: '#8B1A1A',
+            fontSize: 12.5, lineHeight: 1.45, display: 'flex', gap: 12, alignItems: 'flex-start',
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            <strong>Check before doing anything else on this order.</strong>
+            {saveAlert.map((m) => <span key={m} style={{ display: 'block', marginTop: 4 }}>{m}</span>)}
+          </span>
+          <button
+            type="button"
+            onClick={() => setSaveAlert(null)}
+            style={{
+              padding: '5px 12px', borderRadius: 8, border: '1px solid #C62828', background: '#fff',
+              color: '#8B1A1A', fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {source === 'netsuite' && inProgressOrders.length > 0 && (
+        <div
+          role="status"
+          style={{
+            margin: '0 16px 12px', padding: '8px 14px', borderRadius: 8,
+            background: '#FBF1E5', border: '1px solid #D9822B', color: '#7A4100', fontSize: 12.5,
+          }}
+        >
+          <strong>{inProgressOrders.length} split{inProgressOrders.length === 1 ? '' : 's'} started and not finished</strong>{' '}
+          ({inProgressOrders.join(', ')}). The wood may already have moved, so they are not on this list to redo.
+          An administrator has to check each one.
+        </div>
+      )}
 
       {/* A failed live load says so in the page, not only in a tooltip, and
           shows no orders: invented ones sent the client looking for a

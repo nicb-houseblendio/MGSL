@@ -445,7 +445,11 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
             inProgressOrders:   stuckLines,
         };
         if (stuckLines.length) {
-            log.error('ARCH Split Queue — splits claimed and not finished',
+            // AUDIT, not ERROR, since 2026-09-22: this is a STANDING condition logged
+            // on every queue load until someone fixes the line, and the screen now
+            // shows it itself ("N splits started and not finished"). The one-off
+            // ERROR is written where it happens, when the true-up fails.
+            log.audit('ARCH Split Queue — splits claimed and not finished',
                 stuckLines.length + ' order(s) carry a line marked In progress, so a split started and ' +
                 'did not complete. The wood may already have moved. They are excluded from the queue ' +
                 'and need checking by hand: ' + stuckLines.join(', '));
