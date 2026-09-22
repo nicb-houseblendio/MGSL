@@ -443,8 +443,10 @@ define([
         const rows = query.runSuiteQL({
             query:
                 'SELECT inv.inventorynumber AS lotname, inv.item AS itemid, ' +
+                '       BUILTIN.DF(it.subsidiary) AS itemsub, ' +
                 '       inl.quantityonhand AS storedqty ' +
                 'FROM inventorynumber inv ' +
+                'JOIN item it ON it.id = inv.item ' +
                 'LEFT JOIN inventorynumberlocation inl ' +
                 '       ON inl.inventorynumber = inv.id AND inl.location = ? ' +
                 'WHERE inv.id = ?',
@@ -466,6 +468,7 @@ define([
             lotId:     lotId,
             lotName:   r.lotname,
             itemId:    r.itemid,
+            itemSubsidiary: String(r.itemsub || ''),
             storedQty: parseFloat(r.storedqty) || 0,
             siblings:  siblings,
         };
@@ -634,6 +637,14 @@ define([
         // The lot must be the LINE's item. readLotState never compared them, so
         // with the reservation check above as the only link, a mis-assigned lot of
         // another item would be split and the order trued up against it.
+        // The ARCH scope, enforced HERE too (round-2 review): only the queue
+        // filtered on it, so a crafted POST could split a CWP MTL bundle, and 32
+        // of the 38 split-flagged lines in sandbox are CWP MTL items.
+        if (lot.itemSubsidiary !== 'ARC') {
+            throw new Error('Lot ' + lot.lotName + ' is not an ARCH item (its item is in ' +
+                            (lot.itemSubsidiary || 'no subsidiary') + '), so it cannot be split ' +
+                            'from this screen. Nothing was adjusted.');
+        }
         const lineItemId = String(so.getSublistValue({ sublistId: 'item', fieldId: 'item', line: lineIndex }) || '');
         if (lineItemId && String(lot.itemId) !== lineItemId) {
             throw new Error('Lot ' + lot.lotName + ' is a different item from that order line, so ' +

@@ -49,3 +49,15 @@ test('the split queue is scoped to subsidiary ARC, like the other three sites', 
   assert.match(splitQueue, /"  AND BUILTIN\.DF\(i\.subsidiary\) = 'ARC' " \+/);
   assert.ok(splitQueue.indexOf("BUILTIN.DF(i.subsidiary) = 'ARC'") < splitQueue.indexOf("'ORDER BY t.tranid, tl.linesequencenumber'"));
 });
+
+// Feedback 14 round-2 review: the two MR tripwires that could not fire.
+test('MR tripwires: decking by CATEGORY, and ARC-location stock on an out-of-scope item', () => {
+  const mr = readFileSync(join(here, '../../../src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js'), 'utf8');
+  assert.match(mr, /AND BUILTIN\.DF\(i\.csegitem_category\) = \?',\s*\n\s*params: ARCH_SCOPE_PARAMS\.concat\(\['Decking'\]\)/);
+  assert.match(mr, /'WHERE BUILTIN\.DF\(loc\.subsidiary\) = \? ' \+/);
+  // the name-LIKE version is gone: it could never see an include-children item
+  assert.doesNotMatch(mr, /BUILTIN\.DF\(i\.subsidiary\) LIKE \?/);
+  // each has its own try, so neither can take down a rebuild
+  assert.match(mr, /Decking-category check failed \(non-fatal\)/);
+  assert.match(mr, /Shared-subsidiary check failed \(non-fatal\)/);
+});

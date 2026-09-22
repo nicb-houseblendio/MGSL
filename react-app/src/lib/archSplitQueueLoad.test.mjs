@@ -203,5 +203,8 @@ test('server: a line reserving NO bundle, or a lot of another item, is refused b
   assert.match(execLib, /if \(lineItemId && String\(lot\.itemId\) !== lineItemId\) \{/);
   assert.doesNotMatch(execLib, /if \(reserved\.length && !reserved\.some/);
   // both are classified as refusals, not faults
-  assert.match(suitelet, /\|does not reserve\|different item\//);
+  assert.match(suitelet, /\|does not reserve\|different item\|not an ARCH item\//);
+  // and the ARCH scope is enforced on the write path itself, not only in the queue
+  assert.match(execLib, /if \(lot\.itemSubsidiary !== 'ARC'\) \{/);
+  assert.match(execLib, /BUILTIN\.DF\(it\.subsidiary\) AS itemsub/);
 });

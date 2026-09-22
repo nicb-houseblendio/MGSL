@@ -246,7 +246,7 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
             // fault. The item-record error is logged separately, at ERROR, where it happens.
             // `does not reserve` and `different item` are the reservation and item
             // guards in revalidate: refusals of a request, not system faults.
-            const expected = /no longer|already|more than|greater than|nothing on hand|cannot be negative|does not exist|different units|does not reserve|different item/i.test(message);
+            const expected = /no longer|already|more than|greater than|nothing on hand|cannot be negative|does not exist|different units|does not reserve|different item|not an ARCH item/i.test(message);
             if (expected) {
                 log.audit('ARCH Split Execute', 'Refused for user ' + user.id + ': ' + message);
             } else {

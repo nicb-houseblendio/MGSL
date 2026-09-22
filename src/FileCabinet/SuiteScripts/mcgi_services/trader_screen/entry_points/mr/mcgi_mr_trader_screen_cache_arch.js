@@ -3030,7 +3030,8 @@ define([
             }
 
             /*
-             * Tripwire for an item SHARED between ARC and another subsidiary.
+             * Tripwire for ARC stock the scope cannot see (e.g. an item shared with
+             * another subsidiary).
              *
              * ARCH_SCOPE_SQL is an exact `BUILTIN.DF(i.subsidiary) = 'ARC'` since
              * 2026-09-22 (Feedback 14). An item assigned to ARC and a second
@@ -3041,17 +3042,28 @@ define([
              * exactly ARC), so this only speaks if the migration creates one.
              * AUDIT, and its own try, so it can never cost a rebuild.
              */
+            /* REWRITTEN in round-2 review: the first version looked for items whose
+             * subsidiary NAME contained ARC. The realistic sharing route, "include
+             * children" from a parent, displays as the PARENT's name (MGSL, CWP MTL),
+             * never containing ARC, so it could never fire. This asks the question
+             * that matters instead: is there stock at an ARC location on an item the
+             * scope does not match? Measured 0, against a control of 1,056. */
             try {
                 const shared = query.runSuiteQL({
-                    query: 'SELECT i.itemid FROM item i ' +
-                           'WHERE BUILTIN.DF(i.subsidiary) LIKE ? AND BUILTIN.DF(i.subsidiary) <> ?',
-                    params: ['%' + ARCH_SUBSIDIARY + '%', ARCH_SUBSIDIARY],
+                    query: 'SELECT DISTINCT i.itemid FROM inventorynumberlocation inl ' +
+                           'JOIN inventorynumber inv ON inv.id = inl.inventorynumber ' +
+                           'JOIN item i ON i.id = inv.item ' +
+                           'JOIN location loc ON loc.id = inl.location ' +
+                           'WHERE BUILTIN.DF(loc.subsidiary) = ? ' +
+                           "  AND NVL(BUILTIN.DF(i.subsidiary), '~none~') <> ? " +
+                           '  AND inl.quantityonhand <> 0',
+                    params: [ARCH_SUBSIDIARY, ARCH_SUBSIDIARY],
                 }).asMappedResults();
                 if (shared.length) {
-                    log.audit('ARCH cache — item(s) shared with another subsidiary are NOT on this screen',
-                        shared.length + ' item(s) name ' + ARCH_SUBSIDIARY + ' among several subsidiaries, ' +
-                        'and the scope matches ' + ARCH_SUBSIDIARY + ' exactly: ' +
-                        shared.slice(0, 25).map((r) => r.itemid).join(', ') +
+                    log.audit('ARCH cache — stock at ARC locations is NOT on this screen',
+                        shared.length + ' item(s) hold stock at a location in subsidiary ' + ARCH_SUBSIDIARY +
+                        ' but the item itself is not in ' + ARCH_SUBSIDIARY + ' exactly, so the scope ' +
+                        'skips them: ' + shared.slice(0, 25).map((r) => r.itemid).join(', ') +
                         (shared.length > 25 ? ' and ' + (shared.length - 25) + ' more' : '') + '.');
                 }
             } catch (e) {
@@ -3090,6 +3102,34 @@ define([
                 }
             } catch (e) {
                 log.audit('ARCH cache', 'Decking-leak check failed (non-fatal): ' + e.message);
+            }
+
+            /*
+             * The same tripwire by CATEGORY, round-2 review 2026-09-22. The name
+             * test above cannot see decking whose code has no "DEC": measured,
+             * IPE16ELO304030KD (25,800 LF at Pioneer.) and IPE5416ELO304030KD are
+             * category Decking, stocked in Linear Feet, in ARC, on the grid and
+             * orderable. Its OWN query and try, so a custom segment that N/query
+             * refuses costs only this check, never the name test above.
+             * Warns; the explicit list stays the gate (that is a client decision).
+             */
+            try {
+                const byCategory = query.runSuiteQL({
+                    query: 'SELECT i.itemid FROM item i ' +
+                           'WHERE ' + ARCH_SCOPE_SQL + ' ' +
+                           '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
+                           '  AND BUILTIN.DF(i.csegitem_category) = ?',
+                    params: ARCH_SCOPE_PARAMS.concat(['Decking']),
+                }).asMappedResults();
+                if (byCategory.length) {
+                    log.audit('ARCH cache — DECKING BY CATEGORY ON THIS SCREEN',
+                        byCategory.length + ' item(s) in ARCH scope are category Decking but are not in ' +
+                        'NON_ARCH_DEPARTMENT_ITEMS, so their stock IS shown and can be sold here: ' +
+                        byCategory.map((r) => r.itemid).join(', ') + '. Add them to the list in all ' +
+                        'three copies (this MR, the service, archOrderCreate) if decking stays off ARCH.');
+                }
+            } catch (e) {
+                log.audit('ARCH cache', 'Decking-category check failed (non-fatal): ' + e.message);
             }
 
             const holds = loadActiveHolds();
