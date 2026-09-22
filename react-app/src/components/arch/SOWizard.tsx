@@ -41,6 +41,7 @@ import {
   fmtPct,
   marginColor,
   planingOptions,
+  STANDARD_DRESSED,
 } from '@/lib/archOrderPricing';
 import {
   INCOTERMS,
@@ -124,7 +125,8 @@ const STEPS: { key: StepKey; label: string }[] = [
   { key: 'review', label: 'Review' },
 ];
 
-const CUT_LENGTHS = ["6'", "7'", "8'", "10'", "12'", "14'", "16'"];
+// 9' added 2026-09-22 (Feedback 15): « on ajoute le 9 pieds », confirmed kept in code.
+const CUT_LENGTHS = ["6'", "7'", "8'", "9'", "10'", "12'", "14'", "16'"];
 
 interface SOWizardProps {
   open: boolean;
@@ -242,12 +244,16 @@ const td: React.CSSProperties = {
 };
 
 /**
- * Bulk dressing choices, in the order planingOptions emits them: it maps
- * [nominal x 0.96, x 0.875, x 0.80] to fractions, so index 0 is the lightest
- * pass. Labelled by depth of cut rather than by a fraction because the
- * resulting size differs per lot — 4/4 dresses to 15/16, 8/4 to 1-15/16.
+ * Bulk dressing: ONE choice, the standard size, resolved per line from its own
+ * thickness (4/4 to 13/16, 5/4 to 1-1/16, 6/4 to 1-5/16, 8/4 to 1-3/4). Feedback
+ * 15, Marc-Antoine: « le apply all ne suit pas les mêmes options ». It offered
+ * Light / Standard / Heavy "≈% off" levels from the retired placeholder formula
+ * while every line offered a size, so the two controls disagreed. Index 0 of
+ * planingOptions is the standard, which is what applyBulkReman writes.
  */
-const BULK_PLANING_LEVELS = ['Light (≈4% off)', 'Standard (≈12.5% off)', 'Heavy (≈20% off)'];
+const BULK_PLANING_LEVELS = [
+  `Standard size (${Object.entries(STANDARD_DRESSED).map(([k, v]) => `${k} → ${v}"`).join(', ')})`,
+];
 
 /**
  * 🔴 PLACEHOLDER, like every other rate here. Flags a sell price under

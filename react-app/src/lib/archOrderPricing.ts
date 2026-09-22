@@ -442,45 +442,44 @@ export const marginColor = (pct: number): string =>
   pct < 0 ? '#B22222' : pct < MARGIN_WARN_PCT ? '#B36B16' : '#1E6B47';
 
 /**
- * Dressed-thickness options for a nominal quarter thickness.
+ * The STANDARD dressed thickness per nominal thickness, Feedback 15.
  *
- * ⚠️ PLACEHOLDER FORMULA, same provenance as the rates. Three notional passes —
- * light (~4% off), standard (~12.5%), heavy (~20%) — proportional to nominal
- * thickness. Real dressing tables have to come from the client.
+ * Andrei to Marc-Antoine, 2026-09-22 10:39: « On met le standard pour les
+ * épaisseurs, 4/4 donne 13/16, 5/4 donne 1-1/16, 6/4 donne 1-5/16, 8/4 donne
+ * 1-3/4, et on ajoute le 9 pieds. » Marc-Antoine, 5:44 PM: « Garde comme ça dans
+ * le code pour l'instant. » So the list lives HERE, and this table is it.
  *
- * ⚠️ AND `CUSTOMLISTPLANNAGE` IS NOT THE MISSING SOURCE, though the name says
- * otherwise. Measured 2026-09-21: it holds `RO - ROUGH`, `S3S - PLANNE 3 FACES`,
- * `S4S - PLANNE 4 FACES` and `S4S PW`, and it feeds `CUSTITEM_PLANNAGE`, an ITEM
- * field. That is a SURFACING SPEC describing what a SKU is, not a target
- * thickness for an order. Wiring it here would put four surfacing codes where a
- * fraction belongs. Feedback 9 item 11 asked where these come from; the answer is
- * this function, and the fix is the client's real dressing table.
+ * It replaces a placeholder formula (nominal x 0.96 / 0.875 / 0.80) that was
+ * still running when that message went out: 5/4 offered 1-3/16, 1-1/8 and 1,
+ * never the 1-1/16 he was told, and the rest sat beside the formula's guesses.
+ *
+ * ⚠️ 10/4 and 12/4 exist on the grid (3 rows) and have NO standard yet; they
+ * offer "Other…" only, where the trader types the size. Asked of MA.
+ *
+ * ⚠️ `CUSTOMLISTPLANNAGE` is still NOT the source: it holds surfacing codes (RO,
+ * S3S, S4S) for the ITEM, not a target thickness for an order.
+ */
+export const STANDARD_DRESSED: Readonly<Record<string, string>> = Object.freeze({
+  '4/4': '13/16',
+  '5/4': '1-1/16',
+  '6/4': '1-5/16',
+  '8/4': '1-3/4',
+});
+
+/** The nominal quarter thickness named in a thickness or a description ("Sapele 6/4 KD"). */
+export const nominalQuarters = (thickness: string): string | null => {
+  // NOT anchored: called with the DESCRIPTION as a fallback. The trailing guard is
+  // `(?!\d)`, NOT `\b` (a literal backspace byte once hid here; see history).
+  const m = String(thickness || '').match(/(\d+)\s*\/\s*4(?!\d)/);
+  return m ? `${parseInt(m[1], 10)}/4` : null;
+};
+
+/**
+ * Dressed-thickness options for a line: its standard size, then "other" (the
+ * trader types one). A thickness with no standard offers "other" only.
  */
 export const planingOptions = (thickness: string): string[] => {
-  // NOT anchored. This is called with the item DESCRIPTION ("Sapele 6/4 KD") as
-  // a fallback, not always a bare thickness, so `^` never matched and every item
-  // silently fell back to nominal = 1 — offering 4/4 dressing options on 8/4 stock.
-  //
-  // ⚠️ The trailing guard is `(?!\d)`, NOT `\b`. An earlier edit put a literal
-  // BACKSPACE byte (0x08) here instead of the two-character escape: the regex
-  // then demanded a backspace after the "4" and could never match, so this stayed
-  // broken while *looking* correct — terminals and diffs render 0x08 invisibly,
-  // and it is a valid regex, so tsc and review both passed it. Caught only by
-  // clicking the deployed UI. Do not "simplify" this back to \b.
-  const m = String(thickness || '').match(/(\d+)\s*\/\s*4(?!\d)/);
-  const nominal = m ? parseInt(m[1], 10) / 4 : 1;
-  const toFraction = (v: number): string => {
-    if (!(v > 0)) return '0';
-    const denom = 16;
-    const n = Math.round(v * denom);
-    const whole = Math.floor(n / denom);
-    const num = n % denom;
-    if (num === 0) return String(whole);
-    const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
-    const d = gcd(num, denom);
-    const frac = `${num / d}/${denom / d}`;
-    return whole > 0 ? `${whole}-${frac}` : frac;
-  };
-  const targets = [nominal * 0.96, nominal * 0.875, nominal * 0.8].map(toFraction);
-  return [...Array.from(new Set(targets)), 'other'];
+  const q = nominalQuarters(thickness);
+  const std = q ? STANDARD_DRESSED[q] : undefined;
+  return std ? [std, 'other'] : ['other'];
 };
