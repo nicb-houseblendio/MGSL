@@ -212,8 +212,20 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // The cache booked a SHIPPED sales-order assignment as the lot's `reserve`,
   // so lot 315643-7 carried reserve 300 on an order that had shipped (IF1208)
   // and been billed (INV-CWP-1236) while the row's Reserved column read 0.
+  // Whitespace-tolerant since 2026-09-22: step 0.2 split the purchase-order
+  // side into onOrder and inTransit, so those two lines gained a trailing
+  // factor and an alignment space. The INTENT is unchanged and is what this
+  // pins: an assignment is scaled by the line's open share, never booked whole.
   ok('cache MR: a lot assignment is scaled by the line-level open share',
-    /reserve \+= assigned \* openShare/.test(mr) && /onOrder \+= assigned \* openShare/.test(mr));
+    /reserve\s*\+= assigned \* openShare/.test(mr)
+    && /onOrder\s*\+= assigned \* openShare/.test(mr)
+    && /inTransit\s*\+= assigned \* openShare/.test(mr));
+  ok('🔴 cache MR: per-lot inTransit is WRITTEN, which is what makes the cell clickable',
+    /bucket\.lots\[r\.lotno\]\.inTransit \+=/.test(mr));
+  ok('cache MR: and the lot splits on the SAME ratio as the row, not its own rule',
+    /const waterShare = open > 0 \? water \/ open : 0;/.test(mr)
+    && /openShare \* waterShare/.test(mr)
+    && /openShare \* \(1 - waterShare\)/.test(mr));
   ok('cache MR: the unconditional whole-assignment reserve is gone',
     !/\.reserve \+= assigned;/.test(mr));
   // Updated 2026-09-10: readyToBuild moved from a hardcoded literal 0 to an

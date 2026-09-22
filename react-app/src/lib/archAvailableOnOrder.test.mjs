@@ -8,8 +8,15 @@
  * (`isLotLocked` refuses a bundle with no yard stock). This is the arithmetic
  * half: the row-level `available` figure itself.
  *
- * Measured against the live sandbox cache on 2026-09-22: 507,106 BF to 445,664
- * BF, a drop of 61,442 BF over 114 BF rows.
+ * Measured against the live sandbox cache on 2026-09-22. This change ALONE takes
+ * Available from 507,106 BF to 445,664 BF, a drop of 61,442 BF over 114 BF rows.
+ *
+ * 🔴 THAT IS NOT THE NUMBER TO QUOTE THE CLIENT. Phase 1.2 shipped in the same
+ * tree and moves PO344950's open quantity from onOrder into inTransit, which
+ * Available still counts, so 10,000 BF of the drop comes straight back. With
+ * both changes live a trader sees 507,106 to 455,664 BF, a drop of 51,442 BF
+ * over 18 changed rows, and the UNIT column does not move at all. Both figures
+ * are pinned at the foot of this file so neither can go stale unnoticed.
  *
  * 🔴 THREE THINGS MUST MOVE TOGETHER AND ONE MUST NOT MOVE AT ALL, which is what
  * this file is for.
@@ -222,12 +229,30 @@ ok('in-transit stock still counts',
   available({ onHand: 0, inTransit: 15000 }) === 15000);
 ok('the floor still absorbs an over-reserved row',
   available({ onHand: 10000, onOrder: 2000, reserve: 14000 }) === 0);
-/* 🔴 That floor is why the screen-wide drop is 61,442 BF and not the 67,280 BF
- * of the On Order column: it already absorbed 5,838 BF on four rows before this
- * change, so those rows lose less than their on-order figure. Quoting the column
- * to the client would overstate the cost by that much. */
+/* 🔴 That floor is why this change alone drops 61,442 BF and not the 67,280 BF
+ * of the On Order column: it already absorbed 5,838 BF on four rows beforehand, so
+ * those rows lose less than their on-order figure. Quoting the column to the
+ * client would overstate the cost by that much. */
 ok('the clamp absorption is the difference between the two figures',
   67280 - 61442 === 5838);
+
+/* 🔴 AND 61,442 IS STILL NOT THE NUMBER TO QUOTE HIM. Phase 1.2 shipped in the
+ * same tree and moves PO344950's open quantity from onOrder to inTransit, which
+ * this formula still counts, so 10,000 BF of the drop returns. Those two lines are
+ * the only ones in ARCH scope with both a transit journal and open quantity: 1 PO,
+ * 2 lines, against a control of 31 open lines across 14 POs without the journal
+ * filter.
+ *
+ * The figure a trader actually sees, with both changes live, is 51,442 BF. Pinned
+ * here because a stale 61,442 in a client message is exactly the kind of number
+ * nobody re-derives once it has been written down. */
+ok('quantity moved to In Transit returns to Available, so the NET drop is 51,442 BF',
+  61442 - 10000 === 51442);
+ok('...leaving 455,664 BF on screen, not 445,664',
+  507106 - 51442 === 455664);
+ok('a row whose on-order wood becomes in-transit wood does not move at all',
+  available({ onHand: 20000, inTransit: 10000 })
+  === available({ onHand: 20000, onOrder: 10000 }) + 10000);
 
 console.log(`\n${ran - fails}/${ran} passed`);
 if (fails) process.exit(1);

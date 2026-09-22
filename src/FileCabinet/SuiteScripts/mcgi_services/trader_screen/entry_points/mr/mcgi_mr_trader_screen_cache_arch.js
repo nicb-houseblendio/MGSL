@@ -2314,6 +2314,39 @@ define([
             const billed   = Math.abs(num(r.billed));
             const open     = Math.max(0, ordered - moved);
 
+            /* ── How much of this PO line is on a boat ────────────────────────
+             *
+             * Computed HERE rather than inside the per-line guard below, because
+             * the LOT attribution further down needs the same split and runs once
+             * per assignment row rather than once per line. The row TOTALS still
+             * accumulate inside the guard; only the arithmetic moved.
+             *
+             * Reasoning, measurements and the MTL comparison are in the block
+             * comment at the totals, which is the first place a reader looks.
+             *
+             * Zero for a sales order: `transitje` and `billed` are properties of a
+             * PURCHASE order and mean nothing on the sale side, where the split is
+             * reserve versus readyToBuild instead.
+             */
+            // Trim() because an unset body field arrives as null, as '' and as a
+            // string of spaces depending on the dialect, and all three mean unset.
+            const hasTransitJE = String(r.transitje || '').trim() !== '';
+            const isAgency = String(r.agencyflag || 'F').toUpperCase() === 'T';
+            const water = isSale ? 0 : (hasTransitJE
+                // On the boat, all of it. `open` is already max(0, ordered - moved).
+                ? open
+                : (isAgency
+                    // Agency, no journal: not in transit at all, per MTL's filter.
+                    ? 0
+                    // Supplier invoiced ahead of delivery. Clamped, because an
+                    // over-billing supplier must not push In Transit above open.
+                    : Math.max(0, Math.min(billed, ordered) - moved)));
+            /* 🔴 THE LOT MUST SPLIT THE SAME WAY THE ROW DOES, or the drill-down
+             * disagrees with the column above it. `water <= open` by construction,
+             * so this is in [0, 1] and the two lot buckets sum to the lot's whole
+             * open share exactly as the row's two sum to `open`. */
+            const waterShare = open > 0 ? water / open : 0;
+
             // ── Line-level figures ONCE per line, never per assignment row ──
             const lineKey = String(r.tranid) + '#' + String(r.lineno);
             if (!seenLines[lineKey]) {
@@ -2396,34 +2429,14 @@ define([
                      * not a live gap, and adopting it is a scope decision nobody has
                      * made.
                      */
-                    // Ownership taken: NetSuite posted the in-transit journal against
-                    // this PO. Trim() because an empty body field arrives as '' and as
-                    // a string of spaces depending on the dialect, and both mean unset.
-                    const hasTransitJE = String(r.transitje || '').trim() !== '';
-                    const isAgency = String(r.agencyflag || 'F').toUpperCase() === 'T';
-                    const water = hasTransitJE
-                        // On the boat, all of it. `open` is already max(0, ordered - moved).
-                        ? open
-                        : (isAgency
-                            // Agency, no journal: not in transit at all, per MTL's filter.
-                            ? 0
-                            // Supplier invoiced ahead of delivery. Clamped, because an
-                            // over-billing supplier must not push In Transit above open.
-                            : Math.max(0, Math.min(billed, ordered) - moved));
+                    // `water` and `waterShare` are computed above the per-line guard,
+                    // because the lot attribution needs them and runs per assignment.
                     bucket.totals.inTransit += water;
                     // Ordered from a supplier and not yet on the water.
                     bucket.totals.onOrder += Math.max(0, open - water);
                 }
             }
 
-            /* ⚠️ PER-LOT inTransit IS STILL NOT WRITTEN, which is build step 0.2.
-             *
-             * The row total above is now correct, but the attribution below never
-             * assigns inTransit to a bundle, so the whole figure lands in
-             * `unattributed` and the In Transit drill-down opens on a gap reason
-             * rather than on the bundles. 1.2 makes the column read a real number;
-             * 0.2 is what makes it clickable. They are two changes, not one.
-             */
             /* ── Lot attribution, only where an assignment exists ─────────────
              *
              * 🔴 ONLY THE OPEN SHARE OF THE LINE REACHES THE LOT.
@@ -2483,7 +2496,29 @@ define([
                         bucket.lots[r.lotno].reserve += assigned * openShare;
                     }
                 } else {
-                    bucket.lots[r.lotno].onOrder += assigned * openShare;
+                    /* 🔴 STEP 0.2, 2026-09-22: THE LOT'S OPEN SHARE SPLITS BETWEEN
+                     * ON ORDER AND IN TRANSIT, exactly as the row total does.
+                     *
+                     * Until today this line booked the WHOLE open share as the lot's
+                     * `onOrder` regardless of whether the wood was on a boat, so
+                     * 100% of every row's In Transit landed in `unattributed`, the
+                     * cell read 0, and a 0 cell is not clickable. That is the
+                     * client's "sont comme hardcoded, il n'y a pas de details".
+                     *
+                     * 🔴 THE SPLIT MUST USE THE SAME RATIO AS THE ROW. If the lot
+                     * used one rule and the row another, the drill-down would add up
+                     * to a different number than the column the trader clicked,
+                     * which is the header-says-X-detail-says-Y shape this file has
+                     * already been bitten by twice. `waterShare` is that one ratio,
+                     * computed once beside the row split.
+                     *
+                     * The two lines below sum to `assigned * openShare`, the lot's
+                     * whole open share, for every input, because waterShare is in
+                     * [0, 1]. So this reapportions what was already attributed and
+                     * invents no wood.
+                     */
+                    bucket.lots[r.lotno].inTransit += assigned * openShare * waterShare;
+                    bucket.lots[r.lotno].onOrder   += assigned * openShare * (1 - waterShare);
                     /* ── WHERE IT IS COMING FROM AND WHEN, added 2026-09-17 ───
                      *
                      * Marc-Antoine, 2026-09-17: « On order : aucun PO n'apparaît.
@@ -3795,11 +3830,28 @@ define([
                  * visibility, in transit is sellable. Dropping both would be tidier and
                  * would be wrong.
                  *
-                 * Measured against the live sandbox cache on 2026-09-22: Available goes
-                 * from 507,106 BF to 445,664 BF, a drop of 61,442 BF over 114 BF rows,
-                 * 20 of which change and 14 of which land at zero. Those 14 stay on the
-                 * screen: the row filter in `trader_screen_service_arch.js` sums the RAW
-                 * buckets and keeps `onOrder`, so nothing disappears.
+                 * Measured against the live sandbox cache on 2026-09-22. THIS CHANGE ON
+                 * ITS OWN takes Available from 507,106 BF to 445,664 BF, a drop of
+                 * 61,442 BF over 114 BF rows, 20 of which change and 14 of which land at
+                 * zero. Those 14 stay on the screen: the row filter in
+                 * `trader_screen_service_arch.js` sums the RAW buckets and keeps
+                 * `onOrder`, so nothing disappears.
+                 *
+                 * 🔴 BUT THAT IS NOT THE NUMBER TO QUOTE HIM, because phase 1.2
+                 * shipped in the same tree. 1.2 moves PO344950's open quantity out of
+                 * `onOrder` and into `inTransit`, and this formula still counts
+                 * `inTransit`, so 10,000 BF of the drop comes straight back:
+                 *
+                 *   PUR44KDSRT    @ Prevost (PBF)  -10,000 BF then +10,000 BF   net 0
+                 *   AMM44OVLLRGKD @ Prevost (PBF)  -15,000 Unit then +15,000 Unit net 0
+                 *
+                 * Those are the only two lines in ARCH scope with both a transit journal
+                 * and open quantity: 1 PO, 2 lines, against a control of 31 open lines
+                 * across 14 POs without the journal filter. So with both changes live
+                 * the trader sees **507,106 to 455,664 BF, a drop of 51,442 BF** over 18
+                 * changed rows, and the UNIT column does not move at all. The 14 rows
+                 * that land at zero are unchanged either way, because neither Prevost
+                 * row was one of them.
                  *
                  * ⚠️ THE DROP IS NOT THE ON ORDER COLUMN. That column reads 67,280 BF.
                  * The `Math.max(0, ...)` below already absorbs 5,838 BF of it on four
