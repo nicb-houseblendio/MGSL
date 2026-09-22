@@ -2,7 +2,7 @@ import * as React from 'react';
 import { formatQty, formatCostPerUnit, displaySuffix, unitLabel } from '@/lib/archUom';
 import { isLotLocked, lockReason, lotQuantity, commitmentOn, lotCostDisplay } from '@/lib/archLots';
 import { bucketLots, bucketGap, bucketGapReason, notSourcedNote } from '@/lib/archBuckets';
-import { lotAllocation, lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
+import { lotAllocation, formatShortDate } from '@/lib/archFixtures';
 import {
   orderSource,
   ordersFor,
@@ -477,12 +477,17 @@ export const ArchLotTable = ({
         },
       ];
     }
-    if (bucket === 'inTransit') {
-      return [
-        { label: 'PO #', mono: true, render: (l) => l.po || '—' },
-        { label: 'ETA', render: (l) => formatShortDate(lotIncomingInfo(l.lotNo, 'inTransit').eta) },
-      ];
-    }
+    /* 🔴 THE In Transit ARM WAS DELETED 2026-09-22 rather than fixed.
+     *
+     * It read `ETA: formatShortDate(lotIncomingInfo(l.lotNo, 'inTransit').eta)`,
+     * an unconditional call into the seeded demo generator, with no check of
+     * `lot.incoming` and no banner. In Transit now routes to `ArchPOListView`
+     * from `DetailDrawerARCH`, which resolves the real PO, supplier and ETA and
+     * labels invented values when it has to fall back.
+     *
+     * Removing it rather than repairing it is deliberate: while this arm exists,
+     * one routing change puts a fabricated arrival date back on live wood, and
+     * the tab was empty for so long that nobody would notice. */
     return [];
   }, [bucket]);
 

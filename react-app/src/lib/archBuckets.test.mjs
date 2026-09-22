@@ -142,8 +142,14 @@ const row = (o) => ({
   });
   ok('on-order gap: 2,950 BF of Available is not attributable to a bundle',
     bucketGap(r, 'available') === 2950, bucketGap(r, 'available'));
-  ok('on-order gap: the reason names purchase orders',
-    /purchase[- ]order/i.test(bucketGapReason('available') || ''), bucketGapReason('available'));
+  // Rewritten 2026-09-22. Neither on-order nor in-transit wood reaches Available
+  // any more, so a reason naming purchase orders would send a trader looking for
+  // a cause that cannot apply. What is left is a claim the row carries that names
+  // no bundle.
+  ok('available gap: the reason names an unattributed claim, not a purchase order',
+    /names no bundle/i.test(bucketGapReason('available') || '')
+    && !/purchase[- ]order/i.test(bucketGapReason('available') || ''),
+    bucketGapReason('available'));
   ok('on-order gap: On Hand itself reconciles',
     bucketGap(r, 'onHand') === 0, bucketGap(r, 'onHand'));
 }

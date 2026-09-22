@@ -27,10 +27,21 @@
  * archAvailableOnOrder, for the same reason: a copy tests the copy.
  *
  * ⚠️ This proves the ARITHMETIC and the QUERY TEXT. It cannot prove the query
- * RUNS: BUCKET_SQL executes through N/query, and the two new columns were
- * verified only through REST SuiteQL, which is a different dialect. A body field
- * readable in one has been unreadable in the other on this account before.
- * Confirming that needs a deploy and a look at the post-deploy meta.
+ * RUNS: the cache executes through N/query and both fields were verified only
+ * through REST SuiteQL, which is a different dialect. A body field readable in
+ * one has been unreadable in the other on this account before. Confirming that
+ * needs a deploy and a look at the post-deploy log line.
+ *
+ * 🔴 WHAT CHANGED ON 2026-09-22, and it is the reason that risk is now survivable:
+ * the two fields were briefly added as COLUMNS OF BUCKET_SQL. SuiteQL fails an
+ * entire query on one unknown column, and BUCKET_SQL feeds On Hand, Reserved,
+ * Outbound, On Order and In Transit together, so an unreadable field would not
+ * have emptied In Transit, it would have zeroed five buckets while `onHand`
+ * survived from LOT_SQL. Available would have RISEN by 35,985 BF with every
+ * bundle unlocked, and the shrink guard, a row-count ratio test, accepts that
+ * payload. They are now read in their own isolated, chunked, try/caught query,
+ * exactly as `custbody_arch_ready_to_build` already was, so the same failure
+ * degrades In Transit to the pre-1.2 billing rule and says so in the log.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -59,16 +70,20 @@ const ok = (label, got, want) => {
   }
 };
 
-/* ── 1. the two columns the rule cannot work without ─────────────────────── */
-console.log('BUCKET_SQL selects what the rule reads');
+/* ── 1. what BUCKET_SQL must and must not carry ──────────────────────────── */
+console.log('what BUCKET_SQL still filters on');
 
-ok('the take-ownership journal is selected',
-  /custbody_po_intransit_journal\s+AS transitje/.test(stripped), true);
-ok('the agency flag is selected',
-  /custbody_po_is_agency\s+AS agencyflag/.test(stripped), true);
-ok('both are read off the TRANSACTION, not the line (header grain)',
-  /t\.custbody_po_intransit_journal/.test(stripped)
-  && /t\.custbody_po_is_agency/.test(stripped), true);
+/* 🔴 THE TWO FLAGS ARE NOT COLUMNS OF BUCKET_SQL, and must never become columns
+ * of it again. They were, for about six hours on 2026-09-22, and the file itself
+ * forbids it 200 lines below: SuiteQL fails an ENTIRE query on one unknown
+ * column, and this query feeds five buckets. The measured consequence was not a
+ * quiet zero but Available RISING by 35,985 BF with every bundle unlocked, and a
+ * shrink guard that accepts the poisoned payload over the good one.
+ *
+ * The positive assertions about the isolated query live in section 2, after the
+ * slice that reads it. */
+ok('🔴 the journal is not selected by BUCKET_SQL',
+  /BUCKET_SQL[\s\S]*?custbody_po_intransit_journal[\s\S]*?t\.type IN/.test(stripped), false);
 /* 🔴 The staleness filter this whole bucket leans on. Without it, quantity on a
  * closed PO line counts as in transit forever. MTL, IND and ARCH all carry it;
  * it is NOT an ARCH addition, contrary to what the plan said. */
@@ -95,7 +110,13 @@ const slice = (from, to, what) => {
   return stripped.slice(at, close + 1);
 };
 
-const splitSrc = slice('const hasTransitJE', 'const waterShare', 'the split');
+/* ⚠️ Anchored on `const poFlags`, not `const hasTransitJE`. The journal and
+ * agency flags stopped being BUCKET_SQL columns on 2026-09-22 and are now read
+ * from an isolated query into a `transitByPo` map, so the first statement of the
+ * block is the map lookup. Slicing from `hasTransitJE` compiles a body that
+ * references an undeclared `poFlags`. */
+const mapSrc = slice('const poIdsForTransit', 'transitSourced = false', 'the transit map builder');
+const splitSrc = slice('const poFlags', 'const waterShare', 'the split');
 const totalsSrc = slice('bucket.totals.inTransit +=', 'bucket.totals.onOrder', 'the row totals');
 const lotSrc = slice('bucket.lots[r.lotno].inTransit +=', 'bucket.lots[r.lotno].onOrder', 'the lot attribution');
 
@@ -105,22 +126,56 @@ ok('🔴 the lot attribution writes inTransit at all, which is step 0.2',
   /bucket\.lots\[r\.lotno\]\.inTransit/.test(stripped), true);
 ok('the split is computed ONCE and shared, not restated per scope',
   (stripped.match(/const water =/g) || []).length, 1);
+/* 🔴 The flags must be read off the map, never off the BUCKET_SQL row. Putting
+ * them back as columns fails the whole query on one unknown column and takes
+ * five buckets down together. */
+ok('🔴 the flags come from the map, not from the query row',
+  /transitByPo\[String\(r\.tranid\)\]/.test(stripped) && !/r\.transitje/.test(stripped), true);
+
+/* 🔴 The isolated read that replaced the two BUCKET_SQL columns. */
+ok('the journal is read in its own query over transaction ids',
+  /FROM transaction /.test(mapSrc) && /WHERE id IN \(/.test(mapSrc), true);
+ok('both fields come from that query',
+  /custbody_po_intransit_journal/.test(mapSrc) && /custbody_po_is_agency/.test(mapSrc), true);
+ok('the order status rides along on it, rather than costing a second read',
+  /status\s+AS tstatus/.test(mapSrc), true);
+ok('a failed read degrades to a flag rather than throwing the run away',
+  /transitSourced = false/.test(mapSrc), true);
+ok('the map builder normalises case rather than comparing raw',
+  /toUpperCase\(\)/.test(mapSrc), true);
+ok('the map builder defaults the agency flag rather than testing a bare value',
+  /agencyflag \|\| 'F'/.test(mapSrc), true);
+ok('the map builder trims the journal, so whitespace cannot read as set',
+  /transitje \|\| ''\)\.trim\(\)/.test(mapSrc), true);
 
 const block = splitSrc + totalsSrc;
-const split = new Function('r', 'open', 'billed', 'ordered', 'moved', 'isSale', 'bucket', block);
+const split = new Function(
+  'r', 'open', 'billed', 'ordered', 'moved', 'isSale', 'bucket', 'transitByPo', block);
+/* `absent` models the PO missing from the map entirely, which is what a failed
+ * transit read leaves behind: every line degrades to the billing rule. */
+const mapFor = (o) => (o.absent ? {} : {
+  '7': {
+    // .trim() mirrors the shipped map builder, which is where the trim now
+    // happens. An unset body field arrives as null, as '' and as spaces
+    // depending on the dialect, and Oracle stores '' as NULL.
+    je: String(o.je || '').trim(),
+    agency: String(o.agency || 'F').toUpperCase(),
+    closed: !!o.closed,
+  },
+});
 const run = (o) => {
   const ordered = o.ordered;
   const moved = o.moved || 0;
   const billed = o.billed || 0;
   const open = Math.max(0, ordered - moved);
   const bucket = { totals: { inTransit: 0, onOrder: 0 } };
-  split({ transitje: o.je, agencyflag: o.agency }, open, billed, ordered, moved, !!o.isSale, bucket);
+  split({ tranid: '7' }, open, billed, ordered, moved, !!o.isSale, bucket, mapFor(o));
   return bucket.totals;
 };
 
 /* The lot side, same split, executed out of the same file. */
 const lotFn = new Function(
-  'r', 'open', 'billed', 'ordered', 'moved', 'isSale', 'bucket', 'assigned', 'openShare',
+  'r', 'open', 'billed', 'ordered', 'moved', 'isSale', 'bucket', 'assigned', 'openShare', 'transitByPo',
   splitSrc + lotSrc,
 );
 const runLot = (o) => {
@@ -130,8 +185,8 @@ const runLot = (o) => {
   const open = Math.max(0, ordered - moved);
   const openShare = ordered > 0 ? open / ordered : 0;
   const bucket = { lots: { L1: { reserve: 0, outbound: 0, onOrder: 0, inTransit: 0, readyToBuild: 0 } } };
-  lotFn({ transitje: o.je, agencyflag: o.agency, lotno: 'L1' },
-    open, billed, ordered, moved, !!o.isSale, bucket, o.assigned, openShare);
+  lotFn({ tranid: '7', lotno: 'L1' },
+    open, billed, ordered, moved, !!o.isSale, bucket, o.assigned, openShare, mapFor(o));
   return { inTransit: bucket.lots.L1.inTransit, onOrder: bucket.lots.L1.onOrder };
 };
 
@@ -172,12 +227,52 @@ ok('billed and received equally: nothing on the water',
 /* ── 4. the journal branch ignores billing, which is the whole point ─────── */
 console.log('the journal branch ignores billing');
 
-ok('journal set and over-billed: still just the open quantity, never more',
-  run({ ordered: 100, moved: 0, billed: 250 }),
+/* 🔴 THESE TWO ARE THE ONLY ASSERTIONS THAT SEPARATE THE BRANCHES, and until
+ * 2026-09-22 neither existed. The headline case here used to omit `je`
+ * entirely, making it a byte-identical duplicate of the billing case above, so
+ * NO test in the repo exercised journal-set AND billed > 0. A mutation making
+ * the journal branch billing-aware survived all seven suites. It is invisible
+ * today only because every ARCH PO line reads billed 0, and this very commit
+ * calls a supplier invoicing ahead of delivery "the normal case, not an exotic
+ * one" for imported hardwood.
+ *
+ * The discriminating shape is a journal line whose billing is BELOW the open
+ * quantity: the billing rule would give min(60,100) - 30 = 30, the journal rule
+ * gives the whole 70. */
+ok('🔴 journal set and billed BELOW open: billing is ignored, all 70 is on the water',
+  run({ ordered: 100, moved: 30, billed: 60, je: '1' }),
+  { inTransit: 70, onOrder: 0 });
+ok('🔴 journal set and billed above open: still just the open quantity, never more',
+  run({ ordered: 100, moved: 0, billed: 250, je: '1' }),
   { inTransit: 100, onOrder: 0 });
-ok('journal set, part received: only the open remainder is on the water',
+ok('  and the billing rule on the SAME inputs would have given 30, not 70',
+  Math.max(0, Math.min(60, 100) - 30), 30);
+ok('journal set, part received, nothing billed: only the open remainder',
   run({ ordered: 100, moved: 30, billed: 0, je: '1' }),
   { inTransit: 70, onOrder: 0 });
+
+/* ── a closed order, and a PO the transit read never returned ────────────── */
+console.log('a closed order contributes nothing');
+/* On this account a closed PO does NOT flip its lines to isclosed='T' (29 such
+ * lines on 5 status-H POs in each environment), and BUCKET_SQL filters only the
+ * LINE. Before the journal branch that was harmless, because a stale PO only
+ * inflated On Order. It would now be sellable in-transit wood forever. */
+ok('🔴 a closed order books nothing to In Transit even with a journal',
+  run({ ordered: 100, moved: 0, billed: 0, je: '1', closed: true }),
+  { inTransit: 0, onOrder: 100 });
+ok('...and nothing to the lot either',
+  runLot({ ordered: 100, moved: 0, billed: 0, je: '1', closed: true, assigned: 100 }),
+  { inTransit: 0, onOrder: 100 });
+
+console.log('a PO missing from the transit map degrades to the billing rule');
+/* This is what a failed isolated read leaves behind, and it must be exactly the
+ * behaviour that shipped before phase 1.2 rather than a new third state. */
+ok('an absent PO falls back to billed-not-received',
+  run({ ordered: 100, moved: 0, billed: 60, absent: true }),
+  { inTransit: 60, onOrder: 40 });
+ok('...and with nothing billed it is all still on order, as before phase 1.2',
+  run({ ordered: 100, moved: 0, billed: 0, je: '1', absent: true }),
+  { inTransit: 0, onOrder: 100 });
 ok('a journal id of 0 as a string still counts as set',
   run({ ordered: 10, moved: 0, billed: 0, je: '0' }).inTransit, 10);
 
@@ -217,10 +312,16 @@ ok('an absent agency flag behaves as F',
 ok('lowercase t is still agency, so a dialect change cannot flip the meaning',
   run({ ordered: 100, moved: 0, billed: 60, agency: 't' }),
   { inTransit: 0, onOrder: 100 });
-ok('the code normalises case rather than comparing raw',
-  /toUpperCase\(\)/.test(block), true);
-ok('and defaults the flag rather than testing a bare value',
-  /agencyflag \|\| 'F'/.test(block), true);
+/* ⚠️ These three moved to the MAP BUILDER on 2026-09-22. The flags stopped
+ * being BUCKET_SQL columns, so the trim, the case fold and the default now happen
+ * once where `transitByPo` is built rather than per row in the split. Asserting
+ * them against `block` would report them missing when they are simply upstream. */
+ok('the map builder normalises case rather than comparing raw',
+  /toUpperCase\(\)/.test(mapSrc), true);
+ok('the map builder defaults the flag rather than testing a bare value',
+  /agencyflag \|\| 'F'/.test(mapSrc), true);
+ok('the map builder trims the journal, so whitespace cannot read as set',
+  /transitje \|\| ''\)\.trim\(\)/.test(mapSrc), true);
 
 /* ── 6. 🔴 the invariant that keeps Available honest ─────────────────────── */
 console.log('inTransit and onOrder stay disjoint and sum to open');

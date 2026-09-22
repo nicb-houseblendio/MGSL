@@ -894,6 +894,22 @@ define([
     let readyToBuildSourced = true;
 
     /**
+     * Whether BUCKET_SQL itself ran, and whether the take-ownership journal was
+     * readable. Both default TRUE and both are only ever set false, same
+     * contract as `readyToBuildSourced` above, so a lost flag can never claim a
+     * bucket was sourced on a run where the read failed.
+     *
+     * 🔴 `bucketsSourced` is the one that matters. When BUCKET_SQL throws,
+     * five totals read 0 while `onHand` still arrives from LOT_SQL, so Available
+     * OVER-reports and every bundle unlocks. Before 2026-09-22 nothing recorded
+     * that, and META still answered `bucketsEmpty: []`, which the screen renders
+     * as a plain "Live" badge: a structural zero presented as a measured one,
+     * which is the single thing `archBuckets.ts` exists to prevent.
+     */
+    let bucketsSourced = true;
+    let transitSourced = true;
+
+    /**
      * One computation, called from BOTH `summarize` META writes, so they
      * cannot drift the way the memory note on this file warns about ("both
      * META writes carry it"). `bucketsBuilt`/`bucketsEmpty` name six buckets
@@ -904,12 +920,36 @@ define([
      * `readyToBuildSourced`: this is only ever called from `summarize`, where
      * that variable is a re-initialised `true` and means nothing. See its note.
      */
-    const bucketsMeta = (sourced) => ({
-        bucketsBuilt: sourced
-            ? ['onHand', 'reserve', 'outbound', 'onOrder', 'inTransit', 'readyToBuild']
-            : ['onHand', 'reserve', 'outbound', 'onOrder', 'inTransit'],
-        bucketsEmpty: sourced ? [] : ['readyToBuild'],
-    });
+    const bucketsMeta = (sourced, bktSourced) => {
+        /* 🔴 A TOTAL BUCKET FAILURE USED TO REPORT A HEALTHY RUN.
+         *
+         * `bktSourced` false means BUCKET_SQL itself threw. Five totals then read
+         * 0 while `onHand` still arrives from LOT_SQL, so `available` becomes
+         * `onHand` with nothing subtracted: the screen OVER-reports and every
+         * bundle reads unlocked. Measured on the live payload, +35,985 BF over 19
+         * rows and 26 bundles released.
+         *
+         * Until 2026-09-22 this returned `bucketsEmpty: []` on that run, which
+         * `App.tsx` renders as a plain "Live" badge. That is exactly the
+         * structural-zero-presented-as-measured failure the note above forbids,
+         * and the one thing `archBuckets.ts` exists to prevent.
+         *
+         * `onHand` is NOT listed as empty either way: it comes from LOT_SQL and
+         * survives a bucket failure. Saying otherwise would send a trader looking
+         * for a problem in the one column that is still right. */
+        if (bktSourced === false) {
+            return {
+                bucketsBuilt: ['onHand'],
+                bucketsEmpty: ['reserve', 'outbound', 'onOrder', 'inTransit', 'readyToBuild'],
+            };
+        }
+        return {
+            bucketsBuilt: sourced
+                ? ['onHand', 'reserve', 'outbound', 'onOrder', 'inTransit', 'readyToBuild']
+                : ['onHand', 'reserve', 'outbound', 'onOrder', 'inTransit'],
+            bucketsEmpty: sourced ? [] : ['readyToBuild'],
+        };
+    };
 
     /**
      * The run's Ready to Build sourcing, folded back out of the summary rows.
@@ -921,6 +961,9 @@ define([
      * META at all).
      */
     const rtbSourcedFrom = (rows) => rows.every((r) => r.rtbSourced !== false);
+
+    /** Same contract as `rtbSourcedFrom`, for BUCKET_SQL as a whole. */
+    const bktSourcedFrom = (rows) => rows.every((r) => r.bktSourced !== false);
 
     const num = (v) => {
         const n = parseFloat(v);
@@ -1968,27 +2011,26 @@ define([
         '  tl.quantity            AS qty, ' +
         '  tl.quantityshiprecv    AS shiprecv, ' +
         '  tl.quantitybilled      AS billed, ' +
-        /* 🔴 THE TAKE-OWNERSHIP JOURNAL, WITHOUT WHICH IN TRANSIT CANNOT WORK ──
+        /* 🔴 THE TAKE-OWNERSHIP JOURNAL IS **NOT** SELECTED HERE, ON PURPOSE.
          *
-         * Added 2026-09-22 for phase 1.2. Neither field appeared anywhere in an
-         * ARCH file before this, which is why open quantity on a PO whose
-         * ownership has been taken landed in On Order and In Transit read 0 on
-         * every row of the screen.
+         * It was, for about six hours on 2026-09-22, and that was a mistake this
+         * file had already written down 200 lines below: a custom body field in
+         * BUCKET_SQL takes down ON HAND, RESERVED, OUTBOUND, ON ORDER and IN
+         * TRANSIT together the moment the column is unreadable, because SuiteQL
+         * fails the whole query on one unknown column.
          *
-         * Marc-Antoine, 2026-09-17 Slack: "Techniquement on le met en transit une
-         * fois qu'il est sur le bateau", and he confirmed ARCH follows the same
-         * rule the other screens use.
+         * And the failure is not a quiet zero. The catch below returns {}, so
+         * every pair falls back to blank totals while `onHand` survives from
+         * LOT_SQL, which makes `available` equal `onHand` with NOTHING subtracted.
+         * Measured against the live payload: Available RISES by 35,985 BF over 19
+         * rows, 26 bundles lose their commitment so `isLotLocked` releases wood
+         * another customer has already bought, and the shrink guard is a row-count
+         * ratio test that accepts the poisoned payload rather than refusing it.
          *
-         * ⚠️ BOTH ARE HEADER-GRAIN, functionally dependent on t.id, so they add
-         * no rows and change no fan-out. Same argument as the item columns below.
-         *
-         * ⚠️ REST SuiteQL reads both of these fine, measured 2026-09-22 in both
-         * accounts. This query runs through N/query, which is a DIFFERENT DIALECT,
-         * and a body field readable in one has been unreadable in the other before
-         * now. Check the post-deploy meta for a bucket error before trusting the
-         * first In Transit figure this produces. */
-        '  t.custbody_po_intransit_journal AS transitje, ' +
-        '  t.custbody_po_is_agency         AS agencyflag, ' +
+         * So both fields are read in their own isolated, chunked query below,
+         * exactly as `custbody_arch_ready_to_build` is. An unreadable column then
+         * degrades In Transit to 0, which is precisely the behaviour that existed
+         * before phase 1.2, and META is told so. */
         /* ── WHICH ORDER, added 2026-09-08 ────────────────────────────────────
          * Five header columns on a query that was ALREADY reading this exact row
          * for its quantity. They cost no extra query, no extra join and no extra
@@ -2159,9 +2201,22 @@ define([
                 params: ARCH_SCOPE_PARAMS,
             }).asMappedResults();
         } catch (e) {
-            // Buckets missing is bad; On Hand being wrong is worse. Return empty
-            // and let the run continue with the buckets at zero, loudly.
-            log.error('ARCH cache buckets — COULD NOT LOAD, all four buckets will read 0',
+            /* 🔴 THIS IS NOT A QUIET UNDER-REPORT, AND THE OLD MESSAGE SAID IT WAS.
+             *
+             * It read "all four buckets will read 0". It is FIVE, and the
+             * consequence is the opposite of a shortfall: with every commitment at
+             * zero and `onHand` still arriving from LOT_SQL, `available` becomes
+             * `onHand` with nothing subtracted, so the screen OVER-reports and
+             * every bundle reads unlocked. Measured on the live payload: +35,985 BF
+             * over 19 rows and 26 bundles released for sale.
+             *
+             * Someone paged at 3am acts on this one line. It has to say the thing
+             * that is dangerous, the way the holds catch below already does. */
+            bucketsSourced = false;
+            log.error('ARCH cache buckets — COULD NOT LOAD. Reserved, Outbound, On Order, ' +
+                'In Transit and Ready to Build ALL read 0, so AVAILABLE OVER-REPORTS by the ' +
+                'reserved quantity and every bundle reads unlocked. Do not sell off this ' +
+                'screen until a clean run.',
                 e.name + ': ' + e.message);
             return {};
         }
@@ -2272,6 +2327,83 @@ define([
             }
         }
 
+        /* ── The take-ownership journal, its own query over the PO ids this run
+         * already found ─────────────────────────────────────────────────────
+         *
+         * Same shape, and the same reason, as the Ready to Build read above. What
+         * puts ARCH wood in transit is the journal NetSuite posts when MGSL take
+         * ownership, not billing: every hardwood PO line reads quantitybilled 0
+         * because they take ownership rather than being invoiced ahead of
+         * delivery, so the old billing rule left In Transit at 0 on every row of
+         * the screen.
+         *
+         * ⚠️ `status` rides along on the same query. BUCKET_SQL filters
+         * `tl.isclosed = 'F'` and nothing filters the ORDER, and on this account a
+         * closed PO does not flip its lines to isclosed 'T' (29 such lines on 5
+         * status-H POs in each environment). Before phase 1.2 that was harmless,
+         * because a stale PO only inflated On Order, which is not sellable. The
+         * journal branch makes it In Transit, so it has to be closed off here.
+         *
+         * ⚠️ SPLIT THE STATUS ON ':'. REST SuiteQL returns 'H' and N/query
+         * returns 'PurchOrd:H' for the same row. This query runs through N/query,
+         * so an IN-list built and proven with sql.mjs would match nothing here.
+         */
+        const poIdsForTransit = [];
+        const seenPoId = {};
+        rows.forEach((r) => {
+            const id = parseInt(r.tranid, 10);
+            if (String(r.trantype) !== 'PurchOrd') return;
+            if (id > 0 && !seenPoId[id]) { seenPoId[id] = true; poIdsForTransit.push(id); }
+        });
+        let transitByPo = {};
+        for (let i = 0; i < poIdsForTransit.length; i += FLAG_CHUNK) {
+            const slice = poIdsForTransit.slice(i, i + FLAG_CHUNK);
+            try {
+                const poRows = query.runSuiteQL({
+                    query: 'SELECT id AS tranid, ' +
+                           '       custbody_po_intransit_journal AS transitje, ' +
+                           '       custbody_po_is_agency         AS agencyflag, ' +
+                           '       status                        AS tstatus ' +
+                           'FROM transaction ' +
+                           'WHERE id IN (' + slice.map(() => '?').join(',') + ')',
+                    params: slice,
+                }).asMappedResults();
+                poRows.forEach((p) => {
+                    transitByPo[String(p.tranid)] = {
+                        je:     String(p.transitje || '').trim(),
+                        agency: String(p.agencyflag || 'F').toUpperCase(),
+                        closed: String(p.tstatus || '').split(':').pop() === 'H',
+                    };
+                });
+            } catch (e) {
+                /* ALL OR NOTHING, same rule as Ready to Build. A half-read map
+                 * would put some of a run's wood in In Transit and the rest in On
+                 * Order with no way to say which, and `transitSourced` is one
+                 * boolean with no way to say "half". Degrading the whole run to
+                 * the old billing rule is exactly the behaviour that shipped
+                 * before phase 1.2, so it is a known state rather than a new one. */
+                transitSourced = false;
+                transitByPo = {};
+                log.audit('ARCH cache — take-ownership journal not readable (non-fatal, ' +
+                    'In Transit falls back to billed-not-received): ' + (e.name || '') + ': ' +
+                    (e.message || String(e)));
+                break;
+            }
+        }
+        /* 🔴 PROVE THE COLUMN ANSWERED, because an unreadable field and a field
+         * nobody has set look identical from here: a NULL column is simply ABSENT
+         * from the mapped row, so `'transitje' in row` cannot tell them apart. The
+         * counts below are the only thing that can. Sandbox on 2026-09-22 must read
+         * 4 distinct journals over the PO ids in scope; a run reporting 0 journals
+         * with a non-zero PO count is the column failing, not the data. */
+        var transitJournalCount = 0;
+        for (var poKey in transitByPo) {
+            if (transitByPo[poKey] && transitByPo[poKey].je !== '') transitJournalCount++;
+        }
+        log.audit('ARCH cache — take-ownership journals read',
+            poIdsForTransit.length + ' PO(s) in scope, ' + transitJournalCount +
+            ' carrying a journal, sourced=' + transitSourced);
+
         rows.forEach((r) => {
             const key = String(r.itemid) + '__' + String(r.locationid);
             if (!byPair[key]) {
@@ -2328,11 +2460,15 @@ define([
              * PURCHASE order and mean nothing on the sale side, where the split is
              * reserve versus readyToBuild instead.
              */
-            // Trim() because an unset body field arrives as null, as '' and as a
-            // string of spaces depending on the dialect, and all three mean unset.
-            const hasTransitJE = String(r.transitje || '').trim() !== '';
-            const isAgency = String(r.agencyflag || 'F').toUpperCase() === 'T';
-            const water = isSale ? 0 : (hasTransitJE
+            /* Read off the map built above, never off `r`: these are no longer
+             * columns of BUCKET_SQL and must never become columns of it again. */
+            const poFlags = transitByPo[String(r.tranid)] || null;
+            const hasTransitJE = !!(poFlags && poFlags.je !== '');
+            const isAgency = !!(poFlags && poFlags.agency === 'T');
+            // A closed order keeps open lines on this account, so without this a
+            // cancelled container would read as sellable in-transit wood forever.
+            const closedOrder = !!(poFlags && poFlags.closed);
+            const water = (isSale || closedOrder) ? 0 : (hasTransitJE
                 // On the boat, all of it. `open` is already max(0, ordered - moved).
                 ? open
                 : (isAgency
@@ -2950,6 +3086,7 @@ define([
                         // Carried per pair only so it can cross into `summarize`.
                         // See `readyToBuildSourced`.
                         rtbSourced:   readyToBuildSourced,
+                        bktSourced:   bucketsSourced,
                         lots:         [],
                     };
                 }
@@ -3063,6 +3200,7 @@ define([
                     // reaches `summarize` by the same route and must not be the
                     // row that reports the run as sourced when it was not.
                     rtbSourced:   readyToBuildSourced,
+                    bktSourced:   bucketsSourced,
                     // No on-hand lot exists at this location. An EMPTY array, not a
                     // fabricated lot: the drill-down correctly shows nothing on hand,
                     // and bucketGap on the front end names the quantity no bundle claims.
@@ -3747,6 +3885,7 @@ define([
                  * read as "no claim" rather than as unsourced.
                  */
                 rtbSourced:   pair.rtbSourced !== false,
+                bktSourced:   pair.bktSourced !== false,
                 onHand:       onHand,
                 // Row totals come from the ORDER LINES, not from summing the
                 // lots. A line without an inventory-detail assignment is real
@@ -3826,9 +3965,26 @@ define([
                  * termes de volume, mais je peux juste commencer a le vendre quand il
                  * est in transit a peu pres." He has said it twice.
                  *
-                 * `inTransit` STAYS in the sum. That is the same sentence: on order is
-                 * visibility, in transit is sellable. Dropping both would be tidier and
-                 * would be wrong.
+                 * 🔴 `inTransit` CAME OUT TOO, later the same day, and the first
+                 * version of this comment argued the opposite. It said in transit stays
+                 * because the client calls it sellable. He does, and THIS CODE CANNOT
+                 * SELL IT: `isLotLocked` refuses any bundle whose `hasArrived` is false,
+                 * `hasArrived` is `onHand > 0`, and `archOrderCreate` compares the wanted
+                 * quantity against `inventorynumberlocation.quantityonhand`, which is 0
+                 * on wood that is still on a boat. So counting it here reproduced the
+                 * exact defect this change exists to remove, on the same two bundles,
+                 * one bucket along.
+                 *
+                 * AVAILABLE MEANS WHAT THE ORDER ENDPOINT WILL ACCEPT. Nothing else is
+                 * honest, because a trader builds an order from this number.
+                 *
+                 * The wood is not hidden: In Transit has its own column, its own total
+                 * and, since step 0.2, its own drill-down listing the bundles by name.
+                 * It becomes part of Available when phases 2.4 to 2.6 give it a
+                 * reservation the server honours, and NOT before. Changing this line
+                 * without changing `hasArrived`, `isSellableView` and the oversell gate
+                 * together puts the screen back into the state that produced a wrong
+                 * number.
                  *
                  * Measured against the live sandbox cache on 2026-09-22. THIS CHANGE ON
                  * ITS OWN takes Available from 507,106 BF to 445,664 BF, a drop of
@@ -3837,21 +3993,13 @@ define([
                  * `trader_screen_service_arch.js` sums the RAW buckets and keeps
                  * `onOrder`, so nothing disappears.
                  *
-                 * 🔴 BUT THAT IS NOT THE NUMBER TO QUOTE HIM, because phase 1.2
-                 * shipped in the same tree. 1.2 moves PO344950's open quantity out of
-                 * `onOrder` and into `inTransit`, and this formula still counts
-                 * `inTransit`, so 10,000 BF of the drop comes straight back:
-                 *
-                 *   PUR44KDSRT    @ Prevost (PBF)  -10,000 BF then +10,000 BF   net 0
-                 *   AMM44OVLLRGKD @ Prevost (PBF)  -15,000 Unit then +15,000 Unit net 0
-                 *
-                 * Those are the only two lines in ARCH scope with both a transit journal
-                 * and open quantity: 1 PO, 2 lines, against a control of 31 open lines
-                 * across 14 POs without the journal filter. So with both changes live
-                 * the trader sees **507,106 to 455,664 BF, a drop of 51,442 BF** over 18
-                 * changed rows, and the UNIT column does not move at all. The 14 rows
-                 * that land at zero are unchanged either way, because neither Prevost
-                 * row was one of them.
+                 * ⚠️ AN EARLIER VERSION OF THIS NOTE SAID THE NET WAS 51,442 BF,
+                 * because phase 1.2 moved PO344950's quantity into `inTransit` and this
+                 * formula still counted it. `inTransit` is now out of the formula too,
+                 * so that offset is gone and the figure is the full one again:
+                 * **507,106 to 445,664 BF, a drop of 61,442 BF**, plus **15,000 Unit**
+                 * off AMM44OVLLRGKD @ Prevost (PBF), which the earlier note wrongly said
+                 * would not move at all.
                  *
                  * ⚠️ THE DROP IS NOT THE ON ORDER COLUMN. That column reads 67,280 BF.
                  * The `Math.max(0, ...)` below already absorbs 5,838 BF of it on four
@@ -3867,7 +4015,7 @@ define([
                  * outright, so this brings the screen into line with an order endpoint
                  * that would have rejected the sale anyway.
                  */
-                available:    Math.max(0, onHand + inTransit
+                available:    Math.max(0, onHand
                                           - reserve - readyToBuild
                                           - held),
                 // NULL, NOT ZERO, when nothing could be costed. 0 renders as
@@ -3979,6 +4127,7 @@ define([
              * different execution and that variable is a re-initialised `true`
              * here. See its note for what that used to make META claim. */
             const rtbSourced = rtbSourcedFrom(rows);
+            const bktSourced = bktSourcedFrom(rows);
 
             /*
              * Stage errors, counted for one reason: to tell a run that produced
@@ -4231,8 +4380,8 @@ define([
                         lastAttempt:        new Date().toISOString(),
                         rowCount:           existingCount,
                         lastRunMode:        'FULL',
-                        bucketsBuilt:       bucketsMeta(rtbSourced).bucketsBuilt,
-                        bucketsEmpty:       bucketsMeta(rtbSourced).bucketsEmpty,
+                        bucketsBuilt:       bucketsMeta(rtbSourced, bktSourced).bucketsBuilt,
+                        bucketsEmpty:       bucketsMeta(rtbSourced, bktSourced).bucketsEmpty,
                         skippedLotCount:    skippedLots.length,
                         recoveredCount:     recoveredCount,
                         unrecoverableCount: unrecoverableCount,
@@ -4303,8 +4452,8 @@ define([
                     // can tell the user which columns are real. See `bucketsMeta`:
                     // readyToBuild moves from Empty to Built the first run after
                     // the field exists and can be read.
-                    bucketsBuilt: bucketsMeta(rtbSourced).bucketsBuilt,
-                    bucketsEmpty: bucketsMeta(rtbSourced).bucketsEmpty,
+                    bucketsBuilt: bucketsMeta(rtbSourced, bktSourced).bucketsBuilt,
+                    bucketsEmpty: bucketsMeta(rtbSourced, bktSourced).bucketsEmpty,
                     // Non-zero means the On Hand figures on screen are LOW: these
                     // lots exist but could not be converted to display units.
                     skippedLotCount: skippedLots.length,
@@ -4335,6 +4484,7 @@ define([
 
             log.audit('ARCH cache summarize',
                 rows.length + ' summary row(s), ' + payloadBytes + ' bytes. ' +
+                (bktSourced ? '' : 'BUCKETS NOT SOURCED, Available over-reports. ') +
                 (rtbSourced ? 'readyToBuild sourced. ' : 'readyToBuild not sourced. ') +
                 costedRows + '/' + rows.length + ' row(s) costed from book ' + costBookId() + '.' +
                 (existingCount ? ' Replaced ' + existingCount + ' cached row(s).' : '') +

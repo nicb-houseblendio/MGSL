@@ -252,8 +252,28 @@ export const DetailDrawerARCH = ({
 
         {/* Body */}
         <div style={{ overflowY: 'auto', flex: 1 }}>
-          {activeBucket === 'onOrder' ? (
-            <ArchPOListView row={row} uom={uom} />
+          {/* 🔴 IN TRANSIT ROUTES HERE TOO, since 2026-09-22.
+            *
+            * It used to fall through to `ArchLotTable`, whose In Transit lead
+            * columns called `lotIncomingInfo` unconditionally. That is the seeded
+            * demo PRNG in `archFixtures.ts`, so the ETA was INVENTED, with no
+            * banner saying so, printed beside a real bundle number and a real PO.
+            * It moved every day the page loaded, because the generator offsets
+            * from today. The cache has carried the true ETA and supplier on these
+            * lots since step 1.4; nothing read them on this tab.
+            *
+            * It never showed, because In Transit read 0 on every row until phase
+            * 1.2, so the tab was always empty. The commit that populated In Transit
+            * is what would have switched the fixture on, over the top of the
+            * client's own "il n'y a pas de details".
+            *
+            * `ArchPOListView` already handled both buckets: it takes
+            * `bucket?: 'onOrder' | 'inTransit'`, filters the lots by it, resolves
+            * the real values with an explicit invented fallback, and renders the
+            * "sample data" banner when any lot lacks `incoming`. It was simply
+            * never called with it. */}
+          {activeBucket === 'onOrder' || activeBucket === 'inTransit' ? (
+            <ArchPOListView row={row} uom={uom} bucket={activeBucket} />
           ) : (
             <ArchLotTable
               row={row}

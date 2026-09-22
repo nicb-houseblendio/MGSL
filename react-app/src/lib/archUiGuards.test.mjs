@@ -233,10 +233,20 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // — see `loadBuckets`. Pin the shape that keeps it safe to deploy before the
   // field exists (never joined into BUCKET_SQL, which the other five buckets
   // depend on) rather than the old hardcoded absence.
+  // Comment-stripped copy. Every rule in this file is about CODE; the source
+  // explains each rule in prose directly above the code that implements it, so a
+  // raw text search matches the explanation and answers the wrong question.
+  const mrCode = mr.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^[ 	]*\/\/.*$/gm, ' ');
   ok('cache MR: readyToBuild is read from its own isolated, try/caught query',
     /custbody_arch_ready_to_build = 'T'/.test(mr) && /readyToBuildSourced = false/.test(mr));
+  /* ⚠️ Comments stripped first, added 2026-09-22. This matched the word in a
+   * COMMENT inside BUCKET_SQL that explains why the field is kept out of it, and
+   * reported the rule broken by the very text describing the rule. Third time
+   * this exact trap has fired in this repo: assert on code, never on prose. */
   ok('cache MR: that query is never joined into BUCKET_SQL itself',
-    !(mr.match(/const BUCKET_SQL =[\s\S]*?;/) || [''])[0].includes('custbody_arch_ready_to_build'));
+    !(mrCode.match(/const BUCKET_SQL =[\s\S]*?;/) || [''])[0].includes('custbody_arch_ready_to_build'));
+  ok('🔴 cache MR: and neither is the transit journal',
+    !(mrCode.match(/const BUCKET_SQL =[\s\S]*?;/) || [''])[0].includes('custbody_po_intransit_journal'));
   ok('cache MR: no unconditional hardcoded readyToBuild literal survives',
     !/readyToBuild:\s*0,/.test(mr));
 
@@ -249,20 +259,41 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // Updated 2026-09-10: `readyToBuild` is a real subtracted variable now, not
   // the literal `0 /*readyToBuild*/` placeholder — it is sold wood one stage
   // further along, and must be excluded from Available the same as `reserve`.
-  // ⚠️ Updated 2026-09-22: `onOrder` left this formula. On order is visibility
-  // only and in transit is sellable, which is the client's own distinction.
-  ok('cache MR: available subtracts neither outbound nor on order',
-    /available:\s*Math\.max\(0, onHand \+ inTransit\s*\n\s*- reserve - readyToBuild\s*\n\s*- held\)/.test(mr));
-  ok('🔴 cache MR: and onOrder is genuinely gone from it, not merely reordered',
+  // ⚠️ Updated twice on 2026-09-22. `onOrder` left first, then `inTransit`:
+  // the client calls in-transit wood sellable but this code refuses it at three
+  // gates, so counting it offered volume no trader could order. Available now
+  // means what the order endpoint will accept.
+  ok('cache MR: available is on-hand net of claims, nothing incoming',
+    /available:\s*Math\.max\(0, onHand\s*\n\s*- reserve - readyToBuild\s*\n\s*- held\)/.test(mr));
+  ok('🔴 cache MR: onOrder is genuinely gone, not merely reordered',
     !/available:\s*Math\.max\([^)]*onOrder/.test(mr));
-  ok('cache MR: the removal is documented against the client quote, not silent',
-    /ON ORDER IS NOT AVAILABLE/.test(mr) && /in transit a peu pres/.test(mr));
+  ok('🔴 cache MR: and inTransit too',
+    !/available:\s*Math\.max\([^)]*inTransit/.test(mr));
+  ok('cache MR: both removals are documented against the client quote, not silent',
+    /ON ORDER IS NOT AVAILABLE/.test(mr) && /in transit a peu pres/.test(mr)
+    && /AVAILABLE MEANS WHAT THE ORDER ENDPOINT WILL ACCEPT/.test(mr));
+  /* 🔴 The two new columns must NEVER go back into BUCKET_SQL. A custom body
+   * field there fails the whole query on one unknown column, and that query feeds
+   * five buckets; the measured result is Available RISING by 35,985 BF with every
+   * bundle unlocked, and a shrink guard that accepts the poisoned payload. */
+  ok('🔴 cache MR: the transit journal is NOT a BUCKET_SQL column',
+    !/BUCKET_SQL[\s\S]*?custbody_po_intransit_journal[\s\S]*?t\.type IN/.test(mr));
+  ok('cache MR: it is read in its own isolated, chunked query instead',
+    /transitByPo/.test(mr) && /FROM transaction ' \+/.test(mr));
+  ok('cache MR: that read degrades to a flag rather than taking the run down',
+    /transitSourced = false/.test(mr));
+  ok('cache MR: and a failed BUCKET_SQL now records that it failed',
+    /bucketsSourced = false/.test(mr));
+  ok('cache MR: the catch names the real consequence, which is an OVER-report',
+    /OVER-REPORTS/.test(mr));
+  ok('🔴 cache MR: a closed order contributes no in-transit wood',
+    /closedOrder/.test(mr) && /split\(':'\)/.test(mr));
   ok('cache MR: and the removal is documented, not silent',
     /`outbound` IS NOT SUBTRACTED/.test(mr));
   ok('grid: the Outbound header does not claim a second deduction',
     /NOT deducted from Available a second time/.test(t));
   ok('contract: types\\/arch.ts states the corrected formula',
-    /onHand \+ inTransit − reserve − readyToBuild − held/.test(src('types/arch.ts')));
+    /onHand − reserve − readyToBuild − held/.test(src('types/arch.ts')));
   ok('contract: and it records that onOrder was removed rather than just omitting it',
     /CORRECTED 2026-09-22/.test(src('types/arch.ts')));
 
@@ -323,8 +354,21 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
    * `true`. Read there, it made META claim the bucket was sourced on exactly
    * the runs where the read had failed. It travels in the rows instead.
    */
-  ok('cache MR: bucketsMeta takes the flag as an ARGUMENT, so summarize cannot read the module copy',
-    /const bucketsMeta = \(sourced\) => \(\{/.test(mrArch) && !/bucketsMeta\(\)/.test(mrArch));
+  // Widened 2026-09-22: bucketsMeta gained a second flag, `bktSourced`, for
+  // BUCKET_SQL as a whole. The rule is unchanged and is what this pins: both
+  // flags arrive as ARGUMENTS and neither is read off the module copy.
+  ok('cache MR: bucketsMeta takes the flags as ARGUMENTS, so summarize cannot read the module copy',
+    /const bucketsMeta = \(sourced, bktSourced\) =>/.test(mrArch) && !/bucketsMeta\(\)/.test(mrArch));
+  /* 🔴 A run where BUCKET_SQL itself threw must not report a healthy screen.
+   * Five totals read 0 while onHand survives from LOT_SQL, so Available
+   * OVER-reports and every bundle unlocks; META used to answer bucketsEmpty: []
+   * on exactly that run, which App.tsx renders as a plain "Live" badge. */
+  ok('🔴 cache MR: a failed BUCKET_SQL empties the five buckets it feeds, and only those',
+    /bucketsEmpty: \['reserve', 'outbound', 'onOrder', 'inTransit', 'readyToBuild'\]/.test(mrArch)
+    && /bucketsBuilt: \['onHand'\]/.test(mrArch));
+  ok('cache MR: and summarize derives THAT flag from the rows too, not from the module copy',
+    /const bktSourced = bktSourcedFrom\(rows\);/.test(mrArch)
+    && /bktSourced:   pair\.bktSourced !== false/.test(mrArch));
   ok('cache MR: summarize derives it from the ROWS that crossed the stage boundary',
     /const rtbSourced = rtbSourcedFrom\(rows\);/.test(mrArch));
   ok('cache MR: and both pair constructors plus the reduce row carry it across',

@@ -28,9 +28,12 @@ const rows = getArchFixtureRows();
  * assertion that the two sides disagree. It mirrors `availabilityStatus` in
  * `archLots.ts`, which lost its On Order rung in the same commit.
  *
- * In transit stays on both sides. The client sells from in transit.
+ * 🔴 IN TRANSIT LEFT BOTH SIDES TOO, later the same day. The client does call
+ * in-transit wood sellable and this code cannot sell it: `isLotLocked` refuses any
+ * bundle with no yard stock and the server refuses it again, so counting it in
+ * Available offered volume no trader could put on an order.
  */
-const lotFree = (l) => Math.max(0, (l.onHand || 0) + (l.inTransit || 0) - commitmentOn(l));
+const lotFree = (l) => Math.max(0, (l.onHand || 0) - commitmentOn(l));
 
 ok('fixtures produce rows at all', rows.length > 0, rows.length);
 
@@ -39,14 +42,17 @@ ok('some rows carry a nonzero readyToBuild, else these assertions prove nothing'
 
 // 1. the formula, stated once
 for (const r of rows) {
-  const expected = Math.max(0, r.onHand + r.inTransit - r.reserve - r.readyToBuild);
+  const expected = Math.max(0, r.onHand - r.reserve - r.readyToBuild);
   if (r.available !== expected) {
     ok(r.itemCode + ' @ ' + r.locationName + ': available subtracts all three commitments',
       false, { available: r.available, expected, reserve: r.reserve, readyToBuild: r.readyToBuild, outbound: r.outbound });
   }
 }
-ok('every row: available = onHand + inTransit - reserve - readyToBuild, WITHOUT outbound and WITHOUT onOrder',
-  rows.every((r) => r.available === Math.max(0, r.onHand + r.inTransit - r.reserve - r.readyToBuild)));
+ok('every row: available = onHand - reserve - readyToBuild, WITHOUT outbound, onOrder or inTransit',
+  rows.every((r) => r.available === Math.max(0, r.onHand - r.reserve - r.readyToBuild)));
+ok('🔴 and a row whose only stock is in transit reports Available 0',
+  rows.filter((r) => (r.inTransit || 0) > 0 && (r.onHand || 0) === 0)
+      .every((r) => r.available === 0));
 // 🔴 Directional, so the guard cannot pass by reverting. On order must be ABSENT
 // from Available, not merely absent from this line: a fixture that still added it
 // would fail the equality above but a text-only guard would not notice.
@@ -95,8 +101,8 @@ ok('no lot counts its shipped quantity as still on hand',
   ok('a claim never exceeds the wood left after shipping',
     shipped.every((l) => (l.reserve || 0) + (l.readyToBuild || 0) <= (l.onHand || 0) + 1e-9),
     shipped.filter((l) => (l.reserve || 0) + (l.readyToBuild || 0) > (l.onHand || 0)).map((l) => l.lotNo));
-  ok('the fixture formula matches the ARCH cache formula, which excludes outbound and on order',
-    rows.every((r) => r.available === Math.max(0, r.onHand + r.inTransit - r.reserve - r.readyToBuild)));
+  ok('the fixture formula matches the ARCH cache formula, which excludes outbound, on order and in transit',
+    rows.every((r) => r.available === Math.max(0, r.onHand - r.reserve - r.readyToBuild)));
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archFixtures ok');

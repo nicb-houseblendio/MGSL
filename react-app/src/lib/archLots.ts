@@ -261,9 +261,18 @@ export const availabilityStatus = (
    * Available stops counting it. Marc-Antoine asked to see on-order wood and
    * not to be able to sell it; both still hold.
    *
-   * In Transit keeps its rung, because he sells in transit.
+   * 🔴 AND THE IN TRANSIT RUNG WENT WITH IT, later the same day. The first
+   * version of this note kept it, on the grounds that the client sells in
+   * transit. He does, and this code cannot: `isLotLocked` below refuses any
+   * bundle with no yard stock, and the server refuses it again. A rung here
+   * put unsellable wood inside the Available header while the checkbox beneath
+   * it was disabled, which is the complaint this whole change answers.
+   *
+   * An in-transit bundle is still listed under IN TRANSIT with its quantity,
+   * its PO and its ETA. It returns here when phases 2.4 to 2.6 land, together
+   * with `hasArrived`, `isSellableView` and the server's oversell gate, never
+   * on its own.
    */
-  if ((lot.inTransit || 0) > 0) return { label: 'In Transit', color: '#7E57C2', qty: lot.inTransit };
   return null;
 };
 

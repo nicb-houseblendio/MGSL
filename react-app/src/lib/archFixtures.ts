@@ -176,10 +176,11 @@ const buildRow = (index: number): ArchSummaryRow => {
     // Available by up to 975 BF on 5 rows). OUTBOUND is NOT subtracted, because it is
     // no longer part of onHand: see the note in the lot generator above. This is the
     // same formula the ARCH cache uses, deliberately.
-    // Kept in step with cache_arch.js by hand: onOrder left the Available
-    // formula on 2026-09-22. A fixture that disagrees with the server is how
-    // a demo proves a bug that does not exist, or hides one that does.
-    available: Math.max(0, onHand + inTransit - reserve - readyToBuild),
+    // Kept in step with cache_arch.js by hand: onOrder AND inTransit both left
+    // the Available formula on 2026-09-22, because neither can be sold yet. A
+    // fixture that disagrees with the server is how a demo proves a bug that
+    // does not exist, or hides one that does.
+    available: Math.max(0, onHand - reserve - readyToBuild),
     // Hardwood lot cost per unit — roughly $2.40 to $9.80. Same band across all
     // four categories: the fixtures exist to exercise layout, not to model
     // veneer pricing, and inventing a per-category band would read as real.

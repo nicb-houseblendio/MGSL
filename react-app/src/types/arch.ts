@@ -384,11 +384,14 @@ export interface ArchSummaryRow {
   /** How many of this row's lots are held. */
   heldLotCount?: number;
   /**
-   * onHand + inTransit − reserve − readyToBuild − held, floored at 0.
+   * onHand − reserve − readyToBuild − held, floored at 0.
    *
-   * ⚠️ CORRECTED 2026-09-22: `onOrder` was in this sum and is not any more.
-   * On order is visibility only, in transit is sellable, which is the client's
-   * own distinction and not a rounding of it.
+   * ⚠️ CORRECTED 2026-09-22: `onOrder` AND `inTransit` were both in this sum
+   * and neither is any more. Available means what the order endpoint will
+   * accept. The client does call in-transit wood sellable, and it will be, but
+   * not until the reservation phases land: today `isLotLocked` and the server
+   * both refuse a bundle with no yard stock, so counting it here would offer
+   * volume no trader can actually put on an order.
    * Held stock is excluded here and ONLY here.
    *
    * ⚠️ CORRECTED 2026-09-08. This used to read "… − outbound − held" and to say
