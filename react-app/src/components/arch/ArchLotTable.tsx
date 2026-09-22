@@ -9,6 +9,8 @@ import {
   oldestAge,
   joinValues,
   formatOrderDate,
+  shipWeekCell,
+  SHIP_DATE_DEFAULTED_TITLE,
   traderName,
   NO_VALUE,
 } from '@/lib/archLotOrders';
@@ -187,6 +189,18 @@ const headerCellStyle: React.CSSProperties = {
 };
 
 // #B36B16 measured 4.17:1 on white. #8F5612 is the same amber, AA-clear.
+/* Why a cell is a dash, when the answer is "there is no data", not "we failed".
+ * Feedback 13, 2026-09-21: « Il manque de l'info dans les colonnes ». After the
+ * Ready to Build fix, four columns stay empty on every live ARC bundle because
+ * the data does not exist in NetSuite: 0 of 841 lots carry a container, only two
+ * tallies exist in the account (neither for an ARC PO today), and there is no
+ * grain field at all. A bare dash reads as the same bug again. */
+const NO_CONTAINER_TITLE = 'No container or vessel is recorded on this bundle’s receipt in NetSuite.';
+const NO_TALLY_TITLE =
+  'No usable tally for this bundle (none attached, or it no longer matches after a split), ' +
+  'so its lengths and widths are not known.';
+const NO_GRAIN_TITLE = 'Grain is not recorded anywhere in NetSuite yet, so there is nothing to show.';
+
 const ageColor = (days: number) => (days > 21 ? '#B22222' : days > 10 ? '#8F5612' : '#2E7D32');
 
 export const ArchLotTable = ({
@@ -253,6 +267,8 @@ export const ArchLotTable = ({
       lot.tallyState as Parameters<typeof demoTallyProps>[2],
       allowFixture,
     ).bundle ?? null;
+  /** Whether Lengths and Avg width have anything to read. Same source as their cells. */
+  const hasTallyShape = (lot: { lotNo: string; tally?: unknown; tallyState?: unknown }) => !!lotBundle(lot);
   const toggleTally = (lotNo: string) =>
     setToggledTally((cur) => {
       const next = new Set(cur);
@@ -451,8 +467,13 @@ export const ArchLotTable = ({
           label: 'Ship Week',
           render: (l) =>
             claims(l).length
-              ? joinValues(claims(l).map((o) => formatOrderDate(o.shipDate))).text
+              ? joinValues(claims(l).map((o) => shipWeekCell(o.shipDate, o.created).text)).text
               : fallback(l, (f) => formatShortDate(f.shipWeek)),
+          // A dash that is only NetSuite's default ship date says so (see shipWeekCell).
+          title: (l) =>
+            claims(l).length && claims(l).every((o) => shipWeekCell(o.shipDate, o.created).title)
+              ? SHIP_DATE_DEFAULTED_TITLE
+              : undefined,
         },
         {
           label: 'Customer',
@@ -1023,7 +1044,11 @@ export const ArchLotTable = ({
                         <td style={{ ...cellStyle, fontWeight: 700, color: ARCH_SURFACE.navyMid }} className="font-mono">
                           {lot.lotNo}
                         </td>
-                        <td style={{ ...cellStyle, fontSize: 11, color: ARCH_SURFACE.textMid }} className="font-mono">
+                        <td
+                          style={{ ...cellStyle, fontSize: 11, color: ARCH_SURFACE.textMid }}
+                          className="font-mono"
+                          title={lot.containerNo ? undefined : NO_CONTAINER_TITLE}
+                        >
                           {lot.containerNo || '—'}
                         </td>
                         {isOnHand && (
@@ -1079,7 +1104,10 @@ export const ArchLotTable = ({
                             Both fall back to an em dash rather than a zero: a lot with no
                             parsed matrix has no lengths and no average, and printing 0.0"
                             would be a measurement nobody took. */}
-                        <td style={{ ...cellStyle, color: ARCH_SURFACE.textMid }}>
+                        <td
+                          style={{ ...cellStyle, color: ARCH_SURFACE.textMid }}
+                          title={hasTallyShape(lot) ? undefined : NO_TALLY_TITLE}
+                        >
                           {(() => {
                             /* From the FILTERED grid, so a row never advertises
                                lengths its own matrix below no longer lists. The
@@ -1111,8 +1139,17 @@ export const ArchLotTable = ({
                             );
                           })()}
                         </td>
-                        <td style={{ ...cellStyle, color: ARCH_SURFACE.textMid }}>{row.grain || '—'}</td>
-                        <td style={{ ...cellStyle, textAlign: 'right' }} className="font-mono">
+                        <td
+                          style={{ ...cellStyle, color: ARCH_SURFACE.textMid }}
+                          title={row.grain ? undefined : NO_GRAIN_TITLE}
+                        >
+                          {row.grain || '—'}
+                        </td>
+                        <td
+                          style={{ ...cellStyle, textAlign: 'right' }}
+                          className="font-mono"
+                          title={hasTallyShape(lot) ? undefined : NO_TALLY_TITLE}
+                        >
                           {(() => {
                             const base = toLengthWidthGrid(lotBundle(lot), GRID_OPTS);
                             const g = effectiveRange && base

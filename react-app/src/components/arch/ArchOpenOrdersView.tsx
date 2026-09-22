@@ -61,6 +61,7 @@ import { useNetSuite } from '@/context/NetSuiteContext';
 import { useArchOpenOrders } from '@/hooks/useArchOpenOrders';
 import type { ArchLiveOpenOrder, ArchOpenOrdersState } from '@/hooks/useArchOpenOrders';
 import { setReadyToBuild } from '@/lib/archOrderApi';
+import { shipWeekCell } from '@/lib/archLotOrders';
 import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archOrder';
 
 /* ── Derived figures ────────────────────────────────────────────────────────*/
@@ -1301,8 +1302,11 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
                             <td style={{ ...td, color: ARCH_SURFACE.textMid, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {locationLabel(o)}
                             </td>
-                            <td style={{ ...td, color: ARCH_SURFACE.textMid, whiteSpace: 'nowrap' }}>
-                              {shipWeek(o.shipDate)}
+                            <td
+                              style={{ ...td, color: ARCH_SURFACE.textMid, whiteSpace: 'nowrap' }}
+                              title={shipWeekCell(o.shipDate, o.created, shipWeek).title}
+                            >
+                              {shipWeekCell(o.shipDate, o.created, shipWeek).text}
                             </td>
                             <td style={{ ...num, fontWeight: 700 }} className="font-mono">
                               {formatUnitTotals(orderQtys(o))}

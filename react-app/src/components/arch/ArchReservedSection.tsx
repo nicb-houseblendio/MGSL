@@ -6,6 +6,7 @@ import {
   anyUnsourced,
   anyUnavailable,
   formatOrderDate,
+  shipWeekCell,
   traderName,
   NO_VALUE,
 } from '@/lib/archLotOrders';
@@ -243,8 +244,9 @@ export const ArchReservedSection = ({
                   : fixture
                     ? formatShortDate(fixture.createdDate)
                     : NO_VALUE;
-                const shipWeek = order
-                  ? formatOrderDate(order.shipDate)
+                const shipCell = order ? shipWeekCell(order.shipDate, order.created) : null;
+                const shipWeek = shipCell
+                  ? shipCell.text
                   : fixture
                     ? formatShortDate(fixture.shipWeek)
                     : NO_VALUE;
@@ -303,7 +305,7 @@ export const ArchReservedSection = ({
                       renders the raw date under a "Ship week" header for the same
                       reason. If Marc-Antoine wants the week's Monday, it is one
                       formatter in lib/archLotOrders.ts. */}
-                  <td style={{ ...cell, color: ARCH_SURFACE.textMid }}>{shipWeek}</td>
+                  <td style={{ ...cell, color: ARCH_SURFACE.textMid }} title={shipCell?.title}>{shipWeek}</td>
                   <td style={cell}>{customer}</td>
                   {/* The Sales Team rep, not the record's creator, and the tooltip
                       says which. Marc-Antoine treats them as two different things

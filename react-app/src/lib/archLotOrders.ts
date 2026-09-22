@@ -33,7 +33,14 @@
  * rebuild lands: until it does, every lot is 'unsourced', the banner stays, and
  * nothing on screen claims to be real.
  *
- * ── ONLY `reserve` HAS A SOURCE, STILL ──────────────────────────────────────
+ * ── 🔴 SUPERSEDED 2026-09-22: `readyToBuild` HAS A SOURCE TOO NOW ────────────
+ * The cache stamps `readyToBuild` on every order and, since da4f08d, actually
+ * copies it into the payload, so `orderSource`/`ordersFor` below resolve both
+ * buckets on live data (Feedback 13). The history below is why the stamp
+ * exists; its "NOT yet split" claim is no longer true. `outbound` still has no
+ * source, and that part stands.
+ *
+ * (historical) ── ONLY `reserve` HAS A SOURCE, STILL ──────────────────────────
  * `orders` describes the sales orders behind a bundle's committed quantity.
  * The other two buckets with SO columns cannot be answered from it:
  *
@@ -149,6 +156,34 @@ export const formatOrderDate = (iso: string | undefined | null): string => {
   const d = new Date(`${iso}T00:00:00`);
   if (isNaN(d.getTime())) return NO_VALUE;
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+};
+
+/**
+ * The Ship Week cell for one order: its ship date, or an em dash when the ship
+ * date is only NetSuite's default.
+ *
+ * Feedback 13 round-1 review, 2026-09-22. On ARC, `shipdate` equals `trandate`
+ * on 32 of 35 sales orders and on all 5 Ready to Build orders: NetSuite fills it
+ * with the order date when nobody enters one, and the ARCH wizard never saved
+ * the trader's date until d9d6299. So SO 115774 read "Ship Week Sep 9", the day
+ * it was entered and 13 days in the past, under a label that promises a plan.
+ * A default is not a plan; the dash says so and the title says why.
+ *
+ * ⚠️ A genuine same-day ship reads as a dash too. Accepted: the title says to
+ * check the SO, and a confident wrong week is the worse error.
+ */
+export const SHIP_DATE_DEFAULTED_TITLE =
+  'The ship date equals the order date, which is what NetSuite fills in when none is entered, ' +
+  'so it is not shown as a planned week. Open the sales order to confirm.';
+
+export const shipWeekCell = (
+  shipDate: string | undefined | null,
+  created: string | undefined | null,
+  format: (iso: string) => string = formatOrderDate,
+): { text: string; title?: string } => {
+  if (!shipDate) return { text: NO_VALUE };
+  if (created && shipDate === created) return { text: NO_VALUE, title: SHIP_DATE_DEFAULTED_TITLE };
+  return { text: format(shipDate) };
 };
 
 /**
