@@ -200,19 +200,20 @@ export const WarehouseSplitScreen = () => {
    */
   const handleSave = React.useCallback(async () => {
     if (saving) return;
+    // A failed live load has no jobs, so nothing can be open; refuse anyway
+    // rather than print "Progress saved" over a write that never happened.
+    // BEFORE the job lookup, or an empty job list returns silently first.
+    if (source === 'error' || source === 'loading') {
+      setOpenJob(null);
+      setToast('Nothing was saved: the split queue is not loaded from NetSuite.');
+      return;
+    }
     const job = jobs.find((j) => j.soNo === openJob);
     if (!job) return;
 
     const ready = job.bundles.filter((b) => entryDone(entryFor(job, b.lotNo), b.systemBF));
     const left = job.bundles.length - ready.length;
 
-    // A failed live load has no jobs, so nothing can be open; refuse anyway
-    // rather than print "Progress saved" over a write that never happened.
-    if (source === 'error' || source === 'loading') {
-      setOpenJob(null);
-      setToast('Nothing was saved: the split queue is not loaded from NetSuite.');
-      return;
-    }
     // Local preview on fixtures (no endpoint at all): nothing to write to; keep
     // the preview behaviour so the screen is still demonstrable without NetSuite.
     if (source !== 'netsuite') {
@@ -284,12 +285,10 @@ export const WarehouseSplitScreen = () => {
     (soNo: string, text: string, emailed: boolean) => {
       const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       setNotes((prev) => ({ ...prev, [soNo]: [...(prev[soNo] || []), { date, text, emailed }] }));
-      if (emailed) {
-        const job = jobs.find((j) => j.soNo === soNo);
-        setToast(`Comment sent to ${job?.trader || 'the trader'}`);
-      }
+      // Never "Comment sent": nothing is emailed or saved (see SplitNoteDialog).
+      setToast(`Comment kept on this screen only for ${soNo}. It is not saved to NetSuite or emailed.`);
     },
-    [jobs]
+    []
   );
 
   /* ── Filtering and grouping ───────────────────────────────────────────────*/

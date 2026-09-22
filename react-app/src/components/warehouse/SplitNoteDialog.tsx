@@ -2,13 +2,14 @@
  * Comments on a split job.
  *
  * Straight from the client prototype's note modal: a running history of short
- * entries, plus an optional "email the trader" toggle. It exists because the
+ * entries. It exists because the
  * warehouse and the trader are the two halves of a split and neither sees the
  * other's screen. When a bundle comes up short, or the wood is not what the tally
  * said, the warehouse needs somewhere to say so against THAT order.
  *
- * ⚠️ Notes live in React state only. Nothing is persisted and no email is sent —
- * the toggle records intent so the flow can be reviewed end to end. Where these
+ * ⚠️ Notes live in React state only. Nothing is persisted and no email is sent,
+ * and since 2026-09-22 the dialog says so instead of offering a notify toggle
+ * that did nothing. Where these
  * should live in NetSuite (transaction note, custom record, user note) has never
  * been discussed with the client.
  */
@@ -25,18 +26,17 @@ interface SplitNoteDialogProps {
   onClose: () => void;
 }
 
-/** first.last@mgsl.com, the convention the prototype assumes. */
-const traderEmail = (trader: string): string =>
-  `${(trader || 'trader').toLowerCase().replace(/\s+/g, '.')}@mgsl.com`;
-
 export const SplitNoteDialog = ({ job, notes, onAdd, onClose }: SplitNoteDialogProps) => {
   const [draft, setDraft] = React.useState('');
-  const [emailTrader, setEmailTrader] = React.useState(true);
   const empty = draft.trim() === '';
 
+  /* No email is sent and nothing is persisted, so no toggle offers to. It used to:
+     "Notify <trader> (first.last@mgsl.com)", ticked by default, over an invented
+     address, followed by "Comment sent to <trader>". Removed 2026-09-22 once the
+     screen started serving live orders to a real warehouse role (Feedback 11). */
   const submit = () => {
     if (empty) return;
-    onAdd(draft.trim(), emailTrader);
+    onAdd(draft.trim(), false);
     setDraft('');
   };
 
@@ -79,14 +79,6 @@ export const SplitNoteDialog = ({ job, notes, onAdd, onClose }: SplitNoteDialogP
                     {n.date}
                   </span>
                   <span style={{ fontSize: 12.5, color: ARCH_SURFACE.text, flex: 1 }}>{n.text}</span>
-                  {n.emailed && (
-                    <span
-                      title={`Sent to ${traderEmail(job.trader)}`}
-                      style={{ fontSize: 10, color: '#15803D', fontWeight: 700, whiteSpace: 'nowrap' }}
-                    >
-                      ✉ sent
-                    </span>
-                  )}
                 </div>
               ))}
             </div>
@@ -121,12 +113,7 @@ export const SplitNoteDialog = ({ job, notes, onAdd, onClose }: SplitNoteDialogP
               cursor: 'pointer',
             }}
           >
-            <input
-              type="checkbox"
-              checked={emailTrader}
-              onChange={(e) => setEmailTrader(e.target.checked)}
-            />
-            Notify {job.trader} <span className="font-mono" style={{ fontSize: 11 }}>({traderEmail(job.trader)})</span>
+            Comments stay on this screen only: they are not saved to NetSuite and {job.trader || 'the trader'} is not emailed.
           </label>
         </div>
 

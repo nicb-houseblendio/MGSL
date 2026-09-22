@@ -22,8 +22,9 @@
  * build into two entry points — the component boundary is already clean.
  *
  * ⚠️ The deployment currently has allemployees=T so it can be demoed. It MUST be
- * restricted to the warehouse role before production — that role is still an
- * open question with Marc-Antoine.
+ * restricted to the warehouse role before production. That role is 2183
+ * (customrole2183, Hardwood Logistics Coordinator), settled 2026-09-22 in
+ * Feedback 11; the split endpoint already lists it.
  *
  * Lives under trader_screen/ because it loads that folder's bundle and is
  * therefore covered by the same deploy.xml files path. Move both together.

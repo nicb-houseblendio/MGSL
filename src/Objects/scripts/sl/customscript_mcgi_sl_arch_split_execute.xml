@@ -80,9 +80,10 @@
       <!-- 2183 = MGSL - Hardwood Logistics Coordinator, the warehouse role
            (Feedback 11, 2026-09-22: MA opened the split screen as this role and
            was refused 8 times, "Refused: user 3308 role 2183 is not in [3]").
-           Role ids do NOT carry between accounts: 2181 in production is an
-           unrelated MTL role, so re-resolve this id before any prod deploy. -->
-      <custscript_arch_split_roles>2183</custscript_arch_split_roles>
+           By SCRIPT id, not internal id: internal ids are assigned per account
+           (production's newest role is 2181, an MTL role, so a future 2183 there
+           would be whatever gets created next). The script accepts either form. -->
+      <custscript_arch_split_roles>customrole2183</custscript_arch_split_roles>
       <allemployees>F</allemployees>
       <allpartners>F</allpartners>
       <!-- allroles stays F. This Suitelet runs as Administrator and posts

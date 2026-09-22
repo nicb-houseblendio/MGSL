@@ -26,8 +26,10 @@
  * is deliberate: an unconfigured deployment must refuse everyone rather than
  * admit everyone. The warehouse role was settled 2026-09-22 (Feedback 11): MA
  * opened the screen as 2183 Hardwood Logistics Coordinator, so the SDF ships
- * `2183` for this parameter and in the audience. Sibling deployment 6495 currently sits at
- * allemployees=T, which is exactly the shape of mistake this guards against.
+ * `customrole2183` for this parameter and in the audience. The warehouse page
+ * (script 6495, deployment 4656) is allemployees=T, and since 2026-09-22 also
+ * allroles=T and run-as Administrator by the client's hand, which is exactly the
+ * shape of mistake this guards against.
  *
  * ── Contract ────────────────────────────────────────────────────────────────
  * POST, JSON body:
@@ -50,19 +52,33 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
 
     const ROLE_ADMINISTRATOR = 3;
 
-    /** Role IDs permitted to complete a split. Empty parameter = Administrator only. */
+    /**
+     * Roles permitted to complete a split. Empty parameter = Administrator only.
+     *
+     * Each entry is an internal id (`2183`) OR a role SCRIPT id (`customrole2183`).
+     * Script ids are the portable form and what the SDF ships: an internal id is
+     * assigned per account, so `2183` in production would name whichever role
+     * happens to be created 2183rd there and hand it Administrator IA writes
+     * (production has no such role today; its newest is 2181, an MTL role). A
+     * script id travels with the role object itself.
+     */
     const permittedRoles = () => {
         const raw = runtime.getCurrentScript().getParameter({ name: 'custscript_arch_split_roles' });
-        const ids = String(raw || '')
+        const entries = String(raw || '')
             .split(',')
-            .map((s) => parseInt(String(s).trim(), 10))
-            .filter((n) => !isNaN(n));
-        if (!ids.length) return [ROLE_ADMINISTRATOR];
+            .map((s) => String(s).trim().toLowerCase())
+            .filter((s) => s !== '');
+        if (!entries.length) return [String(ROLE_ADMINISTRATOR)];
         // Administrator always retains access so a misconfigured list cannot lock
         // out the person who has to fix it.
-        if (ids.indexOf(ROLE_ADMINISTRATOR) === -1) ids.push(ROLE_ADMINISTRATOR);
-        return ids;
+        if (entries.indexOf(String(ROLE_ADMINISTRATOR)) === -1) entries.push(String(ROLE_ADMINISTRATOR));
+        return entries;
     };
+
+    /** True when the signed-in role matches an entry by internal id or script id. */
+    const rolePermitted = (user, allowed) =>
+        allowed.indexOf(String(Number(user.role))) !== -1 ||
+        allowed.indexOf(String(user.roleId || '').toLowerCase()) !== -1;
 
     /**
      * A Suitelet cannot set an HTTP status code — NetSuite answers 200 to
@@ -89,13 +105,14 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
         const user = runtime.getCurrentUser();
         const allowed = permittedRoles();
 
-        if (allowed.indexOf(Number(user.role)) === -1) {
+        if (!rolePermitted(user, allowed)) {
             // AUDIT, not ERROR: a refusal is this check doing its job, and it fires
             // on every page load by a role not yet on the list (twelve times in
             // eleven minutes on 2026-09-22). The role id goes back in the payload so
             // the screen can tell an administrator exactly which id to add.
             log.audit('ARCH Split Execute',
-                'Refused: user ' + user.id + ' role ' + user.role + ' is not in [' + allowed.join(',') + ']');
+                'Refused: user ' + user.id + ' role ' + user.role + ' (' + (user.roleId || '?') +
+                ') is not in [' + allowed.join(',') + ']');
             return respond(context, 403, {
                 ok: false,
                 code: 'FORBIDDEN',
@@ -127,6 +144,9 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
                 service: 'arch-split-execute',
                 user: user.id,
                 role: user.role,
+                // The script id the allowlist can match on, so an admin can see
+                // the exact string to put in Permitted Split Roles.
+                roleId: user.roleId,
                 permittedRoles: allowed,
                 rolesConfigured: allowed.length > 1,
             });

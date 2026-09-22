@@ -49,7 +49,8 @@ test('an HTML page (audience block or expired session) is not_json, not a networ
   const d = decideSplitQueueLoad({ hasEndpoint: true, contentType: 'text/html', body: null });
   assert.equal(d.source, 'error');
   assert.equal(d.failure, 'not_json');
-  assert.match(d.message, /audience/);
+  assert.match(d.message, /Audience/);
+  assert.match(d.message, /Permitted Split Roles/);
 });
 
 test('a server failure passes its own message through', () => {
@@ -94,16 +95,44 @@ test('screen: no "NetSuite unreachable" badge, a visible alert, and no fake "Pro
 });
 
 test('suitelet: the refusal carries the role id and logs at AUDIT, not ERROR', () => {
-  const block = suitelet.slice(suitelet.indexOf('if (allowed.indexOf(Number(user.role)) === -1)'),
+  const block = suitelet.slice(suitelet.indexOf('if (!rolePermitted(user, allowed)) {'),
     suitelet.indexOf("if (context.request.method === 'GET')"));
   assert.match(block, /log\.audit\(/);
   assert.doesNotMatch(block, /log\.error\(/);
   assert.match(block, /role: Number\(user\.role\)/);
 });
 
+test('suitelet: roles match by internal id OR script id, so the SDF can ship a portable script id', () => {
+  assert.match(suitelet, /const rolePermitted = \(user, allowed\) =>/);
+  assert.match(suitelet, /String\(user\.roleId \|\| ''\)\.toLowerCase\(\)/);
+  assert.match(suitelet, /if \(!rolePermitted\(user, allowed\)\) \{/);
+  // Executed, not just grepped: pull the two helpers out and run them.
+  const grab = (name) => {
+    const at = suitelet.indexOf('const ' + name + ' =');
+    const end = suitelet.indexOf(';\n', suitelet.indexOf('=>', at));
+    return suitelet.slice(at, end + 1);
+  };
+  const permBody = suitelet.slice(suitelet.indexOf('const permittedRoles = () => {'),
+    suitelet.indexOf('    };', suitelet.indexOf('const permittedRoles = () => {')) + 6);
+  const make = (param) => new Function('runtime', 'ROLE_ADMINISTRATOR',
+    permBody + '\n' + grab('rolePermitted') + '\nreturn { permittedRoles, rolePermitted };')(
+    { getCurrentScript: () => ({ getParameter: () => param }) }, 3);
+  const a = make('customrole2183');
+  assert.deepEqual(a.permittedRoles(), ['customrole2183', '3']);
+  assert.equal(a.rolePermitted({ role: 2183, roleId: 'customrole2183' }, a.permittedRoles()), true);
+  assert.equal(a.rolePermitted({ role: 3, roleId: 'administrator' }, a.permittedRoles()), true);
+  assert.equal(a.rolePermitted({ role: 2182, roleId: 'customrole2182' }, a.permittedRoles()), false);
+  const b = make('2183, CustomRole2184');
+  assert.equal(b.rolePermitted({ role: 2183, roleId: 'customrole2183' }, b.permittedRoles()), true);
+  assert.equal(b.rolePermitted({ role: 2184, roleId: 'customrole2184' }, b.permittedRoles()), true);
+  const c = make('');
+  assert.deepEqual(c.permittedRoles(), ['3']);
+  assert.equal(c.rolePermitted({ role: 2183, roleId: 'customrole2183' }, c.permittedRoles()), false);
+});
+
 test('SDF: the Logistics Coordinator role is in BOTH the parameter and the audience, and allroles stays F', () => {
   const dep = sdf.slice(sdf.indexOf('<scriptdeployment scriptid="customdeploy_mcgi_sl_arch_split_execute">'));
-  assert.match(dep, /<custscript_arch_split_roles>2183<\/custscript_arch_split_roles>/);
+  assert.match(dep, /<custscript_arch_split_roles>customrole2183<\/custscript_arch_split_roles>/);
   assert.match(dep, /<audslctrole>ADMINISTRATOR\|\[scriptid=customrole2183\]<\/audslctrole>/);
   assert.match(dep, /<allroles>F<\/allroles>/);
   assert.match(dep, /<runasrole>ADMINISTRATOR<\/runasrole>/);

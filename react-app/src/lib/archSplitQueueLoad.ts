@@ -70,9 +70,11 @@ export const decideSplitQueueLoad = (a: SplitQueueAttempt): SplitQueueLoadDecisi
       source: 'error',
       failure: 'not_json',
       message:
-        'NetSuite refused this request before the split script ran. Either your role is not in the ' +
-        'audience of the "MCGI SL ARCH Split Execute" deployment, or your session has expired; ' +
-        'reload the page to rule out the second.',
+        'NetSuite answered with a page instead of the split queue, so the split script did not ' +
+        'reply. Reload the page first, in case your session expired. If it happens again, an ' +
+        'administrator must add your role to BOTH the Audience and "Permitted Split Roles" on the ' +
+        '"MCGI SL ARCH Split Execute" deployment; if it is already in both, the script\'s ' +
+        'execution log will say what failed.',
     };
   }
   if (a.body.ok === true) {
