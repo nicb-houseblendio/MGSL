@@ -301,7 +301,8 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
                   </span>
                 </td>
                 <td style={{ ...cell, fontWeight: 600, color: ARCH_SURFACE.text }}>{u.supplier || '—'}</td>
-                <td style={{ ...cell, fontSize: 11, color: ARCH_SURFACE.textMid }} className="font-mono">—</td>
+                {/* The PO's Seal / Trailer # (Feedback 15): a line with no bundle has no lot to carry it. */}
+                <td style={{ ...cell, fontSize: 11, color: ARCH_SURFACE.textMid }} className="font-mono">{u.container || '—'}</td>
                 <td style={{ ...cell, textAlign: 'right' }} title={!etaDate && u.etaDefaulted ? SHIP_WEEK_DEFAULTED_TITLE : undefined}>
                   {etaDate ? (
                     <EtaPill date={formatShortDate(etaDate)} color={meta.color} />

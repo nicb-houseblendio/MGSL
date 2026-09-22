@@ -517,6 +517,8 @@ export interface ArchUnbundledLine {
   onOrderLines?: number;
   /** A ship week was set, but only to the PO date (its default), so none is shown. */
   etaDefaulted?: boolean;
+  /** The PO's Seal / Trailer # (`custbody_seal_trailer_number`), or '' (Feedback 15). */
+  container?: string;
   /** Display units, like every other bucket. */
   inTransit: number;
   onOrder: number;

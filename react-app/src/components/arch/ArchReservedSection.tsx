@@ -284,7 +284,7 @@ export const ArchReservedSection = ({
                     style={{ ...cell, fontSize: 11, color: ARCH_SURFACE.textMid }}
                     className="font-mono"
                     title={!continuation && !lot.containerNo
-                      ? 'No container or vessel is recorded on this bundle’s receipt in NetSuite.'
+                      ? 'No container recorded: no vessel on its inventory adjustment, and no Seal / Trailer # on its PO.'
                       : undefined}
                   >
                     {continuation ? '' : lot.containerNo || NO_VALUE}

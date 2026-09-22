@@ -195,7 +195,8 @@ const headerCellStyle: React.CSSProperties = {
  * the data does not exist in NetSuite: 0 of 841 lots carry a container, only two
  * tallies exist in the account (neither for an ARC PO today), and there is no
  * grain field at all. A bare dash reads as the same bug again. */
-const NO_CONTAINER_TITLE = 'No container or vessel is recorded on this bundle’s receipt in NetSuite.';
+// Feedback 15: IA bundles read the vessel (custbody5), PO bundles the PO's Seal / Trailer #.
+const NO_CONTAINER_TITLE = 'No container recorded: no vessel on its inventory adjustment, and no Seal / Trailer # on its PO.';
 const NO_TALLY_TITLE =
   'No usable tally for this bundle (none attached, or it no longer matches after a split), ' +
   'so its lengths and widths are not known.';

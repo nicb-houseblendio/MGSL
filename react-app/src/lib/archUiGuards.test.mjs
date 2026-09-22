@@ -1652,8 +1652,10 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
 
   // The packing-list capture holds a real ISO 6346 code and must win over a
   // vessel name. Order matters in the `||` chain, so it is asserted literally.
-  ok('f9-2:  ...and the packing-list container still wins over the vessel',
-    /containerNo:\s+\(tally && tally\.container\) \|\| vesselFor\(l\) \|\| ''/.test(mr), null);
+  // Feedback 15 appends the PO's Seal / Trailer # as the LAST fallback; the
+  // packing list still wins, then the IA vessel.
+  ok('f9-2:  ...and the packing-list container still wins over the vessel, then the PO seal',
+    /containerNo:\s+\(tally && tally\.container\) \|\| vesselFor\(l\) \|\| lotSeals\[String\(l\.lotId\)\] \|\| ''/.test(mr), null);
 
   // `po` is deliberately NOT changed by this item. The prefix is still reported as
   // the PO, which is his own nomenclature, and repairing that column is a separate

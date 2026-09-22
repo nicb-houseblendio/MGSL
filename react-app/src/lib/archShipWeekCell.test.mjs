@@ -72,7 +72,7 @@ test('round 2: a mix of a defaulted and a real ship date shows the real one', ()
 
 test('round 2: the Reserved panel container dash explains itself too', () => {
   const res = read('components/arch/ArchReservedSection.tsx');
-  assert.match(res, /No container or vessel is recorded on this bundle/);
+  assert.match(res, /No container recorded: no vessel on its inventory adjustment, and no Seal \/ Trailer # on its PO\./);
 });
 
 test('round 2 (F12): an append does not preload a defaulted ship date', () => {

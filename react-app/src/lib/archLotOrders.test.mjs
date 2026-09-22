@@ -284,7 +284,7 @@ const TEAM_ROWS = [
   { tranid: '126500', repid: '2090', rep: 'Justin Loveland', contribution: '0.5', isprimary: 'F' },
 ];
 
-const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [], transitRows = [] } = {}) => {
+const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [], transitRows = [], sealRows = [], poSealRows = [] } = {}) => {
   const sqlLog = [];
   const errors = [];
   const audits = [];
@@ -308,6 +308,9 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
       // The take-ownership journal / agency / status read (1.2). Returned [] by
       // default, which kept every PO test on the billing branch.
       else if (/custbody_po_intransit_journal/.test(sql)) rows = transitRows;
+      // Feedback 15: the lot seal read (via inventoryassignment) and the per-PO one.
+      else if (/custbody_seal_trailer_number/.test(sql) && /FROM inventoryassignment/.test(sql)) rows = sealRows;
+      else if (/custbody_seal_trailer_number/.test(sql)) rows = poSealRows;
       else if (/FROM item i/.test(sql)) rows = [];                      // untagged check
       else if (/customrecord_msl_plc_capture/i.test(sql)) rows = [];     // tallies
       return { asMappedResults: () => rows };
@@ -846,6 +849,23 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   const bru = br && br.unbundled ? br.unbundled : [];
   ok('H17 a line billed exactly for what was received is NOT billedAhead',
     bru.length === 1 && bru[0].billedAhead === false && bru[0].partlyReceived === true, bru);
+
+  /* ── Feedback 15: the container from the PO's Seal / Trailer # ── */
+  const sl = one(runMr({
+    bucketRows: [po({ tranid: '999116', docno: 'PO-SL', lineno: '54', qty: '1', billed: '0' })],
+    sealRows: [{ lotid: '49847', seal: 'ABC1234' }],
+    poSealRows: [{ tranid: '999116', seal: 'TRL-9' }],
+  }));
+  const slLot = sl && sl.lots.find((l) => l.lotNo === '316027-12');
+  ok('H19 a bundle from a PO reads the PO Seal / Trailer # as its container',
+    !!slLot && slLot.containerNo === 'ABC1234', slLot && slLot.containerNo);
+  const slu = sl && sl.unbundled ? sl.unbundled : [];
+  ok('H20 an unbundled PO line carries its PO Seal / Trailer # too',
+    slu.length === 1 && slu[0].container === 'TRL-9', slu);
+  const noSeal = one(runMr({ bucketRows: [po({ tranid: '999117', docno: 'PO-NS', lineno: '55', qty: '1', billed: '0' })] }));
+  ok('H21 no seal anywhere leaves the container empty, not invented',
+    !!noSeal && noSeal.lots.every((l) => l.containerNo === '') && noSeal.unbundled.every((u) => u.container === ''),
+    noSeal && noSeal.lots.map((l) => l.containerNo));
 
   // Per-tab line counts on a merged entry.
   ok('H18 a merged entry counts its lines per tab',

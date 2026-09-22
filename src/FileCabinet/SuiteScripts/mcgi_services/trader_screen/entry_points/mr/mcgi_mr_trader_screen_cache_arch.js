@@ -1282,6 +1282,54 @@ define([
         return v;
     };
 
+    /**
+     * The container for a bundle that came in on a PO: the PO's "Seal / Trailer #"
+     * (`custbody_seal_trailer_number`). Feedback 15, Marc-Antoine 2026-09-22:
+     * « Container : pour le IA, oui c'est ok d'utiliser le vessel. Pour le PO,
+     * est-ce qu'on peut utiliser le custbody_seal_trailer_number ? »
+     *
+     * The lot's PO is found from its inventory assignments: on a PO line the PO
+     * is the transaction itself, on a receipt line it is `tl.createdfrom` (joined
+     * explicitly per type). First non-empty seal wins (a Make Copy lot can
+     * sit on two POs). Its OWN query and try, so a failure costs this column only,
+     * never the cost/vessel read beside it. Measured 2026-09-22: the field exists
+     * in both accounts and is set on one PO (PO-ARC-000014, "ABC1234"), whose
+     * four bundles resolve through their receipt.
+     */
+    const loadLotSeals = (lotList) => {
+        const ids = (lotList || []).map((l) => l && l.lotId).filter(Boolean);
+        if (!ids.length) return {};
+        try {
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT ia.inventorynumber AS lotid, po.custbody_seal_trailer_number AS seal ' +
+                    'FROM inventoryassignment ia ' +
+                    'JOIN transactionline tl ON tl.id = ia.transactionline ' +
+                    '                       AND tl.transaction = ia.transaction ' +
+                    'JOIN transaction t ON t.id = ia.transaction ' +
+                    // Explicit per type: a back-to-back PO line's createdfrom is the SO, so
+                    // NVL(createdfrom, id) would read the SO's seal (0 such lines today).
+                    "JOIN transaction po ON ((t.type = 'PurchOrd' AND po.id = t.id) " +
+                    "                     OR (t.type = 'ItemRcpt' AND po.id = tl.createdfrom)) " +
+                    'WHERE ia.inventorynumber IN (' + ids.map(() => '?').join(',') + ') ' +
+                    "  AND t.type IN ('PurchOrd', 'ItemRcpt') " +
+                    '  AND po.custbody_seal_trailer_number IS NOT NULL',
+                params: ids,
+            }).asMappedResults() || [];
+            const out = {};
+            rows.forEach((r) => {
+                const id = String(r.lotid);
+                const seal = String(r.seal || '').trim();
+                if (seal && !out[id]) out[id] = seal;
+            });
+            return out;
+        } catch (e) {
+            log.audit('ARCH cache', 'PO seal/trailer read failed (non-fatal, Container falls back to the vessel only): ' +
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return {};
+        }
+    };
+
     const loadLotReceiptFacts = (lotList) => {
         if (!lotList || !lotList.length) return {};
         const ids = [];
@@ -2425,6 +2473,26 @@ define([
         for (var poKey in transitByPo) {
             if (transitByPo[poKey] && transitByPo[poKey].je !== '') transitJournalCount++;
         }
+        /* The Seal / Trailer # per PO (Feedback 15), for PO lines with no bundle,
+         * which have no lot to carry it. Own query and try, like the journal read. */
+        const sealByPo = {};
+        for (let i = 0; i < poIdsForTransit.length; i += FLAG_CHUNK) {
+            const slice = poIdsForTransit.slice(i, i + FLAG_CHUNK);
+            try {
+                query.runSuiteQL({
+                    query: 'SELECT id AS tranid, custbody_seal_trailer_number AS seal FROM transaction ' +
+                           'WHERE id IN (' + slice.map(() => '?').join(',') + ') ' +
+                           '  AND custbody_seal_trailer_number IS NOT NULL',
+                    params: slice,
+                }).asMappedResults().forEach((p) => {
+                    sealByPo[String(p.tranid)] = String(p.seal || '').trim();
+                });
+            } catch (e) {
+                log.audit('ARCH cache', 'PO seal/trailer read failed (non-fatal): ' + (e.name || '') + ': ' + (e.message || String(e)));
+                break;
+            }
+        }
+
         log.audit('ARCH cache — take-ownership journals read',
             poIdsForTransit.length + ' PO(s) in scope, ' + transitJournalCount +
             ' carrying a journal, sourced=' + transitSourced);
@@ -2543,6 +2611,7 @@ define([
                     supplier: String(r.customer || ''),
                     eta:      poEta(r),
                     etaDefaulted: poEtaDefaulted(r),
+                    container: sealByPo[String(r.tranid)] || '',
                     // Which In Transit rule applies. 'closed' first: a closed PO
                     // keeps open lines on this account and they are not coming.
                     arm:      closedOrder ? 'closed' : (water > 0 ? (hasTransitJE ? 'journal' : 'billed') : 'none'),
@@ -2914,6 +2983,7 @@ define([
                 if (!merged[mk]) {
                     merged[mk] = {
                         poNumber: p.poNumber, supplier: p.supplier, eta: p.eta, etaDefaulted: p.etaDefaulted,
+                        container: p.container || '',
                         arm: p.arm, billedAhead: p.billedAhead, partlyReceived: p.partlyReceived,
                         lineCount: 0, inTransitLines: 0, onOrderLines: 0, inTransit: 0, onOrder: 0,
                     };
@@ -3637,6 +3707,8 @@ define([
             // (Feedback 9 item 1) and the Lot Vessel (item 2). Loaded here rather
             // than in the cost block below because the lot map needs the vessel.
             const lotFacts = loadLotReceiptFacts(pair.lots);
+            // Feedback 15: the PO's Seal / Trailer # for bundles that came in on a PO.
+            const lotSeals = loadLotSeals(pair.lots);
 
             /**
              * The Lot Vessel for a lot, or '' when the stored value is really the
@@ -3762,7 +3834,8 @@ define([
                      * costs nothing and self-heals: the day the import carries ULTRA
                      * YORKSHIRE instead of 314307, it appears with no redeploy.
                      */
-                    containerNo:   (tally && tally.container) || vesselFor(l) || '',
+                    // Tally, then the IA's vessel, then the PO's Seal / Trailer # (Feedback 15).
+                    containerNo:   (tally && tally.container) || vesselFor(l) || lotSeals[String(l.lotId)] || '',
                     onHand:        l.storedQty / rate,
                     // Per-lot figures exist ONLY where the order line carries an
                     // inventory-detail assignment. A line without one contributes
@@ -4094,6 +4167,7 @@ define([
                 // Transit rule, so the drill-down can list it (Feedback 8, 2.8c).
                 unbundled: ((bk && bk.unbundled) || []).map((u) => ({
                     poNumber: u.poNumber, supplier: u.supplier, eta: u.eta, etaDefaulted: !!u.etaDefaulted,
+                    container: u.container || '',
                     arm: u.arm, billedAhead: !!u.billedAhead, partlyReceived: !!u.partlyReceived,
                     lineCount: u.lineCount || 1,
                     inTransitLines: u.inTransitLines || 0,
