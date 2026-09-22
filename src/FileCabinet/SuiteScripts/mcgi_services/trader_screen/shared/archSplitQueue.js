@@ -290,7 +290,44 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
 
     const getPendingSplits = () => {
         const allRows = fetchRows();
-        const rows = allRows.filter((r) => String(r.splitstatus || '') === STATUS_PENDING);
+        /*
+         * 🔴 A BLANK STATUS IS PENDING WORK, AND REQUIRING 'Pending' EMPTIED THE QUEUE.
+         *
+         * Marc-Antoine reported this on the 2026-09-21 call, at [11:06], in the same
+         * breath as the Open SO tab: "je pense que les OpenSO ils se feedent pas, ils
+         * sont encore sur le departement Trading Hardwood. Meme chose bundle split."
+         * The Open SO half was a department-scope bug. This half is not.
+         *
+         * Who writes this field, measured 2026-09-22:
+         *   - `archOrderCreate` sets it to Pending when IT writes a split line.
+         *   - `mcgi_cs_arch_split_capture` (CLIENT, id 6498, RELEASED, allroles) treats
+         *     Split Status as server-owned and REFUSES every user edit to it, on
+         *     purpose: hand-setting Done on an uncut bundle holds the stock forever.
+         *   - Nothing at all sets it when a trader ticks Split in the NetSuite UI.
+         *
+         * So a hand-ticked split has no status, and this filter dropped it. Every one
+         * of the six open ARC split lines was in that state, all six created by
+         * Marc-Antoine in the UI on 2026-09-18 with a real BF entered (300, 157, 600,
+         * 350, 600, 350), and the queue served zero jobs.
+         *
+         * ⚠️ WHY THE BLANK CASE IS SAFE HERE RATHER THAN A FLOOD. Account-wide there
+         * are 24 open split-flagged lines with no status, and 18 of them are stale --
+         * 15 on BILLED orders and 3 past fulfilment. They are already excluded by
+         * `fetchRows`, which requires the ORDER to be open and the LINE unshipped.
+         * Measured: the query returns 6 rows, and all 6 are the ARC jobs. The blank
+         * case adds real work only because the staleness filters sit upstream of it.
+         *
+         * 🔴 'Done' AND 'In progress' ARE STILL EXCLUDED, and that is the whole point
+         * of not simply dropping the status filter. Done means the wood was cut.
+         * In progress means a split started and stopped, so the wood may already have
+         * moved and it needs a person rather than another attempt -- counted below as
+         * `stuck` so the screen can say the queue is short for a reason.
+         */
+        const isPending = (r) => {
+            const st = String(r.splitstatus || '').trim();
+            return st === STATUS_PENDING || st === '';
+        };
+        const rows = allRows.filter(isPending);
         /*
          * CLAIMED AND NOT FINISHED. `In progress` is written before the inventory
          * adjustment is posted, so a line sitting in it is a split that started and
