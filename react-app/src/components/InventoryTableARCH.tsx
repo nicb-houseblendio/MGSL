@@ -27,6 +27,7 @@ import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { formatQty, formatCostPerUnit, displaySuffix, unitListLabel } from '@/lib/archUom';
 import { rowCostDisplay } from '@/lib/archLots';
+import { noPackingListFlag } from '@/lib/archUnbundled';
 import { ARCH_METRIC_COLORS, ARCH_FOOTER_COLORS } from '@/components/arch/archColors';
 import type { ArchSummaryRow, ArchDetailKey, ArchTotals } from '@/types/arch';
 
@@ -249,6 +250,13 @@ const MetricCell = ({
   // The row's own unit, not a screen-wide one — a veneer row reads in SQFT even
   // when the Lumber rows beside it are showing cubic metres.
   const display = formatQty(bf, row.unit, uom);
+  /* The team flag (Feedback 8 step 2.8c): in-transit wood billed before receipt
+     with no packing list, so no bundles. A marker on the cell, the reason and the
+     POs on hover; the drill-down lists those lines with a "No packing list" badge. */
+  const npl = bucket === 'inTransit' ? noPackingListFlag(row) : null;
+  const flagTitle = npl
+    ? `${formatQty(npl.qty, row.unit, uom)} in transit with no packing list (billed before receipt): ${npl.poNumbers.join(', ')}`
+    : undefined;
 
   if (onDrillDown && bf > 0) {
     return (
@@ -257,8 +265,13 @@ const MetricCell = ({
         onClick={() => onDrillDown(bucket, row)}
         className="hover:underline font-medium tabular-nums text-right w-full block"
         style={{ color }}
-        title={note}
+        title={flagTitle || note}
       >
+        {npl && (
+          <span aria-label="No packing list" style={{ color: '#D9822B', marginRight: 4, fontSize: 9, verticalAlign: 'middle' }}>
+            ●
+          </span>
+        )}
         {display}
       </button>
     );

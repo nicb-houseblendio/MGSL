@@ -708,5 +708,48 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   ok('G7 clean run', errors.length === 0, errors);
 }
 
+/* ════ H. PO lines with NO bundles are listed, with provenance (F8 2.8c) ═══════
+ * « si jamais on facture avant réception et qu'on a pas de packing list, alors on
+ * présentera la ligne dans le TS sans le détail des bundles. Ce sera un flag pour
+ * l'équipe. » The quantity already reached the row; it vanished from the
+ * drill-down, which lists lots only, and on a MIXED row it vanished silently. */
+{
+  const po = (over) => bkRow(Object.assign({
+    trantype: 'PurchOrd', lotno: null, assignedqty: null, shiprecv: '0', shipweek: '10/1/2026',
+    custid: '77', customer: 'Supplier SA',
+  }, over));
+
+  const pure = runMr({ bucketRows: [po({ tranid: '999102', docno: 'PO-BILL', lineno: '11', qty: '2', billed: '2' })] })
+    .written.find((r) => String(r.internalId) === '2915');
+  const u = pure && Array.isArray(pure.unbundled) ? pure.unbundled : [];
+  ok('H1 a billed-ahead PO line with no bundle is published as unbundled, with its PO, supplier and ETA',
+    u.length === 1 && u[0].poNumber === 'PO-BILL' && u[0].supplier === 'Supplier SA' && u[0].eta === '2026-10-01',
+    u);
+  ok('H2 ...flagged as the BILLED arm, all of it in transit, in display units',
+    u.length === 1 && u[0].arm === 'billed' && Math.round(u[0].inTransit) === 2000 && Math.round(u[0].onOrder) === 0, u);
+
+  // Mixed: one line 3 units with 1 unit bundled on 316027-12, plus a second line with no bundle.
+  const mixed = runMr({ bucketRows: [
+    po({ tranid: '999103', docno: 'PO-MIX', lineno: '21', qty: '3', billed: '0', lotno: '316027-12', assignedqty: '1' }),
+    po({ tranid: '999103', docno: 'PO-MIX', lineno: '22', qty: '1', billed: '0' }),
+  ] }).written.find((r) => String(r.internalId) === '2915');
+  const mu = mixed && Array.isArray(mixed.unbundled) ? mixed.unbundled : [];
+  const lotsOnOrder = mixed ? mixed.lots.reduce((t, l) => t + (l.onOrder || 0), 0) : 0;
+  const unbOnOrder = mu.reduce((t, x) => t + x.onOrder, 0);
+  ok('H3 on a MIXED row, bundles + unbundled lines add up to the On Order column exactly',
+    !!mixed && Math.abs(lotsOnOrder + unbOnOrder - mixed.onOrder) < 1e-6 && Math.round(mixed.onOrder) === 4000,
+    mixed && { lotsOnOrder, unbOnOrder, onOrder: mixed.onOrder });
+  ok('H4 ...the partly bundled line contributes only its UNbundled 2,000, the other line its 1,000',
+    mu.length === 2 && mu.map((x) => Math.round(x.onOrder)).sort((a, b) => a - b).join() === '1000,2000' &&
+      mu.every((x) => x.arm === 'none'), mu);
+  ok('H5 ...and agrees with the row-level unattributed figure',
+    !!mixed && Math.abs(unbOnOrder - mixed.unattributed.onOrder) < 1e-6, mixed && mixed.unattributed);
+
+  const bundled = runMr({ bucketRows: [po({ tranid: '999104', docno: 'PO-ALL', lineno: '31', qty: '1', billed: '0', lotno: '316027-2', assignedqty: '1' })] })
+    .written.find((r) => String(r.internalId) === '2915');
+  ok('H6 a fully bundled line publishes NO unbundled entry',
+    !!bundled && Array.isArray(bundled.unbundled) && bundled.unbundled.length === 0, bundled && bundled.unbundled);
+}
+
 console.log(fail ? ('# FAIL ' + fail) : '# archLotOrders ok');
 if (fail) process.exitCode = 1;

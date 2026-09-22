@@ -384,6 +384,15 @@ export interface ArchSummaryRow {
   /** How many of this row's lots are held. */
   heldLotCount?: number;
   /**
+   * Open PO quantity on this row that NO bundle claims, one entry per PO line,
+   * with where it is coming from. Feedback 8 step 2.8c, 2026-09-22: « si jamais
+   * on facture avant réception et qu'on a pas de packing list, alors on
+   * présentera la ligne dans le TS sans le détail des bundles. Ce sera un flag
+   * pour l'équipe. » `inTransit + onOrder` of these plus the lots' equals the
+   * row's figures. Absent on a cache written before the field existed.
+   */
+  unbundled?: ArchUnbundledLine[];
+  /**
    * onHand − reserve − readyToBuild − held, floored at 0.
    *
    * ⚠️ CORRECTED 2026-09-22: `onOrder` AND `inTransit` were both in this sum
@@ -480,4 +489,22 @@ export interface ArchTotals {
   available: number;
   /** Distinct units present in the rows these totals cover. */
   units: ArchUnit[];
+}
+
+/** One PO line's quantity that no bundle claims (see `ArchSummaryRow.unbundled`). */
+export interface ArchUnbundledLine {
+  /** The PO document number, e.g. "PO-ARC-000007". */
+  poNumber: string;
+  supplier: string;
+  /** `custbody_ship_week` as `YYYY-MM-DD`, or ''. */
+  eta: string;
+  /**
+   * Why it is on the water, if it is: 'billed' = invoiced before receipt (the
+   * client's "no packing list" case), 'journal' = take ownership done, 'none' =
+   * still only on order.
+   */
+  arm: 'billed' | 'journal' | 'none';
+  /** Display units, like every other bucket. */
+  inTransit: number;
+  onOrder: number;
 }

@@ -2434,6 +2434,9 @@ define([
             if (!byPair[key]) {
                 byPair[key] = {
                     totals: blank(), lots: {}, unattributed: blank(),
+                    // Per open PO line, keyed like `seenLines`: what the line
+                    // carries and how much of it bundles claim. Feeds `unbundled`.
+                    poLines: {},
                     // Carried so a pair with NO on-hand lot can still name itself.
                     itemId: String(r.itemid),
                     locationId: String(r.locationid),
@@ -2510,6 +2513,30 @@ define([
 
             // ── Line-level figures ONCE per line, never per assignment row ──
             const lineKey = String(r.tranid) + '#' + String(r.lineno);
+            /* ── Feedback 8 step 2.8c, 2026-09-22 ─────────────────────────────
+             * « si jamais on facture avant réception et qu'on a pas de packing
+             * list, alors on présentera la ligne dans le TS sans le détail des
+             * bundles. Ce sera un flag pour l'équipe. »
+             *
+             * A PO line with no bundles was counted in the row's In Transit / On
+             * Order and then vanished from the drill-down, which lists lots only:
+             * with no PO, supplier or ETA on a row that had none, and SILENTLY on a
+             * row that also had bundled lines (its footer summed short of the tab).
+             * Recorded once per line; the lot block below adds what bundles claim,
+             * and the fold publishes the remainder as `unbundled`. */
+            if (!isSale && open > 0 && !bucket.poLines[lineKey]) {
+                bucket.poLines[lineKey] = {
+                    poNumber: String(r.docno || ''),
+                    supplier: String(r.customer || ''),
+                    eta:      isoDate(r.shipweek) || '',
+                    // Which In Transit rule put it on the water, so the screen can
+                    // say "billed, no packing list" rather than a generic gap.
+                    arm:      water > 0 ? (hasTransitJE ? 'journal' : 'billed') : 'none',
+                    open:     open,
+                    waterShare: waterShare,
+                    assignedOpen: 0,
+                };
+            }
             if (!seenLines[lineKey]) {
                 seenLines[lineKey] = true;
                 if (isSale) {
@@ -2680,6 +2707,8 @@ define([
                      */
                     bucket.lots[r.lotno].inTransit += assigned * openShare * waterShare;
                     bucket.lots[r.lotno].onOrder   += assigned * openShare * (1 - waterShare);
+                    // What bundles claim of this line, same `assigned * openShare`.
+                    if (bucket.poLines[lineKey]) bucket.poLines[lineKey].assignedOpen += assigned * openShare;
                     /* ── WHERE IT IS COMING FROM AND WHEN, added 2026-09-17 ───
                      *
                      * Marc-Antoine, 2026-09-17: « On order : aucun PO n'apparaît.
@@ -2848,6 +2877,20 @@ define([
                 const claimed = Object.keys(b.lots).reduce((s, lot) => s + b.lots[lot][f], 0);
                 b.unattributed[f] = Math.max(0, b.totals[f] - claimed);
             });
+            /* The same remainder, PER PO LINE and with its provenance (2.8c). Split
+             * by the line's own waterShare, the ratio the row and the lots use, so
+             * lots + unbundled = the row's inTransit and onOrder exactly. A tiny
+             * epsilon drops float dust from fully bundled lines. BASE units here;
+             * reduce converts. */
+            b.unbundled = Object.keys(b.poLines || {}).map((lk) => {
+                const p = b.poLines[lk];
+                const left = Math.max(0, p.open - p.assignedOpen);
+                return {
+                    poNumber: p.poNumber, supplier: p.supplier, eta: p.eta, arm: p.arm,
+                    inTransit: left * p.waterShare,
+                    onOrder:   left * (1 - p.waterShare),
+                };
+            }).filter((u) => u.inTransit + u.onOrder > 1e-9);
         });
 
         return byPair;
@@ -4009,6 +4052,13 @@ define([
                 // fewer lots than the column suggests reads as a known gap rather
                 // than a bug. Real ARCH orders assign lots; ours seeded none.
                 unattributed: unattributed,
+                // The same gap per PO line, with PO, supplier, ETA and the In
+                // Transit rule, so the drill-down can list it (Feedback 8, 2.8c).
+                unbundled: ((bk && bk.unbundled) || []).map((u) => ({
+                    poNumber: u.poNumber, supplier: u.supplier, eta: u.eta, arm: u.arm,
+                    inTransit: u.inTransit / rate,
+                    onOrder:   u.onOrder / rate,
+                })),
                 // Held stock is subtracted here and ONLY here. onHand still
                 // reports it, because the wood is on the floor; it simply is not
                 // sellable while a correction is pending.
