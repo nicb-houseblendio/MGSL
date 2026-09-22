@@ -26,7 +26,7 @@
       <defaultchecked>F</defaultchecked>
       <defaultselection></defaultselection>
       <defaultvalue></defaultvalue>
-      <description>Comma separated role internal IDs permitted to complete a bundle split. Empty means Administrator only, which is the safe default for a deployment that writes as Administrator. Administrator is always retained even if omitted from the list, so a bad entry cannot lock out the person who has to fix it.</description>
+      <description>Comma separated roles (internal ids or role script ids, e.g. customrole2183) permitted to complete a bundle split. Empty means Administrator only, which is the safe default for a deployment that writes as Administrator. Administrator is always retained even if omitted from the list, so a bad entry cannot lock out the person who has to fix it.</description>
       <displayheight></displayheight>
       <displaytype>NORMAL</displaytype>
       <displaywidth></displaywidth>

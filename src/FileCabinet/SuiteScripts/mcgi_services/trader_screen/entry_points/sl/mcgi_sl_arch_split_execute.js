@@ -21,7 +21,8 @@
  * audience has to stay wide enough for warehouse staff to load it, so the real
  * boundary is the allowlist below.
  *
- * `custscript_arch_split_roles` holds the permitted role internal IDs, comma
+ * `custscript_arch_split_roles` holds the permitted roles (internal ids or role
+ * script ids such as customrole2183), comma
  * separated. If it is empty or unset, ONLY Administrator passes. That default
  * is deliberate: an unconfigured deployment must refuse everyone rather than
  * admit everyone. The warehouse role was settled 2026-09-22 (Feedback 11): MA

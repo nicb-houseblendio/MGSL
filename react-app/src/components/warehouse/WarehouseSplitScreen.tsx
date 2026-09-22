@@ -277,7 +277,9 @@ export const WarehouseSplitScreen = () => {
     reload();
 
     if (needsHands.length) {
-      setSaveAlert(needsHands.concat(failed));
+      // The bundles that DID split are listed too, with their new lot names:
+      // an alert that hides them costs the worker the child-lot labels.
+      setSaveAlert(needsHands.concat(failed, done.map((d) => `Split in NetSuite: ${d}`)));
       return;
     }
     if (failed.length && !done.length) {
@@ -352,8 +354,9 @@ export const WarehouseSplitScreen = () => {
     return (
       <tr key={job.soNo} style={{ background: i % 2 ? '#FBFCFE' : '#fff', borderBottom: '1px solid #EEF1F6' }}>
         <td style={{ ...td, paddingLeft: 14 }}>
-          {/* No link: these sales orders are fixtures, so an arrow to a NetSuite
-              record would be a dead affordance. It comes back with real data. */}
+          {/* No link yet. Written when this screen only showed fixtures; since
+              2026-09-22 the queue is live and these are real SO numbers, so a
+              link to the record is a reasonable follow-up, not built here. */}
           <span className="font-mono" style={{ fontWeight: 700, color: '#1A6FE0', fontSize: 11.5 }}>
             {job.soNo}
           </span>

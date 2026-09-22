@@ -1497,7 +1497,7 @@ define([
          * ⚠️ SUPERSEDED 2026-09-10. Measured 2026-08-20 that only six items
          * carried the segment, and real orders were rare because of it. That
          * scope is gone — see the cache MR's header comment. Subsidiary ARC
-         * (the scope since 2026-09-22) covers 143 non-decking items, so this branch should fire far less
+         * (the scope since 2026-09-22) covers 143 items outside the decking list, so this branch should fire far less
          * often; when it does, `taggedItemCount` still lets the front end say
          * how many items were in scope for whichever role served the request.
          */
