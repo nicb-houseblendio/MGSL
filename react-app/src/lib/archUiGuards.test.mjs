@@ -830,7 +830,8 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('  ...telling him nothing needs triggering, which was his actual question',
     /nothing needs triggering/.test(flat), null);
   ok('  ...and naming what to do about it',
-    /confirm it is not hardwood/.test(flat), null);
+    /put the item in subsidiary <span className="font-mono">ARC<\/span>/.test(s) &&
+      !/Set <span className="font-mono">Hardwood<\/span>/.test(s), null);
 
   // It must NOT fire on demo data, where the count would read as a live account fault.
   ok('the notice is gated on live NetSuite data',
