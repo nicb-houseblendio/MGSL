@@ -2008,6 +2008,23 @@ export const SOWizard = ({
                   // invisible. Re-picking the mode you are already in is not a
                   // switch and must not throw the choice away.
                   if (changed) setSalesTeamId('');
+                  /* 🔴 EQUIPMENT TOO, and for a sharper reason than the team.
+                   *
+                   * It is chosen on the Customer step, which a trader can fill in
+                   * for a NEW order and then abandon by switching to an append. The
+                   * value survived that switch and the endpoint writes equipment on
+                   * the append path, so a pick meant for an order that was never
+                   * created would have been written onto a REAL existing order,
+                   * overwriting whatever it carried. Nothing on screen would have
+                   * shown it: the append hydrates the order's other header fields
+                   * and never hydrates this one, so the select reads blank while
+                   * holding a live id.
+                   *
+                   * Clearing on a real switch is the same contract as the sales
+                   * team above, and it costs the same thing: re-picking the mode
+                   * you are already in is not a switch, so a deliberate choice
+                   * survives. */
+                  if (changed) { setEquipment(''); setEquipmentId(''); }
                 }}
                 style={{
                   flex: '1 1 0',
@@ -4151,7 +4168,11 @@ export const SOWizard = ({
           ['Ship to', shipTo || '—'],
           ['Ship date', shipDate || '—'],
           ['Incoterms', incoterms || '—'],
-          ['Equipment', equipment || '—'],
+          /* 'unchanged' on an append, NOT an em dash. The wizard does not hydrate
+           * an existing order's equipment, so blank here means "we are writing
+           * nothing and the order keeps what it has", which an em dash would
+           * misreport as "this order has no equipment". */
+          ['Equipment', equipment || (mode === 'existing' ? 'unchanged' : '—')],
           ['Currency', currency || '—'],
           ['Payment terms', customerTerms || '—'],
           // Only when there is one. An empty row here would read as a note that

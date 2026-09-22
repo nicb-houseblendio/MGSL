@@ -2773,14 +2773,32 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             }).asMappedResults();
             const byName = {};
             rows.forEach((r) => { byName[String(r.itemid)] = int(r.id); });
-            if (rows.length < ARCH_CHARGE_ITEM_NAMES.length) {
-                /* Not an error. Production genuinely has no 'Freight Charges'
-                 * item. Logged so the absence is visible rather than inferred
-                 * from a short dropdown. */
-                log.audit('ARCH Order Create — charge items not all present in this account',
-                    'Resolved ' + rows.length + ' of ' + ARCH_CHARGE_ITEM_NAMES.length +
-                    '. Missing: ' + ARCH_CHARGE_ITEM_NAMES.filter(
-                        (n) => !byName[n]).join(', '));
+            /* 🔴 COUNT THE MAP, NOT THE ROWS. `int()` in this file returns
+             * null rather than 0 for anything that is not a positive integer, and
+             * every consumer below filters on truthiness. So a row that comes back
+             * but whose id fails `int()` disappears from the allowlist, the picker
+             * and the freight-shaped set while `rows.length` still reads 5 and this
+             * alarm stays silent. That is the exact silent-nothing shape this whole
+             * resolver was written to remove, and it was sitting inside the detector
+             * for it. The Missing list on the next line already derives from
+             * `byName`, so the two halves of the message now agree. */
+            if (Object.keys(byName).length < ARCH_CHARGE_ITEM_NAMES.length) {
+                /* ⚠️ log.debug, NOT log.audit, and the reason is this account's own
+                 * history. Production genuinely has no 'Freight Charges' item, so 4
+                 * of 5 is its CORRECT steady state and an audit line here would fire
+                 * on every execution forever. The wizard calls the health GET every
+                 * time it opens, and this script's retained log is roughly 200 rows
+                 * covering two weeks, so that one line would evict the real ERROR
+                 * rows within hours. An hourly notice in the error channel has
+                 * already hidden a four-day outage on this project once.
+                 *
+                 * The missing set is exposed as DATA on the health payload instead,
+                 * which is a pull a developer can make rather than a push into a
+                 * 200-row window. */
+                log.debug('ARCH Order Create — charge items not all present in this account',
+                    'Resolved ' + Object.keys(byName).length + ' of ' +
+                    ARCH_CHARGE_ITEM_NAMES.length + '. Missing: ' +
+                    ARCH_CHARGE_ITEM_NAMES.filter((n) => !byName[n]).join(', '));
             }
             chargeItemMemo = byName;
             return byName;
@@ -2801,6 +2819,17 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * Wrapped: this feeds a diagnostic GET, and a read failure must not take the
      * endpoint's health report down with it.
      */
+    /* The charge items this account does NOT have, as data.
+     *
+     * Production genuinely lacks 'Freight Charges', so 4 of 5 is its correct
+     * steady state. Exposing the gap on the health payload lets a developer ask
+     * for it, instead of a log line firing on every wizard open into a retained
+     * window of roughly 200 rows. */
+    const chargeItemsMissing = () => {
+        const byName = chargeItemsByName();
+        return ARCH_CHARGE_ITEM_NAMES.filter((n) => !byName[n]);
+    };
+
     const chargeItemList = () => {
         /* Ordered by the declaration above rather than by whatever order the
          * query returned, so the wizard's dropdown is stable between accounts. */
@@ -4604,29 +4633,36 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
 
             applyIncoterms(so, h, true);
 
+            /* Feedback 10 item 1, "entre Ship date et Pmt terms".
+             *
+             * 🔴 OUTSIDE the ship-date branch, corrected 2026-09-22. It was
+             * inserted INSIDE it hours earlier, which made a new order carry its
+             * equipment only when it also carried a ship date. Latent through the
+             * wizard, because `headerOk` makes the ship date mandatory there, and
+             * wrong for anything else that posts. The same insertion also split the
+             * comment below in half; it is restored.
+             *
+             * ⚠️ OPTIONAL, and written only when the request names it. The field
+             * is not mandatory on the ARC form and 59 of the 60 form-386 orders in
+             * this account saved with it blank, so an order that says nothing about
+             * equipment must save exactly as it does today.
+             *
+             * 🔴 NO DEFAULT ARM, unlike incoterms. The 🔴 note at applyIncoterms
+             * records the real bug that shape caused on SO-CWP-001371: a default
+             * fired on an APPEND and overwrote a value the order already carried.
+             * Equipment is a per-shipment choice with no customer-level source to
+             * fall back on, so there is nothing honest to default it to.
+             *
+             * setIfPresent rather than setValue, for the reason the scar above it
+             * gives: being selectable in SuiteQL is not proof of being writable. */
+            if (h.equipmentId) {
+                setIfPresent(so, H_EQUIPMENT, int(h.equipmentId), 'the logistics equipment');
+            }
+
             if (h.shipDate) {
                 // setValue with a real Date, NOT setText. setText parses against
                 // the executing user's date-format preference, so an ISO string
                 // throws, and the old catch swallowed it at audit level — the
-                /* Feedback 10 item 1, "entre Ship date et Pmt terms".
-                 *
-                 * ⚠️ OPTIONAL, and written only when the request names it. The
-                 * field is not mandatory on the ARC form and 59 of the 60 form-386
-                 * orders in this account saved with it blank, so an order that says
-                 * nothing about equipment must save exactly as it does today.
-                 *
-                 * 🔴 NO DEFAULT ARM, unlike incoterms. The 🔴 note at
-                 * applyIncoterms records the real bug that shape caused on
-                 * SO-CWP-001371: a default fired on an APPEND and overwrote a value
-                 * the order already carried. Equipment is a per-shipment choice with
-                 * no customer-level source to fall back on, so there is nothing to
-                 * default it to and guessing one would be worse than leaving it.
-                 *
-                 * setIfPresent rather than setValue, for the reason the scar above it
-                 * gives: being selectable in SuiteQL is not proof of being writable. */
-                if (h.equipmentId) {
-                    setIfPresent(so, H_EQUIPMENT, int(h.equipmentId), 'the logistics equipment');
-                }
                 // order saved with the field silently empty.
                 const d = parseIsoDate(h.shipDate);
                 if (d) {
@@ -5704,6 +5740,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         customerSalesRep: customerSalesRep,
         listIncoterms: listIncoterms,
         listEquipment: listEquipment,
+        chargeItemsMissing: chargeItemsMissing,
         getFxRate: getFxRate,
         getMillingRates: getMillingRates,
         // Exported for the test runner.

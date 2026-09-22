@@ -527,6 +527,11 @@ define([
                  * than needing a second round trip, and the server allowlist
                  * stays the single source of what may be added. */
                 chargeItems: orderLib.chargeItemList(),
+                /* Which of the five this account lacks. Empty in sandbox, and
+                 * ['Freight Charges'] in production, where that is correct rather
+                 * than broken. Reported as data so the absence is visible without
+                 * a log line on every call. */
+                chargeItemsMissing: orderLib.chargeItemsMissing(),
                 /* Read-only, Feedback 9 items 6 and 8: what this deployment's
                  * runasrole can actually SEE. Gated on the write list like the
                  * other probes, because it is a developer tool and the screen

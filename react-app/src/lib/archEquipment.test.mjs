@@ -122,6 +122,59 @@ ok('🔴 written ONLY when the request names it',
  * equipment must leave whatever the order already has. */
 ok('written on BOTH the create and the append path',
   (srv.match(/setIfPresent\(so, H_EQUIPMENT/g) || []).length, 2);
+
+/* 🔴 COUNTING IS NOT ENOUGH, and this guard learned that the hard way. The
+ * assertion above passed while the CREATE-path write sat nested inside
+ * `if (h.shipDate) {`, which meant a new order carried its equipment only when it
+ * also carried a ship date. Latent through the wizard, because `headerOk` makes
+ * the ship date mandatory there, and wrong for anything else that posts.
+ *
+ * So assert WHERE, not just how many: neither write may have an unclosed
+ * `if (h.shipDate) {` between it and the nearest preceding `if (h.equipmentId)`. */
+{
+  const sites = [];
+  let from = 0;
+  for (;;) {
+    const at = srv.indexOf('setIfPresent(so, H_EQUIPMENT', from);
+    if (at === -1) break;
+    sites.push(at);
+    from = at + 1;
+  }
+  ok('both write sites were located', sites.length, 2);
+
+  /* ⚠️ A REAL BRACE WALK, not a count of opens against closes. The first version
+   * of this guard counted `if (h.shipDate) {` against de-dented `}` in the
+   * preceding 1200 characters, and a mutation putting the write back inside the
+   * branch PASSED it 39/39. A guard that cannot fail is worse than no guard,
+   * because it is read as coverage.
+   *
+   * Walk backwards from the write, tracking depth. The first `{` we leave
+   * unmatched is the block that encloses it; read the line that opened it. */
+  const enclosingOpener = (pos) => {
+    let depth = 0;
+    for (let i = pos; i >= 0; i--) {
+      const ch = srv[i];
+      if (ch === '}') depth++;
+      else if (ch === '{') {
+        if (depth === 0) return srv.slice(srv.lastIndexOf('\n', i) + 1, i + 1).trim();
+        depth--;
+      }
+    }
+    return '';
+  };
+
+  for (let i = 0; i < sites.length; i++) {
+    const guardAt = srv.lastIndexOf('if (h.equipmentId)', sites[i]);
+    ok(`site ${i + 1} is guarded by if (h.equipmentId)`, guardAt !== -1, true);
+    // What encloses that guard? It must NOT be the ship-date branch.
+    const opener = enclosingOpener(guardAt - 1);
+    ok(`🔴 site ${i + 1} is NOT nested inside the ship-date branch`,
+      /h\.shipDate/.test(opener), false);
+  }
+}
+/* And the comment that insertion split in half is whole again. */
+ok('the ship-date comment was repaired',
+  /swallowed it at audit level [\s\S]{0,10}the\n\s*\/\/ order saved with the field silently empty\./.test(SRV), true);
 ok('🔴 and there is NO default arm, unlike incoterms',
   /equipmentDefault|custscript_arch_equipment/.test(srv), false);
 ok('  while incoterms still has one, which is correct for a mandatory field',
@@ -139,11 +192,21 @@ ok('it sits between Ship date and Payment terms',
   && wiz.indexOf('arch-equipment') < wiz.indexOf('Payment terms'), true);
 ok('it is editable, unlike Payment terms beside it',
   /id="arch-equipment"[\s\S]{0,400}readOnly/.test(WIZ), false);
+/* 🔴 AND SWITCHING MODES CLEARS IT, which is a sharper case than the customer
+ * change. Equipment is picked on the Customer step, so a trader can fill in a NEW
+ * order and abandon it by switching to an append. The value survived that switch
+ * and the endpoint writes equipment on the append path, so a pick meant for an
+ * order that was never created would be written onto a REAL one, overwriting what
+ * it carried, with the select reading blank the whole time. */
+ok('🔴 switching between new and append clears it',
+  /if \(changed\) \{ setEquipment\(''\); setEquipmentId\(''\); \}/.test(wiz), true);
+ok('  and the Review row says "unchanged" on an append rather than an em dash',
+  /mode === 'existing' \? 'unchanged'/.test(wiz), true);
 ok('picking a customer clears it, like incoterms',
   /setEquipment\(''\)[\s\S]{0,60}setEquipmentId\(''\)/.test(wiz), true);
 ok('it reaches the request payload',
   /equipmentId: equipmentId \|\| undefined/.test(wiz), true);
-ok('and the Review step shows it', /\['Equipment', equipment \|\| '—'\]/.test(WIZ), true);
+ok('and the Review step shows it', /\['Equipment', equipment \|\|/.test(WIZ), true);
 
 /* ── 6. the client fetcher ───────────────────────────────────────────────── */
 console.log('the client fetcher');
