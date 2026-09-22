@@ -277,18 +277,48 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
     /**
      * Department stamped on ARCH orders.
      *
-     * 11 is "Hardwood" in this account (9 Trading, 10 Softwood, 11 Hardwood,
-     * read 2026-08-20). NetSuite makes department MANDATORY on the sales-order
-     * form and does not source it from the customer, so it has to come from
-     * somewhere; Nic's design says it should follow the trader's role, and until
-     * roles are settled the screen's own subject matter is the honest default.
+     * 🔴 WAS 11, AND 11 CANNOT BE WRITTEN ON AN ARC ORDER AT ALL.
      *
-     * Overridable by script parameter so it never needs a deploy to change. Note
-     * the real MTL orders in this account use 9 (Trading) rather than 10, so if
-     * MGSL turns out to book hardwood under Trading too, this is the one value to
-     * change.
+     * Department 11 is `Trading : Hardwood` and its SUBSIDIARY LIST IS `CWP MTL`
+     * AND NOTHING ELSE. Department 9 `Trading` is the parent and is available to
+     * every subsidiary including ARC. Measured 2026-09-21:
+     *
+     *   9   Trading             parent, 27 subsidiaries incl. ARC
+     *   11  Trading : Hardwood  parent 9, CWP MTL only
+     *   10  Trading : Softwood  parent 9, CWP MTL only
+     *
+     * The order's subsidiary is sourced from the CUSTOMER, so an ARC customer
+     * makes an ARC order, and writing 11 on it fails with "You have entered an
+     * Invalid Field Value 11 for the following field: department". That is the
+     * 2026-09-14 failure recorded at `diagnoseDepartment` below, and it would
+     * have refused EVERY order on ARC stock the day traders went on the screen.
+     *
+     * ⚠️ It was diagnosed as a role permission for a week, including in this
+     * file's own error text, which then got quoted back as evidence. A department
+     * that is not available to the order's subsidiary is invalid for every role,
+     * Administrator included, so no permission change would have fixed it.
+     *
+     * 9 IS ALSO WHAT MGSL ACTUALLY USES, in both subsidiaries. Sales orders by
+     * subsidiary and department, 2026-09-21:
+     *
+     *   CWP MTL  Trading   1,452     ARC  Trading  33
+     *   CWP MTL  Hardwood     33
+     *   CWP MTL  Softwood      9
+     *
+     * So 11 was never the house convention: it appears on 33 of 1,495 MTL orders
+     * and THIS ENDPOINT WROTE 16 OF THEM. The previous comment here had already
+     * noticed real MTL orders use 9 and called it a value "to change"; nobody
+     * changed it because nothing had failed yet.
+     *
+     * And the granularity is not lost. Once ARCH moved into its own subsidiary,
+     * the Hardwood DEPARTMENT is redundant for it: subsidiary ARC identifies the
+     * business, which is the reason the migration chose subsidiary over
+     * department in the first place.
+     *
+     * Still overridable by script parameter, and now VALIDATED against the
+     * record's own option list before the save -- see `resolveDepartment`.
      */
-    const DEPARTMENT_DEFAULT = 11;
+    const DEPARTMENT_DEFAULT = 9;
 
     /**
      * The sales-order form ARCH orders MUST end up on, and how they get there.
@@ -445,6 +475,115 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
     };
 
     const departmentId = () => int(param('custscript_arch_department')) || DEPARTMENT_DEFAULT;
+
+    /**
+     * 🔴 ASK THE ACCOUNT, DO NOT TRUST THE CONSTANT.
+     *
+     * `departmentId()` is a wish. Whether it can be written depends on the
+     * order's subsidiary, which depends on the customer, which is only known
+     * once `entity` is set. So this runs AFTER the customer and checks the
+     * wanted department against `departmentsubsidiarymap` before the save.
+     *
+     * Why a fallback and not a throw: a refused save costs the trader the whole
+     * wizard, and there is normally a correct answer available -- department 9
+     * `Trading` is mapped to 27 subsidiaries. Failing closed on a configuration
+     * mismatch turns it into an outage, which is exactly what the 11-on-ARC bug
+     * did for a week.
+     *
+     * Order of preference:
+     *   1. the wanted id, when the map says this subsidiary allows it
+     *   2. `DEPARTMENT_DEFAULT`, when the map allows that instead
+     *   3. the wanted id unchanged, at ERROR level, so the save reports the real
+     *      refusal rather than this code guessing a department onto an order
+     *
+     * ⚠️ Step 3 never invents a third answer. An arbitrary valid department would
+     * write wrong GL segmentation onto a real customer order and nobody would
+     * notice; a refused save is visible and gets reported.
+     *
+     * ⚠️ And every unknown resolves to "keep the wish, unvalidated": a throw from
+     * the query, or zero rows. An empty result must NOT be read as "nothing is
+     * valid" -- that is the same false-zero shape as an unsupported SuiteQL
+     * filter returning 0 rows for a populated field.
+     */
+    const resolveDepartment = (so) => {
+        const wanted = departmentId();
+        const sub = int(so.getValue({ fieldId: 'subsidiary' }));
+
+        /* No subsidiary yet means no question to answer. The create path sets
+         * `entity` before this runs precisely so the subsidiary is populated by
+         * the time we get here, but an append can reach it on a record whose
+         * subsidiary is not exposed to the executing role. */
+        if (!sub) return wanted;
+
+        /* 🔴 WAS `fld.getSelectOptions()`, WHICH DOES NOT EXIST HERE.
+         *
+         * The first version of this function asked the department field for its
+         * option list. On a NON-DYNAMIC record that method is not defined, so
+         * every call threw, the catch returned `wanted` unvalidated, and the
+         * whole validation layer was dead code that reported success. It was
+         * caught by the health GET on 2026-09-21:
+         *
+         *   "optionsError": "TypeError: fld.getSelectOptions is not a function"
+         *
+         * The guards passed because they mocked `getSelectOptions` as a
+         * function, which is the classic shape of a test that proves the mock
+         * works. `departmentsubsidiarymap` is the real source: two columns,
+         * 193 rows, and it is what NetSuite itself filters the dropdown on.
+         */
+        let rows = null;
+        try {
+            rows = query.runSuiteQL({
+                query: 'SELECT department FROM departmentsubsidiarymap WHERE subsidiary = ?',
+                params: [sub],
+            }).asMappedResults() || [];
+        } catch (e) {
+            /* ⚠️ REST SuiteQL and N/query are DIFFERENT DIALECTS, and this query
+             * was written and proved against the REST endpoint. If
+             * `departmentsubsidiarymap` is not a valid search type inside
+             * N/query it throws HERE, on a live order. The only acceptable
+             * outcome is the behaviour we had before validation existed: a
+             * validation failure must never become an order failure. */
+            log.audit('ARCH order - department validation unavailable',
+                'Keeping department ' + wanted + ' unvalidated for subsidiary ' + sub + '. ' +
+                (e && e.message ? e.message : e));
+            return wanted;
+        }
+
+        /* 🔴 AN EMPTY RESULT IS NO INFORMATION, NOT "nothing is valid".
+         * Treating zero rows as authoritative is the same false-zero shape an
+         * unsupported SuiteQL filter produces, which cost a whole measurement
+         * pass on 2026-09-21 by returning 0 for a field with 271 populated
+         * rows. No rows means we learned nothing; proceed as before. */
+        if (!rows.length) return wanted;
+
+        const valid = {};
+        for (let i = 0; i < rows.length; i++) {
+            const id = int(rows[i].department);
+            if (id) valid[String(id)] = true;
+        }
+        if (valid[String(wanted)]) return wanted;
+
+        if (valid[String(DEPARTMENT_DEFAULT)]) {
+            log.audit('ARCH order - department remapped for this subsidiary',
+                'Department ' + wanted + ' is not available to subsidiary ' + sub +
+                ', so this order uses ' + DEPARTMENT_DEFAULT + ' instead.');
+            return DEPARTMENT_DEFAULT;
+        }
+
+        /* 🔴 DELIBERATELY DOES NOT INVENT A DEPARTMENT.
+         *
+         * There is no third guess worth making. Picking an arbitrary valid id
+         * would write wrong GL segmentation onto a real customer order and
+         * nobody would ever notice. Letting the save refuse costs the trader
+         * this one order and produces a report. A visible failure beats silent
+         * miscoding, so keep the wish and let NetSuite say no. */
+        log.error('ARCH order - no valid department for this subsidiary',
+            'Subsidiary ' + sub + ' allows ' + Object.keys(valid).length + ' department(s), and ' +
+            'neither ' + wanted + ' nor the default ' + DEPARTMENT_DEFAULT + ' is among them. ' +
+            'Keeping ' + wanted + ' so the save reports the real refusal rather than this code ' +
+            'guessing a department onto a customer order.');
+        return wanted;
+    };
 
     /**
      * The REAL incoterms options, read from NetSuite rather than invented.
@@ -3931,7 +4070,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             // the temporary seed Suitelet, which evidently bypassed mandatory
             // fields. Absence on an existing record is not evidence a field is
             // optional.
-            so.setValue({ fieldId: 'department', value: departmentId() });
+            so.setValue({ fieldId: 'department', value: resolveDepartment(so) });
 
             // ── "Reload (Ship From)" is the standard `location` header field ──
             //
@@ -4301,7 +4440,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
 
             // ── Mandatory, and NOT on the wizard: fill the gap, never overwrite ──
             if (!int(so.getValue({ fieldId: 'department' }))) {
-                so.setValue({ fieldId: 'department', value: departmentId() });
+                so.setValue({ fieldId: 'department', value: resolveDepartment(so) });
             }
 
             // "Reload (Ship From)". Derived from the lines being added, and only
@@ -4904,14 +5043,44 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             out.fieldFound = !!fld;
             if (fld) {
                 out.mandatory = !!fld.isMandatory;
+                /* ⚠️ THIS PROBE IS LEGACY AND IT ALWAYS FAILS. Kept, renamed, and
+                 * documented rather than deleted, because its failure is the
+                 * evidence for why `resolveDepartment` no longer works this way:
+                 * `getSelectOptions` is not defined on a non-dynamic record, so
+                 * the field cannot be asked what it will accept. Reading
+                 * `legacyOptionsProbe` as "validation is broken" is the wrong
+                 * conclusion -- `mapAllowed` below is the real check. */
                 try {
                     const opts = fld.getSelectOptions({}) || [];
                     out.optionCount = opts.length;
                     out.options = opts.slice(0, 60).map((o) => String(o.value) + '=' + String(o.text));
                     out.wantedIsOffered = opts.some((o) => String(o.value) === String(out.wanted));
                 } catch (e) {
-                    out.optionsError = (e.name || '') + ': ' + (e.message || String(e));
+                    out.legacyOptionsProbe = 'expected to fail on a non-dynamic record: ' +
+                        (e.name || '') + ': ' + (e.message || String(e));
                 }
+            }
+            /* 🔴 THE REAL VALIDATION, REPORTED SO IT CANNOT GO DEAD UNNOTICED.
+             *
+             * `resolveDepartment` checks `departmentsubsidiarymap` through
+             * N/query. That query was written against REST SuiteQL, which is a
+             * DIFFERENT DIALECT, so it could fail only once deployed -- exactly
+             * how the previous implementation stayed broken while its guards
+             * were green. Running the same query here means the health GET
+             * answers "does validation work in production" without creating an
+             * order. If `mapError` appears, the resolver is falling back to the
+             * unvalidated path and the constant is the only thing protecting
+             * order creation. */
+            try {
+                const mapRows = query.runSuiteQL({
+                    query: 'SELECT department FROM departmentsubsidiarymap WHERE subsidiary = ?',
+                    params: [int(out.subsidiary)],
+                }).asMappedResults() || [];
+                out.mapAllowed = mapRows.map((r) => int(r.department)).filter(function (v) { return !!v; });
+                out.mapAllowsWanted = out.mapAllowed.indexOf(int(out.wanted)) !== -1;
+                out.mapAllowsDefault = out.mapAllowed.indexOf(DEPARTMENT_DEFAULT) !== -1;
+            } catch (e) {
+                out.mapError = (e.name || '') + ': ' + (e.message || String(e));
             }
             /* The same call the create path makes, so a failure here is the
              * failure there, reported instead of thrown. */
