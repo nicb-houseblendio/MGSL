@@ -23,8 +23,10 @@
  * false 2026-08-20 by driving this screen end to end: it posted IA-CWP-467 and
  * split lot 315970-9 into 500 BF plus a new 315970-9-B of 645 BF.
  *
- * It still falls back to fixtures when the Suitelet does not inject an endpoint
- * URL, and `source` says which it is — that part was always true.
+ * It falls back to fixtures ONLY when the Suitelet does not inject an endpoint
+ * URL (a local preview). A live load that fails or is refused shows an error
+ * banner and no orders, since 2026-09-22 (Feedback 11): invented orders under
+ * "NetSuite unreachable" sent the client hunting for a permission.
  */
 
 import * as React from 'react';
@@ -105,7 +107,7 @@ export const WarehouseSplitScreen = () => {
   // The source is surfaced in the toolbar rather than hidden: demo data shown as
   // if it were real is the one outcome worth designing against.
   const {
-    jobs, source, error, lotMissingCount, notReadyToBuildCount, readyToBuildKnown,
+    jobs, source, error, failure, lotMissingCount, notReadyToBuildCount, readyToBuildKnown,
     reload, completeBundle,
   } = useArchSplitQueue();
   const [saving, setSaving] = React.useState(false);
@@ -204,8 +206,15 @@ export const WarehouseSplitScreen = () => {
     const ready = job.bundles.filter((b) => entryDone(entryFor(job, b.lotNo), b.systemBF));
     const left = job.bundles.length - ready.length;
 
-    // On fixtures there is nothing to write to; keep the old preview behaviour
-    // so the screen is still demonstrable without NetSuite.
+    // A failed live load has no jobs, so nothing can be open; refuse anyway
+    // rather than print "Progress saved" over a write that never happened.
+    if (source === 'error' || source === 'loading') {
+      setOpenJob(null);
+      setToast('Nothing was saved: the split queue is not loaded from NetSuite.');
+      return;
+    }
+    // Local preview on fixtures (no endpoint at all): nothing to write to; keep
+    // the preview behaviour so the screen is still demonstrable without NetSuite.
     if (source !== 'netsuite') {
       setOpenJob(null);
       if (!left) setResult({ job, outcomes: job.bundles.map((b) => splitOutcome(b, entryFor(job, b.lotNo))) });
@@ -692,22 +701,53 @@ export const WarehouseSplitScreen = () => {
         <span
           title={
             source === 'netsuite' ? 'Live from NetSuite.'
-              : error ? 'Could not reach NetSuite, so demo data is shown instead: ' + error
+              : source === 'error' ? (error || 'The split queue could not be loaded.')
               : 'Demo data. This screen is not connected to NetSuite here.'
           }
           style={{
             fontSize: 10,
             fontWeight: 700,
-            color:      source === 'netsuite' ? '#1B5E20' : '#7A4100',
-            background: source === 'netsuite' ? '#E8F5E9' : '#FBF1E5',
-            border:     '1px solid ' + (source === 'netsuite' ? '#1B5E20' : '#D9822B'),
+            color:      source === 'netsuite' ? '#1B5E20' : source === 'error' ? '#8B1A1A' : '#7A4100',
+            background: source === 'netsuite' ? '#E8F5E9' : source === 'error' ? '#FDECEC' : '#FBF1E5',
+            border:     '1px solid ' + (source === 'netsuite' ? '#1B5E20' : source === 'error' ? '#C62828' : '#D9822B'),
             padding: '2px 8px',
             borderRadius: 9,
           }}
         >
-          {source === 'loading' ? 'Loading…' : source === 'netsuite' ? 'Live' : error ? 'Demo data — NetSuite unreachable' : 'Demo data'}
+          {source === 'loading' ? 'Loading…'
+            : source === 'netsuite' ? 'Live'
+            : source === 'error' ? (failure === 'forbidden' ? 'Not permitted' : 'Not loaded')
+            : 'Demo data'}
         </span>
       </div>
+
+      {/* A failed live load says so in the page, not only in a tooltip, and
+          shows no orders: invented ones sent the client looking for a
+          permission that did not exist (Feedback 11). */}
+      {source === 'error' && (
+        <div
+          role="alert"
+          style={{
+            margin: '0 16px 12px', padding: '10px 14px', borderRadius: 8,
+            background: '#FDECEC', border: '1px solid #C62828', color: '#8B1A1A',
+            fontSize: 12.5, lineHeight: 1.45, display: 'flex', gap: 12, alignItems: 'center',
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            <strong>The split queue is not loaded.</strong> {error}
+          </span>
+          <button
+            type="button"
+            onClick={reload}
+            style={{
+              padding: '5px 12px', borderRadius: 8, border: '1px solid #C62828', background: '#fff',
+              color: '#8B1A1A', fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Table */}
       <div style={{ padding: '0 16px 24px' }}>
@@ -736,7 +776,9 @@ export const WarehouseSplitScreen = () => {
               <tbody>
                 <tr>
                   <td colSpan={10} style={{ padding: '40px 0', textAlign: 'center', color: ARCH_SURFACE.textLight, fontSize: 12.5 }}>
-                    {search.trim() ? 'No results for this search.' : 'No splits to do.'}
+                    {source === 'error' ? 'Nothing to show until the queue loads from NetSuite.'
+                      : source === 'loading' ? 'Loading…'
+                      : search.trim() ? 'No results for this search.' : 'No splits to do.'}
                   </td>
                 </tr>
               </tbody>

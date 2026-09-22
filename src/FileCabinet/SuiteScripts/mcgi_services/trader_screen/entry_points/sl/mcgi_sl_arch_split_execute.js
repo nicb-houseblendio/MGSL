@@ -23,9 +23,10 @@
  *
  * `custscript_arch_split_roles` holds the permitted role internal IDs, comma
  * separated. If it is empty or unset, ONLY Administrator passes. That default
- * is deliberate: the warehouse role is still an open question with
- * Marc-Antoine, and until it is answered an unconfigured deployment must refuse
- * everyone rather than admit everyone. Sibling deployment 6495 currently sits at
+ * is deliberate: an unconfigured deployment must refuse everyone rather than
+ * admit everyone. The warehouse role was settled 2026-09-22 (Feedback 11): MA
+ * opened the screen as 2183 Hardwood Logistics Coordinator, so the SDF ships
+ * `2183` for this parameter and in the audience. Sibling deployment 6495 currently sits at
  * allemployees=T, which is exactly the shape of mistake this guards against.
  *
  * ── Contract ────────────────────────────────────────────────────────────────
@@ -89,12 +90,18 @@ define(['N/runtime', 'N/log', './../../shared/archSplitExecute', './../../shared
         const allowed = permittedRoles();
 
         if (allowed.indexOf(Number(user.role)) === -1) {
-            log.error('ARCH Split Execute',
+            // AUDIT, not ERROR: a refusal is this check doing its job, and it fires
+            // on every page load by a role not yet on the list (twelve times in
+            // eleven minutes on 2026-09-22). The role id goes back in the payload so
+            // the screen can tell an administrator exactly which id to add.
+            log.audit('ARCH Split Execute',
                 'Refused: user ' + user.id + ' role ' + user.role + ' is not in [' + allowed.join(',') + ']');
             return respond(context, 403, {
                 ok: false,
                 code: 'FORBIDDEN',
-                error: 'Your role is not permitted to complete bundle splits. Ask an administrator to add it.',
+                role: Number(user.role),
+                error: 'Your role (id ' + user.role + ') is not permitted to see or complete bundle splits. '
+                    + 'An administrator must add it to Permitted Split Roles on the MCGI SL ARCH Split Execute deployment.',
             });
         }
 

@@ -2,32 +2,31 @@ import * as React from 'react';
 import { getSplitJobs } from '@/lib/archSplit';
 import type { ArchSplitJob } from '@/types/archSplit';
 import type { ArchUnit } from '@/lib/archUom';
+import { decideSplitQueueLoad, isJsonContentType } from '@/lib/archSplitQueueLoad';
+import type { SplitQueueFailure } from '@/lib/archSplitQueueLoad';
 
 /**
- * The warehouse split queue, from NetSuite when it is reachable and from
- * fixtures when it is not.
+ * The warehouse split queue: from NetSuite when the page is served by the
+ * warehouse Suitelet, from fixtures only in a local preview with no endpoint.
  *
- * The screen was built against `getSplitJobs()` and every control was audited
- * against the client prototype using it, so the fixtures stay as the fallback
- * rather than being deleted. Two reasons that is worth keeping:
- *
- *  - The endpoint is behind a role allowlist. Someone opening the screen without
- *    permission should see the layout and an explanatory banner, not an empty
- *    page that looks broken.
- *  - Until real orders carry split flags the live queue is legitimately empty,
- *    and an empty screen is indistinguishable from a failed one.
- *
- * `source` is returned so the screen can say which it is showing. Silently
- * serving demo data as if it were real is the failure mode to avoid.
+ * 🔴 CHANGED 2026-09-22 (Feedback 11). A refused or failed live load used to
+ * fall back to fixtures too, on the theory that someone without permission
+ * should "see the layout". In practice Marc-Antoine, refused by the role
+ * allowlist, saw two invented orders under "NetSuite unreachable" and went
+ * hunting for a NetSuite permission that did not exist. A failed live load is
+ * now `source: 'error'` with NO jobs and a message naming who must act. The
+ * decision lives in `lib/archSplitQueueLoad.ts`, where it is tested.
  */
 
-export type SplitQueueSource = 'netsuite' | 'fixtures' | 'loading';
+export type SplitQueueSource = 'netsuite' | 'fixtures' | 'loading' | 'error';
 
 export interface ArchSplitQueueState {
   jobs: ArchSplitJob[];
   source: SplitQueueSource;
-  /** Non-null when the live fetch failed and fixtures are standing in. */
+  /** Non-null when the live load failed (`source: 'error'`). Written for the warehouse to read. */
   error: string | null;
+  /** Why the live load failed, so the screen can pick its wording. */
+  failure: SplitQueueFailure | null;
   /** Split-flagged lines with no lot assigned. They cannot be worked as-is. */
   lotMissingCount: number;
   /**
@@ -107,6 +106,8 @@ interface QueueResponse {
     notReadyToBuild?: number; readyToBuildKnown?: boolean;
   };
   error?: string;
+  code?: string;
+  role?: number | string;
 }
 
 /**
@@ -123,6 +124,7 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
   const [jobs, setJobs] = React.useState<ArchSplitJob[]>([]);
   const [source, setSource] = React.useState<SplitQueueSource>('loading');
   const [error, setError] = React.useState<string | null>(null);
+  const [failure, setFailure] = React.useState<SplitQueueFailure | null>(null);
   const [lotMissingCount, setLotMissingCount] = React.useState(0);
   // true (not held back) while on fixtures or before the first live response —
   // only a live answer of `false` means the field genuinely isn't set up yet.
@@ -135,11 +137,7 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
   React.useEffect(() => {
     let cancelled = false;
 
-    const fallback = (why: string | null) => {
-      if (cancelled) return;
-      setJobs(getSplitJobs());
-      setSource('fixtures');
-      setError(why);
+    const clearCounts = () => {
       setLotMissingCount(0);
       setNotReadyToBuildCount(0);
       setReadyToBuildKnown(true);
@@ -147,18 +145,40 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
 
     const url = endpointUrl();
     if (!url) {
-      // Not served by the warehouse Suitelet — a local preview or a storybook.
-      fallback(null);
+      // Not served by the warehouse Suitelet: a local preview. Fixtures are the point here.
+      setJobs(getSplitJobs());
+      setSource('fixtures');
+      setError(null);
+      setFailure(null);
+      clearCounts();
       return;
     }
 
+    const fail = (d: { failure: SplitQueueFailure | null; message: string | null }) => {
+      if (cancelled) return;
+      setJobs([]);
+      setSource('error');
+      setError(d.message);
+      setFailure(d.failure);
+      clearCounts();
+    };
+
     setSource('loading');
     fetch(`${url}${url.indexOf('?') === -1 ? '?' : '&'}action=queue`, { credentials: 'include' })
-      .then((r) => r.json() as Promise<QueueResponse>)
-      .then((body) => {
+      .then(async (r) => {
+        const contentType = r.headers.get('content-type');
+        // A page instead of JSON means NetSuite answered before the script did.
+        let body: QueueResponse | null = null;
+        if (isJsonContentType(contentType)) {
+          try { body = (await r.json()) as QueueResponse; } catch { body = null; }
+        }
+        return { contentType, body };
+      })
+      .then(({ contentType, body }) => {
         if (cancelled) return;
-        if (!body.ok) {
-          fallback(body.error || 'The split queue could not be loaded.');
+        const d = decideSplitQueueLoad({ hasEndpoint: true, contentType, body });
+        if (d.source !== 'netsuite' || !body) {
+          fail(d);
           return;
         }
         setJobs((body.jobs || []) as unknown as ArchSplitJob[]);
@@ -167,9 +187,13 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
         setReadyToBuildKnown(body.counts?.readyToBuildKnown !== false);
         setSource('netsuite');
         setError(null);
+        setFailure(null);
       })
       .catch((e: unknown) => {
-        fallback(e instanceof Error ? e.message : 'The split queue could not be reached.');
+        fail(decideSplitQueueLoad({
+          hasEndpoint: true,
+          networkError: e instanceof Error ? e.message : 'unknown error',
+        }));
       });
 
     return () => {
@@ -196,6 +220,9 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
       });
       // The Suitelet answers 200 to everything — NetSuite gives no way to set a
       // status code — so branch on the payload, never on r.status.
+      if (!isJsonContentType(r.headers.get('content-type'))) {
+        return { ok: false, error: 'NetSuite refused this request before the split script ran, so nothing was written. Reload the page; if it happens again your role is not in the deployment audience.' };
+      }
       const body = await r.json();
       if (!body || body.ok !== true) {
         return { ok: false, error: (body && body.error) || 'The split could not be completed.' };
@@ -207,7 +234,7 @@ export const useArchSplitQueue = (): ArchSplitQueueState => {
   }, []);
 
   return {
-    jobs, source, error, lotMissingCount, notReadyToBuildCount, readyToBuildKnown,
+    jobs, source, error, failure, lotMissingCount, notReadyToBuildCount, readyToBuildKnown,
     reload, completeBundle,
   };
 };

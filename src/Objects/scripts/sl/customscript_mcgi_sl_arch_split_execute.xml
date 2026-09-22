@@ -26,7 +26,7 @@
       <defaultchecked>F</defaultchecked>
       <defaultselection></defaultselection>
       <defaultvalue></defaultvalue>
-      <description>Comma separated role internal IDs permitted to complete a bundle split. Leave EMPTY until the warehouse role is settled with the client: empty means Administrator only, which is the safe default for a deployment that writes as Administrator. Administrator is always retained even if omitted from the list, so a bad entry cannot lock out the person who has to fix it.</description>
+      <description>Comma separated role internal IDs permitted to complete a bundle split. Empty means Administrator only, which is the safe default for a deployment that writes as Administrator. Administrator is always retained even if omitted from the list, so a bad entry cannot lock out the person who has to fix it.</description>
       <displayheight></displayheight>
       <displaytype>NORMAL</displaytype>
       <displaywidth></displaywidth>
@@ -77,17 +77,23 @@
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploy_mcgi_sl_arch_split_execute">
       <custscript_arch_split_adj_account>228</custscript_arch_split_adj_account>
+      <!-- 2183 = MGSL - Hardwood Logistics Coordinator, the warehouse role
+           (Feedback 11, 2026-09-22: MA opened the split screen as this role and
+           was refused 8 times, "Refused: user 3308 role 2183 is not in [3]").
+           Role ids do NOT carry between accounts: 2181 in production is an
+           unrelated MTL role, so re-resolve this id before any prod deploy. -->
+      <custscript_arch_split_roles>2183</custscript_arch_split_roles>
       <allemployees>F</allemployees>
       <allpartners>F</allpartners>
+      <!-- allroles stays F. This Suitelet runs as Administrator and posts
+           Inventory Adjustments, so with allroles=T the script's role list is
+           the ONLY barrier between every role in the account (Industriel and MTL
+           included) and an Administrator write. MA set it to T on 2026-09-22
+           while looking for the missing permission; this restores the second
+           barrier. The audience decides who can reach the URL, the parameter
+           decides who the script will act for, and both must list the role. -->
       <allroles>F</allroles>
-      <!-- Administrator only, until the warehouse role is settled with the client.
-           allemployees=F is not by itself enough: an admin does NOT bypass a
-           Suitelet audience, so with no role listed the endpoint refuses
-           everyone including the person who has to test it. Add the warehouse
-           role HERE as well as to custscript_arch_split_roles when it is known;
-           the audience decides who can reach the URL, the parameter decides who
-           the script will act for. -->
-      <audslctrole>ADMINISTRATOR</audslctrole>
+      <audslctrole>ADMINISTRATOR|[scriptid=customrole2183]</audslctrole>
       <eventtype></eventtype>
       <isdeployed>T</isdeployed>
       <isonline>F</isonline>
