@@ -1833,10 +1833,23 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // valid escape in the script that generated the file. The regex then demanded a
   // backspace character and could never match, while rendering identically in a
   // terminal, a diff and code review. `id: NNNN,` is unambiguous without it.
+  // 🔴 Moved off internal ids 2026-09-22. 3540 is a SANDBOX id; production's
+  // Milling Charges is 2976 and production has no Freight Charges item at all, so
+  // the id list made the milling feature silently do nothing in prod: no line, no
+  // error. The rule is unchanged, only its expression is account-neutral now.
+  // ⚠️ Comment-stripped, and not optionally. The source explains this rule in
+  // prose directly above the code that implements it, naming the two items that
+  // must NOT be offered, so a raw search matches the explanation and reports the
+  // rule broken by the very text describing it. Third time in this repo.
+  const ocCode = oc.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^[ \t]*\/\/.*$/gm, ' ');
   ok('f9-10: milling is offered, and ONLY the customer-facing item',
-    /id: 3540,/.test(oc) &&
-      !/id: 3330,/.test(oc) &&
-      !/id: 3331,/.test(oc), null);
+    /'Milling Charges',/.test(ocCode) &&
+      !/Milling Charges : Cut/.test(ocCode) &&
+      !/'Planing'/.test(ocCode), null);
+  ok('f9-10:  ...and no charge item is named by a hardcoded internal id any more',
+    !/id: 3540,/.test(ocCode) && !/id: 3541,/.test(ocCode) && !/id: 2089,/.test(ocCode), null);
+  ok('f9-10:  ...they are resolved against whichever account this is',
+    /chargeItemsByName/.test(ocCode) && /ARCH_CHARGE_ITEM_NAMES/.test(ocCode), null);
   ok('f9-10:  ...and the overruled objection is recorded, not deleted',
     /MILLING IS NOW OFFERED/.test(oc) &&
       /10:04/.test(oc), null);

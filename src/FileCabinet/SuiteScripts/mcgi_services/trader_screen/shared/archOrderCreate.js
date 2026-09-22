@@ -2646,16 +2646,89 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * lignes si applicables". The wizard sums its milling column and sends ONE
      * charge; this end does not fan it back out per lot line.
      */
-    const ARCH_CHARGE_ITEMS = [
-        { id: 2089, label: 'Freight/Transport' },
-        { id: 1859, label: 'Freight' },
-        { id: 3541, label: 'Freight Charges' },
-        { id: 1874, label: 'Drop Charges' },
-        /* Customer-facing milling, added 2026-09-21 on his answer at [10:04].
-         * 3540 and NOT 3330/3331: those two carry the internal cost on the reman
-         * POs and belong nowhere near a sales order. See the block above. */
-        { id: 3540, label: 'Milling Charges' },
+    /* 🔴 BY NAME, NOT BY INTERNAL ID. Corrected 2026-09-22.
+     *
+     * These were hardcoded ids, and two of them were SANDBOX ids. Measured in
+     * both accounts:
+     *
+     *     item                sandbox    production
+     *     Freight/Transport     2089        2089
+     *     Freight               1859        1859
+     *     Drop Charges          1874        1874
+     *     Milling Charges       3540       *2976*
+     *     Freight Charges       3541       *does not exist*
+     *
+     * `chargeItemList` filtered on those ids, so in production it returned three
+     * rows instead of five, `writeAuth.chargeItems` carried no milling row, the
+     * wizard's milling item resolved to undefined and the charge list came back
+     * unchanged. No line, no error, and the Remanufacturing footer still reading
+     * "Added to the sales order". The milling feature Marc-Antoine asked for on
+     * 2026-09-21 would have done nothing at all the day it reached prod.
+     *
+     * Names are the stable key here. They are what MGSL actually say, they match
+     * across both accounts, and a name absent from an account simply drops out of
+     * the allowlist instead of dragging a wrong id along with it. Measured: no
+     * duplicate names among these five in either account.
+     *
+     * ⚠️ 'Milling Charges' and NOT 'Milling Charges : Cut' or 'Planing'. Those
+     * two carry the internal cost on the reman POs and belong nowhere near a
+     * sales order. Same rule the ids version carried, now expressed where it can
+     * survive an account change. */
+    const ARCH_CHARGE_ITEM_NAMES = [
+        'Freight/Transport',
+        'Freight',
+        'Freight Charges',
+        'Drop Charges',
+        // Customer-facing milling, added 2026-09-21 on his answer at [10:04].
+        'Milling Charges',
     ];
+
+    /* Freight-SHAPED, for the FOB Reload auto-add below. 'Milling Charges' is
+     * deliberately not here: a milling line must never satisfy the freight
+     * requirement. */
+    const FREIGHT_SHAPED_NAMES = ['Freight/Transport', 'Freight', 'Freight Charges', 'Drop Charges'];
+    const AUTO_FREIGHT_NAME = 'Freight/Transport';
+
+    /**
+     * The five charge items resolved to this account's ids, once per execution.
+     *
+     * ⚠️ An empty map is a REAL answer and must not throw. Every caller below
+     * degrades to "no charge items available", which refuses charge lines rather
+     * than writing a wrong one. Silence here would be worse than the failure.
+     */
+    let chargeItemMemo = null;
+    const chargeItemsByName = () => {
+        if (chargeItemMemo) return chargeItemMemo;
+        try {
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT id, itemid FROM item ' +
+                    'WHERE itemid IN (' +
+                    ARCH_CHARGE_ITEM_NAMES.map(() => '?').join(',') + ') ' +
+                    "  AND isinactive = 'F' AND itemtype = 'NonInvtPart'",
+                params: ARCH_CHARGE_ITEM_NAMES,
+            }).asMappedResults();
+            const byName = {};
+            rows.forEach((r) => { byName[String(r.itemid)] = int(r.id); });
+            if (rows.length < ARCH_CHARGE_ITEM_NAMES.length) {
+                /* Not an error. Production genuinely has no 'Freight Charges'
+                 * item. Logged so the absence is visible rather than inferred
+                 * from a short dropdown. */
+                log.audit('ARCH Order Create — charge items not all present in this account',
+                    'Resolved ' + rows.length + ' of ' + ARCH_CHARGE_ITEM_NAMES.length +
+                    '. Missing: ' + ARCH_CHARGE_ITEM_NAMES.filter(
+                        (n) => !byName[n]).join(', '));
+            }
+            chargeItemMemo = byName;
+            return byName;
+        } catch (e) {
+            log.error('ARCH Order Create — charge items unreadable',
+                'No charge line can be validated this run, so charges are refused ' +
+                'rather than written against a guessed id. ' +
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return {};
+        }
+    };
 
     /**
      * The charge items the screen may offer, re-read from NetSuite so a label
@@ -2666,18 +2739,12 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * endpoint's health report down with it.
      */
     const chargeItemList = () => {
-        try {
-            const ids = ARCH_CHARGE_ITEMS.map((c) => c.id);
-            const rows = query.runSuiteQL({
-                query:
-                    'SELECT id, itemid, itemtype FROM item ' +
-                    'WHERE id IN (' + ids.join(',') + ') ' +
-                    "  AND isinactive = 'F' AND itemtype = 'NonInvtPart'",
-            }).asMappedResults();
-            return rows.map((r) => ({ id: String(int(r.id)), name: String(r.itemid) }));
-        } catch (e) {
-            return { error: (e.name || '') + ': ' + (e.message || String(e)) };
-        }
+        /* Ordered by the declaration above rather than by whatever order the
+         * query returned, so the wizard's dropdown is stable between accounts. */
+        const byName = chargeItemsByName();
+        return ARCH_CHARGE_ITEM_NAMES
+            .filter((n) => byName[n])
+            .map((n) => ({ id: String(byName[n]), name: n }));
     };
 
     /**
@@ -2717,16 +2784,36 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * whatever freight it was given.
      */
     const FOB_RELOAD_INCOTERM = 5;
-    const FREIGHT_SHAPED_ITEMS = [2089, 1859, 3541, 1874];
+    /* Resolved per account, see chargeItemsByName. Was a hardcoded id list that
+     * included 3541, which does not exist in production. */
+    const freightShapedIds = () => {
+        const byName = chargeItemsByName();
+        return FREIGHT_SHAPED_NAMES.map((n) => byName[n]).filter(Boolean);
+    };
 
     const autoFreightForFobReload = (incotermId, charges) => {
         if (int(incotermId) !== FOB_RELOAD_INCOTERM) return null;
+        const shaped = freightShapedIds();
         for (let i = 0; i < charges.length; i++) {
-            if (FREIGHT_SHAPED_ITEMS.indexOf(int(charges[i].itemId)) !== -1) return null;
+            if (shaped.indexOf(int(charges[i].itemId)) !== -1) return null;
+        }
+        /* 🔴 RESOLVED, NOT HARDCODED. 2089 happens to be the same id in both
+         * accounts, but reading it from the same resolver as everything else is
+         * what stops the next account from silently getting a wrong line rather
+         * than no line. */
+        const freightId = chargeItemsByName()[AUTO_FREIGHT_NAME];
+        if (!freightId) {
+            /* ⚠️ No item to add. Say so loudly rather than returning a line with
+             * no id, which would be refused downstream with a confusing message. */
+            log.error('ARCH Order Create — FOB Reload freight line NOT added',
+                'The item "' + AUTO_FREIGHT_NAME + '" could not be resolved in this ' +
+                'account, so the order is created WITHOUT the freight line the ' +
+                'incoterm requires. Somebody has to add it by hand.');
+            return null;
         }
         return {
-            itemId: 2089,
-            itemCode: 'Freight/Transport',
+            itemId: freightId,
+            itemCode: AUTO_FREIGHT_NAME,
             quantity: 1,
             rate: 0,
             description: 'Added automatically: FOB Reload. Rate to be confirmed.',
@@ -2742,8 +2829,13 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             return { charges: [], problems: ['`charges` must be an array.'] };
         }
 
+        /* Built from what this account actually has, so an id that exists only
+         * in the other account can never be accepted here. */
+        const chargeByName = chargeItemsByName();
         const allowed = {};
-        ARCH_CHARGE_ITEMS.forEach((c) => { allowed[String(c.id)] = c.label; });
+        ARCH_CHARGE_ITEM_NAMES.forEach((n) => {
+            if (chargeByName[n]) allowed[String(chargeByName[n])] = n;
+        });
 
         rawCharges.forEach((raw, idx) => {
             const label = 'Charge line ' + (idx + 1);
@@ -2758,8 +2850,9 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
              * refused. */
             if (!Object.prototype.hasOwnProperty.call(allowed, String(itemId))) {
                 problems.push(label + ': item ' + itemId + ' is not a charge item this ' +
-                              'screen may add. Allowed: ' +
-                              ARCH_CHARGE_ITEMS.map((c) => c.label).join(', ') + '.');
+                              'screen may add. Allowed in this account: ' +
+                              (Object.keys(allowed).map((k) => allowed[k]).join(', ')
+                               || 'none, the charge items could not be read') + '.');
                 return;
             }
 

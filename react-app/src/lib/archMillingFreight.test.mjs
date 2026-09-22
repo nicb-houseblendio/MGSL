@@ -52,25 +52,50 @@ for (let i = srv.indexOf('{', at + START.length - 1); i < srv.length; i++) {
 const body = srv.slice(at + START.length, end - 1);
 
 const FOB_RELOAD = Number((srv.match(/FOB_RELOAD_INCOTERM = (\d+)/) || [])[1]);
-const FREIGHT_IDS = JSON.parse(
-  (srv.match(/FREIGHT_SHAPED_ITEMS = (\[[^\]]*\])/) || [])[1].replace(/\s/g, ''),
-);
 
-const autoFreight = (incotermId, charges) => new Function(
-  'incotermId', 'charges', 'int', 'FOB_RELOAD_INCOTERM', 'FREIGHT_SHAPED_ITEMS',
+/* 🔴 IDS ARE NO LONGER HARDCODED, so the harness resolves them the way the
+ * shipped code does: by NAME, through a stand-in for `chargeItemsByName`.
+ *
+ * The ids below are SANDBOX ids and they are deliberately only in the test. The
+ * source used to carry them, and two of the five were wrong in production:
+ * Milling Charges is 2976 there and Freight Charges does not exist at all, so
+ * the milling feature silently added no line and raised no error. Pinning them
+ * here instead means the harness can still exercise the arithmetic while the
+ * source stays account-neutral. */
+const SBX_IDS = {
+  'Freight/Transport': 2089,
+  Freight: 1859,
+  'Freight Charges': 3541,
+  'Drop Charges': 1874,
+  'Milling Charges': 3540,
+};
+const FREIGHT_NAMES = JSON.parse(
+  (srv.match(/FREIGHT_SHAPED_NAMES = (\[[^\]]*\])/) || [])[1]
+    .replace(/'/g, '"').replace(/,\s*\]/, ']'),
+);
+const AUTO_NAME = (srv.match(/AUTO_FREIGHT_NAME = '([^']+)'/) || [])[1];
+const FREIGHT_IDS = FREIGHT_NAMES.map((n) => SBX_IDS[n]);
+
+const autoFreight = (incotermId, charges, byName) => new Function(
+  'incotermId', 'charges', 'int', 'FOB_RELOAD_INCOTERM',
+  'freightShapedIds', 'chargeItemsByName', 'AUTO_FREIGHT_NAME', 'log',
   body,
 )(
   incotermId,
   charges,
   (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0; },
   FOB_RELOAD,
-  FREIGHT_IDS,
+  () => FREIGHT_NAMES.map((n) => (byName || SBX_IDS)[n]).filter(Boolean),
+  () => (byName || SBX_IDS),
+  AUTO_NAME,
+  { error: () => {}, audit: () => {} },
 );
 
 console.log('FOB Reload automatic freight');
 
 ok('FOB Reload with no charges adds a line', !!autoFreight(FOB_RELOAD, []), true);
-ok('  on Freight/Transport', autoFreight(FOB_RELOAD, []).itemId, 2089);
+ok('  on Freight/Transport', autoFreight(FOB_RELOAD, []).itemId, SBX_IDS['Freight/Transport']);
+ok('  named, so the response does not depend on an id', autoFreight(FOB_RELOAD, []).itemCode, 'Freight/Transport');
 ok('  at rate 0, because they do not know the price yet', autoFreight(FOB_RELOAD, []).rate, 0);
 ok('  quantity 1', autoFreight(FOB_RELOAD, []).quantity, 1);
 ok('  flagged so the response can say it was not asked for', autoFreight(FOB_RELOAD, []).autoAdded, true);
@@ -103,16 +128,29 @@ ok('  which is the whole reason the check is a list, not a length',
   FREIGHT_IDS.includes(3540), false);
 
 console.log('the freight list itself');
-ok('holds the four freight-shaped items', FREIGHT_IDS.slice().sort((a, b) => a - b), [1859, 1874, 2089, 3541]);
+ok('holds the four freight-shaped items, by name',
+  FREIGHT_NAMES.slice().sort(), ['Drop Charges', 'Freight', 'Freight Charges', 'Freight/Transport']);
+ok('  which resolve to these ids in SANDBOX', FREIGHT_IDS.slice().sort((a, b) => a - b), [1859, 1874, 2089, 3541]);
+/* 🔴 Milling must never satisfy the freight requirement. An order carrying a
+ * milling charge and no freight still owes freight. */
+ok('  and milling is NOT among them', FREIGHT_NAMES.indexOf('Milling Charges'), -1);
 ok('FOB Reload is incoterm 5, as measured in the account', FOB_RELOAD, 5);
 
 /* ── the server must accept milling, and only the customer-facing item ───── */
 console.log('milling on the server allowlist');
-const allowlist = srv.slice(srv.indexOf('const ARCH_CHARGE_ITEMS = ['));
+/* 🔴 Asserted on the NAME list now, because the id list is gone. The rule is
+ * unchanged and it is the one that matters: the CUSTOMER-FACING milling item is
+ * offered and the two internal reman-cost items are not. Expressing it by name is
+ * what makes it survive an account change, which the id version did not: 3540 is
+ * sandbox-only and production's Milling Charges is 2976. */
+const allowlist = srv.slice(srv.indexOf('const ARCH_CHARGE_ITEM_NAMES = ['));
 const firstBlock = allowlist.slice(0, allowlist.indexOf('];'));
-ok('3540 Milling Charges is allowed', /\bid:\s*3540\b/.test(firstBlock), true);
-ok('3330 Milling Charges : Cut is NOT (it is the internal cost, on POs)', /\bid:\s*3330\b/.test(firstBlock), false);
-ok('3331 Milling Charges : Planing is NOT', /\bid:\s*3331\b/.test(firstBlock), false);
+ok("'Milling Charges' is allowed", /'Milling Charges'/.test(firstBlock), true);
+ok("'Milling Charges : Cut' is NOT (it is the internal cost, on POs)",
+  /Milling Charges : Cut/.test(firstBlock), false);
+ok("'Planing' is NOT, same reason", /'Planing'/.test(firstBlock), false);
+ok('all five charge items are declared',
+  firstBlock.split('\n').filter((l) => /^\s+'/.test(l)).length, 5);
 
 /* ── the wizard: one line, the column total, per WRITABLE line ───────────── */
 console.log('the wizard collapses the column to one line');
