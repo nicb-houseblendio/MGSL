@@ -3745,7 +3745,13 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
 
         if (!rows.length) throw refusal('That sales order does not exist.');
 
-        const code = String(rows[0].status || '').toUpperCase();
+        /* 🔴 THE LETTER AFTER THE COLON. Inside N/query (which this runs in) the
+           status comes back as `SalesOrd:G`, not `G`, so upper-casing the raw
+           value gave `SALESORD:G`, which never matched and this guard never fired:
+           0 "can no longer take new lines" refusals in the log, ever. Found by the
+           round-2 review, 2026-09-22; the service's statusLetter already did this. */
+        const rawStatus = String(rows[0].status || '').trim();
+        const code = rawStatus.slice(rawStatus.lastIndexOf(':') + 1).toUpperCase();
         if (CLOSED_STATUSES[code]) {
             throw refusal('Sales order ' + rows[0].tranid + ' is ' +
                             (rows[0].label || CLOSED_STATUSES[code]) +

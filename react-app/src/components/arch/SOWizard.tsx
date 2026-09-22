@@ -1449,7 +1449,12 @@ export const SOWizard = ({
     // for a new order is dropped rather than left in state behind a panel that
     // is no longer a picker.
     setSalesTeamId('');
-    setShipDate(o.shipDate || '');
+    // A ship date equal to the order date is NetSuite's default, not a plan
+    // (26 of 28 open ARC orders), so it is NOT preloaded: the field is left empty
+    // and the trader must enter a real one. Preloading it priced FX and milling on
+    // a stale date (115194: 2026-02-05, FX 1.3693 vs 1.4030 today) and printed
+    // that date as the ship date. Same rule as shipWeekCell (round-2 review).
+    setShipDate(o.shipDate && o.shipDate !== o.created ? o.shipDate : '');
     // Carry the agreed price across so Pricing is already satisfied for lines
     // that are already sold. The trader only has to price what they just added.
     setPrice((prev) => {

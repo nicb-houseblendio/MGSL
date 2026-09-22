@@ -323,7 +323,7 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
       if (result.ok) {
         setRtbLagNotice(
           `${o.soNo} saved. This tab is up to date now, but the Hardwood tab's ` +
-          `READY TO BUILD column is served from the hourly cache and will not ` +
+          `READY TO BUILD column is served from the cache, which rebuilds every 15 minutes, and will not ` +
           `show it until the next rebuild. The age of those figures is on the ` +
           `badge beside the date at the top.`
         );
@@ -709,7 +709,12 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
         <div style={{ ...notice, background: '#FFF8E1', borderBottom: '1px solid #E6B800', color: '#7A4100' }}>
           <span style={{ fontSize: 13, lineHeight: 1 }}>⚠️</span>
           <span>
-            <strong>This list may not be complete.</strong>{' '}
+            {/* Round-2 review, 2026-09-22: on the ENDPOINT leg every degradation is a
+                missing column (cost, rep, item count), never a missing order, so the
+                old headline told MA the list was incomplete right after he asked for
+                it to be fixed, over a list that was 28 of 28. Only the RESTlet leg
+                can actually be missing orders. */}
+            <strong>{transport === 'restlet' ? 'This list may not be complete.' : 'Some figures on this tab are incomplete.'}</strong>{' '}
             {/*
               🔴 NAME THE REASON, do not name the commonest-sounding one. This
               sentence used to read "The order endpoint did not answer" for all

@@ -74,3 +74,27 @@ test('round 2: the Reserved panel container dash explains itself too', () => {
   const res = read('components/arch/ArchReservedSection.tsx');
   assert.match(res, /No container or vessel is recorded on this bundle/);
 });
+
+test('round 2 (F12): an append does not preload a defaulted ship date', () => {
+  const wiz = read('components/arch/SOWizard.tsx');
+  assert.match(wiz, /setShipDate\(o\.shipDate && o\.shipDate !== o\.created \? o\.shipDate : ''\);/);
+  assert.doesNotMatch(wiz, /setShipDate\(o\.shipDate \|\| ''\);/);
+});
+
+test('round 2 (F12): only the RESTlet leg claims the list may be incomplete', () => {
+  const oo = read('components/arch/ArchOpenOrdersView.tsx');
+  assert.match(oo, /transport === 'restlet' \? 'This list may not be complete\.' : 'Some figures on this tab are incomplete\.'/);
+});
+
+test('round 2 (F12): the append guard reads the status LETTER, so SalesOrd:G is refused', () => {
+  const oc = readFileSync(join(here, '../../../src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js'), 'utf8');
+  const at = oc.indexOf('const assertAppendable = (soId) =>');
+  const body = oc.slice(at, oc.indexOf('return { tranId: rows[0].tranid', at));
+  assert.doesNotMatch(body, /const code = String\(rows\[0\]\.status \|\| ''\)\.toUpperCase\(\);/);
+  // Execute the extraction on both dialects' spellings.
+  const letter = (raw) => { const s = String(raw || '').trim(); return s.slice(s.lastIndexOf(':') + 1).toUpperCase(); };
+  assert.match(body, /rawStatus\.slice\(rawStatus\.lastIndexOf\(':'\) \+ 1\)\.toUpperCase\(\)/);
+  assert.equal(letter('SalesOrd:G'), 'G');
+  assert.equal(letter('G'), 'G');
+  assert.equal(letter('SalesOrd:B'), 'B');
+});
