@@ -319,6 +319,9 @@ export const ArchLotTable = ({
    * « on dirait qu'il fait juste disparaitre du TS »). It is named now.
    */
   const gap = React.useMemo(() => bucketGap(row, bucket), [row, bucket]);
+  /* Wood on this row that is bought but not in the yard. Read only by the
+   * Available empty state, to explain a 0 that used to be a bundle list. */
+  const incomingOnRow = (row.onOrder || 0) + (row.inTransit || 0);
   const gapReason = gap > 0 ? bucketGapReason(bucket) : null;
   const notSourced = notSourcedNote(bucket);
 
@@ -811,9 +814,28 @@ export const ArchLotTable = ({
             of this", which is exactly the vanishing Marc-Antoine described. The
             quantity is real; what is missing is the bundle attribution.
           */}
+          {/*
+            🔴 THIRD BRANCH ADDED 2026-09-22, and it covers a regression this
+            same day's change introduced.
+
+            When `onOrder` and `inTransit` left the Available formula, twelve
+            live rows fell to Available 0 while still carrying incoming wood.
+            Their Available drawer then said only "No bundles in this status",
+            which is true and useless: the trader is looking at a row whose grid
+            line shows 3,000 BF On Order, and the panel tells them nothing about
+            why none of it is available. Before the change those bundles were
+            listed here.
+
+            Neither existing branch could say it. `gap` is
+            `max(0, header - lots)`, and here both sides are 0, so the first
+            branch cannot fire; the second is the generic case. Verified on
+            screen against AFM54KD @ Ambassador Services International.
+          */}
           {gap > 0 && !notSourced
             ? `The ${meta.label.toLowerCase()} total is real, but no bundle carries it, so there is nothing to list`
-            : 'No bundles in this status'}
+            : bucket === 'available' && incomingOnRow > 0
+              ? `Nothing on this row is available to sell yet. ${formatQty(incomingOnRow, row.unit, uom)} ${displaySuffix(row.unit, uom)} is incoming, on order or in transit, and is counted in its own column rather than in Available. It becomes available when it arrives in the yard.`
+              : 'No bundles in this status'}
         </div>
       ) : (
         <div

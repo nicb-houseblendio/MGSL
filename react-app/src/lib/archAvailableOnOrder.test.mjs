@@ -230,5 +230,29 @@ ok('a partly committed bundle is locked whole, per the client',
 ok('...but still shows its free volume in the list, which is the row total\'s business',
   lotQuantity(partly, 'available'), 490);
 
+/* ── 5. the empty state a zeroed Available row now shows ─────────────────── */
+console.log('the Available empty state explains itself');
+
+/* 🔴 Twelve live rows fell to Available 0 while still carrying incoming wood,
+ * and their drawer said only "No bundles in this status": true, and useless
+ * beside a grid line reading 3,000 BF On Order. Before this change those bundles
+ * were listed there. Neither existing branch could say it, because `gap` is
+ * max(0, header - lots) and both sides are 0 here. Verified on screen against
+ * AFM54KD @ Ambassador Services International, 2026-09-22. */
+const TABLE = read('../components/arch/ArchLotTable.tsx');
+const tableCode = code(TABLE);
+
+ok('the Available empty state has a branch for incoming wood',
+  /bucket === 'available' && incomingOnRow > 0/.test(tableCode), true);
+ok('...and it names the quantity rather than saying nothing',
+  /incoming, on order or in transit/.test(TABLE), true);
+ok('...derived from the ROW, because the lot list is empty in exactly this case',
+  /const incomingOnRow = \(row\.onOrder \|\| 0\) \+ \(row\.inTransit \|\| 0\)/.test(tableCode), true);
+ok('the generic message still exists for rows with genuinely nothing',
+  /'No bundles in this status'/.test(tableCode), true);
+/* 🔴 And the In Transit tab must NOT reach the seeded generator any more. */
+ok('🔴 the lot table can no longer call the demo ETA generator',
+  /lotIncomingInfo/.test(tableCode), false);
+
 console.log(`\n${ran - fails}/${ran} passed`);
 if (fails) process.exit(1);
