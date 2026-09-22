@@ -3,7 +3,7 @@ import { formatQty, displaySuffix } from '@/lib/archUom';
 import { lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
 import { ARCH_BUCKET_META, ARCH_SURFACE } from '@/components/arch/archColors';
 import type { ArchSummaryRow, ArchLot, ArchDetailKey } from '@/types/arch';
-import { poListTotals, unbundledBadge } from '@/lib/archUnbundled';
+import { poListTotals, unbundledBadge, linesOnTab, SHIP_WEEK_DEFAULTED_TITLE } from '@/lib/archUnbundled';
 
 /**
  * On Order / In Transit view — purchase orders, not tallies.
@@ -172,15 +172,19 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
   }
 
   const anyInvented = lots.some((l) => l.incoming === undefined);
-  const lineCount = unbundled.reduce((n, u) => n + (u.lineCount || 1), 0);
+  const lineCount = unbundled.reduce((n, u) => n + linesOnTab(u, bucket), 0);
   const poCount = new Set([
     ...lots.map((l) => resolveIncoming(l, bucket).po),
     ...unbundled.map((u) => u.poNumber || '—'),
   ]).size;
-  const footerLabel = [
+  const listed = [
     lots.length ? `${lots.length} bundle${lots.length === 1 ? '' : 's'}` : '',
     lineCount ? `${lineCount} line${lineCount === 1 ? '' : 's'} without bundles` : '',
-  ].filter(Boolean).join(' and ') + ` on ${poCount} purchase order${poCount === 1 ? '' : 's'}`;
+  ].filter(Boolean).join(' and ');
+  // Only a residual: nothing can be listed, so say that instead of "on 0 purchase orders".
+  const footerLabel = listed
+    ? `${listed} on ${poCount} purchase order${poCount === 1 ? '' : 's'}`
+    : 'Not listed bundle by bundle';
 
   const headerCell: React.CSSProperties = {
     padding: '8px 10px',
@@ -221,7 +225,10 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
       <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 12 }}>
         <thead>
           <tr>
-            {['PO #', 'Bundle', 'Supplier', 'Container / Vessel', 'ETA', `${label} (${displaySuffix(row.unit, uom)})`].map(
+            {/* "Ship week", not "ETA": the value is the PO's custbody_ship_week, the
+                supplier's ship week, which MTL and IND label "Ship Week"; it can be
+                in the past for wood still at sea (round-2 review, 2026-09-22). */}
+            {['PO #', 'Bundle', 'Supplier', 'Container / Vessel', 'Ship week', `${label} (${displaySuffix(row.unit, uom)})`].map(
               (h, i) => (
                 <th key={h} style={{ ...headerCell, textAlign: i >= 4 ? 'right' : 'left' }}>
                   {h}
@@ -248,7 +255,10 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
                 <td style={{ ...cell, fontSize: 11, color: ARCH_SURFACE.textMid }} className="font-mono">
                   {lot.containerNo || '—'}
                 </td>
-                <td style={{ ...cell, textAlign: 'right' }}>
+                <td
+                  style={{ ...cell, textAlign: 'right' }}
+                  title={!inc.eta && lot.incoming?.etaDefaulted ? SHIP_WEEK_DEFAULTED_TITLE : undefined}
+                >
                   {inc.eta ? (
                     <EtaPill date={inc.eta} color={meta.color} />
                   ) : (
@@ -276,8 +286,8 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
               >
                 <td style={{ ...cell, fontWeight: 700, color: meta.color }} className="font-mono">
                   {u.poNumber || '—'}
-                  {(u.lineCount || 1) > 1 && (
-                    <span style={{ fontWeight: 500, color: ARCH_SURFACE.textMid, fontSize: 10.5 }}> ×{u.lineCount} lines</span>
+                  {linesOnTab(u, bucket) > 1 && (
+                    <span style={{ fontWeight: 500, color: ARCH_SURFACE.textMid, fontSize: 10.5 }}> ×{linesOnTab(u, bucket)} lines</span>
                   )}
                 </td>
                 <td style={cell} title={badge.title}>
@@ -292,7 +302,7 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
                 </td>
                 <td style={{ ...cell, fontWeight: 600, color: ARCH_SURFACE.text }}>{u.supplier || '—'}</td>
                 <td style={{ ...cell, fontSize: 11, color: ARCH_SURFACE.textMid }} className="font-mono">—</td>
-                <td style={{ ...cell, textAlign: 'right' }}>
+                <td style={{ ...cell, textAlign: 'right' }} title={!etaDate && u.etaDefaulted ? SHIP_WEEK_DEFAULTED_TITLE : undefined}>
                   {etaDate ? (
                     <EtaPill date={formatShortDate(etaDate)} color={meta.color} />
                   ) : (

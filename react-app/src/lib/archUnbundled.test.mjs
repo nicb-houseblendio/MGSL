@@ -77,6 +77,21 @@ test('badge by state and TAB', () => {
   assert.equal(unbundledBadge(line({ arm: 'journal', billedAhead: false }), 'inTransit').text, 'No bundles yet');
 });
 
+test('per-tab line count, with the older-payload fallback', async () => {
+  const { linesOnTab } = await import('./archUnbundled.ts');
+  assert.equal(linesOnTab(line({ lineCount: 2, onOrderLines: 1, inTransitLines: 2 }), 'onOrder'), 1);
+  assert.equal(linesOnTab(line({ lineCount: 2, onOrderLines: 1, inTransitLines: 2 }), 'inTransit'), 2);
+  assert.equal(linesOnTab(line({ lineCount: 3 }), 'onOrder'), 3);
+});
+
+test('the view: Ship week header, per-tab counts, a footer that never says "on 0 purchase orders"', () => {
+  assert.match(view, /'Ship week', `\$\{label\}/);
+  assert.doesNotMatch(view, /'Container \/ Vessel', 'ETA'/);
+  assert.match(view, /linesOnTab\(u, bucket\) > 1 &&/);
+  assert.match(view, /: 'Not listed bundle by bundle';/);
+  assert.match(view, /SHIP_WEEK_DEFAULTED_TITLE/);
+});
+
 test('the view is wired to the tested functions', () => {
   assert.match(view, /const \{ lots, unbundled, residual, total \} = poListTotals\(row, bucket\);/);
   assert.match(view, /const badge = unbundledBadge\(u, bucket\);/);

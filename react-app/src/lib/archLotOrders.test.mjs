@@ -822,6 +822,34 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   ok('H14 bundles claim assigned x openShare, so lots + unbundled still equal the row',
     !!os && Math.abs(osLots + osu.reduce((t, x) => t + x.onOrder, 0) - os.onOrder) < 1e-6,
     os && { osLots, osu, onOrder: os.onOrder });
+
+  /* ── Round-2 review: three behaviours no test pinned (mutations survived) ── */
+  // A BUNDLE whose PO ship week is only the PO date has no ETA either, and says why.
+  const be = one(runMr({ bucketRows: [po({ tranid: '999113', docno: 'PO-BE', lineno: '50', qty: '1', billed: '0',
+    lotno: '316027-2', assignedqty: '1', trandate: '9/21/2026', shipweek: '9/21/2026' })] }));
+  const beLot = be && be.lots.find((l) => l.lotNo === '316027-2');
+  ok('H15 a bundle whose ship week equals the PO date gets eta "" and etaDefaulted',
+    !!beLot && beLot.incoming && beLot.incoming.eta === '' && beLot.incoming.etaDefaulted === true,
+    beLot && beLot.incoming);
+
+  // Two lines of one PO, one billed and one not, are NOT merged (different state).
+  const tb = one(runMr({ bucketRows: [
+    po({ tranid: '999114', docno: 'PO-TB', lineno: '51', qty: '1', billed: '1' }),
+    po({ tranid: '999114', docno: 'PO-TB', lineno: '52', qty: '1', billed: '0' }),
+  ] }));
+  const tbu = tb && tb.unbundled ? tb.unbundled : [];
+  ok('H16 a billed and an unbilled line of one PO stay two entries',
+    tbu.length === 2 && tbu.some((x) => x.billedAhead) && tbu.some((x) => !x.billedAhead), tbu);
+
+  // Billed ONLY for what was received is not billed AHEAD.
+  const br = one(runMr({ bucketRows: [po({ tranid: '999115', docno: 'PO-BR', lineno: '53', qty: '2', shiprecv: '1', billed: '1' })] }));
+  const bru = br && br.unbundled ? br.unbundled : [];
+  ok('H17 a line billed exactly for what was received is NOT billedAhead',
+    bru.length === 1 && bru[0].billedAhead === false && bru[0].partlyReceived === true, bru);
+
+  // Per-tab line counts on a merged entry.
+  ok('H18 a merged entry counts its lines per tab',
+    mgu.length === 1 && mgu[0].onOrderLines === 2 && mgu[0].inTransitLines === 0, mgu);
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archLotOrders ok');

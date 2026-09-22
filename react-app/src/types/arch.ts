@@ -264,6 +264,8 @@ export interface ArchLot {
      * Montreal included.
      */
     eta: string;
+    /** A ship week was set, but only to the PO date (its default), so `eta` is ''. */
+    etaDefaulted?: boolean;
   } | null;
   /**
    * An active Inventory Hold sits on this lot, so it is NOT sellable.
@@ -510,6 +512,11 @@ export interface ArchUnbundledLine {
   partlyReceived?: boolean;
   /** How many PO lines in the same state this entry merges. */
   lineCount?: number;
+  /** Of those, how many carry quantity on each tab (the count shown per tab). */
+  inTransitLines?: number;
+  onOrderLines?: number;
+  /** A ship week was set, but only to the PO date (its default), so none is shown. */
+  etaDefaulted?: boolean;
   /** Display units, like every other bucket. */
   inTransit: number;
   onOrder: number;

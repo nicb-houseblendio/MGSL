@@ -255,7 +255,7 @@ const MetricCell = ({
      POs on hover; the drill-down lists those lines with a "No packing list" badge. */
   const npl = bucket === 'inTransit' ? noPackingListFlag(row) : null;
   const flagTitle = npl
-    ? `${formatQty(npl.qty, row.unit, uom)} in transit with no packing list (billed before receipt): ${npl.poNumbers.join(', ')}`
+    ? `${formatQty(npl.qty, row.unit, uom)} in transit with no packing list, on POs billed before receipt: ${npl.poNumbers.join(', ')}`
     : undefined;
 
   if (onDrillDown && bf > 0) {

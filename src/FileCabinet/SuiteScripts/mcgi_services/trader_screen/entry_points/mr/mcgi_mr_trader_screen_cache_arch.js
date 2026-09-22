@@ -2436,6 +2436,11 @@ define([
             const sw = isoDate(r.shipweek) || '';
             return sw && sw !== (isoDate(r.trandate) || '') ? sw : '';
         };
+        /** True when a ship week WAS set but only to the PO date, so the screen can say why it shows none. */
+        const poEtaDefaulted = (r) => {
+            const sw = isoDate(r.shipweek) || '';
+            return !!sw && sw === (isoDate(r.trandate) || '');
+        };
 
         rows.forEach((r) => {
             const key = String(r.itemid) + '__' + String(r.locationid);
@@ -2537,6 +2542,7 @@ define([
                     poNumber: String(r.docno || ''),
                     supplier: String(r.customer || ''),
                     eta:      poEta(r),
+                    etaDefaulted: poEtaDefaulted(r),
                     // Which In Transit rule applies. 'closed' first: a closed PO
                     // keeps open lines on this account and they are not coming.
                     arm:      closedOrder ? 'closed' : (water > 0 ? (hasTransitJE ? 'journal' : 'billed') : 'none'),
@@ -2751,6 +2757,7 @@ define([
                         // date string to parse — `isoDate` is the one place this
                         // file converts, and it already handles the null.
                         eta:      poEta(r),
+                        etaDefaulted: poEtaDefaulted(r),
                     };
                 }
 
@@ -2906,14 +2913,19 @@ define([
                 const mk = [p.poNumber, p.arm, p.eta, p.billedAhead, p.partlyReceived].join('|');
                 if (!merged[mk]) {
                     merged[mk] = {
-                        poNumber: p.poNumber, supplier: p.supplier, eta: p.eta, arm: p.arm,
-                        billedAhead: p.billedAhead, partlyReceived: p.partlyReceived,
-                        lineCount: 0, inTransit: 0, onOrder: 0,
+                        poNumber: p.poNumber, supplier: p.supplier, eta: p.eta, etaDefaulted: p.etaDefaulted,
+                        arm: p.arm, billedAhead: p.billedAhead, partlyReceived: p.partlyReceived,
+                        lineCount: 0, inTransitLines: 0, onOrderLines: 0, inTransit: 0, onOrder: 0,
                     };
                 }
+                const it = left * p.waterShare;
+                const oo = left * (1 - p.waterShare);
                 merged[mk].lineCount += 1;
-                merged[mk].inTransit += left * p.waterShare;
-                merged[mk].onOrder   += left * (1 - p.waterShare);
+                // Per TAB, so "x2 lines" on On Order never counts a line with nothing there.
+                if (it > 1e-9) merged[mk].inTransitLines += 1;
+                if (oo > 1e-9) merged[mk].onOrderLines += 1;
+                merged[mk].inTransit += it;
+                merged[mk].onOrder   += oo;
             });
             b.unbundled = Object.keys(merged).map((mk) => merged[mk]);
             delete b.poLines;   // served its purpose; keep the stage payload small
@@ -4081,9 +4093,11 @@ define([
                 // The same gap per PO line, with PO, supplier, ETA and the In
                 // Transit rule, so the drill-down can list it (Feedback 8, 2.8c).
                 unbundled: ((bk && bk.unbundled) || []).map((u) => ({
-                    poNumber: u.poNumber, supplier: u.supplier, eta: u.eta, arm: u.arm,
-                    billedAhead: !!u.billedAhead, partlyReceived: !!u.partlyReceived,
+                    poNumber: u.poNumber, supplier: u.supplier, eta: u.eta, etaDefaulted: !!u.etaDefaulted,
+                    arm: u.arm, billedAhead: !!u.billedAhead, partlyReceived: !!u.partlyReceived,
                     lineCount: u.lineCount || 1,
+                    inTransitLines: u.inTransitLines || 0,
+                    onOrderLines: u.onOrderLines || 0,
                     inTransit: u.inTransit / rate,
                     onOrder:   u.onOrder / rate,
                 })),

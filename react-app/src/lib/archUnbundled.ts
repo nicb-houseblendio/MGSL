@@ -85,6 +85,17 @@ export interface PoListTotals {
   total: number;
 }
 
+/** Lines of one merged entry that carry quantity on THIS tab (older payloads: all). */
+export const linesOnTab = (u: ArchUnbundledLine, bucket: IncomingBucket): number => {
+  const n = bucket === 'inTransit' ? u.inTransitLines : u.onOrderLines;
+  return n != null ? n : (u.lineCount || 1);
+};
+
+/** Why a Ship week cell is empty, when there is a reason worth saying. */
+export const SHIP_WEEK_DEFAULTED_TITLE =
+  'The ship week on this PO is only its PO date, which is what the field defaults to, ' +
+  'so it is not shown as a date. Open the PO to confirm.';
+
 export const poListTotals = (row: ArchSummaryRow, bucket: IncomingBucket): PoListTotals => {
   const lots = row.lots.filter((l) => (l[bucket] || 0) > 0);
   const unbundled = (row.unbundled || []).filter((u) => (u[bucket] || 0) >= DUST);
