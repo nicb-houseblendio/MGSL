@@ -3650,6 +3650,14 @@ define([
                                     repShared:  !!o.repShared,
                                     repTied:    !!o.repTied,
                                     repNameUnreadable: !!o.repNameUnreadable,
+                                    // Which bucket this order's share landed in. Stamped in
+                                    // getInputData since fc6e899 (2026-09-15) but NOT copied
+                                    // here until 2026-09-22, so the front end never saw it and
+                                    // every Ready to Build SO column rendered an em dash
+                                    // (Feedback 13, SO 115774 / lot 315310-16). Guarded by
+                                    // archLotOrders.test.mjs section G, which runs THIS
+                                    // output through the real resolver.
+                                    readyToBuild: !!o.readyToBuild,
                                     qty:        o.qty / rate,
                                 };
                             })

@@ -284,7 +284,7 @@ const TEAM_ROWS = [
   { tranid: '126500', repid: '2090', rep: 'Justin Loveland', contribution: '0.5', isprimary: 'F' },
 ];
 
-const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS } = {}) => {
+const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [] } = {}) => {
   const sqlLog = [];
   const errors = [];
   const audits = [];
@@ -302,6 +302,9 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
         rows = teamRows;
       } else if (/FROM inventorynumberlocation/.test(sql)) rows = lotRows;
       else if (/FROM transactionline tl/.test(sql)) rows = bucketRows;
+      // The Ready to Build flag read. Returned [] by default, which is why nothing
+      // here noticed the stamp never reached the payload (Feedback 13).
+      else if (/custbody_arch_ready_to_build/.test(sql)) rows = flagIds.map((id) => ({ tranid: id }));
       else if (/FROM item i/.test(sql)) rows = [];                      // untagged check
       else if (/customrecord_msl_plc_capture/i.test(sql)) rows = [];     // tallies
       return { asMappedResults: () => rows };
@@ -666,6 +669,43 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   ok('C2: over-billed cannot push In Transit above the ordered quantity',
     !!over && Math.round(over.inTransit) === 2000 && Math.round(over.onOrder) === 0,
     over && { onOrder: over.onOrder, inTransit: over.inTransit });
+}
+
+/* ════ G. Ready to Build attribution reaches the PAYLOAD (Feedback 13) ════════
+ * 2026-09-21, MA on SO 115774 / lot 315310-16: "Ready to build : Il manque de
+ * l'info dans les colonnes". The MR stamped `readyToBuild` on each order in
+ * getInputData, then the reduce-side payload builder copied a fixed field list
+ * that omitted it, so `orderSource(lot, 'readyToBuild')` read 'unavailable' on
+ * every live bundle and all six SO columns rendered an em dash. A4b passed the
+ * whole time because it hand-builds stamped orders; these run the MR's OWN
+ * output through the real resolver, which is the only thing that proves it. */
+{
+  const { written, errors } = runMr({ flagIds: ['126500'] });
+  const row = written.find((r) => String(r.internalId) === '2915');
+  const held = row && row.lots.find((l) => l.lotNo === '316027-12');
+  const ords = held && Array.isArray(held.orders) ? held.orders : [];
+  ok('G1 every written order carries a BOOLEAN readyToBuild stamp',
+    ords.length === 2 && ords.every((o) => typeof o.readyToBuild === 'boolean'),
+    ords.map((o) => [o.soNumber, o.readyToBuild]));
+  ok('G2 the flagged order is stamped true, the other false',
+    ords.find((o) => o.soNumber === 'SO-CWP-001360')?.readyToBuild === true &&
+    ords.find((o) => o.soNumber === 'SO-CWP-001344')?.readyToBuild === false,
+    ords.map((o) => [o.soNumber, o.readyToBuild]));
+  ok('G3 the buckets split on the same flag: 640 Ready to Build, 1,080 Reserved',
+    !!held && Math.round(held.readyToBuild) === 640 && Math.round(held.reserve) === 1080,
+    held && { readyToBuild: held.readyToBuild, reserve: held.reserve });
+  ok('G4 the resolver now SOURCES the Ready to Build tab from the MR output',
+    !!held && orderSource(held, 'readyToBuild') === 'netsuite', held && orderSource(held, 'readyToBuild'));
+  ok('G5 and each tab lists only its own order',
+    !!held &&
+    ordersFor(held, 'readyToBuild').map((o) => o.soNumber).join() === 'SO-CWP-001360' &&
+    ordersFor(held, 'reserve').map((o) => o.soNumber).join() === 'SO-CWP-001344',
+    held && [ordersFor(held, 'readyToBuild').map((o) => o.soNumber), ordersFor(held, 'reserve').map((o) => o.soNumber)]);
+  ok('G6 each tab lists quantities that sum to that tab\'s own figure',
+    !!held &&
+    Math.abs(ordersFor(held, 'readyToBuild').reduce((t, o) => t + o.qty, 0) - held.readyToBuild) < 1e-6 &&
+    Math.abs(ordersFor(held, 'reserve').reduce((t, o) => t + o.qty, 0) - held.reserve) < 1e-6);
+  ok('G7 clean run', errors.length === 0, errors);
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archLotOrders ok');
