@@ -35,7 +35,7 @@
   <encryptatrest>F</encryptatrest>
   <fieldtype>SELECT</fieldtype>
   <globalsearch>F</globalsearch>
-  <help>Sales Order this bundle is reserved for. Set by the ARCH trader screen. Clear it only through the trader screen so the Sales Order line is released too.</help>
+  <help>Sales Order this bundle is reserved for. Set by the ARCH trader screen. Removing the line from that Sales Order releases the bundle and clears this field; do not clear it by hand, or the order line keeps a bundle the lot no longer knows about.</help>
   <isformula>F</isformula>
   <ismandatory>F</ismandatory>
   <label>ARCH Reserved For SO</label>
