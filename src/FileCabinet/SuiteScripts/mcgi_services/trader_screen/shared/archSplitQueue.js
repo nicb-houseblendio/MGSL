@@ -178,7 +178,12 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
             // Invalid Date and renders as "Ships in NaNd". ArchSplitJob.shipDate
             // is documented as ISO, so convert here rather than making every
             // consumer guess a locale.
-            "  TO_CHAR(t.custbody_mgsl_expectedshipdate, 'YYYY-MM-DD') AS shipdate, " +
+            // The native ship date. Until 2026-09-22 this read
+            // custbody_mgsl_expectedshipdate, which is null on 34 of 34 ARC orders
+            // (the field is not on the SO record), so every job fell back to its
+            // TRANSACTION date and the "Ships in N d" pill counted from the day the
+            // order was entered. The order wizard now writes `shipdate` too.
+            "  TO_CHAR(t.shipdate, 'YYYY-MM-DD')                       AS shipdate, " +
             "  TO_CHAR(t.trandate, 'YYYY-MM-DD')                       AS trandate, " +
             '  tl.id                            AS lineid, ' +
             '  tl.linesequencenumber            AS lineno, ' +

@@ -247,7 +247,15 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      */
     const H_CUSTOMER_PO = 'otherrefnum';
     const H_INCOTERMS   = 'custbody_incoterms';
-    const H_SHIP_DATE   = 'custbody_mgsl_expectedshipdate';
+    /* The NATIVE ship date. It was `custbody_mgsl_expectedshipdate` until
+     * 2026-09-22, which is NOT on the sales-order record (see setIfPresent's scar
+     * below), so setIfPresent skipped it and every ship date a trader entered was
+     * dropped: 21 "Field custbody_mgsl_expectedshipdate is not on the sales-order
+     * record" audits from script 6505, the latest on 2026-09-21. `shipdate` is what
+     * the IND and MTL order paths write (trader_screen_service.js, MCGI_RL_TraderAPI),
+     * and it is what the Open Orders tab and the split queue read back, so the date
+     * a trader types is now the date the screens show. */
+    const H_SHIP_DATE   = 'shipdate';
     /* Feedback 10 item 1. Exists in BOTH accounts as id 6218, already on the ARC
      * sales-order form, in the Logistics group, and OPTIONAL there. Nothing had
      * to be created in NetSuite; this is wiring only. */

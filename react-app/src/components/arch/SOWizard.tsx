@@ -2553,7 +2553,7 @@ export const SOWizard = ({
      *   Customer PO       otherrefnum                      (H_CUSTOMER_PO)
      *   Ship-to address   shipaddresslist
      *   Currency          currency
-     *   Ship date         custbody_mgsl_expectedshipdate   (H_SHIP_DATE)
+     *   Ship date         shipdate (native)                (H_SHIP_DATE)
      *   Payment terms     terms
      *   Incoterms         custbody_incoterms               (H_INCOTERMS)
      *   Sales rep         custbody_sales_rep + employee    (H_SALES_REP)
