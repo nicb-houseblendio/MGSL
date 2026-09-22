@@ -2486,20 +2486,54 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * a parent-subsidiary (MGSL) item is accepted on an ARC order at all. None of
      * the 31 is mapped to ARC itself, so that mattered.
      *
-     * 🔴 MILLING IS DELIBERATELY ABSENT, and this is not an oversight. It already
-     * has a mechanism: the Remanufacturing step prices planing and cutting at
-     * $0.20/BF EACH (`archOrderPricing.ts`), writes them as line fields on the lot
-     * line (`F_REMAN_PLANE` / `F_REMAN_CUT` in `addLine`), and MGSL post a journal
-     * entry at invoicing. A `Milling Charges` line item would be a second,
-     * competing representation of the same money, so a trader could fold milling
-     * into the wood price AND add a milling line, charging the customer twice with
-     * nothing on screen saying so. Asked of Marc-Antoine rather than guessed.
+     * ✅ MILLING IS NOW OFFERED, AND THE OBJECTION THAT KEPT IT OUT WAS WRONG.
+     *
+     * This block used to argue that a `Milling Charges` line would be a second,
+     * competing representation of the $0.20/BF the Remanufacturing step already
+     * prices, so a trader could charge the customer twice. That was asked of
+     * Marc-Antoine rather than guessed, which was right, and he answered it on
+     * the 2026-09-21 call at [10:04]:
+     *
+     *   "milling charges, ca c'est l'ecran du remand donc j'ai un cout interne,
+     *    mon service cost, ca il est calcule automatiquement, ca ca marche, mais
+     *    parfois on va charger notre client aussi dans un frais comme le frais de
+     *    transport, ca fait qu'on va rajouter une ligne sur le SO"
+     *
+     * **They are two different numbers.** The $0.20/BF is the INTERNAL cost and
+     * it is automatic. The milling charge is a SEPARATE, optional, customer-facing
+     * amount a trader types in. Nothing is billed twice, because nothing was ever
+     * the same money.
+     *
+     * 🔴 AND THE ACCOUNT ALREADY SPLITS IT THAT WAY, which is the evidence the
+     * old objection lacked. Measured 2026-09-21:
+     *
+     *   3330  Milling Charges : Cut       5 lines, ALL on PurchOrd
+     *   3331  Milling Charges : Planing   5 lines, ALL on PurchOrd
+     *   3540  Milling Charges             0 lines, never used
+     *
+     * The Cut and Planing items live on the internal reman POs -- `SO-CWP-001375-M`
+     * carries Cut at 148.40 and Planing at 148.40, which is 742 BF x $0.20 twice.
+     * So the cost side is already two items on a PO, and 3540 has been sitting
+     * unused because the customer-facing line it was made for did not exist yet.
+     * That is why this offers 3540 and NOT 3330/3331: putting the cost-side items
+     * on a sales order would mix the two sides of the same job.
+     *
+     * ⚠️ ONE LINE, THE COLUMN TOTAL. He constrained the shape twice, at [10:49]
+     * and [11:06]: "c'est juste une ligne ... si j'ai plusieurs mes lignes pour
+     * plusieurs items, tu rajoutes pas 5 lignes la, juste un montant qui est le
+     * total de mes lignes pour toute la colonne" and "Est le total de toutes les
+     * lignes si applicables". The wizard sums its milling column and sends ONE
+     * charge; this end does not fan it back out per lot line.
      */
     const ARCH_CHARGE_ITEMS = [
         { id: 2089, label: 'Freight/Transport' },
         { id: 1859, label: 'Freight' },
         { id: 3541, label: 'Freight Charges' },
         { id: 1874, label: 'Drop Charges' },
+        /* Customer-facing milling, added 2026-09-21 on his answer at [10:04].
+         * 3540 and NOT 3330/3331: those two carry the internal cost on the reman
+         * POs and belong nowhere near a sales order. See the block above. */
+        { id: 3540, label: 'Milling Charges' },
     ];
 
     /**
@@ -2530,6 +2564,55 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * `resolveLines` -- `{ charges, problems }` -- so the caller refuses the whole
      * order the same way and a bad charge can never half-write one.
      */
+    /**
+     * 🔴 FOB RELOAD MEANS SOMEBODY OWES FREIGHT, SO THE LINE IS ADDED FOR THEM.
+     *
+     * Asked for on the 2026-09-21 call, and it is not in the Slack list:
+     *
+     *   [08:51] "quand les gars vont choisir FOB Reload, sont obliges d'ajouter un
+     *            frais de transport sur leur SO ... si on pouvait rajouter une ligne
+     *            automatiquement quand ca cree le SO de freight transport"
+     *   [09:41] "mettons l'incoterm FOB Reload est choisi. Ben la ca rajoute un line
+     *            item sur le SO de freight."
+     *
+     * ⚠️ RATE 0, DELIBERATELY. He gave the reason in the same breath: "a ce
+     * moment-la ils ne savent pas toujours le prix". The line is a placeholder that
+     * says this order owes freight, not a guess at what it costs. `resolveCharges`
+     * already accepts rate 0 as legitimate rather than a mistake -- 3 of the 6
+     * hand-made ARC freight lines carry 0 -- so this needs no special case.
+     *
+     * 🔴 THE GAP IS REAL AND MEASURED. Of 89 FOB Reload sales orders in the
+     * account, 4 carry a freight line. So 85 orders that by his own terms owe
+     * freight do not show it, which is what this closes.
+     *
+     * 🔴 NEVER DOUBLES AN EXISTING FREIGHT LINE. If the trader already chose any
+     * freight-shaped charge in the Items step, this does nothing: the trader knows
+     * something this code does not, and quietly adding a second line would invent a
+     * charge nobody agreed to. Milling does NOT count as freight for this test,
+     * which is why the check is a list rather than "any charge at all".
+     *
+     * ⚠️ CREATE ONLY, inherited from the charge path: an append is refused
+     * earlier if it carries charges at all, and an existing order already has
+     * whatever freight it was given.
+     */
+    const FOB_RELOAD_INCOTERM = 5;
+    const FREIGHT_SHAPED_ITEMS = [2089, 1859, 3541, 1874];
+
+    const autoFreightForFobReload = (incotermId, charges) => {
+        if (int(incotermId) !== FOB_RELOAD_INCOTERM) return null;
+        for (let i = 0; i < charges.length; i++) {
+            if (FREIGHT_SHAPED_ITEMS.indexOf(int(charges[i].itemId)) !== -1) return null;
+        }
+        return {
+            itemId: 2089,
+            itemCode: 'Freight/Transport',
+            quantity: 1,
+            rate: 0,
+            description: 'Added automatically: FOB Reload. Rate to be confirmed.',
+            autoAdded: true,
+        };
+    };
+
     const resolveCharges = (rawCharges) => {
         const problems = [];
         const charges = [];
@@ -3892,6 +3975,23 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             (input.header || {}).charges || input.charges);
         if (resolvedCharges.problems.length) {
             throw refusal(resolvedCharges.problems.join(' '));
+        }
+        /* 🔴 FOB RELOAD ADDS ITS OWN FREIGHT LINE, and it happens HERE so the
+         * added line goes through the same cap check, the same writer and the same
+         * response as a charge the trader chose. Putting it after the write would
+         * let it slip past MAX_LINES and leave it out of the reply, so the trader
+         * would be told one thing and the order would say another -- the same
+         * defect the Review step already had once this session. */
+        if (!appending) {
+            const autoFreight = autoFreightForFobReload(
+                (input.header || {}).incotermsId, resolvedCharges.charges);
+            if (autoFreight) {
+                resolvedCharges.charges.push(autoFreight);
+                log.audit('ARCH order - freight line added for FOB Reload',
+                    'Incoterm is FOB Reload (' + FOB_RELOAD_INCOTERM + ') and the request ' +
+                    'carried no freight charge, so one Freight/Transport line was added at ' +
+                    'rate 0 for billing to complete.');
+            }
         }
         /* ⚠️ CHARGES COUNT TOWARD THE LINE CAP. `resolveLines` enforces MAX_LINES
          * over the stock lines alone, so without this a request could carry 200

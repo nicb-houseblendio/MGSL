@@ -1728,9 +1728,31 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // 🔴 MILLING IS DELIBERATELY ABSENT. The Remanufacturing step already prices
   // planing and cutting at 0.20/BF each and records them on the lot line, with a JE
   // at invoicing. A milling line item would be the same money twice.
-  ok('f9-10: milling is NOT in the allowlist, and the reason is written down',
-    !/Milling Charges' \}/.test(oc) &&
-      /MILLING IS DELIBERATELY ABSENT/.test(oc), null);
+  /*
+   * RE-POINTED 2026-09-21, not flipped green. This asserted that milling was
+   * ABSENT from the allowlist, which was the right call on the evidence we had
+   * and which Marc-Antoine then overruled on the call at [10:04]: the $0.20/BF
+   * is the internal cost, the milling charge is a separate customer-facing
+   * amount, so nothing is billed twice.
+   *
+   * The invariant did not go away, it got narrower. Only the CUSTOMER-facing
+   * item may be sold: 3330 `Milling Charges : Cut` and 3331 `... : Planing`
+   * carry the internal cost on the reman POs (5 lines each, all PurchOrd), and
+   * putting either on a sales order would mix the two sides of one job. Deleting
+   * this guard would have retired that distinction along with the stale half.
+   */
+  // ⚠️ No word-boundary escape here, on purpose. An earlier edit of this exact
+  // line wrote a real 0x08 BACKSPACE byte instead of the escape, because it is a
+  // valid escape in the script that generated the file. The regex then demanded a
+  // backspace character and could never match, while rendering identically in a
+  // terminal, a diff and code review. `id: NNNN,` is unambiguous without it.
+  ok('f9-10: milling is offered, and ONLY the customer-facing item',
+    /id: 3540,/.test(oc) &&
+      !/id: 3330,/.test(oc) &&
+      !/id: 3331,/.test(oc), null);
+  ok('f9-10:  ...and the overruled objection is recorded, not deleted',
+    /MILLING IS NOW OFFERED/.test(oc) &&
+      /10:04/.test(oc), null);
 
   // Charges last, so the post-save lot matcher never walks past one to reach a lot.
   ok('f9-10: charges are written after every stock line',
@@ -1766,17 +1788,27 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // $250 of freight. Confirming a write means seeing what is written.
   ok('f9-10: the charge lines are shown on the Review step',
     /Freight and other charges/.test(wiz) &&
-      /charges\.map\(\(c, i\) => \(/.test(wiz) &&
+      /chargesWithMilling\.map\(\(c, i\) => \(/.test(wiz) &&
       /fmtMoney\(c\.quantity \* c\.rate, currency \|\| 'USD', 2\)/.test(wiz), null);
   // Revenue drives margin and must EXCLUDE charges; the saved order's total
   // includes them. Both figures, so Review cannot disagree with the document.
+  /*
+   * RE-POINTED 2026-09-21. The rule is unchanged -- Review must show the total
+   * the saved order will carry, beside a margin that excludes charges -- but the
+   * array it sums is now `chargesWithMilling`, because the milling column adds a
+   * line the Items step never saw. Summing the old `charges` would have shown a
+   * total missing the milling line while the request carried it, which is the
+   * exact defect this guard was written for.
+   */
   ok('f9-10:  ...with an order total that includes them, beside a margin that does not',
     /'Order total',/.test(wiz) &&
-      /totals\.revenue \+ charges\.reduce\(\(sum, c\) => sum \+ c\.quantity \* c\.rate, 0\)/.test(wiz), null);
+      // [\s\S] because the expression wraps across two lines in the source, and a
+      // regex literal cannot contain a real newline.
+      /totals\.revenue[\s\S]{0,40}chargesWithMilling\.reduce\(\(sum, c\) => sum \+ c\.quantity \* c\.rate, 0\)/.test(wiz), null);
   // Only when there are charges, so an order without freight keeps the six
   // figures this strip has always had.
   ok('f9-10:  ...and only when the order actually carries a charge',
-    /\.\.\.\(charges\.length > 0/.test(wiz), null);
+    /\.\.\.\(chargesWithMilling\.length > 0/.test(wiz), null);
 
 }
 

@@ -634,6 +634,31 @@ export const SOWizard = ({
    * 'existing' mode so a trader is never offered something that will be refused.
    */
   const [charges, setCharges] = React.useState<ArchChargeLine[]>([]);
+  /*
+   * Customer-facing MILLING charge, per line, keyed by line key.
+   *
+   * Marc-Antoine on the 2026-09-21 call, [10:04]: the $0.20/BF service cost is
+   * internal and automatic ("ca ca marche"), but "parfois on va charger notre
+   * client aussi dans un frais comme le frais de transport, ca fait qu'on va
+   * rajouter une ligne sur le SO". Two different numbers, so this is its own
+   * state and never touches ArchRemanIntent.
+   *
+   * 🔴 HELD SEPARATELY FROM THE REMAN INTENT ON PURPOSE. The reman intent is
+   * sent PER LINE to the endpoint, and he was explicit that milling is ONE line
+   * carrying the column total ([10:49] "tu rajoutes pas 5 lignes la, juste un
+   * montant qui est le total de mes lignes pour toute la colonne"). Folding this
+   * into the per-line payload would have produced exactly the five lines he
+   * asked us not to write.
+   *
+   * A per-line input with a single summed output is what "column total" means,
+   * so the trader still prices each bundle and the customer still sees one line.
+   */
+  /* ⚠️ `millingCharge`, not `milling`. `milling` is already taken further down
+   * by the milling RATE record (ArchMillingRates), and naming this one the same
+   * thing type-broke six call sites that had nothing to do with it. Two
+   * different meanings of the same word: the rate MGSL pays, and the amount the
+   * customer is charged. */
+  const [millingCharge, setMillingCharge] = React.useState<Record<string, string>>({});
   /** Hover on the step rail. Inline styles carry no :hover, and without a hover
    *  state the tabs gave no sign they could be clicked. */
   const [hoverStep, setHoverStep] = React.useState<number | null>(null);
@@ -976,6 +1001,25 @@ export const SOWizard = ({
     [mode, lines]
   );
 
+  /**
+   * The milling column, totalled over the lines BEING WRITTEN.
+   *
+   * ⚠️ `writableLines`, not `lines`. On an append the cart can hold bundles that
+   * are already on the order and are not being re-sent; summing those would bill
+   * the customer for milling on wood this request never touches. Charges are
+   * refused on an append anyway, so this is belt and braces rather than the only
+   * guard, but the total is also displayed and a displayed number that counts
+   * rows the write ignores is its own defect.
+   */
+  const millingTotal = React.useMemo(
+    () => writableLines.reduce((sum, l) => {
+      const v = parseFloat(millingCharge[l.key] || '');
+      return sum + (Number.isFinite(v) && v > 0 ? v : 0);
+    }, 0),
+    [writableLines, millingCharge]
+  );
+
+
   /** Dropping is per-order, so switching orders must not carry the set over. */
   React.useEffect(() => {
     setDroppedExisting(new Set());
@@ -1117,6 +1161,40 @@ export const SOWizard = ({
   }, [open]);
   /** Only a definite NO blocks. Unknown stays out of the way. */
   const writeRefused = !!writeAuth && writeAuth.status === 'ok' && !writeAuth.allowed;
+
+  /**
+   * The milling charge item, resolved from the SERVER's allowlist by name.
+   *
+   * 🔴 NOT a hardcoded 3540. The id lives in `ARCH_CHARGE_ITEMS` on the server
+   * and is re-read from NetSuite on every health GET, so if the item is
+   * inactivated or retyped it stops being offered and this resolves to
+   * undefined. Hardcoding the id here would keep sending a charge the server has
+   * stopped accepting, and the trader would see the refusal rather than the
+   * absence.
+   */
+  const millingItem = React.useMemo(
+    () => (writeAuth ? writeAuth.chargeItems.find((x) => /milling/i.test(x.name)) : undefined),
+    [writeAuth]
+  );
+
+  /**
+   * What the request actually carries: the trader's own charge rows, plus at most
+   * one milling line.
+   *
+   * ⚠️ Appended rather than merged into `charges`, so the Items step's list stays
+   * exactly what the trader typed there. Mutating `charges` would make the
+   * milling line appear in the Items step as a row they could edit or delete,
+   * which would then disagree with the Remanufacturing column that produced it.
+   */
+  const chargesWithMilling = React.useMemo(() => {
+    if (!(millingTotal > 0) || !millingItem) return charges;
+    return charges.concat([{
+      itemId: millingItem.id,
+      itemName: millingItem.name,
+      quantity: 1,
+      rate: millingTotal,
+    }]);
+  }, [charges, millingTotal, millingItem]);
 
   /** 1 until a real rate arrives, which is also what a Canadian order needs. */
   const costFx = fx && fx.status === 'ok' && fx.rate ? fx.rate : 1;
@@ -1760,8 +1838,14 @@ export const SOWizard = ({
       writableLines.map((l) => lineEconomics(l, sp(l.key), rm(l.key), parseFloat(pr(l.key)) || 0, costFx, liveRates))
     ),
     /* Feedback 9 item 10. Create only, and belt-and-braces: the endpoint refuses
-     * charges on an append, and this makes sure the request never carries any. */
-    charges: mode === 'existing' ? undefined : charges,
+     * charges on an append, and this makes sure the request never carries any.
+     *
+     * 🔴 The milling column collapses to ONE charge here, not per line. Summed
+     * over the lines BEING WRITTEN, so an append-shaped selection cannot bill
+     * milling for bundles this request is not touching. Omitted entirely when
+     * the column is empty or the item is not in the server's allowlist, so an
+     * order without milling sends exactly the payload it sent before. */
+    charges: mode === 'existing' ? undefined : chargesWithMilling,
     lines: writableLines.map((l) => ({
       lotNo: l.lotNo,
       // Internal ids, threaded through from the cart so the write path is given
@@ -2291,14 +2375,27 @@ export const SOWizard = ({
           non-inventory items (freight, milling charges, etc.). Dans la
           section 2 (items) » — this IS section 2.
 
-          🔴 MILLING IS NOT OFFERED, deliberately. The Remanufacturing step
-          already prices planing and cutting at $0.20/BF each and records them
-          on the lot line, with MGSL posting a journal entry at invoicing. A
-          milling line here would be the same money twice, so it is a question
-          for Marc-Antoine rather than something to ship on a guess.
+          ✅ MILLING IS NOW OFFERED, AND NOT FROM HERE. This block used to argue
+          that a milling line would double-bill the $0.20/BF the Remanufacturing
+          step already prices. He settled it on the 2026-09-21 call at [10:04]:
+          the $0.20/BF is the INTERNAL cost and automatic, and the milling charge
+          is a separate customer-facing amount. Two numbers, not one.
 
-          The list comes from the server's allowlist; the four names are read
-          live from NetSuite. Hidden entirely on an append. */}
+          🔴 So `Milling Charges` IS in the server allowlist now and WILL appear
+          in this dropdown, but the intended entry point is the Remanufacturing
+          step, where he asked for it ("ça c'est l'écran du remand"). That column
+          sums to one line. A trader who adds milling from here as well would
+          produce two milling lines on one order, and nothing on this screen says
+          so.
+
+          ⚠️ Left reachable rather than filtered out, because the allowlist is
+          the server's and hiding one of its items here would make the two
+          disagree about what may be sold. The Review step lists every charge the
+          request carries, from both sources, which is where a duplicate becomes
+          visible before the write.
+
+          The list comes from the server's allowlist; the names are read live from
+          NetSuite. Hidden entirely on an append. */}
       {mode !== 'existing' && writeAuth && writeAuth.chargeItems.length > 0 && (
         <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid ' + ARCH_SURFACE.border }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
@@ -3373,6 +3470,19 @@ export const SOWizard = ({
             <th style={{ ...th, textAlign: 'center' }}>Cut</th>
             <th style={th}>Length</th>
             <th style={{ ...th, textAlign: 'right' }}>Service cost</th>
+            {/* 🔴 A SECOND MONEY COLUMN, AND THE TWO ARE NOT THE SAME MONEY.
+                `Service cost` is the internal $0.20/BF: automatic, in CAD, never
+                billed here. This one is what the CUSTOMER is charged, typed by
+                the trader, in the order currency, and it becomes ONE line on the
+                SO carrying this column's total.
+
+                The header says "to customer" because the reason this feature was
+                argued about for a week is that the two were assumed to be the
+                same money. Two adjacent money columns with unlabelled audiences
+                would rebuild that confusion on the screen. */}
+            {mode !== 'existing' && millingItem && (
+              <th style={{ ...th, textAlign: 'right' }}>Milling to customer</th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -3485,11 +3595,65 @@ export const SOWizard = ({
                     <span style={{ color: ARCH_SURFACE.textLight }}>—</span>
                   )}
                 </td>
+                {mode !== 'existing' && millingItem && (
+                  <td style={{ ...td, textAlign: 'right' }}>
+                    {/* Optional on every row. Blank is the normal case: he said
+                        "si jamais les traders mettent un montant ici", not that
+                        every line carries one. No placeholder rate to copy and
+                        no default, because a default here would bill the
+                        customer for milling nobody asked for. */}
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={millingCharge[l.key] || ''}
+                      onChange={(e2) =>
+                        setMillingCharge((m) => ({ ...m, [l.key]: e2.target.value }))
+                      }
+                      placeholder="—"
+                      style={{
+                        ...numField,
+                        width: 92,
+                        borderColor: parseFloat(millingCharge[l.key] || '') > 0
+                          ? ARCH_SURFACE.green
+                          : '#CBD5E1',
+                      }}
+                    />
+                  </td>
+                )}
               </tr>
             );
           })}
         </tbody>
       </table>
+      {/* 🔴 THE COLUMN TOTAL, STATED, BECAUSE ONE LINE IS WHAT GETS WRITTEN.
+          The trader types per bundle and the SO receives a single line. Without
+          this footer the two representations never meet on screen, and the
+          trader would first see the collapsed figure on Review with no way to
+          check it against what they typed.
+
+          This is the same defect the freight line had earlier in this session:
+          the request carried a charge the confirm screen did not show. Stating
+          the total here, next to the inputs that produce it, is what makes the
+          Review figure verifiable rather than surprising. */}
+      {mode !== 'existing' && millingItem && millingTotal > 0 && (
+        <div
+          style={{
+            marginTop: 10,
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 8,
+            fontSize: 12,
+            color: ARCH_SURFACE.text,
+          }}
+        >
+          <strong>Milling to customer: {fmtMoney(millingTotal, orderCurrency || 'USD', 2)}</strong>
+          <span style={{ fontSize: 11.5, color: ARCH_SURFACE.textLight }}>
+            written as one {millingItem.name} line, not one per bundle. Not counted in the
+            margin.
+          </span>
+        </div>
+      )}
       <div style={{ marginTop: 10, fontSize: 11, color: ARCH_SURFACE.textLight }}>
         {/* The rates are Canadian, item 9b, and this legend defaulted to US dollars
             because fmtMoney's fallback is USD. On a US order it therefore printed the
@@ -4040,7 +4204,38 @@ export const SOWizard = ({
           ⚠️ Confirming a write means SEEING what is written. This is the last
           screen before `Create sales order`, so anything the request carries and
           this omits is something nobody agreed to. */}
-      {charges.length > 0 && (
+      {/* 🔴 FOB RELOAD ADDS A FREIGHT LINE SERVER-SIDE, SO SAY SO BEFORE THE WRITE.
+          The endpoint adds one Freight/Transport line at rate 0 when the incoterm
+          is FOB Reload and the request carries no freight, because at SO creation
+          the traders do not yet know the amount ([08:51], [09:41]).
+
+          A line that appears on the saved order and NOT on the screen the trader
+          confirmed from is precisely the defect the charges block was added to
+          fix. It cannot be listed in the table below, because this end does not
+          create it and inventing a row here would be a second source of truth for
+          the same line. So it is announced instead.
+
+          Suppressed once any freight charge is present, matching the server's own
+          test exactly: if the two disagree the trader is told something false. */}
+      {mode !== 'existing' && incotermsId && /fob\s*reload/i.test(incoterms)
+        && !chargesWithMilling.some((c) => /freight|transport|drop/i.test(c.itemName)) && (
+        <div
+          style={{
+            marginTop: 14,
+            padding: '9px 11px',
+            borderRadius: 7,
+            background: '#FFF7ED',
+            border: '1px solid #FED7AA',
+            fontSize: 12,
+            color: '#7C2D12',
+          }}
+        >
+          <strong>FOB Reload:</strong> a Freight/Transport line will be added to this order
+          automatically, at 0 for billing to complete. Add it in the Items step instead if you
+          already know the amount.
+        </div>
+      )}
+      {chargesWithMilling.length > 0 && (
         <div style={{ marginTop: 14 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
             <span style={{ fontSize: 12.5, fontWeight: 700, color: ARCH_SURFACE.text }}>
@@ -4052,7 +4247,7 @@ export const SOWizard = ({
           </div>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <tbody>
-              {charges.map((c, i) => (
+              {chargesWithMilling.map((c, i) => (
                 <tr key={i} style={{ borderTop: '1px solid ' + ARCH_SURFACE.border }}>
                   {/* ⚠️ EXPLICIT COLOUR, from the palette. With none set these cells
                       inherited a lighter tone than the lot rows above and read as
@@ -4142,10 +4337,11 @@ export const SOWizard = ({
              Shown ONLY when charges exist, so an order without freight keeps
              exactly the six figures this strip has always had and nobody has to
              read a duplicate of Revenue under another name. */
-          ...(charges.length > 0
+          ...(chargesWithMilling.length > 0
             ? [['Order total',
                 fmtMoney(
-                  totals.revenue + charges.reduce((sum, c) => sum + c.quantity * c.rate, 0),
+                  totals.revenue
+                    + chargesWithMilling.reduce((sum, c) => sum + c.quantity * c.rate, 0),
                   currency || 'USD', 0),
                 '#fff'] as [string, string, string]]
             : []),
