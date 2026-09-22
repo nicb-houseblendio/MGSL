@@ -16,6 +16,7 @@ import {
   fetchFxRate,
   fetchMillingRates,
   fetchWriteAuth,
+  fetchCustomerSalesRep,
   type ArchIncotermsResult,
   type ArchFxResult,
   type ArchMillingRates,
@@ -1473,6 +1474,40 @@ export const SOWizard = ({
     // has no Sales Team until NetSuite gives it one. Both are cleared rather than
     // seeded from a fixture: `salesTeamFor()` invented a team name per customer.
     setRepTeam(customerPicked());
+    /* 🔴 THEN ASK NETSUITE WHO THE CUSTOMER'S OWN TEAM NAMES, added 2026-09-22.
+     *
+     * Marc-Antoine, 2026-09-17: "Sur certains client il est populé automatiquement
+     * (ex: The hardwood store). est-ce qu'on peut faire en sorte qu'il suive ce
+     * qu'il y a sur la fiche client?" He sees it populated because NetSuite's UI
+     * sources the customer's sales team onto a new order. Our endpoint builds the
+     * record non-dynamically, so it sources nothing, and this line used to CLEAR
+     * the field and stop there.
+     *
+     * ⚠️ THE CLEAR ABOVE STAYS AND MUST RUN FIRST. The fetch is async, so
+     * between the click and the answer the field has to show nothing rather than
+     * the previous customer's rep. Clearing first is what makes a slow or failed
+     * lookup indistinguishable from a customer who has no team, which is the
+     * honest state in both cases.
+     *
+     * ⚠️ IT ONLY PREFILLS, it does not lock. The dropdown stays editable, so
+     * a trader writing an order for somebody else's customer can still say so.
+     * 57 of the 321 active ARC customers carry no team at all and simply get the
+     * behaviour that shipped before this.
+     *
+     * Guarded on the id we just picked: an answer that arrives after the trader
+     * has moved to another customer must not overwrite the newer choice. */
+    if (hit && hit.id) {
+      const pickedFor = hit.id;
+      void fetchCustomerSalesRep(pickedFor).then((team) => {
+        if (!team) return;
+        setCustomerId((current) => {
+          if (current === pickedFor) {
+            setRepTeam((prev) => (prev.salesRepId ? prev : { ...prev, salesRepId: team.repId }));
+          }
+          return current;
+        });
+      });
+    }
     // The commission split too: a team chosen for one customer is not a choice
     // for another. `pickedTeam` re-resolves against the live list, so a stale id
     // could not be sent anyway; this is so the FIELD does not keep showing it.

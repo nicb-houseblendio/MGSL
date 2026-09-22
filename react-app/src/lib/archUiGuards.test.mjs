@@ -1708,8 +1708,31 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
 
   // Additive, not a swap: customer 1913 must keep resolving off `salesrep`, and no
   // case that works today may stop working.
-  ok('f9-7: the customer leg reads the MGSL field FIRST, then salesrep',
-    /return customerRep\('custentity_mgsl_sales_rep'\) \|\| customerRep\('salesrep'\);/.test(oc), null);
+  //
+  // ⚠️ Widened 2026-09-22. The customer's OWN SALES TEAM now leads the chain,
+  // which is what Marc-Antoine asked for on the 17th. The two field legs keep
+  // their order and their meaning behind it, so this still pins what it was
+  // written to pin, plus one rung.
+  ok('f9-7: the customer leg reads the sales TEAM first, then the MGSL field, then salesrep',
+    // 🔴 Three separate assertions, NOT one multi-line regex. A regex literal
+    // cannot contain a real newline, and writing the chain as one pattern put a
+    // line break inside the literal and took the whole file down with a
+    // SyntaxError. Same trap this repo has hit before.
+    /return customerSalesRep\(customerId\)\.repId/.test(oc)
+    && /\|\| customerRep\('custentity_mgsl_sales_rep'\)/.test(oc)
+    && /\|\| customerRep\('salesrep'\);/.test(oc)
+    && oc.indexOf("customerSalesRep(customerId).repId")
+       < oc.indexOf("|| customerRep('custentity_mgsl_sales_rep')"), true);
+  ok('f9-7:  ...and the team lookup joins employee, so it cannot suggest a rep the write path refuses',
+    /FROM customersalesteam cst/.test(oc) && /JOIN employee e ON e\.id = cst\.employee/.test(oc)
+    && /e\.issalesrep = 'T'/.test(oc), null);
+  ok('f9-7:  ...and it degrades rather than throwing, same contract as the field legs',
+    /customer sales TEAM unreadable/.test(oc), null);
+  // 🔴 The screen and the write path must run the SAME lookup, or the wizard
+  // prefills a rep the endpoint then refuses. That defect has happened here once
+  // already with the rep dropdown.
+  ok('f9-7:  ...and the screen is served by that same function, not a second copy',
+    /customerSalesRep: customerSalesRep,/.test(oc), null);
 
   // 🔴 WRAPPED. The only caller does not catch, so an unknown-identifier error
   // on a custom field would leave order creation as an exception instead of the

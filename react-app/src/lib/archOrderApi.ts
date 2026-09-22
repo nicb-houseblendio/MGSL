@@ -692,6 +692,41 @@ export const fetchWriteAuth = async (): Promise<ArchWriteAuth> => {
   }
 };
 
+/**
+ * The sales rep on a customer's own sales team, for prefilling the wizard.
+ *
+ * 🔴 Marc-Antoine, 2026-09-17: "Sur certains client il est populé automatiquement
+ * (ex: The hardwood store). est-ce qu'on peut faire en sorte qu'il suive ce qu'il
+ * y a sur la fiche client?" NetSuite's own UI sources the customer's team onto a
+ * new order; our endpoint builds the record non-dynamically, so it does not.
+ *
+ * ⚠️ Returns null for BOTH "the customer has no team" and "the call failed", and
+ * that is deliberate rather than lazy: the caller's response to either is the
+ * same, leave the field blank and let the trader pick, which is exactly today's
+ * behaviour. Nothing here may block the wizard.
+ */
+export const fetchCustomerSalesRep = async (
+  customerId: string
+): Promise<{ repId: string; repName: string } | null> => {
+  const url = endpointUrl();
+  if (!url || !customerId) return null;
+  try {
+    // Same conditional separator as below: `url.resolveScript` already returns a
+    // query string, and hardcoding '?' gets the Suitelet's HTML instead of JSON.
+    const sep = url.indexOf('?') === -1 ? '?' : '&';
+    const r = await fetch(
+      `${url + sep}action=customerSalesTeam&customer=${encodeURIComponent(customerId)}`,
+      { method: 'GET', credentials: 'include' }
+    );
+    // A Suitelet answers 200 to everything, so branch on the payload.
+    const body = (await r.json()) as { ok?: boolean; repId?: number | string | null; repName?: string };
+    if (!body || body.ok !== true || !body.repId) return null;
+    return { repId: String(body.repId), repName: String(body.repName || '') };
+  } catch {
+    return null;
+  }
+};
+
 export const fetchSalesRepsFromEndpoint = async (): Promise<ArchSalesRepDTO[] | null> => {
   const url = endpointUrl();
   if (!url) return null;

@@ -337,6 +337,40 @@ define([
                 });
             }
 
+            /* 🔴 THE CUSTOMER'S OWN SALES TEAM, for the wizard's prefill.
+             *
+             * Marc-Antoine asked for the SO's Sales Team to follow the customer
+             * record. The server half of that lives in `resolveSalesRep`, but it
+             * is invisible on its own: the wizard always sends a rep, so the
+             * customer leg never fires. This is what lets the SCREEN fill the
+             * field the moment a customer is picked, which is the behaviour he
+             * actually described.
+             *
+             * ⚠️ ON THE SUITELET, NEVER THE RESTLET, and for the same reason
+             * `listSalesReps` was moved here. A RESTlet ignores `runasrole` and
+             * runs as the CALLER, and the ARCH trader role cannot read `employee`
+             * at all. The lookup joins `employee`, so on a RESTlet it would come
+             * back empty for exactly the role that needs it.
+             *
+             * NOT gated on `mayDiagnose`. This is screen data, the same carve-out
+             * `chargeItems` already has, not a diagnostic. */
+            if (action === 'customerSalesTeam') {
+                const cust = parseInt(context.request.parameters.customer, 10);
+                const team = orderLib.customerSalesRep(cust);
+                return respond(context, 200, {
+                    ok: true,
+                    service: 'arch-order-create',
+                    action: 'customerSalesTeam',
+                    customer: cust || null,
+                    repId: team.repId,
+                    repName: team.repName,
+                    /* 'none' is a real answer, not a failure. 57 of the 321 active
+                     * ARC customers carry no team row, and the trader picks for
+                     * those exactly as they do today. */
+                    source: team.source,
+                });
+            }
+
             if (action === 'salesReps') {
                 const reps = orderLib.listSalesReps();
                 return respond(context, 200, {

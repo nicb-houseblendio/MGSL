@@ -1164,6 +1164,78 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         }
     };
 
+    /**
+     * The sales rep named on a CUSTOMER'S OWN sales team.
+     *
+     * Marc-Antoine, 2026-09-17: "Sur certains client il est populé automatiquement
+     * (ex: The hardwood store). est-ce qu'on peut faire en sorte qu'il suive ce
+     * qu'il y a sur la fiche client?"
+     *
+     * WHY HE SEES IT AND THE WIZARD DID NOT. NetSuite's UI sources the customer's
+     * sales team onto a new order. This endpoint builds the record with
+     * `isDynamic: false`, which sources no defaults, so the sublist arrives empty
+     * and we write whatever `resolveSalesRep` returns. That is the whole mechanism.
+     *
+     * ⚠️ THIS WAS RECORDED AS BLOCKED ON SOMEBODY ELSE AND IT WAS NOT BLOCKED.
+     * The note said `customersalesteam` might be unreadable from the write path's
+     * role and that only an Administrator probe had said otherwise. Both halves
+     * were wrong. The write path runs as `customrole2184`, not the trader role the
+     * note reasoned about, and the probe that read 264 rows runs THROUGH THIS
+     * DEPLOYMENT under that role, in N/query. It is proof. The probe is
+     * demonstrably role-scoped: it sees six ARC reps where an Administrator sees
+     * several subsidiaries' worth.
+     *
+     * Measured 2026-09-22 over the 321 active ARC customers: 264 carry a team,
+     * every one a SINGLE employee at contribution 1, 263 name the same person as
+     * the rep field, ZERO disagree, and one has a team where the rep field is
+     * empty. Reading the sublist therefore strictly dominates reading the field.
+     *
+     * 🔴 THE JOIN IS THE SAFETY GATE. It repeats the predicate the rep-field
+     * legs already use, so an employee this role cannot see, or who is not an
+     * active rep, is dropped here instead of reaching the sublist and being
+     * refused at save. Live case: customer 1138 names an IND employee outside this
+     * role's six-rep scope, so it prefills nothing and the trader picks, rather
+     * than the screen suggesting somebody NetSuite would reject.
+     *
+     * ⚠️ This does NOT collapse rep and sales team. He was explicit on
+     * 2026-09-08 that the rep identifies the SO's owner and the sales team is the
+     * commission split. Still two writes; only the lookup order changed.
+     *
+     * Returns `{ repId, repName, source }`. `source` is for the screen, so a
+     * trader can be told where a prefilled name came from rather than finding a
+     * field mysteriously filled in.
+     */
+    const customerSalesRep = (customerId) => {
+        const none = { repId: null, repName: '', source: 'none' };
+        if (!int(customerId)) return none;
+        try {
+            const rows = query.runSuiteQL({
+                query:
+                    'SELECT cst.employee AS repid, e.entityid AS repname ' +
+                    'FROM customersalesteam cst ' +
+                    'JOIN employee e ON e.id = cst.employee ' +
+                    "WHERE cst.customer = ? AND e.issalesrep = 'T' " +
+                    "  AND e.isinactive = 'F' " +
+                    'ORDER BY cst.contribution DESC',
+                params: [int(customerId)],
+            }).asMappedResults();
+            if (!rows.length) return none;
+            return {
+                repId: int(rows[0].repid) || null,
+                repName: String(rows[0].repname || ''),
+                source: 'customerSalesTeam',
+            };
+        } catch (e) {
+            /* Degrade, never throw. A read failure here falls through to the rep
+             * field, which is exactly the behaviour that shipped before this
+             * existed, so the worst case is today rather than a refused order. */
+            log.error('ARCH Order Create — customer sales TEAM unreadable',
+                'Falling back to the rep field. ' +
+                (e.name || '') + ': ' + (e.message || String(e)));
+            return none;
+        }
+    };
+
     const resolveSalesRep = (requestedId, userId, customerId) => {
         // A configured rep is the LAST resort, and deliberately has no built-in
         // default.
@@ -1261,7 +1333,56 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             }
         };
 
-        return customerRep('custentity_mgsl_sales_rep') || customerRep('salesrep');
+        /* 🔴 THE CUSTOMER'S OWN SALES TEAM COMES FIRST, added 2026-09-22.
+         *
+         * Marc-Antoine, 2026-09-17: "Sur certains client il est populé
+         * automatiquement (ex: The hardwood store). est-ce qu'on peut faire en
+         * sorte qu'il suive ce qu'il y a sur la fiche client?"
+         *
+         * WHY HE SEES IT POPULATED AND WE DO NOT. NetSuite's own UI sources the
+         * customer's sales team onto a new order. This endpoint builds the record
+         * with `isDynamic: false`, which does not source defaults, so the sublist
+         * arrives empty and we write whatever `resolveSalesRep` returns. That is
+         * the whole mechanism behind his observation.
+         *
+         * ⚠️ THIS WAS RECORDED AS BLOCKED AND IT WAS NOT. The note said
+         * `customersalesteam` might be unreadable from the write path's role and
+         * that only an Administrator probe had proved otherwise. Two things were
+         * wrong with that. The write path runs as `customrole2184`, not the trader
+         * role the note was reasoning about, and the health probe that read 264
+         * rows runs THROUGH THIS DEPLOYMENT under that same role, in N/query, not
+         * as an Administrator. It is proof, and the probe is demonstrably
+         * role-scoped because it sees six ARC reps where an Administrator sees
+         * every subsidiary's.
+         *
+         * Measured 2026-09-22 across the 321 active ARC customers: 264 carry a
+         * team, every one of them a SINGLE employee at contribution 1, 263 name
+         * the same person as the rep field, ZERO disagree, and one customer has a
+         * team where the rep field is empty. So reading the sublist strictly
+         * dominates reading the field: it covers a case the field misses and
+         * contradicts it nowhere.
+         *
+         * 🔴 THE JOIN IS THE SAFETY GATE, not decoration. It is the same
+         * predicate the two legs below already run, so an employee this role
+         * cannot see, or who is not an active rep, is dropped here rather than
+         * reaching the sublist and being refused at save. One live case: customer
+         * 1138 names an IND employee who is outside this role's six-rep scope. It
+         * prefills nothing and the trader picks, instead of the screen suggesting
+         * somebody NetSuite would then reject.
+         *
+         * ⚠️ This does NOT collapse rep and sales team, which he was explicit
+         * about on 2026-09-08. The rep identifies the SO's owner; the sales team
+         * is the commission split. They are still two writes. What changed is only
+         * where the answer is looked up first.
+         */
+        /* One implementation, called from two places. `customerSalesRep` below is
+         * the same lookup exposed to the SCREEN, so the wizard's prefill and this
+         * validator cannot drift into suggesting one person and writing another.
+         * That drift is a defect this file has already had once, with the rep
+         * dropdown offering somebody the write path then refused. */
+        return customerSalesRep(customerId).repId
+            || customerRep('custentity_mgsl_sales_rep')
+            || customerRep('salesrep');
     };
 
     /**
@@ -5233,12 +5354,29 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * So the question has to be asked from INSIDE, which is what this does. It
      * writes nothing and returns ids and counts, never names beyond entityid.
      *
-     * 🔴 `entityGroupControl` IS THE VALIDITY CHECK, NOT A CURIOSITY. `entitygroup`
-     * is documented four times over as unreachable from this role, and granting
-     * LIST_CRMGROUP changed nothing. So it MUST come back refused here. If it
-     * reads, this probe is running with wider scope than the create path and every
-     * other number in this object is answering the wrong question. Check that
-     * field first; the rest is only meaningful when it says refused.
+     * 🔴 THE OLD CONTROL WAS INVERTED AND IT COST US A FALSE BLOCKER.
+     * Corrected 2026-09-22.
+     *
+     * It used to read `entitygroup` and declare that if that table answered, the
+     * probe was not role-scoped and every other figure should be ignored. That was
+     * true when written. It stopped being true when **LIST_CRMGROUP permlevel 1
+     * was granted to role 2184**, which is exactly the change the note said had
+     * never happened. So the control began printing IGNORE THE FIGURES ABOVE over
+     * a set of correct answers, and a reader acting on it recorded the customer
+     * sales-team feature as blocked on somebody else. It was never blocked.
+     *
+     * ✅ `repsBySubsidiary` IS THE DISCRIMINATOR NOW, and unlike the old one it
+     * cannot rot into a false negative by a permission being granted. It asks a
+     * question whose two answers differ by scope rather than by permission: this
+     * role sees the reps of the subsidiaries selected on it, an Administrator sees
+     * every subsidiary's. Measured 2026-09-22, the probe returns ARC and 6; an
+     * Administrator running the identical query sees more subsidiaries than one.
+     * If this ever comes back with several subsidiaries, THEN the figures below
+     * are answering the wrong question.
+     *
+     * ⚠️ `entityGroupControl` is kept, demoted to an observation. It still
+     * records whether the CRM Group grant is in place, which is worth knowing, but
+     * it no longer votes on whether the rest of this object is trustworthy.
      */
     const roleVisibility = () => {
         const out = {};
@@ -5295,14 +5433,17 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             out.customerSalesTeamRows = 'REFUSED: ' + (e.message || String(e));
         }
 
-        // THE CONTROL. Must be refused. See the block header.
+        /* An OBSERVATION, not the control. See the block header: this used to
+         * declare the whole probe untrustworthy when it read, and it now reads
+         * because the CRM Group permission was granted. Read `repsBySubsidiary`
+         * for the scope question. */
         try {
             query.runSuiteQL({ query: 'SELECT COUNT(*) AS n FROM entitygroup' })
                 .asMappedResults();
             out.entityGroupControl =
-                'READABLE — THIS PROBE IS NOT ROLE-SCOPED, IGNORE THE FIGURES ABOVE';
+                'readable — the CRM Group grant is in place (this is NOT a scope failure)';
         } catch (e) {
-            out.entityGroupControl = 'refused as expected (' +
+            out.entityGroupControl = 'refused — no CRM Group grant (' +
                 String(e.message || e).slice(0, 80) + ')';
         }
 
@@ -5366,6 +5507,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         fieldReadiness: fieldReadiness,
         diagnoseDepartment: diagnoseDepartment,
         listSalesReps: listSalesReps,
+        customerSalesRep: customerSalesRep,
         listIncoterms: listIncoterms,
         getFxRate: getFxRate,
         getMillingRates: getMillingRates,
