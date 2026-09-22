@@ -3700,7 +3700,38 @@ define([
                  * cannot be read, `readyToBuild` is 0 and this line is
                  * unchanged from before it existed.
                  */
-                available:    Math.max(0, onHand + onOrder + inTransit
+                /* 🔴 ON ORDER IS NOT AVAILABLE, and it was counted here until 2026-09-22.
+                 *
+                 * Marc-Antoine, 2026-09-14 status call [17:15]: "On order c'est juste
+                 * pour avoir une visibilite sur qu'est-ce qu'on a commande, tu sais en
+                 * termes de volume, mais je peux juste commencer a le vendre quand il
+                 * est in transit a peu pres." He has said it twice.
+                 *
+                 * `inTransit` STAYS in the sum. That is the same sentence: on order is
+                 * visibility, in transit is sellable. Dropping both would be tidier and
+                 * would be wrong.
+                 *
+                 * Measured against the live sandbox cache on 2026-09-22: Available goes
+                 * from 507,106 BF to 445,664 BF, a drop of 61,442 BF over 114 BF rows,
+                 * 20 of which change and 14 of which land at zero. Those 14 stay on the
+                 * screen: the row filter in `trader_screen_service_arch.js` sums the RAW
+                 * buckets and keeps `onOrder`, so nothing disappears.
+                 *
+                 * ⚠️ THE DROP IS NOT THE ON ORDER COLUMN. That column reads 67,280 BF.
+                 * The `Math.max(0, ...)` below already absorbs 5,838 BF of it on four
+                 * rows whose reserve and readyToBuild exceed their on hand, so quoting
+                 * the column as the cost would overstate it. 61,442 is the measured
+                 * difference of the formula, not a bucket total.
+                 *
+                 * ⚠️ And it moves. REBUILD_INTERVAL_MS is 15 minutes and every receipt
+                 * changes it, so re-measure the morning anyone quotes it to him.
+                 *
+                 * The server already agreed with this. `archOrderCreate.js` gates on
+                 * `inventorynumberlocation.quantityonhand` and refuses on-order wood
+                 * outright, so this brings the screen into line with an order endpoint
+                 * that would have rejected the sale anyway.
+                 */
+                available:    Math.max(0, onHand + inTransit
                                           - reserve - readyToBuild
                                           - held),
                 // NULL, NOT ZERO, when nothing could be costed. 0 renders as

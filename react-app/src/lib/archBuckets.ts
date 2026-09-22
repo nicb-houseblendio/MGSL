@@ -89,7 +89,11 @@ export const bucketGapReason = (bucket: ArchDetailKey): string | null => {
       // gap to be closed.
       return 'It has already shipped, so it is no longer on any bundle. This column is shipment history';
     case 'available':
-      return 'It is incoming stock on purchase-order lines that have no bundle numbers on them yet, so it cannot be attributed to any bundle';
+      // Narrowed 2026-09-22 with onOrder leaving the Available formula. What
+      // can still gap here is IN TRANSIT wood with no bundle numbers on it;
+      // on-order wood no longer reaches this figure at all, so naming it here
+      // would send a trader looking for a cause that cannot apply.
+      return 'It is in-transit stock on purchase-order lines that have no bundle numbers on them yet, so it cannot be attributed to any bundle';
     case 'onHand':
       // On Hand is summed FROM the lots, so a gap here is not a detail gap at
       // all. Naming a cause would be a guess; say only what is measured.

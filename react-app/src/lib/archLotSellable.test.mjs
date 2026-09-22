@@ -26,7 +26,7 @@
  * always enforced. It is an OR of two independent rules, not one arithmetic
  * test, and section 3 below is the assertion that says so.
  */
-import { commitmentOn, sellableOn, hasArrived, isLotLocked, lockReason, availabilityStatus } from './archLots.ts';
+import { commitmentOn, sellableOn, hasArrived, isLotLocked, lockReason, availabilityStatus, lotQuantity } from './archLots.ts';
 
 let fail = 0;
 const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (cond ? '' : '   got: ' + JSON.stringify(got))); if (!cond) fail++; };
@@ -54,11 +54,29 @@ ok('the reason names the quantity and says it has not been received',
   /not yet received/.test(lockReason(onOrderBundle).detail),
   lockReason(onOrderBundle).detail);
 
-// It must still be VISIBLE. He asked to see it, not to have it hidden.
-ok('🔴 but it is still listed under Available, because he asked to SEE it',
-  availabilityStatus(onOrderBundle)?.label === 'On Order',
+/* It must still be VISIBLE. He asked to see it, not to have it hidden.
+ *
+ * 🔴 CHANGED 2026-09-22, and the change is client-visible. These two used to
+ * assert the bundle was listed under AVAILABLE at its full incoming quantity.
+ * On 2026-09-22 `onOrder` left the Available formula on the server, because he
+ * said on order is visibility only and he sells from in transit. A lot list
+ * that still offered on-order bundles under a header that no longer counts
+ * them would disagree with itself by 42,605 BF.
+ *
+ * So visibility moved rather than went away, and these assertions now pin
+ * WHERE: the On Order column, the On Order drill-down, and the badge. If a
+ * future change hides an on-order bundle from all three, that breaks his
+ * instruction and one of these fails.
+ */
+ok('an on-order bundle is NO LONGER listed under Available',
+  availabilityStatus(onOrderBundle) === null,
   availabilityStatus(onOrderBundle));
-ok('...at its full incoming quantity', availabilityStatus(onOrderBundle).qty === 3000);
+ok('🔴 but it is still visible, which is what he actually asked for: it keeps its quantity',
+  onOrderBundle.onOrder === 3000);
+ok('...and it still reports itself as on order through the lock reason',
+  lockReason(onOrderBundle)?.badge === 'Ord');
+ok('...listed at its full incoming quantity under the On Order bucket',
+  lotQuantity(onOrderBundle, 'onOrder') === 3000);
 
 const inTransitBundle = lot({ onHand: 0, inTransit: 500 });
 ok('an in-transit bundle is locked on the same rule', isLotLocked(inTransitBundle));

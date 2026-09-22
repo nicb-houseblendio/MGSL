@@ -237,14 +237,22 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // Updated 2026-09-10: `readyToBuild` is a real subtracted variable now, not
   // the literal `0 /*readyToBuild*/` placeholder — it is sold wood one stage
   // further along, and must be excluded from Available the same as `reserve`.
-  ok('cache MR: available no longer subtracts outbound',
-    /available:\s*Math\.max\(0, onHand \+ onOrder \+ inTransit\s*\n\s*- reserve - readyToBuild\s*\n\s*- held\)/.test(mr));
+  // ⚠️ Updated 2026-09-22: `onOrder` left this formula. On order is visibility
+  // only and in transit is sellable, which is the client's own distinction.
+  ok('cache MR: available subtracts neither outbound nor on order',
+    /available:\s*Math\.max\(0, onHand \+ inTransit\s*\n\s*- reserve - readyToBuild\s*\n\s*- held\)/.test(mr));
+  ok('🔴 cache MR: and onOrder is genuinely gone from it, not merely reordered',
+    !/available:\s*Math\.max\([^)]*onOrder/.test(mr));
+  ok('cache MR: the removal is documented against the client quote, not silent',
+    /ON ORDER IS NOT AVAILABLE/.test(mr) && /in transit a peu pres/.test(mr));
   ok('cache MR: and the removal is documented, not silent',
     /`outbound` IS NOT SUBTRACTED/.test(mr));
   ok('grid: the Outbound header does not claim a second deduction',
     /NOT deducted from Available a second time/.test(t));
   ok('contract: types\\/arch.ts states the corrected formula',
-    /onHand \+ onOrder \+ inTransit − reserve − readyToBuild − held/.test(src('types/arch.ts')));
+    /onHand \+ inTransit − reserve − readyToBuild − held/.test(src('types/arch.ts')));
+  ok('contract: and it records that onOrder was removed rather than just omitting it',
+    /CORRECTED 2026-09-22/.test(src('types/arch.ts')));
 
   // ── Ready to Build, the manual toggle, 2026-09-10 ─────────────────────────
   const oc = srcAbs('src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/shared/archOrderCreate.js');

@@ -384,7 +384,11 @@ export interface ArchSummaryRow {
   /** How many of this row's lots are held. */
   heldLotCount?: number;
   /**
-   * onHand + onOrder + inTransit − reserve − readyToBuild − held, floored at 0.
+   * onHand + inTransit − reserve − readyToBuild − held, floored at 0.
+   *
+   * ⚠️ CORRECTED 2026-09-22: `onOrder` was in this sum and is not any more.
+   * On order is visibility only, in transit is sellable, which is the client's
+   * own distinction and not a rounding of it.
    * Held stock is excluded here and ONLY here.
    *
    * ⚠️ CORRECTED 2026-09-08. This used to read "… − outbound − held" and to say

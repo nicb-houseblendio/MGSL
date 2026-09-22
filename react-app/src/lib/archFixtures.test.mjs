@@ -19,7 +19,18 @@ let fail = 0;
 const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (cond ? '' : '   got: ' + JSON.stringify(got))); if (!cond) fail++; };
 
 const rows = getArchFixtureRows();
-const lotFree = (l) => Math.max(0, (l.onHand || 0) + (l.onOrder || 0) + (l.inTransit || 0) - commitmentOn(l));
+/* 🔴 `onOrder` LEFT THIS ON 2026-09-22, at the same time as the row formula.
+ *
+ * This is the LOT side of invariant 3 below, which asserts a row's Available
+ * equals the free volume of its own lots exactly. The row formula in
+ * `archFixtures.ts` and the cache builder both stopped counting on-order wood
+ * that day, so leaving it here would turn an equality that holds into an
+ * assertion that the two sides disagree. It mirrors `availabilityStatus` in
+ * `archLots.ts`, which lost its On Order rung in the same commit.
+ *
+ * In transit stays on both sides. The client sells from in transit.
+ */
+const lotFree = (l) => Math.max(0, (l.onHand || 0) + (l.inTransit || 0) - commitmentOn(l));
 
 ok('fixtures produce rows at all', rows.length > 0, rows.length);
 
@@ -28,14 +39,20 @@ ok('some rows carry a nonzero readyToBuild, else these assertions prove nothing'
 
 // 1. the formula, stated once
 for (const r of rows) {
-  const expected = Math.max(0, r.onHand + r.onOrder + r.inTransit - r.reserve - r.readyToBuild);
+  const expected = Math.max(0, r.onHand + r.inTransit - r.reserve - r.readyToBuild);
   if (r.available !== expected) {
     ok(r.itemCode + ' @ ' + r.locationName + ': available subtracts all three commitments',
       false, { available: r.available, expected, reserve: r.reserve, readyToBuild: r.readyToBuild, outbound: r.outbound });
   }
 }
-ok('every row: available = onHand + onOrder + inTransit - reserve - readyToBuild, WITHOUT outbound',
-  rows.every((r) => r.available === Math.max(0, r.onHand + r.onOrder + r.inTransit - r.reserve - r.readyToBuild)));
+ok('every row: available = onHand + inTransit - reserve - readyToBuild, WITHOUT outbound and WITHOUT onOrder',
+  rows.every((r) => r.available === Math.max(0, r.onHand + r.inTransit - r.reserve - r.readyToBuild)));
+// 🔴 Directional, so the guard cannot pass by reverting. On order must be ABSENT
+// from Available, not merely absent from this line: a fixture that still added it
+// would fail the equality above but a text-only guard would not notice.
+ok('🔴 and a row with on-order wood and nothing else reports Available 0',
+  rows.filter((r) => (r.onOrder || 0) > 0 && (r.onHand || 0) === 0 && (r.inTransit || 0) === 0)
+      .every((r) => r.available === 0));
 
 // 2. THE CHECK THAT CATCHES A WRONG FORMULA: a row cannot offer more than its lots hold.
 const over = rows
@@ -78,8 +95,8 @@ ok('no lot counts its shipped quantity as still on hand',
   ok('a claim never exceeds the wood left after shipping',
     shipped.every((l) => (l.reserve || 0) + (l.readyToBuild || 0) <= (l.onHand || 0) + 1e-9),
     shipped.filter((l) => (l.reserve || 0) + (l.readyToBuild || 0) > (l.onHand || 0)).map((l) => l.lotNo));
-  ok('the fixture formula matches the ARCH cache formula, which excludes outbound',
-    rows.every((r) => r.available === Math.max(0, r.onHand + r.onOrder + r.inTransit - r.reserve - r.readyToBuild)));
+  ok('the fixture formula matches the ARCH cache formula, which excludes outbound and on order',
+    rows.every((r) => r.available === Math.max(0, r.onHand + r.inTransit - r.reserve - r.readyToBuild)));
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archFixtures ok');

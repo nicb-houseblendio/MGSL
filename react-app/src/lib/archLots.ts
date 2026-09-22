@@ -245,7 +245,24 @@ export const availabilityStatus = (
   if (lot.onHold) return null;
   const netOnHand = (lot.onHand || 0) - commitmentOn(lot);
   if (netOnHand > 0) return { label: 'On Hand', color: '#1B5E20', qty: netOnHand };
-  if ((lot.onOrder || 0) > 0) return { label: 'On Order', color: '#1565C0', qty: lot.onOrder };
+  /* 🔴 THE ON ORDER RUNG WAS REMOVED 2026-09-22, and it had to go in the same
+   * commit as the server formula.
+   *
+   * This function decides which lots the AVAILABLE drill-down lists, while the
+   * drawer header prints the row's `available` straight off the payload
+   * (`DetailDrawerARCH.tsx`). Change one and not the other and the header says
+   * one number while the list underneath adds up to a different one, by 42,605
+   * BF of on-order bundles as measured on 2026-09-22.
+   *
+   * ⚠️ An on-order bundle does NOT disappear from the screen. It is still
+   * listed under the On Order drill-down, still carries its `Ord` badge and its
+   * reason, and still shows its quantity in the On Order column. What changed
+   * is that it is no longer listed under AVAILABLE, which is correct once
+   * Available stops counting it. Marc-Antoine asked to see on-order wood and
+   * not to be able to sell it; both still hold.
+   *
+   * In Transit keeps its rung, because he sells in transit.
+   */
   if ((lot.inTransit || 0) > 0) return { label: 'In Transit', color: '#7E57C2', qty: lot.inTransit };
   return null;
 };
