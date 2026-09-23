@@ -411,3 +411,10 @@ test('F6 the reconciler recovers a pending claim by its key and hands failures t
   assert.match(mr, /exception: 'VAL_HANDOFF_FAILED'/);
   assert.match(mr, /f\.assignedAllOnLineBase = onLine\.reduce/);
 });
+
+test('F7 no N/query in the reconciler filters inventoryassignment.transactionline directly (returns 0 rows, measured)', () => {
+  const mr = readFileSync(join(SHARED, '../entry_points/mr/mcgi_mr_arch_reservation.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  assert.doesNotMatch(mr, /FROM inventoryassignment ia '\s*\+\s*'WHERE ia\.transaction = \? AND ia\.transactionline = \?/);
+  assert.match(mr, /JOIN inventoryassignment ia ON ia\.transaction = tl\.transaction AND ia\.transactionline = tl\.id ' \+\s*'WHERE tl\.transaction = \? AND tl\.uniquekey = \?'/);
+});

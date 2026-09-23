@@ -142,8 +142,17 @@ define(['N/query', 'N/record', 'N/log', '../../shared/archReservation'],
                         qtyBase: Math.abs(num(ln[0].qty)), shippedBase: Math.abs(num(ln[0].shipped)),
                         closed: String(ln[0].closed) === 'T',
                     };
-                    const onLine = rows('SELECT ia.inventorynumber AS lot, ia.quantity AS q FROM inventoryassignment ia ' +
-                        'WHERE ia.transaction = ? AND ia.transactionline = ?', [c.soId, f.line.lineId]);
+                    /* 🔴 JOINED THROUGH transactionline, NEVER filtered on
+                     * ia.transactionline directly. Measured 2026-09-23 in N/query:
+                     * `FROM inventoryassignment ia WHERE ia.transaction = ? AND
+                     * ia.transactionline = ?` returns ZERO rows (binds and literals
+                     * alike) for a line that carries the lot, while REST SuiteQL
+                     * returns it. That silent empty kept claim 20 alive on a line
+                     * another bundle already filled. The join form returns it. */
+                    const onLine = rows('SELECT ia.inventorynumber AS lot, ia.quantity AS q ' +
+                        'FROM transactionline tl ' +
+                        'JOIN inventoryassignment ia ON ia.transaction = tl.transaction AND ia.transactionline = tl.id ' +
+                        'WHERE tl.transaction = ? AND tl.uniquekey = ?', [c.soId, c.lineKey]);
                     f.assignedOnLineBase = onLine.filter((r) => int(r.lot) === c.lotId)
                         .reduce((s, r) => s + Math.abs(num(r.q)), 0);
                     // Every lot on the line (review HIGH 2).
