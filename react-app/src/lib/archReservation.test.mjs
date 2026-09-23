@@ -109,7 +109,7 @@ test('ageMinutes reads the account clock on both sides', () => {
 
 const STATE = (o) => ({ lotid: 52870, lotname: '344950-1', itemid: 3150, itemcode: 'PUR44KDSRT', department: 'Trading', subsidiary: 'ARC', locationid: 22, storedqty: 0, stockunit: 5, saleunit: 5, rate: 0.001, ...o });
 
-const endpoint = ({ states = [STATE()], claims = [], claimsThrow = false, poLines = [], flags = [], flagsThrow = false, unattrib = [], committed = [] } = {}) => {
+const endpoint = ({ states = [STATE()], claims = [], claimsThrow = false, poLines = [], flags = [], flagsThrow = false, unattrib = [], committed = [], poRcv = [] } = {}) => {
   const sql = [];
   const errors = [];
   const query = {
@@ -118,6 +118,7 @@ const endpoint = ({ states = [STATE()], claims = [], claimsThrow = false, poLine
       const rows = (() => {
         if (/customrecord_arch_res/.test(q)) { if (claimsThrow) throw new Error('Invalid search type: customrecord_arch_res'); return claims; }
         if (/custbody_po_intransit_journal/.test(q)) { if (flagsThrow) throw new Error('Unknown identifier'); return flags; }
+        if (/tl\.quantityshiprecv AS rcv FROM transactionline tl/.test(q)) return poRcv;
         if (/t\.type = 'PurchOrd'/.test(q)) return poLines;
         if (/FROM inventorynumberlocation inl/.test(q)) return states;
         if (/LEFT JOIN inventoryassignment ia/.test(q)) return unattrib;
@@ -407,7 +408,7 @@ test('F5 (HIGH 3) the claim carries the order key, and claims are named even whe
 
 test('F6 the reconciler recovers a pending claim by its key and hands failures to the lot, not to null', () => {
   const mr = readFileSync(join(SHARED, '../entry_points/mr/mcgi_mr_arch_reservation.js'), 'utf8');
-  assert.match(mr, /'ARCH-ORDER-' \+ c\.orderKey, '%\[ARCH-APPEND:' \+ c\.orderKey \+ '\]%'/);
+  assert.match(mr, /'ARCH-ORDER-' \+ c\.orderKey, 'ARCH-ORDER-' \+ c\.orderKey \+ '\[%',\s*'%\[ARCH-APPEND:' \+ c\.orderKey \+ '\]%'/);
   assert.match(mr, /exception: 'VAL_HANDOFF_FAILED'/);
   assert.match(mr, /f\.assignedAllOnLineBase = onLine\.reduce/);
 });
@@ -417,4 +418,49 @@ test('F7 no N/query in the reconciler filters inventoryassignment.transactionlin
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
   assert.doesNotMatch(mr, /FROM inventoryassignment ia '\s*\+\s*'WHERE ia\.transaction = \? AND ia\.transactionline = \?/);
   assert.match(mr, /JOIN inventoryassignment ia ON ia\.transaction = tl\.transaction AND ia\.transactionline = tl\.id ' \+\s*'WHERE tl\.transaction = \? AND tl\.uniquekey = \?'/);
+});
+
+/* ══ 6. Final review fixes ═══════════════════════════════════════════════ */
+
+test('G1 (M1) a short landing whose landed part SHIPPED keeps its claim for the rest', () => {
+  // line 1.0, landed 0.6 handed over and shipped; 0.4 still wanted.
+  const d = decide(HELD, FACTS({
+    line: { item: 3150, location: 22, qtyBase: 1.0, shippedBase: 0.6, closed: false },
+    stock: [{ location: 22, onHandBase: 0, onOrderBase: 0 }],
+    assignedOnLineBase: 0.6, assignedAllOnLineBase: 0.6,
+    poLines: [{ closedLine: false, closedPo: false, orderedBase: 1.0, receivedBase: 0.6, bundleBase: 1.0 }],
+  }));
+  assert.notEqual(d.action, 'release', d.reason);
+});
+
+test('G2 (M1) another bundle that covered part of the line and shipped does not release this claim', () => {
+  const d = decide(HELD, FACTS({
+    line: { item: 3150, location: 22, qtyBase: 1.4, shippedBase: 0.5, closed: false },
+    assignedOnLineBase: 0, assignedAllOnLineBase: 0.5,
+  }));
+  assert.notEqual(d.action, 'release', d.reason);
+});
+
+test('G3 (M1) the rest of a short bundle landing later is handed over, net of what already shipped', () => {
+  const d = decide(HELD, FACTS({
+    line: { item: 3150, location: 22, qtyBase: 1.0, shippedBase: 0.6, closed: false },
+    stock: [{ location: 22, onHandBase: 0.4, onOrderBase: 0 }],
+    assignedOnLineBase: 0.6, assignedAllOnLineBase: 0.6,
+  }));
+  assert.equal(d.action, 'handoff'); assert.ok(Math.abs(d.handoffBase - 0.4) < 1e-9, d.handoffBase);
+  assert.equal(d.releaseAfterHandoff, true);
+});
+
+test('G4 (M2) a pending claim whose order exists but whose line is ambiguous is KEPT with an alert', () => {
+  const pend = { ...HELD, soId: 0, lineKey: 0, nowAcct: '2026-09-23 03:00:00' };
+  const d = decide(pend, FACTS({ orderFound: true }));
+  assert.equal(d.action, 'keep'); assert.equal(d.alert, true);
+});
+
+test('G5 (L3) the endpoint refuses a bundle on a PO that already has a receipt, as the reconciler reports it', () => {
+  const env = { poLines: [PO_LINE()], flags: [{ poid: 900, je: 'x', tstatus: 'B' }] };
+  assert.equal(endpoint(env).mod.resolveLines([LINE()]).lines[0].preArrival, true, 'control: no receipt, accepted');
+  const r = endpoint({ ...env, poRcv: [{ poid: 900, rcv: 0 }, { poid: 900, rcv: 0.5 }] }).mod.resolveLines([LINE()]);
+  assert.equal(r.lines.length, 0);
+  assert.match(r.problems[0], /already partly received/);
 });

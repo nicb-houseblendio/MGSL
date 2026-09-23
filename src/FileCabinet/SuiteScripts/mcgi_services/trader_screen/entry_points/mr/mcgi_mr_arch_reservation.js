@@ -219,22 +219,35 @@ define(['N/query', 'N/record', 'N/log', '../../shared/archReservation'],
 
     /**
      * A pending claim whose order DID save (review HIGH 3): find it by the request
-     * key and its bare line (same item and location, no inventory detail, not named
-     * by another claim), then complete the claim. Returns the line key or 0.
+     * key and its bare line (same item, same location as the bundle's PO line,
+     * the bundle's quantity, no inventory detail, not named by another claim), then
+     * complete the claim. Returns { soId, lineKey }, { found: true } when the order
+     * exists but the line is ambiguous (kept for a person, never swept), or 0.
      */
     const recoverPending = (c) => {
         if (!c.orderKey || c.soId) return 0;
-        const so = rows('SELECT id FROM transaction WHERE type = ? AND (externalid = ? OR externalid LIKE ?)',
-            ['SalesOrd', 'ARCH-ORDER-' + c.orderKey, '%[ARCH-APPEND:' + c.orderKey + ']%']);
+        // A create that was later appended to reads ARCH-ORDER-<key>[ARCH-APPEND:..]
+        // (final review L2), so the create form is matched as a prefix too.
+        const so = rows('SELECT id FROM transaction WHERE type = ? AND ' +
+            '(externalid = ? OR externalid LIKE ? OR externalid LIKE ?)',
+            ['SalesOrd', 'ARCH-ORDER-' + c.orderKey, 'ARCH-ORDER-' + c.orderKey + '[%',
+             '%[ARCH-APPEND:' + c.orderKey + ']%']);
         if (so.length !== 1) return 0;
+        const po = rows('SELECT tl.location AS loc, ia.quantity AS bq FROM inventoryassignment ia ' +
+            'JOIN transactionline tl ON tl.transaction = ia.transaction AND tl.id = ia.transactionline ' +
+            "JOIN transaction t ON t.id = tl.transaction WHERE ia.inventorynumber = ? AND t.type = 'PurchOrd'",
+            [c.lotId]);
         const soId = int(so[0].id);
         const claimed = {};
         Reservation.readClaims(query).rows.forEach((x) => { if (x.soId === soId && x.lineKey) claimed[x.lineKey] = true; });
-        const lines = rows("SELECT tl.id AS lineid, tl.uniquekey AS uk FROM transactionline tl " +
+        const lines = rows("SELECT tl.id AS lineid, tl.uniquekey AS uk, tl.location AS loc, tl.quantity AS qty FROM transactionline tl " +
             "WHERE tl.transaction = ? AND tl.mainline = 'F' AND tl.item = ? AND tl.isclosed = 'F' " +
             'AND NOT EXISTS (SELECT 1 FROM inventoryassignment ia WHERE ia.transaction = tl.transaction AND ia.transactionline = tl.id)',
-            [soId, c.itemId]).filter((r) => !claimed[int(r.uk)]);
-        if (lines.length !== 1) return 0;   // ambiguous: a person decides, the TTL still applies
+            [soId, c.itemId]).filter((r) => !claimed[int(r.uk)])
+            // Narrowed by the bundle's own PO line when it is known (final review M2).
+            .filter((r) => po.length !== 1 || (int(r.loc) === int(po[0].loc) &&
+                Math.abs(Math.abs(num(r.qty)) - Math.abs(num(po[0].bq))) < 1e-6));
+        if (lines.length !== 1) return { found: true };
         Reservation.finalize(record, c.claimId, soId, int(lines[0].uk));
         return { soId: soId, lineKey: int(lines[0].uk) };
     };
@@ -247,15 +260,18 @@ define(['N/query', 'N/record', 'N/log', '../../shared/archReservation'],
             return;
         }
         let c = item.c;
+        let orderFound = false;
         if (!c.soId && c.orderKey && !c.inactive) {
             const got = recoverPending(c);
-            if (got) {
+            if (got && got.found) orderFound = true;
+            if (got && got.lineKey) {
                 log.audit('ARCH reservation - claim completed from its order key',
                     (c.lotNo || c.lotId) + ' -> SO ' + got.soId + ' line ' + got.lineKey);
                 c = Object.assign({}, c, { soId: got.soId, lineKey: got.lineKey, pending: false });
             }
         }
         const f = factsFor(c);
+        f.orderFound = orderFound;
         let d = Reservation.decideClaim(c, f);
         const tag = (c.lotNo || c.lotId) + (c.soNumber ? ' on ' + c.soNumber : '');
 

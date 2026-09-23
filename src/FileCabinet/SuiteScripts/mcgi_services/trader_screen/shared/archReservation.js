@@ -241,6 +241,10 @@ define([], () => {
         if (c.inactive) return out('release', 'the claim was inactivated by hand');
         if (!c.soId) {
             if (c.lineKey) return out('release', 'the sales order was deleted');
+            /* Final review M2: the order WAS found by the request key but its line
+             * could not be told apart. Releasing it on the TTL would leave a bare
+             * line that locks every bundle of the item, so it is kept for a person. */
+            if (f.orderFound) return out('keep', 'the order exists but its line is ambiguous', { alert: true });
             const age = ageMinutes(c.since, c.nowAcct || f.nowAcct);
             return (age !== null && age >= PENDING_TTL_MIN)
                 ? out('release', 'abandoned: no order named it within ' + PENDING_TTL_MIN + ' minutes')
@@ -257,16 +261,23 @@ define([], () => {
         if (c.itemId && line.item && Number(line.item) !== Number(c.itemId)) {
             return out('release', 'the line now carries another item', { alert: true });
         }
-        const open = Math.max(0, Math.abs(line.qtyBase) - Math.abs(line.shippedBase || 0));
+        const need = Math.abs(line.qtyBase);
+        const shipped = Math.abs(line.shippedBase || 0);
+        const open = Math.max(0, need - shipped);
         if (open <= EPS) return out('release', 'the line is fulfilled');
         /* Two figures, review 2026-09-23 (HIGH 2): this bundle on the line, and
          * EVERY lot on the line. A line a person filled with another bundle by hand
          * no longer needs this one, so it is released; and a hand-off is capped by
          * what the line still lacks from all lots, never only from this one. */
+        /* 🔴 GROSS AGAINST GROSS (final review M1). An assignment survives
+         * fulfilment, so the assigned figures are GROSS while `open` is net of what
+         * shipped. Comparing them released a short-landed claim as soon as the part
+         * that did land shipped. Coverage is measured against the line's whole
+         * quantity instead. */
         const assigned = Math.abs(f.assignedOnLineBase || 0);
         const assignedAll = Math.max(assigned, Math.abs(f.assignedAllOnLineBase || 0));
-        if (assignedAll >= open - EPS) {
-            return out('release', assigned >= open - EPS
+        if (assignedAll >= need - EPS) {
+            return out('release', assigned >= need - EPS
                 ? 'handed over: the line carries the bundle'
                 : 'the line is already covered by another bundle');
         }
@@ -284,10 +295,12 @@ define([], () => {
              * assignment does not lower on-hand, so after a short hand-off `here`
              * still counts the part already given, and the next run handed it out a
              * second time. `free` is what of this bundle is not on the line yet. */
-            const free = here - assigned;
+            // `here` is net of what shipped from the bundle, so only the UNSHIPPED
+            // part of what it already gave is still sitting in it.
+            const free = here - Math.max(0, assigned - shipped);
             if (free <= EPS) return out('keep', 'landed short, all of it is on the line', { exception: 'VAL_RECEIVED_SHORT' });
-            const give = Math.min(open - assignedAll, free);
-            const full = assignedAll + give >= open - EPS;
+            const give = Math.min(need - assignedAll, free);
+            const full = assignedAll + give >= need - EPS;
             return out('handoff', full ? 'landed: handing the bundle to its line' : 'landed short',
                 { handoffBase: give, releaseAfterHandoff: full, exception: full ? null : 'VAL_RECEIVED_SHORT' });
         }
@@ -303,7 +316,7 @@ define([], () => {
         if (onOrder + EPS < bundle || live.some((p) => Math.abs(p.orderedBase) + EPS < Math.abs(p.bundleBase || 0))) {
             return out('keep', 'its PO line was reduced', { exception: 'VAL_PO_LINE_CLOSED' });
         }
-        if (open > bundle + EPS) return out('keep', 'the SO line asks for more than the bundle', { exception: 'VAL_SO_LINE_ABOVE_BUNDLE' });
+        if (need > bundle + EPS) return out('keep', 'the SO line asks for more than the bundle', { exception: 'VAL_SO_LINE_ABOVE_BUNDLE' });
         return out('keep', 'on the water');
     };
 

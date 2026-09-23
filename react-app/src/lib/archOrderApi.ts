@@ -64,6 +64,8 @@ export interface ArchOrderResult {
   splitLinesQueued?: number;
   /** Non-empty means the order EXISTS but its bundles are not locked. */
   lotsNotAttributed?: string[];
+  /** Feedback 8: bundles reserved before arrival whose claim does not name the line. */
+  reservationProblems?: string[];
   assignmentMismatches?: string[];
   /** Set when the order landed on a form that cannot carry a lot. */
   formWarning?: string | null;

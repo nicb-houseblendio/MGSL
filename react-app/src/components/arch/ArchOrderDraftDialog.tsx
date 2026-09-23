@@ -244,6 +244,23 @@ const OutcomeNotice = ({
     );
   }
 
+  /* Final review L1: a bundle reserved off the boat whose claim names no line is
+     released after 30 minutes unless its order is recognised, and the trader is the
+     person who can get it fixed inside that window. */
+  const reservationNotice = (result.reservationProblems || []).length > 0 ? (
+    <div style={{ ...notice, background: '#FFF7ED', border: '1px solid #FDBA74', color: '#7C2D12' }}>
+      <div>
+        <strong>The order exists, but a reservation before arrival was not fully recorded.</strong>{' '}
+        Tell an administrator now: the bundle can be released in 30 minutes.
+        <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
+          {(result.reservationProblems || []).map((p, i) => (
+            <li key={i} style={{ marginTop: 2 }}>{p}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  ) : null;
+
   const unlocked = (result.lotsNotAttributed || []).length > 0;
   if (unlocked || result.formWarning) {
     return (
@@ -262,6 +279,7 @@ const OutcomeNotice = ({
             )}
           </div>
         </div>
+        {reservationNotice}
         {remanNotice}
         {teamNotice}
         {replacedNotice}
@@ -271,6 +289,7 @@ const OutcomeNotice = ({
 
   return (
     <>
+      {reservationNotice}
       <div style={{ ...notice, background: '#F0FDF4', border: '1px solid #86EFAC', color: '#14532D' }}>
         <span>
           Created and the bundles are locked.

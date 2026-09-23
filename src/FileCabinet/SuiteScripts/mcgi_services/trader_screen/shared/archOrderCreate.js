@@ -2711,6 +2711,24 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             }
         }
 
+        /* Final review L3: the reconciler reports a bundle on a PO that has ANY
+         * receipt as received without it (one PO is one container in MA's flow), so
+         * the endpoint refuses the same case rather than accept a reservation that
+         * is an exception on its first check. Unreadable = treated as received. */
+        const poReceived = {};
+        if (poIds.length) {
+            try {
+                query.runSuiteQL({
+                    query: 'SELECT tl.transaction AS poid, tl.quantityshiprecv AS rcv FROM transactionline tl ' +
+                           "WHERE tl.transaction IN (" + poIds.join(',') + ") AND tl.mainline = 'F'",
+                }).asMappedResults().forEach((x) => {
+                    if (Math.abs(numOr(x.rcv, 0)) > 0) poReceived[String(int(x.poid))] = true;
+                });
+            } catch (e) {
+                poIds.forEach((id) => { poReceived[String(id)] = true; });
+            }
+        }
+
         const byLot = {};
         const seen = {};
         rows.forEach((r) => {
@@ -2735,6 +2753,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 received: received,
                 open: open,
                 closedPo: !!(f && f.closed),
+                poReceived: !!poReceived[String(int(r.poid))],
                 inTransit: open > 0 && water >= open - 1e-9,
                 flagsRead: flagsRead,
             });
@@ -3412,9 +3431,10 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                                   'than the one picked. Reload the screen.');
                     return;
                 }
-                if (pl.received > 0 || !pl.inTransit) {
+                if (pl.received > 0 || pl.poReceived || !pl.inTransit) {
                     problems.push(label + ': bundle ' + st.lotName + ' on ' + pl.poNumber + ' is ' +
-                                  (pl.closedPo ? 'on a closed PO' : (pl.received > 0 ? 'partly received'
+                                  (pl.closedPo ? 'on a closed PO' : (pl.received > 0 || pl.poReceived
+                                      ? 'on a PO that is already partly received'
                                       : 'on order, not in transit yet')) +
                                   ', so it cannot be reserved. Only bundles on the water can be sold before they land.');
                     return;
