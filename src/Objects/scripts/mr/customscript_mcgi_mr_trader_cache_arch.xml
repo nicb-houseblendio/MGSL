@@ -84,7 +84,13 @@
       <!-- Primary book = CAD on a CAD subsidiary. See the field help. -->
       <custscript_ts_arch_cost_book>1</custscript_ts_arch_cost_book>
       <isdeployed>T</isdeployed>
-      <loglevel>DEBUG</loglevel>
+      <!-- AUDIT since 2026-09-23 (set live on deployment 4664 the same day).
+           At DEBUG a rebuild wrote 239 notes, 232 of them MCGI_LIB_LotCost's
+           per-pair debug lines, and that volume was the stated reason rebuilds
+           could not run more often than every 15 min. The builder's change-driven
+           gate refuses to rebuild early while this reads DEBUG, so setting it back
+           is safe but slow. For a diagnosis: DEBUG, one rebuild, back to AUDIT. -->
+      <loglevel>AUDIT</loglevel>
       <queueallstagesatonce>T</queueallstagesatonce>
       <runasrole>ADMINISTRATOR</runasrole>
       <!-- NOTSCHEDULED, deliberately, 2026-08-26. The builder reschedules ITSELF.
