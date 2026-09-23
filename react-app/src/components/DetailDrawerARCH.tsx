@@ -276,7 +276,13 @@ export const DetailDrawerARCH = ({
             * "sample data" banner when any lot lacks `incoming`. It was simply
             * never called with it. */}
           {activeBucket === 'onOrder' || activeBucket === 'inTransit' ? (
-            <ArchPOListView row={row} uom={uom} bucket={activeBucket} />
+            <ArchPOListView
+              row={row}
+              uom={uom}
+              bucket={activeBucket}
+              onAddToCart={onAddToCart ? (lotNos, bucket) => onAddToCart(row, lotNos, bucket) : undefined}
+              cartLotNos={cartLotNos}
+            />
           ) : (
             <ArchLotTable
               row={row}

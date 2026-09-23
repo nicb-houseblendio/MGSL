@@ -4,6 +4,7 @@ import { lotIncomingInfo, formatShortDate } from '@/lib/archFixtures';
 import { ARCH_BUCKET_META, ARCH_SURFACE } from '@/components/arch/archColors';
 import type { ArchSummaryRow, ArchLot, ArchDetailKey } from '@/types/arch';
 import { poListTotals, unbundledBadge, linesOnTab, SHIP_WEEK_DEFAULTED_TITLE } from '@/lib/archUnbundled';
+import { isReservableInTransit, reservationText } from '@/lib/archLots';
 
 /**
  * On Order / In Transit view — purchase orders, not tallies.
@@ -35,10 +36,15 @@ import { poListTotals, unbundledBadge, linesOnTab, SHIP_WEEK_DEFAULTED_TITLE } f
  * the payload predates that or comes from fixtures — and when it is reached, the
  * table says so in a banner.
  *
- * Selection: there is none here, and that is the other half of his ask. This
- * view has no checkboxes at all, and `isLotLocked` in `archLots.ts` separately
- * refuses these bundles in the two views that DO sell, so a trader cannot reach
- * them from Available either.
+ * Selection: NONE on On Order, which is the other half of his ask, and
+ * `isLotLocked` in `archLots.ts` separately refuses these bundles in the two
+ * views that DO sell, so a trader cannot reach them from Available either.
+ *
+ * ── IN TRANSIT IS THE EXCEPTION, since 2026-09-23 (Feedback 8, step 2.3) ────
+ * A bundle on the water can be reserved: it goes on the SO with no inventory
+ * detail and is held by a claim record until it lands. Only whole bundles wholly
+ * in transit are offered (`isReservableInTransit`), and the order endpoint
+ * refuses everything else anyway. A reserved bundle shows who holds it.
  */
 
 interface ArchPOListViewProps {
@@ -50,6 +56,10 @@ interface ArchPOListViewProps {
    * trader wants are identical and only the quantity and the ink differ.
    */
   bucket?: Extract<ArchDetailKey, 'onOrder' | 'inTransit'>;
+  /** In Transit only: add the ticked bundles to the SO cart (Feedback 8, 2.3). */
+  onAddToCart?: (lotNos: string[], bucket: ArchDetailKey) => void;
+  /** Bundles already in the cart, so they read as added. */
+  cartLotNos?: Set<string>;
 }
 
 const EtaPill = ({ date, color }: { date: string; color: string }) => (
@@ -133,8 +143,10 @@ const resolveIncoming = (
   };
 };
 
-export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewProps) => {
+export const ArchPOListView = ({ row, uom, bucket = 'onOrder', onAddToCart, cartLotNos }: ArchPOListViewProps) => {
   const meta = ARCH_BUCKET_META[bucket];
+  const selectable = bucket === 'inTransit' && !!onAddToCart;
+  const [ticked, setTicked] = React.useState<Set<string>>(() => new Set());
   /* Bundles, then PO lines with no bundles (2.8c), then whatever NEITHER list can
      show (a bundle on an open line the lot query did not return, or a payload
      older than `unbundled`). The footer is always the row's own figure. */
@@ -201,6 +213,15 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
     padding: '9px 10px',
     borderBottom: '1px solid #E2E8F0',
   };
+  const reservable = selectable ? lots.filter((l) => isReservableInTransit(l) && !cartLotNos?.has(l.lotNo)) : [];
+  const tickedLots = reservable.filter((l) => ticked.has(l.lotNo));
+  const toggle = (lotNo: string) =>
+    setTicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(lotNo)) next.delete(lotNo); else next.add(lotNo);
+      return next;
+    });
+  const lead = selectable ? 1 : 0;
 
   return (
     <div style={{ padding: '16px 18px 22px' }}>
@@ -228,6 +249,7 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
             {/* "Ship week", not "ETA": the value is the PO's custbody_ship_week, the
                 supplier's ship week, which MTL and IND label "Ship Week"; it can be
                 in the past for wood still at sea (round-2 review, 2026-09-22). */}
+            {selectable && <th style={{ ...headerCell, width: 28 }} aria-label="Select" />}
             {['PO #', 'Bundle', 'Supplier', 'Container / Vessel', 'Ship week', `${label} (${displaySuffix(row.unit, uom)})`].map(
               (h, i) => (
                 <th key={h} style={{ ...headerCell, textAlign: i >= 4 ? 'right' : 'left' }}>
@@ -240,8 +262,26 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
         <tbody>
           {lots.map((lot, i) => {
             const inc = resolveIncoming(lot, bucket);
+            const held = reservationText(lot);
+            const inCart = !!cartLotNos?.has(lot.lotNo);
+            const canTick = selectable && isReservableInTransit(lot) && !inCart;
             return (
               <tr key={lot.lotNo} style={{ background: i % 2 === 0 ? '#fff' : '#F8FAFC' }}>
+                {selectable && (
+                  <td style={{ ...cell, width: 28 }}>
+                    <input
+                      type="checkbox"
+                      checked={inCart || ticked.has(lot.lotNo)}
+                      disabled={!canTick}
+                      onChange={() => toggle(lot.lotNo)}
+                      aria-label={`Reserve bundle ${lot.lotNo}`}
+                      title={held ? held.detail : inCart ? 'Already in the cart' : !canTick
+                        ? 'Only a whole bundle on the water, with nothing still on order, can be reserved'
+                        : 'Reserve this whole bundle before it arrives'}
+                      style={{ width: 15, height: 15, accentColor: meta.color, cursor: canTick ? 'pointer' : 'not-allowed' }}
+                    />
+                  </td>
+                )}
                 <td style={{ ...cell, fontWeight: 700, color: meta.color }} className="font-mono">
                   {inc.po}
                 </td>
@@ -250,6 +290,20 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
                     bundles": there was no column where a bundle would have gone. */}
                 <td style={{ ...cell, fontWeight: 600, color: ARCH_SURFACE.text }} className="font-mono">
                   {lot.lotNo}
+                  {held && (
+                    <span
+                      title={held.detail}
+                      style={{
+                        marginLeft: 6, display: 'inline-block', padding: '1px 7px', borderRadius: 10,
+                        fontSize: 10, fontWeight: 700,
+                        color: lot.reservation?.exception ? '#8B1A1A' : '#B23F00',
+                        background: lot.reservation?.exception ? '#FDECEC' : '#FFF1E6',
+                        border: `1px solid ${lot.reservation?.exception ? '#D14343' : '#E9A06B'}`,
+                      }}
+                    >
+                      {held.badge}
+                    </span>
+                  )}
                 </td>
                 <td style={{ ...cell, fontWeight: 600, color: ARCH_SURFACE.text }}>{inc.supplier}</td>
                 <td style={{ ...cell, fontSize: 11, color: ARCH_SURFACE.textMid }} className="font-mono">
@@ -284,6 +338,7 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
                 key={`unbundled-${u.poNumber}-${i}`}
                 style={{ background: (lots.length + i) % 2 === 0 ? '#fff' : '#F8FAFC' }}
               >
+                {selectable && <td style={cell} />}
                 <td style={{ ...cell, fontWeight: 700, color: meta.color }} className="font-mono">
                   {u.poNumber || '—'}
                   {linesOnTab(u, bucket) > 1 && (
@@ -322,7 +377,7 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
           {residual !== 0 && (
             <tr>
               <td
-                colSpan={5}
+                colSpan={5 + lead}
                 style={{ ...cell, color: residual < 0 ? '#8B1A1A' : ARCH_SURFACE.textMid, fontStyle: 'italic' }}
               >
                 {residual > 0
@@ -337,7 +392,7 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
         </tbody>
         <tfoot>
           <tr style={{ background: '#F1F5FA' }}>
-            <td colSpan={5} style={{ ...cell, borderBottom: 'none', fontWeight: 700, color: ARCH_SURFACE.textMid }}>
+            <td colSpan={5 + lead} style={{ ...cell, borderBottom: 'none', fontWeight: 700, color: ARCH_SURFACE.textMid }}>
               {footerLabel}
             </td>
             <td
@@ -349,6 +404,25 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder' }: ArchPOListViewP
           </tr>
         </tfoot>
       </table>
+      {selectable && reservable.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, marginTop: 12 }}>
+          <span style={{ fontSize: 11.5, color: ARCH_SURFACE.textMid }}>
+            A bundle on the water is reserved whole and goes on the SO without a lot until it lands.
+          </span>
+          <button
+            type="button"
+            disabled={tickedLots.length === 0}
+            onClick={() => { onAddToCart!(tickedLots.map((l) => l.lotNo), 'inTransit'); setTicked(new Set()); }}
+            style={{
+              padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 700, border: 'none',
+              background: tickedLots.length ? meta.color : '#CBD5E1', color: '#fff',
+              cursor: tickedLots.length ? 'pointer' : 'not-allowed',
+            }}
+          >
+            + Add {tickedLots.length || ''} to SO
+          </button>
+        </div>
+      )}
     </div>
   );
 };

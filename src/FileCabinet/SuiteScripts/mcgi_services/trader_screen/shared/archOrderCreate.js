@@ -3281,7 +3281,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                               (heldBy.pending
                                   ? ' by an order being saved right now.'
                                   : ' on ' + (heldBy.soNumber || ('SO ' + heldBy.soId)) +
-                                    (heldBy.customer ? ' for ' + heldBy.customer : '') + '.') +
+                                    // "Bell Forest Products Inc." already ends in a period.
+                                    (heldBy.customer ? ' for ' + heldBy.customer.replace(/\.+$/, '') : '') + '.') +
                               ' A bundle cannot be sold twice.');
                 return;
             }

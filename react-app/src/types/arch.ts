@@ -301,6 +301,25 @@ export interface ArchLot {
    */
   onHold?: boolean;
   /**
+   * Feedback 8: a bundle reserved BEFORE it arrived, from its
+   * `customrecord_arch_res` claim. Whole bundle, true or false: present means
+   * nobody else may sell it, whatever the quantities say. `pending` = an order is
+   * being saved; `landed` = it has stock and is waiting for the reconciler to put
+   * it on the order; `exception` = the reconciler's supply-side flag (2.7c).
+   * Absent on payloads older than 2026-09-23.
+   */
+  reservation?: {
+    soId: string;
+    soNumber: string;
+    customer: string;
+    pending: boolean;
+    since: string;
+    landed: boolean;
+    exception: { label: string; since: string } | null;
+  } | null;
+  /** SO-line quantity reserving this bundle while it is on the water. Not On Hand. */
+  preReserved?: number;
+  /**
    * The hold record's raw "Packs on Hold" figure, carried through untouched.
    *
    * NOT used in any arithmetic. It is here so that if the client later says a

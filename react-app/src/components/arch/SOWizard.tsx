@@ -1935,7 +1935,7 @@ export const SOWizard = ({
       unit: l.unit,
       costPerBF: l.costPerBF,
       pricePerBF: parseFloat(pr(l.key)) || 0,
-      isSplit: sp(l.key).on,
+      isSplit: sp(l.key).on && l.bucket !== 'inTransit',
       reman: rm(l.key),
     })),
   });
@@ -3390,10 +3390,14 @@ export const SOWizard = ({
                 <td style={{ ...td, textAlign: 'center' }}>
                   <input
                     type="checkbox"
-                    checked={s.on}
+                    checked={s.on && l.bucket !== 'inTransit'}
+                    /* Feedback 8: a bundle still on the water has no wood to cut, so
+                       it is reserved whole; the endpoint refuses a split of it. */
+                    disabled={l.bucket === 'inTransit'}
+                    title={l.bucket === 'inTransit' ? 'Not arrived yet: reserved whole, split after it lands' : undefined}
                     onChange={(e) => setSp(l.key, { on: e.target.checked, targetBF: e.target.checked ? s.targetBF : '' })}
                     aria-label={`Split bundle ${l.lotNo}`}
-                    style={{ width: 16, height: 16, accentColor: ARCH_SURFACE.green, cursor: 'pointer' }}
+                    style={{ width: 16, height: 16, accentColor: ARCH_SURFACE.green, cursor: l.bucket === 'inTransit' ? 'not-allowed' : 'pointer' }}
                   />
                 </td>
                 <td style={{ ...td, textAlign: 'right' }}>

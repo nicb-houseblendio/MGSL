@@ -149,7 +149,36 @@ export const hasArrived = (lot: ArchLot): boolean => (lot.onHand || 0) > 0;
  * disabled with a reason on it, rather than by an error after building a cart.
  */
 export const isLotLocked = (lot: ArchLot): boolean =>
-  commitmentOn(lot) > 0 || !hasArrived(lot);
+  commitmentOn(lot) > 0 || !hasArrived(lot) || !!lot.reservation;
+
+/**
+ * Can this bundle be reserved off the boat? Feedback 8, step 2.3, the ONE place
+ * a bundle with no stock is sellable, and only from the In Transit drill-down.
+ *
+ * Mirrors the order endpoint, which is the real gate: whole bundle, wholly in
+ * transit (nothing of it still merely on order, MA: « on order is visibility
+ * only »), no stock yet, no claim, no hold, no commitment. The server refuses
+ * the same cases, so this only decides whether the checkbox is offered.
+ */
+export const isReservableInTransit = (lot: ArchLot): boolean =>
+  !hasArrived(lot) &&
+  (lot.inTransit || 0) > 0 &&
+  (lot.onOrder || 0) <= 0 &&
+  !lot.reservation &&
+  !lot.onHold &&
+  commitmentOn(lot) <= 0;
+
+/** What to print for a reserved bundle, or null. */
+export const reservationText = (lot: ArchLot): { badge: string; detail: string } | null => {
+  const r = lot.reservation;
+  if (!r) return null;
+  if (r.pending) return { badge: 'Reserving', detail: 'An order taking this bundle is being saved right now.' };
+  const who = r.soNumber || (r.soId ? 'SO ' + r.soId : 'a sales order');
+  const base = `Reserved on ${who}${r.customer ? ' for ' + r.customer : ''}`;
+  if (r.exception) return { badge: `${who} · ${r.exception.label}`, detail: `${base}. ${r.exception.label} (since ${r.exception.since}).` };
+  if (r.landed) return { badge: `${who} · landed`, detail: `${base}. It has arrived and is being put on the order.` };
+  return { badge: who, detail: `${base}, before arrival. Nobody else can sell it.` };
+};
 
 /**
  * Why a bundle is locked, for the tooltip and the row badge.
@@ -159,6 +188,11 @@ export const isLotLocked = (lot: ArchLot): boolean =>
 export const lockReason = (
   lot: ArchLot
 ): { badge: string; detail: string; color: string } | null => {
+  // Feedback 8: a claim locks the whole bundle, landed or not.
+  const held = reservationText(lot);
+  if (held && !((lot.reserve || 0) > 0)) {
+    return { badge: 'Rsvd', detail: held.detail, color: '#B23F00' };
+  }
   if ((lot.reserve || 0) > 0) {
     return {
       badge: 'Rsvd',
