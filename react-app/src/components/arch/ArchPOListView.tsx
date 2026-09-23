@@ -406,7 +406,8 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder', onAddToCart, cart
       </table>
       {selectable && reservable.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, marginTop: 12 }}>
-          <span style={{ fontSize: 11.5, color: ARCH_SURFACE.textMid }}>
+          {/* Light ink: this line sits on the drawer's navy, not on the white table. */}
+          <span style={{ fontSize: 11.5, color: '#CBD5E1' }}>
             A bundle on the water is reserved whole and goes on the SO without a lot until it lands.
           </span>
           <button
