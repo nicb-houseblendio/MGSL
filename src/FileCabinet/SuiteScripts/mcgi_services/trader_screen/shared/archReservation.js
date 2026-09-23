@@ -320,8 +320,52 @@ define([], () => {
         return out('keep', 'on the water');
     };
 
+    /* ── When the cache chain starts the reconciler ──────────────────────────
+     * 🔴 The reconciler's native recurrence NEVER FIRED (deployed 2026-09-23 as
+     * daily, repeat 15 min: status SCHEDULED, zero runs by 06:31 PT, the same
+     * silent fault the cache MR had twice in August). So it is NOTSCHEDULED and
+     * the cache chain, which is proven alive, submits it. This decides when.
+     *
+     *   RECON_CHECK_MS     the chain evaluates at most once a minute
+     *   an ARC receipt     claims held and a new ARC item receipt: go now
+     *   RECON_BACKSTOP_MS  claims held: at least every 15 min (void SO, deleted
+     *                      line, closed PO line, pending sweep)
+     *   RECON_IDLE_MS      no claims: hourly, to clear a mirror left by a claim
+     *                      deleted by hand
+     *
+     * Claims UNREADABLE means no submit at all: the reconciler throws on the same
+     * read, and in an account without the record type (prod before X.2) it would
+     * be a failed job every 15 min for nothing.
+     *
+     * `submitAt` is the last SUCCESSFUL submit. Absent or in the future counts as
+     * long ago, so an evicted key costs one extra run, never a missed one. */
+    const RECON_CHECK_MS    = 60 * 1000;
+    const RECON_BACKSTOP_MS = 15 * 60 * 1000;
+    const RECON_IDLE_MS     = 60 * 60 * 1000;
+
+    const reconKickDecision = (s) => {
+        const now = Number(s.now);
+        const at = Number(s.submitAt);
+        const since = (at > 0 && at <= now) ? now - at : Infinity;
+        const no = (reason) => ({ submit: false, reason: reason });
+        const go = (reason) => ({ submit: true, reason: reason });
+        if (since < RECON_CHECK_MS) return no('submitted under a minute ago');
+        if (s.claims == null) return no('claims unreadable');
+        const held = Number(s.claims) > 0;
+        if (held && s.newArcReceipt) return go('an ARC item receipt was saved');
+        if (held && since >= RECON_BACKSTOP_MS) return go('backstop, ' + Number(s.claims) + ' claim(s) held');
+        if (since >= RECON_IDLE_MS) return go('hourly sweep');
+        return no('nothing to do');
+    };
+
+    /** A refused submit because a run is already queued or running. Silent: the
+     *  next check retries, and the claim state is re-read, not consumed. */
+    const isSubmitBusy = (e) => /MAP_REDUCE_ALREADY_RUNNING|FAILED_TO_SUBMIT_JOB_REQUEST/i
+        .test(String((e && e.name) || '') + ' ' + String((e && e.message) || ''));
+
     return {
         TYPE, F_LOT, F_ITEM, F_SO, F_LINE, F_KEY, PENDING_TTL_MIN, CLAIMS_SQL,
         externalIdFor, readClaims, readExceptions, claim, finalize, release, isDuplicate, ageMinutes, decideClaim,
+        RECON_CHECK_MS, RECON_BACKSTOP_MS, RECON_IDLE_MS, reconKickDecision, isSubmitBusy,
     };
 });

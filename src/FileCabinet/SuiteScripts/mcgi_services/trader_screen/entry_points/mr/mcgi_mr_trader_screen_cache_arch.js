@@ -805,6 +805,123 @@ define([
     };
 
     /**
+     * Start the Feedback 8 reservation reconciler when it has work. Called from
+     * summarize's `finally`, AFTER rescheduleSelf, so nothing here can end the
+     * chain.
+     *
+     * 🔴 WHY THE CHAIN DOES THIS. The reconciler shipped 2026-09-23 on a native
+     * recurrence (daily, repeat 15 min) that never fired: SCHEDULED, zero runs.
+     * The same fault stopped this builder twice in August, which is why this
+     * builder reschedules itself. So the reconciler is NOTSCHEDULED now, and this
+     * chain, the one thing on ARCH proven to keep running, starts it. WHEN is
+     * decided by `ArchReservation.reconKickDecision`.
+     *
+     * Cost on the paced path, measured through REST: one cache read on most
+     * cycles, and at most once a minute a claims COUNT (~0.4 s), plus, only while
+     * claims exist, an item receipt MAX(id) bounded by the last id seen (~0.5 s)
+     * and, when it rose, one EXISTS count over the new ids. SILENT except when it
+     * submits (at most ~4 an hour, plus one per ARC receipt) or first fails.
+     *
+     * Safety, each one load-bearing:
+     *  - It NEVER submits this builder. A second submit of THIS deployment forks
+     *    the chain forever; only the reconciler's own deployment is named.
+     *  - The throttle is written and READ BACK before any query. An unwritable
+     *    key must mean "skip", never "query every 2.7 s" (MTL's read-back model).
+     *  - A busy refusal (already queued or running) is silent and consumes
+     *    nothing: the receipt watermark only moves after a successful submit, so
+     *    a receipt that landed while a run was in flight gets its own run.
+     *  - Any other failure is logged once per distinct message (12 h dedupe), at
+     *    AUDIT: the reconciler's own heartbeat in META (`reconLastRun`) is the
+     *    alarm, not this line.
+     */
+    const RECON_SCRIPT = 'customscript_mcgi_mr_arch_reservation';
+    const RECON_DEPLOY = 'customdeploy_mcgi_mr_arch_reservation';
+
+    const kickReconciler = () => {
+        let c = null;
+        try {
+            c = CacheClient.getCache();
+            const now = Date.now();
+            const lastCheck = Number(c.get({ key: CacheKeys.RECON_CHECK_AT }) || 0);
+            if (lastCheck > 0 && lastCheck <= now && now - lastCheck < ArchReservation.RECON_CHECK_MS) return;
+            c.put({ key: CacheKeys.RECON_CHECK_AT, value: String(now), ttl: 600 });
+            if (String(c.get({ key: CacheKeys.RECON_CHECK_AT })) !== String(now)) return;
+
+            const one = (sql, params) => {
+                const r = query.runSuiteQL({ query: sql, params: params || [] }).asMappedResults();
+                return r.length ? r[0] : {};
+            };
+            let claims = null;
+            try { claims = Number(one('SELECT COUNT(*) AS n FROM customrecord_arch_res').n) || 0; }
+            catch (e) { claims = null; }
+
+            // Item receipts since the last id seen. Only while claims exist: with
+            // none, a receipt has nothing to hand over.
+            const seen = Number(c.get({ key: CacheKeys.RECON_RCPT_ID }) || 0);
+            let newMax = 0;
+            let newArcReceipt = false;
+            // A failed receipt read leaves newArcReceipt false: the backstop still
+            // decides, it just cannot go early.
+            if (claims > 0) {
+                try {
+                    const mx = Number(one("SELECT MAX(id) AS mx FROM transaction WHERE type = 'ItemRcpt' AND id > ?",
+                        [seen]).mx) || 0;
+                    if (mx > seen) {
+                        // Unseeded (evicted or first run): seed only. The backstop
+                        // is due anyway because the submit stamp is gone with it.
+                        if (seen > 0) {
+                            newArcReceipt = Number(one("SELECT COUNT(*) AS n FROM transaction t " +
+                                "WHERE t.type = 'ItemRcpt' AND t.id > ? AND t.id <= ? " +
+                                'AND EXISTS (SELECT 1 FROM transactionline tl WHERE tl.transaction = t.id AND tl.subsidiary = 9)',
+                                [seen, mx]).n) > 0;
+                        }
+                        newMax = mx;
+                    }
+                } catch (e) {
+                    newMax = 0;
+                    newArcReceipt = false;
+                }
+            }
+
+            /* The later of OUR submit stamp and the reconciler's OWN heartbeat.
+             * Measured 2026-09-23: a second "hourly sweep" fired 4 min after the
+             * first, because one read missed the submit stamp (N/cache has no
+             * read-your-write guarantee across executions; MTL saw ~2.7%). Two
+             * keys written by two different scripts must both be missed now. */
+            const lastRunMs = Date.parse(String(c.get({ key: CacheKeys.RECON_LAST_RUN }) || '')) || 0;
+            const d = ArchReservation.reconKickDecision({
+                now: now,
+                submitAt: Math.max(Number(c.get({ key: CacheKeys.RECON_SUBMIT_AT }) || 0), lastRunMs),
+                claims: claims,
+                newArcReceipt: newArcReceipt,
+            });
+            if (!d.submit) {
+                // Non-ARC receipts only: move past them so they are not re-counted.
+                if (newMax && !newArcReceipt) c.put({ key: CacheKeys.RECON_RCPT_ID, value: String(newMax), ttl: 86400 });
+                return;
+            }
+            try {
+                task.create({ taskType: task.TaskType.MAP_REDUCE, scriptId: RECON_SCRIPT, deploymentId: RECON_DEPLOY })
+                    .submit();
+            } catch (e) {
+                if (ArchReservation.isSubmitBusy(e)) return;
+                throw e;
+            }
+            c.put({ key: CacheKeys.RECON_SUBMIT_AT, value: String(now), ttl: 7200 });
+            if (newMax) c.put({ key: CacheKeys.RECON_RCPT_ID, value: String(newMax), ttl: 86400 });
+            log.audit('ARCH reservation reconciler - started by the cache chain',
+                d.reason + (claims == null ? '' : ', ' + claims + ' claim(s)'));
+        } catch (e) {
+            try {
+                const msg = (e && e.name ? e.name + ': ' : '') + String((e && e.message) || e);
+                if (c && c.get({ key: CacheKeys.RECON_ERR }) === msg) return;
+                if (c) c.put({ key: CacheKeys.RECON_ERR, value: msg, ttl: 43200 });
+                log.audit('ARCH reservation reconciler - could not be started by the cache chain', msg);
+            } catch (ignore) { /* never let the kick touch the chain */ }
+        }
+    };
+
+    /**
      * Fallback display names for the locations holding ARCH stock, verified
      * 2026-08-17.
      *
@@ -4998,6 +5115,8 @@ define([
              * The failure paths are precisely the ones that most need another cycle.
              */
             rescheduleSelf();
+            // AFTER the reschedule, and self-contained: it catches everything.
+            kickReconciler();
         }
     };
 

@@ -20,11 +20,19 @@
  *             (MA 2026-09-22: no auto-release); the reason is written to the lot
  *             mirror so the exception report and the screen can show it.
  *
- * WHY A SCHEDULED JOB AND NOT A USER EVENT. 47% of hardwood sales orders are
+ * WHY A JOB AND NOT A USER EVENT. 47% of hardwood sales orders are
  * created or edited by hand outside the trader screen (I7b), and this repo has
  * no sales-order user event at all, so events cannot be relied on to notice a
  * deleted line. The job is the primary mechanism, and it is idempotent: running
  * it twice does nothing the first run did not.
+ *
+ * 🔴 WHO STARTS IT (2026-09-23). NOT a native schedule: it shipped with one
+ * (daily, repeat 15 min) and it never fired once, status SCHEDULED throughout,
+ * the fault that stopped the ARCH cache MR twice in August. The deployment is
+ * NOTSCHEDULED and the ARCH cache chain submits it (`kickReconciler` in
+ * mcgi_mr_trader_screen_cache_arch.js): right after an ARC item receipt while
+ * claims exist, at least every 15 min while claims exist, hourly otherwise.
+ * One deployment only, so two runs can never overlap.
  *
  * The lot MIRROR (custitemnumber_arch_res_*) is written here and only here,
  * because the order endpoint's role cannot write the lot record (measured,
@@ -36,13 +44,16 @@
  *
  * Nothing here sends email. The summary's last AUDIT line is the job's heartbeat:
  * the exception report must show when it last ran, or a dead job reads as "no
- * exceptions".
+ * exceptions". The same moment is written to the shared cache
+ * (TS_ARCH_RECON_LAST_RUN), which the ARCH service reports as META
+ * `reconLastRun`, so a stopped reconciler is visible from outside NetSuite.
  *
  * @NApiVersion 2.1
  * @NScriptType MapReduceScript
  */
-define(['N/query', 'N/record', 'N/log', '../../shared/archReservation'],
-(query, record, log, Reservation) => {
+define(['N/query', 'N/record', 'N/log', '../../shared/archReservation',
+    '../../shared/cacheClient', '../../shared/cacheKeys_arch'],
+(query, record, log, Reservation, CacheClient, CacheKeysARCH) => {
 
     const HEARTBEAT = 'ARCH reservation reconciler - run complete';
 
@@ -318,6 +329,12 @@ define(['N/query', 'N/record', 'N/log', '../../shared/archReservation'],
         if (errs.length) log.error('ARCH reservation reconciler - errors', errs.slice(0, 20).join(' || '));
         // The heartbeat. Read by whoever needs "when did the check last run".
         log.audit(HEARTBEAT, JSON.stringify({ counts: counts, errors: errs.length }));
+        // And the one META reports. Never allowed to fail the run.
+        try {
+            CacheClient.getCache().put({ key: CacheKeysARCH.RECON_LAST_RUN, value: new Date().toISOString(), ttl: 172800 });
+        } catch (e) {
+            log.audit('ARCH reservation reconciler', 'heartbeat key not written: ' + e.message);
+        }
     };
 
     return { getInputData, map, summarize };

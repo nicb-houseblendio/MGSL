@@ -185,6 +185,11 @@ define([
         return { present: false, reason: 'SUMMARY_UNREADABLE', rows: null };
     };
 
+    const readReconLastRun = (myCache) => {
+        try { return myCache.get({ key: CacheKeysARCH.RECON_LAST_RUN }) || ''; }
+        catch (e) { return ''; }
+    };
+
     const handleGetMeta = () => {
         try {
             const myCache = getMyCache();
@@ -242,6 +247,11 @@ define([
                 // itself CAD rather than converting at a guessed rate.
                 costCurrency:      meta.costCurrency || 'CAD',
                 usdCostedRowCount: meta.usdCostedRowCount == null ? null : meta.usdCostedRowCount,
+                // Feedback 8: when the reservation reconciler last FINISHED a run
+                // (ISO, '' if unknown). Its own key, written by the reconciler, not
+                // part of the builder's META. Stale while claims exist = hand-offs
+                // at receipt have stopped.
+                reconLastRun: readReconLastRun(myCache),
             };
         } catch (e) {
             log.error({ title: 'trader_screen_service_arch.getMeta', details: e.message });
