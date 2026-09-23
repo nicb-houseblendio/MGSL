@@ -129,6 +129,10 @@ interface RawLine {
   /** RAW NetSuite unit name, e.g. "Square Feet". Normalised here, not on the server. */
   unitName?: string;
   bf: number;
+  /** Feedback 16: the bundle's size at the line's location (the assigned part is `bf`). */
+  lotQty?: number;
+  split?: { on: boolean; bf: number; status: string };
+  reman?: { planing: boolean; planeTarget: string; cutting: boolean; cutLength: string };
   /** NetSuite's own line amount, in the order's currency. */
   amount?: number;
   costPerBF: number | null;
@@ -238,7 +242,7 @@ export interface ArchOpenOrdersState {
  * The server sends the raw NetSuite unit name; `normalizeUnit` already exists on
  * this side and the builder's copy carries a note against pasting a fourth one.
  */
-const toCartLine = (l: RawLine): ArchCartLine & { unattributed?: boolean; costSource?: string } => ({
+export const toCartLine = (l: RawLine): ArchCartLine & { unattributed?: boolean; costSource?: string } => ({
   key: l.key,
   internalId: l.internalId,
   itemCode: l.itemCode,
@@ -252,7 +256,14 @@ const toCartLine = (l: RawLine): ArchCartLine & { unattributed?: boolean; costSo
   unit: normalizeUnit(l.unitName),
   // The wire field is still `bf` so the deployed service needs no coordinated
   // redeploy; the TS name says which of the two quantities it is.
-  preSplitQty: Number(l.bf) || 0,
+  // Feedback 16: a SPLIT line is cut from a bigger bundle, so its "Lot BF" is the
+  // bundle's size, not the part on this order (SO-ARC-26 showed 100, not 473).
+  preSplitQty: l.split?.on && Number(l.lotQty) > 0 ? Number(l.lotQty) : Number(l.bf) || 0,
+  existingSplit: l.split?.on ? { on: true, targetBF: String(l.split.bf || l.bf || '') } : undefined,
+  existingReman: l.reman
+    ? { planing: !!l.reman.planing, planingSpec: l.reman.planeTarget || '', planingOther: '',
+        cutting: !!l.reman.cutting, cutLength: l.reman.cutLength || '' }
+    : undefined,
   amount: l.amount === undefined ? undefined : Number(l.amount),
   costPerBF: l.costPerBF === null || l.costPerBF === undefined ? null : Number(l.costPerBF),
   // Carried, NOT applied here. ArchOpenOrdersView subtracts this cost from a

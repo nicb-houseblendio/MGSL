@@ -30,6 +30,13 @@ import type { ArchUnit } from '@/lib/archUom';
 export interface ArchCartLine {
   /** `${internalId}|${bucket}|${lotNo}` — stable, and unique per lot per bucket. */
   key: string;
+  /**
+   * Feedback 16: on a line ALREADY on the order, the split and reman it carries in
+   * NetSuite, so Edit shows them. Read-only: the endpoint never rewrites an
+   * existing line, so the wizard displays these and does not offer to change them.
+   */
+  existingSplit?: ArchSplitIntent;
+  existingReman?: ArchRemanIntent;
   internalId: string;
   itemCode: string;
   description: string;

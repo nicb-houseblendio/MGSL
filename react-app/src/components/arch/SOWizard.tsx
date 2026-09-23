@@ -1051,8 +1051,29 @@ export const SOWizard = ({
     return cart.filter((l) => onOrder.has(bundleId(l)));
   }, [mode, chosenOrder, cart, keptExisting]);
 
-  const sp = (k: string) => split[k] || emptySplit();
-  const rm = (k: string) => reman[k] || emptyReman();
+  /*
+   * Feedback 16 (MA, 2026-09-22): Edit showed an existing split line as a whole
+   * bundle with no planing or cut, although NetSuite held both. Existing lines now
+   * READ what they carry (useArchOpenOrders), and these lookups fall back to it.
+   * Read-only by construction: an existing line is never in `writableLines`, and
+   * its split and reman controls are disabled below. A stored planing size that is
+   * not one of the standard options (older orders, e.g. 15/16 on 4/4) shows as
+   * Other with its value, rather than as a blank select.
+   */
+  const existingIntent = React.useMemo(() => {
+    const m: Record<string, { split?: ArchSplitIntent; reman?: ArchRemanIntent }> = {};
+    lines.forEach((l) => {
+      if (!l.existing) return;
+      let r = l.existingReman;
+      if (r && r.planing && r.planingSpec && !planingOptions(l.thickness || l.description).includes(r.planingSpec)) {
+        r = { ...r, planingOther: r.planingSpec, planingSpec: 'other' };
+      }
+      m[l.key] = { split: l.existingSplit, reman: r };
+    });
+    return m;
+  }, [lines]);
+  const sp = (k: string) => split[k] || existingIntent[k]?.split || emptySplit();
+  const rm = (k: string) => reman[k] || existingIntent[k]?.reman || emptyReman();
   const pr = (k: string) => price[k] ?? '';
 
   const setSp = (k: string, patch: Partial<ArchSplitIntent>) =>
@@ -3393,18 +3414,18 @@ export const SOWizard = ({
                     checked={s.on && l.bucket !== 'inTransit'}
                     /* Feedback 8: a bundle still on the water has no wood to cut, so
                        it is reserved whole; the endpoint refuses a split of it. */
-                    disabled={l.bucket === 'inTransit'}
-                    title={l.bucket === 'inTransit' ? 'Not arrived yet: reserved whole, split after it lands' : undefined}
+                    disabled={l.bucket === 'inTransit' || !!l.existing}
+                    title={l.existing ? 'Already on the order: this screen shows it but cannot change a line NetSuite already holds.' : l.bucket === 'inTransit' ? 'Not arrived yet: reserved whole, split after it lands' : undefined}
                     onChange={(e) => setSp(l.key, { on: e.target.checked, targetBF: e.target.checked ? s.targetBF : '' })}
                     aria-label={`Split bundle ${l.lotNo}`}
-                    style={{ width: 16, height: 16, accentColor: ARCH_SURFACE.green, cursor: l.bucket === 'inTransit' ? 'not-allowed' : 'pointer' }}
+                    style={{ width: 16, height: 16, accentColor: ARCH_SURFACE.green, cursor: l.bucket === 'inTransit' || l.existing ? 'not-allowed' : 'pointer' }}
                   />
                 </td>
                 <td style={{ ...td, textAlign: 'right' }}>
                   <input
                     type="number"
                     value={s.targetBF}
-                    disabled={!s.on}
+                    disabled={!s.on || !!l.existing}
                     /*
                       step="any" and min 0, not min 1 with an implied step of 1.
                       Board feet in hardwood are genuinely fractional — a bundle
@@ -3648,6 +3669,8 @@ export const SOWizard = ({
                   <input
                     type="checkbox"
                     checked={r.planing}
+                    disabled={!!l.existing}
+                    title={l.existing ? 'Already on the order: this screen shows it but cannot change a line NetSuite already holds.' : undefined}
                     onChange={(e2) => setRm(l.key, { planing: e2.target.checked, planingSpec: '', planingOther: '' })}
                     aria-label={`Plane ${l.lotNo}`}
                     style={{ width: 16, height: 16, accentColor: ARCH_SURFACE.green, cursor: 'pointer' }}
@@ -3658,6 +3681,7 @@ export const SOWizard = ({
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                       <select
                         value={r.planingSpec}
+                        disabled={!!l.existing}
                         onChange={(e2) => setRm(l.key, { planingSpec: e2.target.value })}
                         style={{ ...field(!!r.planingSpec), width: 'auto', padding: '6px 8px', fontSize: 12 }}
                       >
@@ -3677,6 +3701,7 @@ export const SOWizard = ({
                              selects. Capped at what the SO line field holds, so
                              the server never has to truncate silently. */
                           maxLength={40}
+                          disabled={!!l.existing}
                           onChange={(e2) => setRm(l.key, { planingOther: e2.target.value })}
                           style={{ ...field(!!r.planingOther.trim()), width: 120, padding: '6px 8px', fontSize: 12 }}
                         />
@@ -3690,6 +3715,8 @@ export const SOWizard = ({
                   <input
                     type="checkbox"
                     checked={r.cutting}
+                    disabled={!!l.existing}
+                    title={l.existing ? 'Already on the order: this screen shows it but cannot change a line NetSuite already holds.' : undefined}
                     onChange={(e2) => setRm(l.key, { cutting: e2.target.checked, cutLength: '' })}
                     aria-label={`Cut ${l.lotNo}`}
                     style={{ width: 16, height: 16, accentColor: ARCH_SURFACE.green, cursor: 'pointer' }}
@@ -3699,6 +3726,7 @@ export const SOWizard = ({
                   {r.cutting ? (
                     <select
                       value={r.cutLength}
+                      disabled={!!l.existing}
                       onChange={(e2) => setRm(l.key, { cutLength: e2.target.value })}
                       style={{ ...field(!!r.cutLength), width: 'auto', padding: '6px 8px', fontSize: 12 }}
                     >

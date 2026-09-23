@@ -1299,6 +1299,74 @@ define([
                 rtbLastError);
         }
 
+        /* ── Feedback 16 (MA, 2026-09-22): Edit SO lost the split and reman ────
+         *
+         * « Le bundle split info est disparu (lot BF est 100 vs le 373 on hand).
+         * Reman info : même affaire. » The data was never lost (SO-ARC-26 line 1
+         * holds split T, 100 BF, cut 10'; line 7 plane 15/16); this payload simply
+         * never carried it, and it sent the ASSIGNED quantity as the line's `bf`,
+         * so the wizard showed a split bundle as a whole 100 BF one.
+         *
+         * Two ISOLATED reads, like Ready to Build above, because prod has none of
+         * the custcol_mgsl_split* / custcol_mgsl_reman* fields yet (measured): in
+         * OPEN_ORDERS_SQL they would blank the whole tab there. A failed read only
+         * leaves lines without `split` / `reman` / `lotQty`, which is today's
+         * behaviour. `bf` stays the assigned quantity (the hook's wire contract). */
+        const lineIntent = {};
+        const lotOnHand = {};
+        const INTENT_CHUNK = 500;
+        let intentError = '';
+        for (let i = 0; i < rtbIdList.length; i += INTENT_CHUNK) {
+            const slice = rtbIdList.slice(i, i + INTENT_CHUNK);
+            try {
+                query.runSuiteQL({
+                    query: 'SELECT tl.transaction AS soid, tl.id AS lineid, ' +
+                           '  tl.custcol_mgsl_split AS sp, tl.custcol_mgsl_split_bf AS spbf, ' +
+                           '  BUILTIN.DF(tl.custcol_mgsl_split_status) AS spst, ' +
+                           '  tl.custcol_mgsl_reman_plane AS rpl, tl.custcol_mgsl_reman_plane_tgt AS rpt, ' +
+                           '  tl.custcol_mgsl_reman_cut AS rct, tl.custcol_mgsl_reman_cut_len AS rcl ' +
+                           'FROM transactionline tl ' +
+                           'WHERE tl.transaction IN (' + slice.map(() => '?').join(',') + ") AND tl.mainline = 'F'",
+                    params: slice,
+                }).asMappedResults().forEach((x) => {
+                    const splitOn = String(x.sp || 'F') === 'T';
+                    const planing = String(x.rpl || 'F') === 'T';
+                    const cutting = String(x.rct || 'F') === 'T';
+                    if (!splitOn && !planing && !cutting) return;
+                    lineIntent[String(x.soid) + '|' + String(x.lineid)] = {
+                        split: splitOn ? { on: true, bf: Number(x.spbf) || 0, status: String(x.spst || '') } : null,
+                        reman: (planing || cutting) ? {
+                            planing: planing, planeTarget: String(x.rpt || ''),
+                            cutting: cutting, cutLength: String(x.rcl || ''),
+                        } : null,
+                    };
+                });
+            } catch (e) {
+                intentError = (e.name || '') + ': ' + (e.message || String(e));
+            }
+        }
+        const lotIdList = [...new Set(rows.map((r) => parseInt(r.lotid, 10)).filter((v) => v > 0))];
+        for (let i = 0; i < lotIdList.length; i += INTENT_CHUNK) {
+            const slice = lotIdList.slice(i, i + INTENT_CHUNK);
+            try {
+                query.runSuiteQL({
+                    query: 'SELECT inl.inventorynumber AS lotid, inl.location AS loc, inl.quantityonhand AS qoh ' +
+                           'FROM inventorynumberlocation inl ' +
+                           'WHERE inl.inventorynumber IN (' + slice.map(() => '?').join(',') + ')',
+                    params: slice,
+                }).asMappedResults().forEach((x) => {
+                    lotOnHand[String(x.lotid) + '|' + String(x.loc)] = Math.abs(parseFloat(x.qoh) || 0);
+                });
+            } catch (e) {
+                intentError = intentError || ((e.name || '') + ': ' + (e.message || String(e)));
+            }
+        }
+        if (intentError) {
+            // AUDIT by cause: in prod the fields do not exist yet, every call.
+            log.audit('ARCH open orders — split/reman or lot size not readable (non-fatal, ' +
+                'Edit shows existing lines without them): ' + intentError);
+        }
+
         // Feedback 13: Ship Week in its own read (this runs as the trader's role,
         // so a custom column in OPEN_ORDERS_SQL could take the whole tab down).
         const shipRead = ArchShipWeek.readShipWeeks(query, log, rtbIdList);
@@ -1450,6 +1518,10 @@ define([
                     lineId:       String(r.lineid),
                     tranId:       tranId,
                     shell: {
+                        // Feedback 16: what this line already asks for. Absent when
+                        // it asks for nothing or the fields cannot be read.
+                        split:        (lineIntent[lineKey] && lineIntent[lineKey].split) || undefined,
+                        reman:        (lineIntent[lineKey] && lineIntent[lineKey].reman) || undefined,
                         internalId:   String(r.itemid),
                         itemCode:     String(r.itemcode || ''),
                         // .trim() before the fallback: three of six ARCH descriptions end
@@ -1502,6 +1574,11 @@ define([
                 lotId:       lotId,
                 containerNo: '',
                 bf:          tidy(assignedBase / seen.conv, 4),
+                // Feedback 16: the bundle's size at the line's location, in the
+                // line's unit, so a split line shows the bundle it is cut from.
+                lotQty:      Object.prototype.hasOwnProperty.call(lotOnHand, lotId + '|' + String(r.locationid))
+                    ? tidy(lotOnHand[lotId + '|' + String(r.locationid)] / seen.conv, 4)
+                    : undefined,
                 /* NetSuite's OWN amount for this line, not a figure rebuilt from a
                  * rounded price times a rounded quantity. Exact whenever the line
                  * carries a single lot, which is every order the wizard writes; on a

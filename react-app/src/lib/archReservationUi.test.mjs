@@ -61,5 +61,5 @@ test('U6 the drawer hands the cart to the In Transit view', () => {
 test('U7 the wizard cannot send a split for a bundle on the water', () => {
   const w = SRC('../components/arch/SOWizard.tsx');
   assert.match(w, /isSplit: sp\(l\.key\)\.on && l\.bucket !== 'inTransit',/);
-  assert.match(w, /disabled=\{l\.bucket === 'inTransit'\}/);
+  assert.match(w, /disabled=\{l\.bucket === 'inTransit' \|\| !!l\.existing\}/);
 });
