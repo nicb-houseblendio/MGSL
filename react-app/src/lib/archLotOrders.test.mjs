@@ -907,7 +907,7 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
 {
   const rts = runMr({
     flagIds: ['126500'],
-    rtsRows: [{ tranid: '126500', trandate: '2026-09-01' }],
+    rtsRows: [{ tranid: '126500', createdday: '2026-09-18' }],
     noteRows: [
       { tranid: '126500', ts: '2026-09-10 08:00:00' },
       { tranid: '126500', ts: '2026-09-15 09:30:00' },   // ticked again later: this one
@@ -959,14 +959,16 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   ok('I12 clean run', rts.errors.length === 0, rts.errors);
 
   // Ticked when the order was created: a create writes no field note.
-  const noNote = runMr({ rtsRows: [{ tranid: '126500', trandate: '2026-09-01' }] });
+  const noNote = runMr({ rtsRows: [{ tranid: '126500', createdday: '2026-09-18' }] });
   const nn = noNote.written.find((r) => String(r.internalId) === '2915')
     ?.lots.find((l) => l.lotNo === '316027-12')?.orders.find((o) => o.soNumber === 'SO-CWP-001360');
-  ok('I13 no system note means ticked at creation: the order date', nn?.readySince === '2026-09-01', nn && nn.readySince);
+  // Feedback 13 round: the CREATION day, not the order date (an SAP import is
+  // created long after its order date, and was ticked at import).
+  ok('I13 no system note means ticked at creation: the creation day', nn?.readySince === '2026-09-18', nn && nn.readySince);
   ok('I14 no price row means an em dash, not a zero', nn?.bfPrice === null && bfPriceText(nn) === NO_VALUE, nn && nn.bfPrice);
 
   // The notes could not be read: no date, never the order's age.
-  const badNote = runMr({ rtsRows: [{ tranid: '126500', trandate: '2026-09-01' }], noteThrows: true });
+  const badNote = runMr({ rtsRows: [{ tranid: '126500', createdday: '2026-09-18' }], noteThrows: true });
   const bn = badNote.written.find((r) => String(r.internalId) === '2915')
     ?.lots.find((l) => l.lotNo === '316027-12')?.orders.find((o) => o.soNumber === 'SO-CWP-001360');
   ok('I15 an unreadable system note gives NO date, not the order date',
@@ -1007,6 +1009,20 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   ok('J4 an unreadable Ship Week falls back to the ship date rule, logged at audit',
     b1344.shipDate === '' && b1344.shipDateDefaulted === true &&
     bad.audits.some((a) => /ship week not readable/.test(a)) && bad.errors.length === 0, [b1344, bad.errors]);
+}
+
+/* ════ K. Grain from the item description (Feedback 13) ══════════════════════
+ * No grain field exists; 15 of 149 ARC items carry the cut code in their
+ * description. Whole words only: the item CODE runs tokens together. */
+{
+  const withDesc = (d) => LOT_ROWS.map((r) => Object.assign({}, r, { description: d, itemcode: 'SAP44FCKD' }));
+  const g = (d) => (runMr({ lotRows: withDesc(d) }).written.find((r) => String(r.internalId) === '2915') || {}).grain;
+  ok('K1 QC and QTR read Quarter Cut', g('Sapele 4/4 QC KD') === 'Quarter Cut' && g('Sapele Veneer QTR AA FSC') === 'Quarter Cut',
+    [g('Sapele 4/4 QC KD'), g('Sapele Veneer QTR AA FSC')]);
+  ok('K2 FC reads Flat Cut, RFT reads Rift Cut', g('Sapele 4/4 FC KD') === 'Flat Cut' && g('White Oak Veneer RFT AA') === 'Rift Cut');
+  ok('K3 no cut code reads nothing, even with FC inside the item CODE', g('Zebrawood 8/4 KD') === '', g('Zebrawood 8/4 KD'));
+  ok('K4 ambiguous SP / RFP are left unmapped, not guessed', g('Walnut Veneer SP FSC') === '' && g('European White Oak Veneer RFP A FSC') === '');
+  ok('K5 FSC is not read as FC', g('Walnut Veneer FSC') === '');
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archLotOrders ok');

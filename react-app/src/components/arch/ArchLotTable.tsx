@@ -202,7 +202,11 @@ const NO_CONTAINER_TITLE = 'No container recorded: no vessel on its inventory ad
 const NO_TALLY_TITLE =
   'No usable tally for this bundle (none attached, or it no longer matches after a split), ' +
   'so its lengths and widths are not known.';
-const NO_GRAIN_TITLE = 'Grain is not recorded anywhere in NetSuite yet, so there is nothing to show.';
+// Feedback 13: grain now comes from the item's description (the cache MR's
+// grainFromDescription), so the dash means "this item carries no cut code".
+const NO_GRAIN_TITLE =
+  'No grain on this item. Grain is read from the item description: QC or QTR is Quarter Cut, FC is Flat Cut, RFT is Rift Cut.';
+const GRAIN_TITLE = 'From the item description (QC or QTR, FC, RFT).';
 
 const ageColor = (days: number) => (days > 21 ? '#B22222' : days > 10 ? '#8F5612' : '#2E7D32');
 
@@ -1201,7 +1205,7 @@ export const ArchLotTable = ({
                         </td>
                         <td
                           style={{ ...cellStyle, color: ARCH_SURFACE.textMid }}
-                          title={row.grain ? undefined : NO_GRAIN_TITLE}
+                          title={row.grain ? GRAIN_TITLE : NO_GRAIN_TITLE}
                         >
                           {row.grain || '—'}
                         </td>

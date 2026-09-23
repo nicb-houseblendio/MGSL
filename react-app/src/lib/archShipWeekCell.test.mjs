@@ -48,7 +48,8 @@ test('every ARCH Ship Week cell goes through shipWeekCell', () => {
 test('the four no-data columns explain their dash', () => {
   const lot = read('components/arch/ArchLotTable.tsx');
   assert.match(lot, /title=\{lot\.containerNo \? undefined : NO_CONTAINER_TITLE\}/);
-  assert.match(lot, /title=\{row\.grain \? undefined : NO_GRAIN_TITLE\}/);
+  // Feedback 13: grain is sourced now, so a filled cell names its source too.
+  assert.match(lot, /title=\{row\.grain \? GRAIN_TITLE : NO_GRAIN_TITLE\}/);
   // Each title is computed exactly as its own cell renders (round-2 review):
   assert.match(lot, /title=\{hasLengths\(lot\) \? undefined : NO_TALLY_TITLE\}/);
   assert.match(lot, /title=\{hasAvgWidth\(lot\) \? undefined : NO_TALLY_TITLE\}/);

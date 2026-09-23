@@ -1030,6 +1030,30 @@ define([
         return ymd ? ymd[1] : '';
     };
 
+    /* ══ Grain from the item's own description (Feedback 13) ═══════════════════
+     *
+     * There is no grain field, list or segment anywhere in the account (searched
+     * customfield, customlist and customsegment, 2026-09-22), so the only grain
+     * data MGSL hold is the cut code in the item's own description, on 15 of 149
+     * ARC items: "Sapele 4/4 QC KD", "Sapele 4/4 FC KD", "White Oak Veneer RFT
+     * AA", "Sapele Veneer QTR AA FSC". Marc-Antoine's own V4 prototype puts grain
+     * on the item row with exactly these values (Quarter Cut, Flat Cut, Rift Cut).
+     *
+     * WHOLE WORDS of the description only, never substrings of the item code:
+     * codes run tokens together (SAP44FCKD, WOAVENRFTAA), so a substring match
+     * would read the "FC" inside other letters. SP and RFP are also seen on
+     * veneers but their meaning is not certain, so they are left unmapped rather
+     * than guessed; an unmapped item shows an em dash that says why.
+     */
+    const GRAIN_BY_CODE = { QC: 'Quarter Cut', QTR: 'Quarter Cut', FC: 'Flat Cut', RFT: 'Rift Cut' };
+    const grainFromDescription = (description) => {
+        const words = String(description || '').toUpperCase().split(/[^A-Z0-9]+/);
+        for (let i = 0; i < words.length; i++) {
+            if (Object.prototype.hasOwnProperty.call(GRAIN_BY_CODE, words[i])) return GRAIN_BY_CODE[words[i]];
+        }
+        return '';
+    };
+
     /* ══ PO from the lot number ════════════════════════════════════════════════
      *
      * The lot-number prefix is the PURCHASE ORDER number. Marc-Antoine, asked
@@ -2430,19 +2454,22 @@ define([
          * still subtracted from Available, so nothing becomes sellable by accident.
          */
         let readyToShipIds = {};
-        const readyTrandate = {};
+        // The day the ORDER RECORD was created, the fallback for Days ready when
+        // no system note exists. Not the order date: an SAP import is created
+        // days or months after its order date, and it was ticked at import.
+        const readyCreated = {};
         for (let i = 0; i < soIdsForFlag.length; i += FLAG_CHUNK) {
             const slice = soIdsForFlag.slice(i, i + FLAG_CHUNK);
             try {
                 query.runSuiteQL({
-                    query: "SELECT id AS tranid, TO_CHAR(trandate, 'YYYY-MM-DD') AS trandate " +
+                    query: "SELECT id AS tranid, TO_CHAR(createddate, 'YYYY-MM-DD') AS createdday " +
                            'FROM transaction ' +
                            'WHERE id IN (' + slice.map(() => '?').join(',') + ') ' +
                            "  AND custbody_so_ready_to_ship = 'T'",
                     params: slice,
                 }).asMappedResults().forEach((r) => {
                     readyToShipIds[String(r.tranid)] = true;
-                    readyTrandate[String(r.tranid)] = String(r.trandate || '');
+                    readyCreated[String(r.tranid)] = String(r.createdday || '');
                 });
             } catch (e) {
                 readyToShipIds = {};
@@ -2467,7 +2494,9 @@ define([
          * order unticked and ticked again has been ready since the second tick.
          *
          *   no note at all  -> ticked when the order was CREATED (a create writes no
-         *                      field note), so the order date is the right answer;
+         *                      field note), so the CREATION day is the right answer
+         *                      (not the order date: an SAP import is created long
+         *                      after its order date, and was ticked at import);
          *   read failed     -> null, an em dash. Falling back to the order date here
          *                      would print an order's AGE under "Days ready".
          *
@@ -2500,7 +2529,7 @@ define([
         const readyDate = (oid) => {
             if (!readyToShipIds[oid]) return '';
             if (readySince[oid]) return readySince[oid].slice(0, 10);
-            return readySinceSourced ? (readyTrandate[oid] || '') : '';
+            return readySinceSourced ? (readyCreated[oid] || '') : '';
         };
 
         /* BF PRICE, for the Outbound drawer's « BF Price » column. What the customer
@@ -4306,7 +4335,9 @@ define([
                 thickness:    pair.thickness || '',
                 grade:        '',   // not sourced YET. cseggrade exists on item (539
                                     // populated) but is null on the ARCH SKUs. See above.
-                grain:        '',   // no such segment — needs a source decision
+                // Feedback 13: the cut code in the item's description, see
+                // grainFromDescription. '' when the item carries none.
+                grain:        grainFromDescription(pair.description),
                 // Row-level `containerNo`/`containers` were REMOVED 2026-08-19.
                 // They existed to feed a Container column and filter on the main
                 // grid; that column is gone, because the value it was going to
