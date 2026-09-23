@@ -483,3 +483,59 @@ export const planingOptions = (thickness: string): string[] => {
   const std = q ? STANDARD_DRESSED[q] : undefined;
   return std ? [std, 'other'] : ['other'];
 };
+
+/**
+ * The description on the ONE Milling Charges line, Feedback 10.
+ *
+ * Marc-Antoine: « La description pourrait être du genre Planing (Dressed
+ * thickness) & cut (target length) ». The words in brackets are the names of two
+ * columns on the Remanufacturing step, so they stand for that step's VALUES, not
+ * for literal text: "Planing (13/16") & cut (8')".
+ *
+ * Built from the lines that carry a milling amount, because those are the lines
+ * the customer is being charged for; a line planed for internal reasons with no
+ * amount is not on this invoice line. Distinct values only, in first-seen order,
+ * so three 4/4 bundles planed to 13/16 read "13/16"" once, and a mixed order reads
+ * "Planing (13/16", 1-1/16") & cut (8', 10')".
+ *
+ * Returns '' when no charged line is planed or cut (a flat milling fee): the
+ * server then writes no description and NetSuite keeps the item's own.
+ */
+export interface MillingDescriptionInput {
+  planing: boolean;
+  planingSpec: string;
+  planingOther: string;
+  cutting: boolean;
+  cutLength: string;
+}
+
+/** A dressed size typed or picked without a unit reads as inches: 13/16 -> 13/16". */
+const inches = (v: string): string => (/\d$/.test(v) ? `${v}"` : v);
+
+export const millingDescription = (lines: MillingDescriptionInput[]): string => {
+  const dressed: string[] = [];
+  const lengths: string[] = [];
+  let planed = false;
+  let cut = false;
+  const add = (list: string[], v: string) => {
+    const t = v.trim();
+    if (t && list.indexOf(t) === -1) list.push(t);
+  };
+  lines.forEach((l) => {
+    if (l.planing) {
+      planed = true;
+      add(dressed, inches(l.planingSpec === 'other' ? l.planingOther.trim() : l.planingSpec.trim()));
+    }
+    if (l.cutting) {
+      cut = true;
+      add(lengths, l.cutLength);
+    }
+  });
+  const parts: string[] = [];
+  if (planed) parts.push(dressed.length ? `Planing (${dressed.join(', ')})` : 'Planing');
+  if (cut) {
+    const word = planed ? 'cut' : 'Cut';
+    parts.push(lengths.length ? `${word} (${lengths.join(', ')})` : word);
+  }
+  return parts.join(' & ');
+};

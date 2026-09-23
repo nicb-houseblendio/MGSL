@@ -274,6 +274,9 @@ export interface ArchChargeLine {
   /** Per-unit, in the order's currency. Zero is legitimate: 3 of the 6 real ARC
    * freight lines carry rate 0, which is how an absorbed charge is recorded. */
   rate: number;
+  /** The line's description, Feedback 10 (milling). The server caps it at 300
+   *  characters and writes nothing when it is absent. */
+  description?: string;
 }
 
 export interface ArchOrderDraft {

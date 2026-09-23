@@ -248,6 +248,9 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
         itemId: c.itemId,
         quantity: c.quantity,
         rate: c.rate,
+        // Feedback 10: the milling line's "Planing (..) & cut (..)". The server
+        // accepted a description all along; this serializer was dropping it.
+        ...(c.description ? { description: c.description } : {}),
       }))
     : undefined,
   lines: draft.lines.map((l) => ({

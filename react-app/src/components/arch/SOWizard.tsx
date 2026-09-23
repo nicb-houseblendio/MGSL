@@ -42,6 +42,7 @@ import {
   marginColor,
   planingOptions,
   STANDARD_DRESSED,
+  millingDescription,
 } from '@/lib/archOrderPricing';
 import {
   INCOTERMS,
@@ -1202,13 +1203,22 @@ export const SOWizard = ({
    */
   const chargesWithMilling = React.useMemo(() => {
     if (!(millingTotal > 0) || !millingItem) return charges;
+    /* Feedback 10: « La description pourrait être du genre Planing (Dressed
+     * thickness) & cut (target length) ». From the lines that carry an amount,
+     * the same set `millingTotal` sums, so the text describes what is billed. */
+    const description = millingDescription(
+      writableLines
+        .filter((l) => parseFloat(millingCharge[l.key] || '') > 0)
+        .map((l) => rm(l.key))
+    );
     return charges.concat([{
       itemId: millingItem.id,
       itemName: millingItem.name,
       quantity: 1,
       rate: millingTotal,
+      ...(description ? { description } : {}),
     }]);
-  }, [charges, millingTotal, millingItem]);
+  }, [charges, millingTotal, millingItem, writableLines, millingCharge, reman]);
 
   /** 1 until a real rate arrives, which is also what a Canadian order needs. */
   const costFx = fx && fx.status === 'ok' && fx.rate ? fx.rate : 1;
@@ -3775,6 +3785,12 @@ export const SOWizard = ({
           <span style={{ fontSize: 11.5, color: ARCH_SURFACE.textLight }}>
             written as one {millingItem.name} line, not one per bundle. Not counted in the
             margin.
+            {/* The description that line will carry (Feedback 10), shown so the
+                trader sees what the customer will read before it is written. */}
+            {(() => {
+              const d = chargesWithMilling.length ? chargesWithMilling[chargesWithMilling.length - 1].description : '';
+              return d ? <> Description: <em>{d}</em>.</> : null;
+            })()}
           </span>
         </div>
       )}
