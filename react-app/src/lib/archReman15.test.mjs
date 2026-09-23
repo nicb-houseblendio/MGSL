@@ -17,18 +17,21 @@ const here = dirname(fileURLToPath(import.meta.url));
 const wiz = readFileSync(join(here, '../components/arch/SOWizard.tsx'), 'utf8');
 
 test('the standard dressed size per thickness is exactly what MA was told', () => {
-  assert.deepEqual({ ...STANDARD_DRESSED }, { '4/4': '13/16', '5/4': '1-1/16', '6/4': '1-5/16', '8/4': '1-3/4' });
+  // The four MA confirmed, plus 10/4 and 12/4 from the same NHLA S2S table they
+  // match value for value (Feedback 15 follow-up, 2026-09-23).
+  assert.deepEqual({ ...STANDARD_DRESSED }, { '4/4': '13/16', '5/4': '1-1/16', '6/4': '1-5/16', '8/4': '1-3/4', '10/4': '2-1/4', '12/4': '2-3/4' });
   assert.deepEqual(planingOptions('4/4'), ['13/16', 'other']);
   assert.deepEqual(planingOptions('5/4'), ['1-1/16', 'other']);
   assert.deepEqual(planingOptions('6/4'), ['1-5/16', 'other']);
   assert.deepEqual(planingOptions('8/4'), ['1-3/4', 'other']);
 });
 
-test('the thickness is found in a description too, and 10/4 or 12/4 offer Other only', () => {
+test('the thickness is found in a description too; 10/4 and 12/4 have a standard; anything else offers Other only', () => {
   assert.deepEqual(planingOptions('Sapele 6/4 KD'), ['1-5/16', 'other']);
   assert.equal(nominalQuarters('Bocote 5/4 KD'), '5/4');
-  assert.deepEqual(planingOptions('10/4'), ['other']);
-  assert.deepEqual(planingOptions('12/4'), ['other']);
+  assert.deepEqual(planingOptions('10/4'), ['2-1/4', 'other']);
+  assert.deepEqual(planingOptions('Walnut 12/4 LE KD EPX'), ['2-3/4', 'other']);
+  assert.deepEqual(planingOptions('16/4'), ['other']);
   assert.deepEqual(planingOptions(''), ['other']);
   // "14/4" must not be read as "4/4"
   assert.equal(nominalQuarters('14/4'), '14/4');

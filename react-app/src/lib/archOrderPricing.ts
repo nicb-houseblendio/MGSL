@@ -459,11 +459,19 @@ export const marginColor = (pct: number): string =>
  * ⚠️ `CUSTOMLISTPLANNAGE` is still NOT the source: it holds surfacing codes (RO,
  * S3S, S4S) for the ITEM, not a target thickness for an order.
  */
+/* 10/4 and 12/4 added 2026-09-23 (Feedback 15 follow-up). The four sizes MA
+ * confirmed (« Garde comme ça dans le code ») are, value for value, the NHLA
+ * "Standard Thickness for Surfaced Lumber" (S2S) table, and the same table gives
+ * 10/4 -> 2-1/4 and 12/4 -> 2-3/4. With them the table covers every thickness an
+ * ARC item carries (4/4 59, 5/4 17, 6/4 15, 8/4 36, 10/4 3, 12/4 4; 15 have
+ * none). "Other" still lets a trader type any size. */
 export const STANDARD_DRESSED: Readonly<Record<string, string>> = Object.freeze({
   '4/4': '13/16',
   '5/4': '1-1/16',
   '6/4': '1-5/16',
   '8/4': '1-3/4',
+  '10/4': '2-1/4',
+  '12/4': '2-3/4',
 });
 
 /** The nominal quarter thickness named in a thickness or a description ("Sapele 6/4 KD"). */
