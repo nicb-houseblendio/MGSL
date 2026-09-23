@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { toCartLine } from '../hooks/useArchOpenOrders.ts';
+import { restoredShipDate, todayIsoLocal } from './archEditShipDate.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = (p) => readFileSync(join(here, '..', p), 'utf8');
@@ -72,7 +73,14 @@ test('F17-4: Edit restores the order\'s Equipment, note and a same-day or future
   const w = src('components/arch/SOWizard.tsx');
   assert.match(w, /setEquipment\(o\.equipment \|\| ''\);\s*setEquipmentId\(o\.equipmentId \|\| ''\);/);
   assert.match(w, /if \(o\.memo !== undefined\) setCustomerNote\(o\.memo \|\| ''\);/);
-  assert.match(w, /stored && stored >= todayIso \? stored : ''/, 'a past default is still not preloaded');
+  assert.match(w, /const preShip = restoredShipDate\(o, todayIsoLocal\(\)\);/, 'the wizard uses the tested rule');
+  const T = '2026-09-23';
+  assert.equal(restoredShipDate({ shipDate: '2026-09-23', created: '2026-09-23', shipDateStored: '2026-09-23' }, T), '2026-09-23', 'a same-day date typed by the trader (SO-ARC-28)');
+  assert.equal(restoredShipDate({ shipDate: '2026-09-30', created: '2026-09-22', shipDateStored: '2026-09-30' }, T), '2026-09-30', 'a future plan');
+  assert.equal(restoredShipDate({ shipDate: '2026-02-05', created: '2026-02-05', shipDateStored: '2026-02-05' }, T), '', 'a past default (115194) is not preloaded');
+  assert.equal(restoredShipDate({ shipDate: '2026-09-10', created: '2026-09-01', shipDateStored: '2026-09-10' }, T), '', 'nor a planned date that has since passed');
+  assert.equal(restoredShipDate({ shipDate: '', created: '2026-09-23', shipDateStored: '' }, T), '', 'nothing stored, nothing restored');
+  assert.equal(todayIsoLocal(new Date(2026, 8, 3)), '2026-09-03', 'local date, zero padded');
   const s = readFileSync(join(here, '../../../src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/service/trader_screen_service_arch.js'), 'utf8');
   const main = s.slice(s.indexOf('const OPEN_ORDERS_SQL'), s.indexOf('const handleGetOpenOrders'));
   assert.doesNotMatch(main, /custbody_equipment/, 'the custom body field never enters the main query');

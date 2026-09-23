@@ -1,12 +1,12 @@
 /**
- * Feedback 17 item 2 (Tally), second pass 2026-09-23: which lot names a captured
- * tally bundle is matched under, in the ARCH cache MR.
+ * Feedback 17 item 2 (Tally), second pass 2026-09-23: which lot a captured tally
+ * bundle is attached to, in the ARCH cache MR.
  *
  * Nic's contract (houseblend-clients master, Tally/record-format.md and
  * payload-template.json) writes `po` as "PO-314888" and leaves `lot` null unless
  * a receipt created the lot. 1,033 of the 1,053 on-hand ARC lots in sandbox came
  * in by adjustment, so a push that follows it would have matched almost nothing.
- * The function is lifted out of the MR source and run for real, not guarded by regex.
+ * The helpers are lifted out of the MR source and run for real, not regex-guarded.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,11 +15,14 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const mr = readFileSync(join(here, '../../../src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js'), 'utf8');
-const start = mr.indexOf('const tallyLotKeys = (po, b) => {');
-const end = mr.indexOf('\n            };', start) + '\n            };'.length;
-assert.ok(start > 0 && end > start, 'tallyLotKeys is in the MR');
-const tallyLotKeys = new Function(mr.slice(start, end) + '\nreturn tallyLotKeys;')();
+const mr = readFileSync(join(here, '../../../src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js'), 'utf8').replace(/\r\n/g, '\n');
+const START = 'const tallyUp = (v) =>';
+const END_MARK = 'return (lotPos || []).some((lp) => tallyPoForms(lp).some((f) => forms.indexOf(f) !== -1));\n    };';
+const start = mr.indexOf(START);
+const end = mr.indexOf(END_MARK, start) + END_MARK.length;
+assert.ok(start > 0 && end > start, 'the tally key helpers are in the MR, at module scope');
+const { tallyLotKeys, tallyLotAnchored } =
+  new Function(mr.slice(start, end) + '\nreturn { tallyLotKeys, tallyLotAnchored };')();
 
 test('the seeds keep matching exactly as before', () => {
   assert.deepEqual(tallyLotKeys('314307', { lot: '1535' }), ['1535', '314307-1535']);
@@ -46,4 +49,24 @@ test('nothing to match on gives no key at all', () => {
 test('keys are upper-cased and de-duplicated', () => {
   assert.deepEqual(tallyLotKeys('314307', { lot: '314307-1535', bundleNo: '1535' }), ['314307-1535']);
   assert.deepEqual(tallyLotKeys(' po-9 ', { lot: 'a1' }), ['A1', 'PO-9-A1', '9-A1']);
+});
+
+test('an exact lot key attaches only when the capture\'s PO is the lot\'s PO', () => {
+  // The seeds: the lot name starts with the capture PO.
+  assert.equal(tallyLotAnchored('314307', '314307-1535', ['314307', undefined]), true);
+  // A bundle number written into `lot` ("2006") must not land on the unrelated
+  // bare-numbered lot 2006 (WEN44KD in sandbox), which has no PO at all.
+  assert.equal(tallyLotAnchored('314307', '2006', ['', undefined]), false);
+  // A receipt lot is anchored through the PO it was received on.
+  assert.equal(tallyLotAnchored('PO-ARC-000005', '000005-2', ['000005', 'PO-ARC-000005']), true);
+  assert.equal(tallyLotAnchored('PO-314888', '314888-12', ['314888', undefined]), true);
+  // Another PO's lot is refused even when the name matches.
+  assert.equal(tallyLotAnchored('PO-314888', 'LOT-9', ['', 'PO-999999']), false);
+  // No PO on the capture: nothing to check against, the exact-name rule stands.
+  assert.equal(tallyLotAnchored('', '2006', ['', undefined]), true);
+});
+
+test('the join goes through the anchor, and each tally carries its capture PO', () => {
+  assert.match(mr, /const tally = tallyHit && tallyLotAnchored\(tallyHit\.po, l\.lotNo,\s*\[poFromLotNo\(l\.lotNo\), \(lotFacts\[String\(l\.lotId\)\] \|\| \{\}\)\.poNumber\]\)/);
+  assert.match(mr, /po:\s+payload\.po \|\| '',/);
 });

@@ -302,6 +302,8 @@ console.log(fail ? ('# FAIL ' + fail) : '# archOrderApi ok');
     globalThis.fetch = () => { calls++; return slow.then(() => ({ json: async () => answer })); };
     const g2 = await fetchWriteAuth();
     ok('F17-B1  ...past the TTL the last good answer is served without waiting', g2 === g1 && calls === 2, calls);
+    const g2b = await fetchWriteAuth();
+    ok('F17-B1  ...and so is every open while that refresh is still in flight', g2b === g1 && calls === 2, calls);
     release();
     await slow; await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
     const g3 = await fetchWriteAuth();

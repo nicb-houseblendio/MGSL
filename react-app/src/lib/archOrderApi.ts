@@ -771,7 +771,12 @@ let lastGoodWriteAuth: ArchWriteAuth | null = null;
 
 export const fetchWriteAuth = (): Promise<ArchWriteAuth> => {
   const now = Date.now();
-  if (writeAuthCache && now - writeAuthCache.at < WRITE_AUTH_TTL_MS) return writeAuthCache.promise;
+  /* Within the TTL too, the last good answer wins over an in-flight refresh
+   * (verification, 2026-09-23): a wizard opened while the refresh ran waited for
+   * it, and got 'unknown' with no charge items if it then failed. */
+  if (writeAuthCache && now - writeAuthCache.at < WRITE_AUTH_TTL_MS) {
+    return lastGoodWriteAuth ? Promise.resolve(lastGoodWriteAuth) : writeAuthCache.promise;
+  }
   const entry = { at: now, promise: loadWriteAuth() };
   writeAuthCache = entry;
   entry.promise.then((r) => {

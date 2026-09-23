@@ -82,7 +82,8 @@ test('round 2 (F12): an append does not preload a defaulted ship date', () => {
   // Same rule, now through `preShip` so the preload is remembered (Feedback 13).
   // Feedback 17: the stale-default rule stays; a stored date today or later (a
   // trader's same-day or future date) is restored, a past default is not.
-  assert.match(wiz, /const preShip = o\.shipDate && o\.shipDate !== o\.created\s*\? o\.shipDate\s*: \(stored && stored >= todayIso \? stored : ''\);/);
+  // The rule is lib/archEditShipDate, executed in archEditExisting.test.mjs.
+  assert.match(wiz, /const preShip = restoredShipDate\(o, todayIsoLocal\(\)\);/);
   assert.doesNotMatch(wiz, /setShipDate\(o\.shipDate \|\| ''\);/);
 });
 

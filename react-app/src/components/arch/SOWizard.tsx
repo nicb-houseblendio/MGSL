@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { formatQty, unitLabel, uomLabel, formatUnitTotals } from '@/lib/archUom';
+import { restoredShipDate, todayIsoLocal } from '@/lib/archEditShipDate';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import {
   useArchCustomers,
@@ -669,7 +670,8 @@ export const SOWizard = ({
   onDraftChange,
 }: SOWizardProps) => {
   // Feedback 17 item 8d: every field below starts from the remembered draft when
-  // there is one. Read once, at mount; the wizard remounts on every open.
+  // there is one. Read once, at mount. ArchScreen remounts the wizard when it
+  // CLOSES (and on Edit, Clear and a successful create), not when it opens.
   const d0 = initialDraft || null;
   const [stepIndex, setStepIndex] = React.useState(d0 ? d0.stepIndex : 0);
   /*
@@ -1542,14 +1544,8 @@ export const SOWizard = ({
      * a date the trader typed as today (it equals the order date on a same-day
      * order). So the date the order holds is restored when it is today or later:
      * a past one would still price FX on a stale day, a future one is a plan. */
-    const todayIso = (() => {
-      const d = new Date();
-      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-    })();
-    const stored = o.shipDateStored || '';
-    const preShip = o.shipDate && o.shipDate !== o.created
-      ? o.shipDate
-      : (stored && stored >= todayIso ? stored : '');
+    // The rule, today or later from either source, lives in lib/archEditShipDate.
+    const preShip = restoredShipDate(o, todayIsoLocal());
     // Equipment and the customer note, which Edit never restored before.
     if (o.equipmentId !== undefined) {
       setEquipment(o.equipment || '');
@@ -1661,9 +1657,12 @@ export const SOWizard = ({
    * `preferLabel` lets an existing order keep the address it already carries
    * rather than being silently moved to the customer's default.
    */
-  const loadAddressesFor = (id: string, preferLabel?: string) => {
+  const loadAddressesFor = (id: string, preferLabel?: string, keepId?: string) => {
     setLiveAddresses([]);
-    setShipAddressId('');
+    // A RESTORE keeps the id it had until the list answers (verification,
+    // 2026-09-23): cleared up front, a failed fetch left the label on screen and
+    // no id on the write, so NetSuite quietly used the customer's default address.
+    setShipAddressId(keepId || '');
     if (!id) return;
     // 🔴 LAST REQUEST WINS, not last RESPONSE. Typing into a native select fires
     // onChange on EVERY KEYSTROKE, so "County Line" walks the list: "C" lands on
@@ -1680,8 +1679,12 @@ export const SOWizard = ({
     fetchCustomerAddresses(id).then((addrs) => {
       if (addressRequest.current !== id) return;   // a newer pick superseded this
       setLiveAddresses(addrs);
+      const kept = preferLabel ? addrs.find((a) => a.label === preferLabel) : undefined;
+      // A restore whose address is not in the list (a typed one, say) keeps what
+      // the trader had rather than being moved to the default.
+      if (keepId !== undefined && !kept) return;
       const preferred =
-        (preferLabel && addrs.find((a) => a.label === preferLabel)) ||
+        kept ||
         addrs.find((a) => a.isDefaultShipping) ||
         addrs.find((a) => a.isDefaultBilling) ||
         addrs[0];
@@ -1696,7 +1699,7 @@ export const SOWizard = ({
    * fetched, not remembered). The restored ship-to label is preferred, so the
    * trader's choice comes back selected. Once, at mount. */
   React.useEffect(() => {
-    if (d0 && d0.customerId) loadAddressesFor(d0.customerId, d0.shipTo || undefined);
+    if (d0 && d0.customerId) loadAddressesFor(d0.customerId, d0.shipTo || undefined, d0.shipAddressId || '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -2522,6 +2525,8 @@ export const SOWizard = ({
               >
                 {formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: l.orderedQty ?? l.preSplitQty })))}
               </td>
+              {/* UOM, Unit cost, remove. One cell per header since the UOM column. */}
+              <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
               <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
               <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
             </tr>
@@ -4079,6 +4084,10 @@ export const SOWizard = ({
               */}
               {formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: orderedBF(l, sp(l.key)) })))}
             </td>
+            {/* UOM, Unit cost, Price / Unit. The UOM cell was missing when that column
+                arrived (Feedback 17), which slid Revenue, Profit and Margin one
+                column left, under Price / Unit (verification, 2026-09-23). */}
+            <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
             <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
             <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
             {/*
@@ -4153,12 +4162,10 @@ export const SOWizard = ({
       {/* The prototype spells the arithmetic out here. Worth keeping: the margin
           is the number the trader is judged on, and the legend below is an honest
           description of what THIS SCREEN computes -- which is not the same as what
-          NS records. Lot cost is real and the reman rates are client-confirmed, but
-          ops & insurance diverges twice over: NS sources the rate from the customer
-          (custentity_mgsl_insurancerate) and charges it on the invoice SUBTOTAL, while
-          this line charges a configured rate on lot cost. See the basis note in
-          archOrderPricing.ts. Keep it auditable rather than let it become a black
-          box nobody can check. */}
+          NS records. Lot cost is real and the reman rates are client-confirmed.
+          Operations & insurance is NOT in it since Feedback 17 (MA: price - lot cost
+          - reman - split, the rest is in their profitability report). Keep it
+          auditable rather than let it become a black box nobody can check. */}
       <div
         style={{
           marginTop: 14,

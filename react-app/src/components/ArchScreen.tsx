@@ -134,15 +134,27 @@ export const ArchScreen = ({ uom, costCurrency = 'USD', tab = 'inventory', onSou
    * wizard now reports its draft here and starts from it. A REF, not state: the
    * wizard reports on every keystroke and this screen renders the whole grid.
    *
-   * Dropped on a successful order (and ignored until the wizard closes, so the
-   * Done screen cannot re-save it), on the cart bar's Clear, and whenever Edit
+   * Dropped on a successful order, on the cart bar's Clear, and whenever Edit
    * opens the wizard: an existing order's own values win, and an Edit session is
    * never remembered for a later new order.
+   *
+   * 🔴 DROPPING IS `resetWizard`, NEVER A BARE `draftRef.current = null`
+   * (verification, 2026-09-23). The wizard holds the draft in its OWN state and
+   * only reads the ref when it mounts, and opening it does not remount it. So a
+   * bare null left the mounted wizard holding the old order: after a successful
+   * create, the next "Build sales order" opened on the previous customer, PO,
+   * freight lines and prices, at the Review step. Clear did the same. Nulling and
+   * remounting together is the only drop that works. It also retired
+   * `draftFrozen`, which existed only because the old instance outlived the save,
+   * and which then swallowed the NEXT order's draft until its first close.
    */
   const draftRef = React.useRef<ArchWizardDraft | null>(null);
-  const draftFrozen = React.useRef(false);
   const handleDraftChange = React.useCallback((d: ArchWizardDraft) => {
-    if (!draftFrozen.current) draftRef.current = d;
+    draftRef.current = d;
+  }, []);
+  const resetWizard = React.useCallback(() => {
+    draftRef.current = null;
+    setWizardKey((k) => k + 1);
   }, []);
 
   const closeWizard = React.useCallback(() => {
@@ -151,7 +163,6 @@ export const ArchScreen = ({ uom, costCurrency = 'USD', tab = 'inventory', onSou
     // The remount stays: after a SUCCESSFUL create the wizard must start fresh,
     // and it does, because the draft was dropped when the order saved.
     setWizardKey((k) => k + 1);
-    draftFrozen.current = false;
   }, []);
 
   /*
@@ -226,10 +237,10 @@ export const ArchScreen = ({ uom, costCurrency = 'USD', tab = 'inventory', onSou
   }, [tab, openOrdersState.reload]);
 
   const handleEditOrder = React.useCallback((soNo: string) => {
-    draftRef.current = null;   // the order's own values win (Feedback 17 item 8d)
+    // The order's own values win (Feedback 17 item 8d), and the remount re-primes
+    // the wizard even if it was opened before.
+    resetWizard();
     setEditingSO(soNo);
-    // Remount, so the wizard re-primes even if it was opened before.
-    setWizardKey((k) => k + 1);
     setWizardOpen(true);
   }, []);
   const [createdDraft, setCreatedDraft] = React.useState<ArchOrderDraft | null>(null);
@@ -398,9 +409,8 @@ export const ArchScreen = ({ uom, costCurrency = 'USD', tab = 'inventory', onSou
       // destroy the trader's selection while the stock is still sellable, which
       // is worse than leaving a cart they can retry from.
       setCart([]);
-      // Feedback 17 item 8d: the next order starts fresh.
-      draftRef.current = null;
-      draftFrozen.current = true;
+      // Feedback 17 item 8d: the next order starts fresh, which takes a remount.
+      resetWizard();
       // 2026-09-23: lock this order's bundles on screen NOW, until the cache
       // rebuilds with them (lib/archOrderOverlay). Not for refused lots.
       addArchOrderOverlay(overlayFromOrder(draft.lines, result, draft.header.customer, Date.now()));
@@ -493,7 +503,7 @@ export const ArchScreen = ({ uom, costCurrency = 'USD', tab = 'inventory', onSou
         onClear={() => {
           setCart([]);
           setCartNote(null);
-          draftRef.current = null;
+          resetWizard();
         }}
       />
 

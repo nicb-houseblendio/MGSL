@@ -1841,6 +1841,65 @@ define([
      */
     const TALLY_STATUSES = { PARSED: 1, MATCHED: 1, REVIEWED: 1 };
 
+    /* ══ Which lot a tally bundle belongs to ══════════════════════════════════
+     *
+     * `tallyLotKeys` gives the lot names one bundle may sit under, exact first.
+     *
+     * ALSO UNDER <PO>-<bundle>, since 2026-09-23. A packing list names a bundle
+     * by the SUPPLIER's number ("1535"), and Marc-Antoine's 2026-09-16 re-import
+     * named the lots <PO>-<that number>: PL 314307's 14 bundles 1535..1548 are
+     * lots 314307-1535..-1548, their on-hand equal to the PL's figures. Exact
+     * keys are kept too, because 12 ARC lots have no dash at all.
+     *
+     * Second pass, 2026-09-23, reading Nic's contract (Tally/record-format.md and
+     * payload-template.json on houseblend-clients master):
+     *   - `po` is written in NetSuite's form, "PO-314888", while the lots carry
+     *     the bare supplier number, so the "PO-" prefix is also tried without it.
+     *   - `lot` is set only where a RECEIPT created the lot and is left null
+     *     otherwise. 1,033 of the 1,053 on-hand ARC lots came in by inventory
+     *     adjustment, so a push that follows the contract leaves nearly all of his
+     *     wood unmatched. `bundleNo` is then tried under the PO, which is his own
+     *     naming rather than a guess. A bare bundle number alone is never a key.
+     *
+     * 🔴 `tallyLotAnchored` closes the one hole left (verification, 2026-09-23):
+     * the EXACT `lot` key is bare, and our own seed 1 already stores a supplier
+     * bundle number there ("1535"). Sandbox holds bare-numbered ARC lots such as
+     * `2006` (WEN44KD) and `2097` (CMA44KD), so a push writing "2006" as a bundle
+     * number would have drawn one shipment's matrix on an unrelated lot, which is
+     * the failure this whole feature refuses. A tally now attaches only when the
+     * lot name itself starts with the capture's PO, or the lot's own PO (from its
+     * name, or the PO it was received on) is the capture's PO. A capture with no
+     * PO keeps the old exact-name rule, since there is nothing to check against. */
+    const tallyUp = (v) => (v == null ? '' : String(v).trim().toUpperCase());
+    const tallyPoForms = (po) => {
+        const capPo = tallyUp(po);
+        const forms = [];
+        if (capPo) forms.push(capPo);
+        const bare = capPo.replace(/^PO[-\s#]*/, '');
+        if (bare && bare !== capPo) forms.push(bare);
+        return forms;
+    };
+    const tallyLotKeys = (po, b) => {
+        const rawLot = tallyUp(b && b.lot);
+        const bundleNo = tallyUp(b && b.bundleNo);
+        const keys = [];
+        const add = (key) => { if (key && keys.indexOf(key) === -1) keys.push(key); };
+        add(rawLot);
+        tallyPoForms(po).forEach((p) => {
+            [rawLot, bundleNo].forEach((id) => {
+                if (id && id.indexOf(p + '-') !== 0) add(p + '-' + id);
+            });
+        });
+        return keys;
+    };
+    const tallyLotAnchored = (po, lotNo, lotPos) => {
+        const forms = tallyPoForms(po);
+        if (!forms.length) return true;
+        const lot = tallyUp(lotNo);
+        if (forms.some((f) => lot.indexOf(f + '-') === 0)) return true;
+        return (lotPos || []).some((lp) => tallyPoForms(lp).some((f) => forms.indexOf(f) !== -1));
+    };
+
     /** Cap on capture records read per reduce call, with a loud log if it bites. */
     const TALLY_MAX = 500;
 
@@ -2168,48 +2227,6 @@ define([
                     ' cap. Lots beyond it silently show no tally. Add a PO or lot filter here ' +
                     'before this grows further.');
             }
-            /* The lot names one tally bundle may sit under, exact first.
-             *
-             * ALSO UNDER <PO>-<bundle>, since 2026-09-23. A packing list names a
-             * bundle by the SUPPLIER's number ("1535"), and Marc-Antoine's
-             * 2026-09-16 re-import named the lots <PO>-<that number>: PL 314307's
-             * 14 bundles 1535..1548 are lots 314307-1535..-1548, their on-hand
-             * equal to the PL's figures. Exact keys are kept too, because 12 ARC
-             * lots have no dash at all. Each key gets the same merge and conflict
-             * rules below, so they can never disagree.
-             *
-             * Second pass, 2026-09-23, reading Nic's contract (Tally/record-format.md
-             * and payload-template.json on houseblend-clients master):
-             *   - `po` is written in NetSuite's form, "PO-314888", while the lots
-             *     carry the bare supplier number, so the "PO-" prefix is also tried
-             *     without it.
-             *   - `lot` is set only where a RECEIPT created the lot and is left null
-             *     otherwise. 1,033 of the 1,053 on-hand ARC lots came in by inventory
-             *     adjustment, so a push that follows the contract leaves nearly all
-             *     of his wood unmatched. `bundleNo` is then tried under the PO, which
-             *     is his own naming rather than a guess: a key only ever meets a lot
-             *     that exists under exactly that name. A bare bundle number alone is
-             *     never a key, since "12" would meet any lot called 12. */
-            const tallyLotKeys = (po, b) => {
-                const up = (v) => (v == null ? '' : String(v).trim().toUpperCase());
-                const rawLot = up(b && b.lot);
-                const bundleNo = up(b && b.bundleNo);
-                const capPo = up(po);
-                const pos = [];
-                if (capPo) pos.push(capPo);
-                const bare = capPo.replace(/^PO[-\s#]*/, '');
-                if (bare && bare !== capPo) pos.push(bare);
-                const keys = [];
-                const add = (key) => { if (key && keys.indexOf(key) === -1) keys.push(key); };
-                add(rawLot);
-                pos.forEach((p) => {
-                    [rawLot, bundleNo].forEach((id) => {
-                        if (id && id.indexOf(p + '-') !== 0) add(p + '-' + id);
-                    });
-                });
-                return keys;
-            };
-
             const byLot = {};
             for (let i = 0; i < rows.length && i < TALLY_MAX; i++) {
                 const r = rows[i];
@@ -2282,6 +2299,7 @@ define([
 
                     byLot[lot] = {
                         captureId:  r.captureid,
+                        po:         payload.po || '',
                         /* When this capture was last touched. The split comparison
                          * in reduce() needs it, and it must come from the SAME
                          * source as the transaction timestamp it is compared
@@ -4345,7 +4363,11 @@ define([
 
             const lots = pair.lots.map((l) => {
                 const lotKey = String(l.lotNo || '').trim().toUpperCase();
-                const tally  = tallies[lotKey] || null;
+                const tallyHit = tallies[lotKey] || null;
+                /* Only when the capture's PO is this lot's PO. See tallyLotAnchored. */
+                const tally = tallyHit && tallyLotAnchored(tallyHit.po, l.lotNo,
+                    [poFromLotNo(l.lotNo), (lotFacts[String(l.lotId)] || {}).poNumber])
+                    ? tallyHit : null;
 
                 /* ── CAN THIS LOT'S TALLY STILL BE TRUSTED? ─────────────────────
                  *

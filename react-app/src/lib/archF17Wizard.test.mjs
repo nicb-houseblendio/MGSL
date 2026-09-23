@@ -108,19 +108,28 @@ test('8d: the wizard starts from and reports a draft that ArchScreen keeps in a 
     assert.match(W, new RegExp('d0 \\? d0\\.' + f + ' :'), f + ' restored');
   }
   assert.match(W, /onDraftChange\?\.\(\{/);
-  assert.match(W, /if \(d0 && d0\.customerId\) loadAddressesFor\(d0\.customerId, d0\.shipTo \|\| undefined\);/);
+  assert.match(W, /if \(d0 && d0\.customerId\) loadAddressesFor\(d0\.customerId, d0\.shipTo \|\| undefined, d0\.shipAddressId \|\| ''\);/, 'restore keeps the ship-to id');
+  assert.match(W, /setShipAddressId\(keepId \|\| ''\);/);
+  assert.match(W, /if \(keepId !== undefined && !kept\) return;/);
   assert.match(S, /const draftRef = React\.useRef<ArchWizardDraft \| null>\(null\);/);
   assert.match(S, /initialDraft=\{editingSO \? null : draftRef\.current\}/);
   assert.match(S, /onDraftChange=\{editingSO \? undefined : handleDraftChange\}/);
 });
 
-test('8d: dropped on success (and frozen until close), on Clear, and on Edit', () => {
+test('8d: dropped on success, on Clear and on Edit, always WITH a remount', () => {
+  // The wizard only reads the draft when it mounts and opening does not remount
+  // it, so a bare null left the last order's customer and prices on the next open
+  // (verification, 2026-09-23). Every drop goes through resetWizard.
+  assert.match(S, /const resetWizard = React\.useCallback\(\(\) => \{\s*draftRef\.current = null;\s*setWizardKey\(\(k\) => k \+ 1\);\s*\}, \[\]\);/);
+  assert.equal((S.match(/draftRef\.current = null;/g) || []).length, 1, 'no bare drop outside resetWizard');
   const ok = S.indexOf('if (result.ok) {');
-  assert.ok(S.indexOf('draftRef.current = null;', ok) > ok && S.indexOf('draftFrozen.current = true;', ok) > ok);
-  assert.match(S, /setCartNote\(null\);\s*draftRef\.current = null;/, 'Clear');
-  assert.match(S, /const handleEditOrder = React\.useCallback\(\(soNo: string\) => \{\s*draftRef\.current = null;/);
-  assert.match(S, /setWizardKey\(\(k\) => k \+ 1\);\s*draftFrozen\.current = false;/, 'the remount on close stays');
-  assert.match(S, /if \(!draftFrozen\.current\) draftRef\.current = d;/);
+  assert.ok(ok > 0 && S.indexOf('resetWizard();', ok) > ok && S.indexOf('resetWizard();', ok) < S.indexOf('addArchOrderOverlay', ok), 'success');
+  assert.match(S, /setCartNote\(null\);\s*resetWizard\(\);/, 'Clear');
+  assert.match(S, /const handleEditOrder = React\.useCallback\(\(soNo: string\) => \{[\s\S]{0,200}?resetWizard\(\);\s*setEditingSO\(soNo\);/, 'Edit');
+  assert.doesNotMatch(S, /draftFrozen.current|const draftFrozen/, 'the freeze is gone: it swallowed the draft of the next order');
+  assert.match(S, /const handleDraftChange = React\.useCallback\(\(d: ArchWizardDraft\) => \{\s*draftRef\.current = d;\s*\}, \[\]\);/);
+  // Close still remounts from the kept draft (his video: click outside, reopen).
+  assert.match(S, /const closeWizard = React\.useCallback\(\(\) => \{\s*setWizardOpen\(false\);\s*setEditingSO\(null\);[\s\S]{0,300}?setWizardKey\(\(k\) => k \+ 1\);\s*\}, \[\]\);/);
 });
 
 test('B1: ArchScreen warms the endpoint health answer once', () => {
@@ -135,4 +144,33 @@ test('8a/8b in the confirmation dialog too: no operations & insurance box, Quant
   assert.doesNotMatch(d, />BF<\/th>|Price\/BF/);
   assert.match(d, />Quantity<\/th>\s*<th style=\{head\}>UOM<\/th>\s*<th style=\{\{ \.\.\.head, textAlign: 'right' \}\}>Price \/ Unit \(\{cur\}\)<\/th>/);
   assert.match(d, /\{uomLabel\(l\.unit\)\}<\/td>/);
+});
+
+test('8a/8b: every footer has one cell per header column (Items, Pricing)', () => {
+  // The UOM column arrived without its footer cell, which slid Pricing's Revenue,
+  // Profit and Margin totals one column left (verification, 2026-09-23).
+  const strip = (x) => x.replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+  const tables = [...W.matchAll(/<table\b[\s\S]*?<\/table>/g)].map((m) => m[0]);
+  let checked = 0;
+  for (const t of tables) {
+    const head = /<thead>([\s\S]*?)<\/thead>/.exec(t);
+    const foot = /<tfoot>([\s\S]*?)<\/tfoot>/.exec(t);
+    if (!head || !foot) continue;
+    const cols = (strip(head[1]).match(/<th\b/g) || []).length;
+    // Pricing's footer has two branches (priced or not); each must span the table.
+    const f = strip(foot[1]);
+    const cell = (a) => { const m = /colSpan=\{(\d+)\}/.exec(a); return m ? Number(m[1]) : 1; };
+    const lead = f.split(/\{priceOk \?|\{allPriced \?|\? \(/)[0];
+    const leadCells = [...lead.matchAll(/<td\b([^>]*?)(?:\/>|>)/g)].reduce((n, m) => n + cell(m[1]), 0);
+    const all = [...f.matchAll(/<td\b([^>]*?)(?:\/>|>)/g)].reduce((n, m) => n + cell(m[1]), 0);
+    if (all === leadCells) assert.equal(all, cols, 'a single-branch footer spans the table');
+    else {
+      // two branches after a shared lead: lead + each branch == cols
+      const rest = all - leadCells;
+      assert.equal(rest % 2, 0, 'two branches of equal width');
+      assert.equal(leadCells + rest / 2, cols, 'each branch spans the table');
+    }
+    checked++;
+  }
+  assert.equal(checked, 2, 'the Items and Pricing footers');
 });
