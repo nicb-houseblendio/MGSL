@@ -166,9 +166,12 @@ define([
     // Feedback 13: the ONE ship-week rule, shared with the open-orders service
     // and the split queue so the three can never describe one order differently.
     '../../shared/archShipWeek',
-    // Feedback 8, phase 2: the pre-arrival reservation claims. Appended LAST.
+    // Feedback 8, phase 2: the pre-arrival reservation claims.
     '../../shared/archReservation',
-], (query, search, log, runtime, task, CacheKeys, CacheClient, LotCostLib, ArchSalesTeam, ArchShipWeek, ArchReservation) => {
+    // 2026-09-23: WHEN a real rebuild runs (change-driven, floor, cap, backstop).
+    // Appended LAST, for the positional-binding reason above.
+    '../../shared/archRebuildGate',
+], (query, search, log, runtime, task, CacheKeys, CacheClient, LotCostLib, ArchSalesTeam, ArchShipWeek, ArchReservation, ArchRebuildGate) => {
 
     /**
      * 🔴 SUPERSEDED 2026-09-22: ARCH stock IS now scoped by subsidiary ARC, see
@@ -533,7 +536,7 @@ define([
      * age is the liveness signal, and it is the only one that works from outside.
      *
      * THERE IS NO "REBUILD RIGHT NOW". Nothing bypasses the pacing gate, including
-     * the force checkbox, and that is deliberate; see paceShouldSkip. The most you
+     * the force checkbox, and that is deliberate; see readPaceLastStart. The most you
      * can do is wait for the gate, which is at most one interval away. To force a
      * rebuild that is ALLOWED TO SHRINK the cache, tick
      * custscript_ts_arch_force_full_rebuild, wait for the next gate opening, untick
@@ -650,7 +653,7 @@ define([
      * The force-full checkbox on the deployment, read tolerantly.
      *
      * SHRINK GUARD ONLY. It does not affect the pacing gate; see the long note in
-     * paceShouldSkip for why that bypass was removed rather than kept.
+     * readPaceLastStart for why that bypass was removed rather than kept.
      *
      * Lives at module scope rather than as the inline IIFE it started as, because
      * the gate briefly needed the same answer. It stays here now that the gate does
@@ -684,7 +687,7 @@ define([
      * line on the paced path that has since been deleted; see the measured cycle
      * rate under THE CHAIN. Nothing reads an age any more, so nothing carries one.
      */
-    const paceShouldSkip = () => {
+    const readPaceLastStart = () => {
         /*
          * ⚠️ THE FORCE BOX DELIBERATELY DOES **NOT** BYPASS THIS GATE, and the
          * first version of this function got that wrong. Do not re-add it.
@@ -711,14 +714,16 @@ define([
          * If Save & Execute appears to do nothing, that is the correct answer;
          * confirm with `node cachecheck.mjs`, which reports the cache's real age.
          */
+        /* Since 2026-09-23 this only READS the stamp; archRebuildGate.decide
+         * applies it (floor, backstop), with the same fail-open rule: absent,
+         * non-numeric or future all come back as 0, which runs. */
         try {
             const raw = CacheClient.getCache().get({ key: CacheKeys.PACE_LAST_START });
-            if (!raw) return false;
+            if (!raw) return 0;
             const last = Number(raw);
-            if (!isFinite(last) || last <= 0) return false;
-            const ageMs = Date.now() - last;
-            if (ageMs < 0) return false;
-            return ageMs < REBUILD_INTERVAL_MS;
+            if (!isFinite(last) || last <= 0) return 0;
+            if (Date.now() - last < 0) return 0;
+            return last;
         } catch (e) {
             // Rare path, and it stays DEBUG rather than going quiet like the paced
             // path did. If the cache were persistently unreadable this would fire
@@ -727,8 +732,122 @@ define([
             // four AUDIT lines. The AUDIT flood is the alarm; this is the reason.
             log.debug('ARCH cache pacing',
                 'Pacing key unreadable, running the rebuild: ' + e.message);
-            return false;
+            return 0;
         }
+    };
+
+    /* -- The change-driven gate (2026-09-23) ---------------------------------
+     * The rule lives in shared/archRebuildGate.js, pure and tested. This part
+     * reads and writes its state in the shared cache, one JSON key, and runs its
+     * signature queries (~50 ms inside NetSuite, measured). Everything here is
+     * on the SILENT path except a detector failure, reported once per message.
+     *
+     * Hot-loop safety, unchanged in kind: the pacing stamp is still written at
+     * the top of getInputData the moment a run is decided, before any rebuild
+     * query, so a failing rebuild can never run again inside FLOOR_MS, and the
+     * failure count backs early reruns off to the backstop. */
+    const GATE_TTL_SECONDS = 7200;
+    const gateSql = (sql, params) => query.runSuiteQL({ query: sql, params: params || [] }).asMappedResults();
+    const readGate = (c) => {
+        try { const raw = c.get({ key: CacheKeys.GATE }); return raw ? (JSON.parse(raw) || {}) : {}; }
+        catch (e) { return {}; }
+    };
+    const writeGate = (c, st) => c.put({ key: CacheKeys.GATE, value: JSON.stringify(st), ttl: GATE_TTL_SECONDS });
+
+    /** The anchor for a window with none yet: the newest ARC change in two days,
+     *  or a day before the DB's own CURRENT_DATE (same clock as the data). */
+    const seedAnchor = () => {
+        const r = gateSql(ArchRebuildGate.SEED_SQL);
+        const mx = r.length ? r[0].mx : '';
+        if (mx) return ArchRebuildGate.minusMinutes(mx, ArchRebuildGate.ANCHOR_MARGIN_MIN);
+        const cd = gateSql("SELECT TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD HH24:MI:SS') AS cd FROM DUAL");
+        return ArchRebuildGate.minusMinutes(cd.length ? cd[0].cd : '', 1440);
+    };
+
+    const reportGateOnce = (c, st, e) => {
+        try {
+            const msg = (e && e.name ? e.name + ': ' : '') + String((e && e.message) || e);
+            if (st.errMsg === msg) return;
+            writeGate(c, Object.assign({}, st, { errMsg: msg }));
+            log.audit('ARCH cache change check failed, rebuilding on the 15-min backstop only', msg);
+        } catch (ignore) { /* silent path */ }
+    };
+
+    /** Returns { run, reason, state, detected } for this cycle. */
+    const gateCycle = () => {
+        let c;
+        try { c = CacheClient.getCache(); } catch (e) { return { run: true, reason: 'cache unreadable' }; }
+        const st = readGate(c);
+        let debug = false;
+        try { debug = String(runtime.getCurrentScript().logLevel || '').toUpperCase() === 'DEBUG'; } catch (e) { debug = false; }
+        const d = ArchRebuildGate.decide({ now: Date.now(), lastStart: readPaceLastStart(), debug: debug, state: st });
+        if (d.go === 'run') return { run: true, reason: d.reason, state: st };
+        if (d.go !== 'detect') return { run: false };
+
+        // Throttle, READ BACK before any query: an unwritable key must mean
+        // "skip", never "run the detector every 2.7 s".
+        const now = Date.now();
+        const next = Object.assign({}, st, { checkAt: now });
+        try { writeGate(c, next); } catch (e) { return { run: false }; }
+        if (Number(readGate(c).checkAt) !== now) return { run: false };
+
+        try {
+            if (!st.anchor) {
+                const anchor = seedAnchor();
+                writeGate(c, Object.assign({}, next, { anchor: anchor, sig: ArchRebuildGate.readSignature(gateSql, anchor).sig, errMsg: '' }));
+                return { run: false };
+            }
+            const sig = ArchRebuildGate.readSignature(gateSql, st.anchor);
+            const o = ArchRebuildGate.onSignature(st, sig.sig);
+            if (o.go === 'run') return { run: true, reason: o.reason, state: next, detected: sig };
+            if (o.reason === 'seeded' || st.errMsg) writeGate(c, Object.assign({}, next, { sig: sig.sig, errMsg: '' }));
+            return { run: false };
+        } catch (e) {
+            reportGateOnce(c, next, e);
+            return { run: false };
+        }
+    };
+
+    /** Right after the pacing stamp: move the anchor to this start and store the
+     *  signature the NEXT check compares against. A failure stores no signature,
+     *  so the next check re-seeds instead of calling everything a change. */
+    const gateStarted = (g) => {
+        try {
+            const c = CacheClient.getCache();
+            const now = Date.now();
+            const st = g.state || {};
+            let anchor = st.anchor || '';
+            try {
+                if (!anchor) anchor = seedAnchor();
+                const mx = g.detected ? g.detected.mx : ArchRebuildGate.readSignature(gateSql, anchor).mx;
+                const moved = mx ? ArchRebuildGate.minusMinutes(mx, ArchRebuildGate.ANCHOR_MARGIN_MIN) : '';
+                if (moved) anchor = moved;
+                writeGate(c, ArchRebuildGate.startedState(st, now, ArchRebuildGate.readSignature(gateSql, anchor).sig, anchor));
+            } catch (e) {
+                writeGate(c, ArchRebuildGate.startedState(st, now, '', anchor));
+            }
+        } catch (ignore) { /* the rebuild matters more than its bookkeeping */ }
+    };
+
+    /** At summarize, for a REAL run only: count or clear a failure (backoff).
+     *  `real` is false on a paced cycle, so a run NetSuite aborted before its
+     *  summarize is not later cleared as a success by an idle cycle (review L5);
+     *  its `running` stays until the next start overwrites it. */
+    const gateFinish = (failed, real) => {
+        try {
+            if (!real) return;
+            const c = CacheClient.getCache();
+            const st = readGate(c);
+            if (!Number(st.running)) return;
+            writeGate(c, ArchRebuildGate.finishedState(st, failed));
+        } catch (ignore) { /* silent path */ }
+    };
+
+    /** The pacing stamp as ISO, for META `startedAt`: when the run that built
+     *  the served rows STARTED. The screen compares its own orders against it. */
+    const startedAtIso = () => {
+        const ms = readPaceLastStart();
+        return ms ? new Date(ms).toISOString() : null;
     };
 
     /**
@@ -3438,11 +3557,16 @@ define([
             // ⚠️ SILENT ON PURPOSE, and this is measured, not a preference. See the
             // log-volume paragraph under THE CHAIN: at the real cycle rate a single
             // line here costs about 32,000 log lines a day.
-            if (paceShouldSkip()) return {};
+            const gate = gateCycle();
+            if (!gate.run) return {};
 
             // Claim the cycle BEFORE the work, not after it. Everything downstream
             // may now fail freely without costing us the interval.
             stampPaceStart();
+            gateStarted(gate);
+            // One line per REAL rebuild, saying why. If a week of these reads
+            // "backstop" only, change detection is broken; see archRebuildGate.
+            log.audit('ARCH cache rebuild', gate.reason || 'run');
 
             const rows = query.runSuiteQL({
                 query: LOT_SQL,
@@ -4719,6 +4843,8 @@ define([
 
     // ── summarize ───────────────────────────────────────────────────────────
     const summarize = (context) => {
+        let gateFailed = false;
+        let gateReal = false;
         try {
             const myCache = CacheClient.getCache();
             const rows = [];
@@ -4763,6 +4889,9 @@ define([
             }
             const runFailed = !!(context.inputSummary && context.inputSummary.error) ||
                 mapErrorCount > 0 || reduceErrorCount > 0;
+            gateFailed = runFailed;
+            // A paced cycle has no rows and no errors; anything else was a real run.
+            gateReal = runFailed || rows.length > 0;
 
             /*
              * ══ ZERO OUTPUT: NEVER WRITE AN EMPTY PAYLOAD OVER A LIVE CACHE ══════
@@ -4853,6 +4982,9 @@ define([
                     'kept rather than replaced with nothing. This means one item+location pair ' +
                     'carries an implausible amount of data — check its lot count before assuming ' +
                     'the ceiling is the problem.');
+                // A refused write backs early reruns off like a failure (review M4):
+                // the next change would only be refused again.
+                gateFailed = true;
                 return;
             }
 
@@ -5002,9 +5134,14 @@ define([
                         uncostedRowCount:   priorMeta ? priorMeta.uncostedRowCount : null,
                         shrinkGuard:        true,
                         shrinkGuardRefused: rows.length,
+                        // The rows served are the prior run's, so is their start.
+                        startedAt:          priorMeta ? (priorMeta.startedAt || null) : null,
                     }),
                     ttl: CacheKeys.TTL_SUMMARY,
                 });
+                // Refused, so back early reruns off (review M4). The backstop and the
+                // force-rebuild parameter still reach it.
+                gateFailed = true;
                 return;
             }
 
@@ -5052,6 +5189,9 @@ define([
                     // only when the shrink guard refuses a run.
                     lastUpdated:  new Date().toISOString(),
                     lastAttempt:  new Date().toISOString(),
+                    // When this run STARTED (the pacing stamp). A change saved
+                    // after it may not be in these rows.
+                    startedAt:    startedAtIso(),
                     rowCount:     rows.length,
                     lastRunMode:  'FULL',
                     // Stated in the payload, not just in this file, so the screen
@@ -5096,6 +5236,7 @@ define([
                 (existingCount ? ' Replaced ' + existingCount + ' cached row(s).' : '') +
                 (forceFull ? ' FORCED — shrink guard bypassed.' : ''));
         } catch (e) {
+            gateFailed = true;
             log.error('ARCH cache summarize failed', e.message);
         } finally {
             /*
@@ -5115,8 +5256,9 @@ define([
              * The failure paths are precisely the ones that most need another cycle.
              */
             rescheduleSelf();
-            // AFTER the reschedule, and self-contained: it catches everything.
+            // AFTER the reschedule, and self-contained: each catches everything.
             kickReconciler();
+            gateFinish(gateFailed, gateReal);
         }
     };
 

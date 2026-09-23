@@ -316,6 +316,9 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
         if (noteThrows) throw new Error('Invalid search type: systemnote');
         return { asMappedResults: () => noteRows };
       }
+      // 2026-09-23: the rebuild gate's signature queries carry an ARC-line EXISTS
+      // on transactionline and would otherwise be served bucket rows.
+      if (/DDHH24MISS|SYSDATE - 2/.test(sql)) return { asMappedResults: () => [] };
       if (/tl\.foreignamount/.test(sql)) return { asMappedResults: () => priceRows };
       if (/custbody_ship_week/.test(sql) && /FROM transaction WHERE id IN/.test(sql)) {
         if (shipWeekThrows) throw new Error('Unknown identifier custbody_ship_week');
@@ -372,6 +375,8 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
     if (/archShipWeek$/.test(id)) return load(join(SHARED, 'archShipWeek.js'), () => { throw new Error('no deps'); });
     // Feedback 8: loaded for real, it has no dependencies.
     if (/archReservation$/.test(id)) return load(join(SHARED, 'archReservation.js'), () => { throw new Error('no deps'); });
+    // 2026-09-23: the change-driven rebuild gate, pure, loaded for real.
+    if (/archRebuildGate$/.test(id)) return load(join(SHARED, 'archRebuildGate.js'), () => { throw new Error('no deps'); });
     throw new Error('unmocked module: ' + id);
   });
 
@@ -439,8 +444,8 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
     shipped && [shipped.orders, shipped.reserve]);
 
   ok('B12 no extra query: the order fields ride the bucket query that was already running',
-    sqlLog.filter((s) => /FROM transactionline tl/.test(s)).length === 1,
-    sqlLog.filter((s) => /FROM transactionline tl/.test(s)).length);
+    sqlLog.filter((s) => /FROM transactionline tl/.test(s) && !/DDHH24MISS|SYSDATE - 2/.test(s)).length === 1,
+    sqlLog.filter((s) => /FROM transactionline tl/.test(s) && !/DDHH24MISS|SYSDATE - 2/.test(s)).length);
   ok('B13 the sales-team read is ONE query for the whole run, not one per row',
     sqlLog.filter((s) => /FROM transactionsalesteam/.test(s)).length === 1,
     sqlLog.filter((s) => /FROM transactionsalesteam/.test(s)).length);

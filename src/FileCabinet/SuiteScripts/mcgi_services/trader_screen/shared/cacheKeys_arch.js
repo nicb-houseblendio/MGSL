@@ -211,6 +211,10 @@ define([], () => {
          * SCHEDULED, zero runs). All written by the cache MR's kick except
          * RECON_LAST_RUN, which is the reconciler's own heartbeat and the only one
          * the service reports (META allowlist: `reconLastRun`). */
+        /* 2026-09-23, the change-driven rebuild gate's state (archRebuildGate):
+         * { starts, checkAt, sig, anchor, fails, running, errMsg }. Builder only;
+         * never reported. Evicted = start over, which errs toward a rebuild. */
+        GATE:                  'TS_ARCH_GATE',
         RECON_CHECK_AT:        'TS_ARCH_RECON_CHECK_AT',   // throttle, one check a minute
         RECON_SUBMIT_AT:       'TS_ARCH_RECON_SUBMIT_AT',  // last successful submit, ms
         RECON_RCPT_ID:         'TS_ARCH_RECON_RCPT_ID',    // highest item receipt id seen

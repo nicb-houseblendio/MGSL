@@ -119,6 +119,7 @@ const run = (opt = {}) => {
     if (/archSalesTeam$/.test(id)) return {};
     if (/archShipWeek$/.test(id)) return load(join(SHARED, 'archShipWeek.js'), noDeps);
     if (/archReservation$/.test(id)) return Reservation;
+    if (/archRebuildGate$/.test(id)) return load(join(SHARED, 'archRebuildGate.js'), noDeps);
     throw new Error('unmocked module: ' + id);
   });
   const it = () => ({ each: () => {} });
