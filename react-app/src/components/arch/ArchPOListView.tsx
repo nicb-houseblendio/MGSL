@@ -5,6 +5,8 @@ import { ARCH_BUCKET_META, ARCH_SURFACE } from '@/components/arch/archColors';
 import type { ArchSummaryRow, ArchLot, ArchDetailKey } from '@/types/arch';
 import { poListTotals, unbundledBadge, linesOnTab, SHIP_WEEK_DEFAULTED_TITLE } from '@/lib/archUnbundled';
 import { isReservableInTransit, reservationText } from '@/lib/archLots';
+import { purchaseOrderUrl } from '@/lib/nsRecordUrl';
+import { useNetSuite } from '@/context/NetSuiteContext';
 
 /**
  * On Order / In Transit view — purchase orders, not tallies.
@@ -120,7 +122,7 @@ const parseIsoLocal = (iso: string): Date | null => {
 const resolveIncoming = (
   lot: ArchLot,
   bucket: 'onOrder' | 'inTransit'
-): { po: string; supplier: string; eta: string; invented: boolean } => {
+): { po: string; poId?: string; supplier: string; eta: string; invented: boolean } => {
   if (lot.incoming === undefined) {
     const fake = lotIncomingInfo(lot.lotNo, bucket);
     return {
@@ -137,13 +139,30 @@ const resolveIncoming = (
     // `PO_FROM_LOT_RE` needs five leading digits, so a `1333-1` bundle yields
     // nothing at all from it.
     po: lot.incoming?.poNumber || lot.po || '—',
+    // Feedback 17 item 10: only the PO off the order line has an id to link to.
+    poId: lot.incoming?.poNumber ? lot.incoming?.poId || '' : '',
     supplier: lot.incoming?.supplier || '—',
     eta: etaDate ? formatShortDate(etaDate) : '',
     invented: false,
   };
 };
 
+
+/** A PO number, linked to its NetSuite PO when we know its id (Feedback 17 item 10). */
+const PoLink = ({ number, id, accountId }: { number: string; id?: string; accountId?: string | null }) => {
+  const url = id ? purchaseOrderUrl(id, accountId) : '';
+  if (!url || !number || number === '—') return <>{number}</>;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}
+       title={'Open ' + number + ' in NetSuite'}>
+      {number}
+    </a>
+  );
+};
+
 export const ArchPOListView = ({ row, uom, bucket = 'onOrder', onAddToCart, cartLotNos }: ArchPOListViewProps) => {
+  // Feedback 17 item 10: PO numbers link to their NetSuite PO.
+  const { accountId } = useNetSuite();
   const meta = ARCH_BUCKET_META[bucket];
   const selectable = bucket === 'inTransit' && !!onAddToCart;
   const [ticked, setTicked] = React.useState<Set<string>>(() => new Set());
@@ -283,7 +302,7 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder', onAddToCart, cart
                   </td>
                 )}
                 <td style={{ ...cell, fontWeight: 700, color: meta.color }} className="font-mono">
-                  {inc.po}
+                  <PoLink number={inc.po} id={inc.poId || ''} accountId={accountId} />
                 </td>
                 {/* The bundle number itself. It was never on this table, which is
                     part of why an empty one read as "no POs" rather than "no
@@ -340,7 +359,7 @@ export const ArchPOListView = ({ row, uom, bucket = 'onOrder', onAddToCart, cart
               >
                 {selectable && <td style={cell} />}
                 <td style={{ ...cell, fontWeight: 700, color: meta.color }} className="font-mono">
-                  {u.poNumber || '—'}
+                  <PoLink number={u.poNumber || '—'} id={u.poId || ''} accountId={accountId} />
                   {linesOnTab(u, bucket) > 1 && (
                     <span style={{ fontWeight: 500, color: ARCH_SURFACE.textMid, fontSize: 10.5 }}> ×{linesOnTab(u, bucket)} lines</span>
                   )}

@@ -80,7 +80,9 @@ test('round 2: the Reserved panel container dash explains itself too', () => {
 test('round 2 (F12): an append does not preload a defaulted ship date', () => {
   const wiz = read('components/arch/SOWizard.tsx');
   // Same rule, now through `preShip` so the preload is remembered (Feedback 13).
-  assert.match(wiz, /const preShip = o\.shipDate && o\.shipDate !== o\.created \? o\.shipDate : '';/);
+  // Feedback 17: the stale-default rule stays; a stored date today or later (a
+  // trader's same-day or future date) is restored, a past default is not.
+  assert.match(wiz, /const preShip = o\.shipDate && o\.shipDate !== o\.created\s*\? o\.shipDate\s*: \(stored && stored >= todayIso \? stored : ''\);/);
   assert.doesNotMatch(wiz, /setShipDate\(o\.shipDate \|\| ''\);/);
 });
 

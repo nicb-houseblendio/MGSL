@@ -320,7 +320,8 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('open orders service: the flag is read in its OWN query, never joined into OPEN_ORDERS_SQL',
     !(svc.match(/const OPEN_ORDERS_SQL =[\s\S]*?;/) || [''])[0].includes('custbody_arch_ready_to_build'));
   ok('open orders service: archStatusFor lets a shipped status win over the tick',
-    /case 'D':\s*\n\s*case 'E':\s*\n\s*case 'F':\s*\n\s*return 'In Transit';\s*\n\s*default:\s*\n\s*return readyToBuild \? 'Ready to Build' : 'Reserved';/.test(svc));
+    // Feedback 17 item 13: Ready to Ship sits between shipped and Ready to Build.
+    /case 'D':\s*\n\s*case 'E':\s*\n\s*case 'F':\s*\n\s*return 'In Transit';\s*\n\s*default:\s*\n\s*if \(readyToShip\) return 'Ready to Ship';\s*\n\s*return readyToBuild \? 'Ready to Build' : 'Reserved';/.test(svc));
   /*
    * This used to pin `if (rtbIdList.length) {`. The loop that replaced it on
    * 2026-09-13 cannot build an empty IN () at all — a `for` over an empty list
@@ -453,7 +454,8 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   const w = src('components/arch/SOWizard.tsx');
   const m = src('lib/archSalesTeamSplit.ts');
   ok('wizard: the two-field state replaced the one that held both',
-    /const \[repTeam, setRepTeam\] = React\.useState<ArchRepTeamState>\(emptyRepTeam\);/.test(w) &&
+    // Feedback 17 item 8d: it may start from the remembered draft.
+    /const \[repTeam, setRepTeam\] = React\.useState<ArchRepTeamState>\(d0 \? d0\.repTeam : emptyRepTeam\);/.test(w) &&
     !/setSalesTeam\(/.test(w) && !/const \[salesTeam, setSalesTeam\]/.test(w));
   ok('wizard: the rep select goes through repPicked, which carries the split',
     /setRepTeam\(\(s\) =>\s*repPicked\(s, e\.target\.value, liveReps\.some\(\(r\) => r\.id === e\.target\.value\)\)\s*\)/.test(w));
@@ -518,7 +520,8 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('review totals: the dark bar distributes across the full width',
     /justifyContent: 'space-between',\s*gap: 24,\s*rowGap: 14,\s*flexWrap: 'wrap',\s*padding: '14px 18px',\s*borderRadius: 10,\s*background: 'linear-gradient\(135deg, #0F2641, #1A3D63\)',/.test(w));
   ok('review totals: every figure survived',
-    ["'Quantity'", "'Revenue'", "'Lot cost'", "'Services + ops'", "'Estimated profit'", "'Margin'"]
+    // Feedback 17: 'Services + ops' is 'Services', operations & insurance is gone.
+    ["'Quantity'", "'Revenue'", "'Lot cost'", "'Services'", "'Estimated profit'", "'Margin'"]
       .every((k) => w.includes('[' + k + ',')));
   ok('review totals: the colour contrast survived',
     /'rgba\(255,255,255,0\.75\)'/.test(w) && /'#FCA5A5'/.test(w) && /'#A5D6A7'/.test(w) &&
@@ -1089,9 +1092,11 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   const w = src('components/arch/SOWizard.tsx');
   const remanStep = w.slice(w.indexOf('const remanBody'), w.indexOf('const priceBody'));
   ok('reman step: the warning banner is gone', remanStep.length > 500 && !/<ProvisionalNote>/.test(remanStep), null);
-  ok('reman step: the per-line service cost follows the conversion, never the raw order currency',
-    /fmtMoney\(e\.planingCost \+ e\.cuttingCost, costShown\)/.test(w) &&
-      !/fmtMoney\(e\.planingCost \+ e\.cuttingCost, currency/.test(w), null);
+  // Feedback 17 item 8c (MA, 2026-09-23): « Service cost est toujours en CAD, peu
+  // importe la devise du SO ». The column shows the UNCONVERTED CAD figure.
+  ok('reman step: the per-line service cost is CAD, unconverted, never the order currency',
+    /fmtMoney\(e\.servicesCad, COST_CURRENCY\)/.test(w) &&
+      !/fmtMoney\(e\.planingCost \+ e\.cuttingCost, (currency|costShown|orderCurrency)/.test(w), null);
   // The constant that every cost label now routes through, and what it holds.
   ok('  ...and that currency is Canadian, named once in the pricing module',
     /export const COST_CURRENCY = 'CAD';/.test(src('lib/archOrderPricing.ts')), null);
@@ -1103,7 +1108,7 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
       /const cuttingRate = liveRates\.cut \?\? CUT_RATE;/.test(w), null);
   ok('review strip: the cost side follows the conversion',
     /fmtMoney\(totals\.lotCost, costShown, 0\)/.test(w) &&
-      /fmtMoney\(totals\.processingCost \+ totals\.opsInsuranceCost, costShown, 0\)/.test(w), null);
+      /fmtMoney\(totals\.processingCost, costShown, 0\)/.test(w), null);
   // 🔴 Item 10b. A converted figure must say the currency it was converted INTO,
   // and an unconverted one must keep saying CAD. One derivation, both cases.
   ok('  ...and that label is derived from the rate, not chosen by hand',
@@ -1119,8 +1124,10 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
       /const fxNote = fxLoading/.test(w), null);
   // Items 9b and 10b disagree on the reman step without this: a Canadian rate above
   // a converted column.
-  ok('  ...and the reman step says its service cost column was converted',
-    /The <strong>Service cost<\/strong> column is converted into \{orderCurrency\}/.test(w), null);
+  // Feedback 17 inverted this one: the column is CAD now, so the "converted"
+  // sentence would be false and must not come back.
+  ok('  ...and the reman step no longer claims its service cost column is converted',
+    !/The <strong>Service cost<\/strong> column is converted into/.test(w), null);
   // Items 5 and 12: a role that may read but not write learns it before the work.
   ok('order wizard: a role that cannot create is stopped before it fills the form',
     /const writeRefused = !!writeAuth && writeAuth\.status === 'ok' && !writeAuth\.allowed;/.test(w) &&
@@ -1129,10 +1136,14 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('  ...and the rate is stated on screen whenever one was applied',
     /\{fxNote &&/.test(w) && /Costs converted from/.test(w) && /Costs are NOT converted/.test(w), null);
   ok('  ...and the confirmation totals use the same rate and rates as the screen',
-    /writableLines\.map\(\(l\) => lineEconomics\(l, sp\(l\.key\), rm\(l\.key\), parseFloat\(pr\(l\.key\)\) \|\| 0, costFx, liveRates\)\)/.test(w), null);
+    /writableLines\.map\(\(l\) => lineEconomics\(l, sp\(l\.key\), rm\(l\.key\), parseFloat\(pr\(l\.key\)\) \|\| 0, costFx, liveRates,\s*costFx !== 1 \? orderCurrency : undefined\)\)/.test(w) &&
+      /lines\.map\(\(l\) => lineEconomics\(l, sp\(l\.key\), rm\(l\.key\), parseFloat\(pr\(l\.key\)\) \|\| 0, costFx, liveRates,\s*costFx !== 1 \? orderCurrency : undefined\)\)/.test(w), null);
   // Item 10a: the two columns he ringed say which currency they are in.
-  ok('pricing table: Cost/BF and Price/BF name their currencies in the header',
-    /Cost \/ BF \(\{COST_CURRENCY\}\)/.test(w) && /Price \/ BF \(\{orderCurrency\}\) \*/.test(w), null);
+  // Feedback 17 item 8b: Unit cost is in the ORDER's currency whenever costs are
+  // converted, and still names CAD when they are not.
+  ok('pricing table: Unit cost and Price / Unit name their currencies in the header',
+    /Unit cost \(\{costFx !== 1 \? orderCurrency : COST_CURRENCY\}\)/.test(w) &&
+      /Price \/ Unit \(\{orderCurrency\}\) \*/.test(w), null);
   // 🔴 Every fmtMoney call names a currency. Its default is USD, so an unlabelled
   // call is a silent claim that the figure is American, which is how the reman rate
   // legend and the Review price column came to be wrong. Scanned rather than
@@ -1195,14 +1206,15 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /Nothing would be written to \{existingSO\}/.test(review) &&
       /written to \{existingSO\}/.test(review) &&
       /Lines already on the order are shown for context/.test(review), null);
-  ok('review: the under-trigger pricing notice survives, he left it unringed',
-    /priced under the trigger/.test(review), null);
+  // Feedback 17 (MA, 2026-09-23): « Pricing check : merci de retirer le pop-up
+  // jaune ». Gone from Pricing AND Review; the negative-profit warning stays.
+  ok('review: the under-trigger pricing notice is gone, at his request',
+    !/priced under the trigger/.test(review) && /money on this order/.test(review), null);
   // 🔴 And it compares like with like. The typed price is the ORDER's currency and
   // costPerBF is Canadian, so without costFx the notice fired on healthy US prices
   // between 2.94 and 4.09 against a CA$3.72 cost. Same multiplier as the margins.
-  ok('review: the low-price trigger is the tested rule, with the same rate as the margins',
-    /isLowPricedAt\(parseFloat\(pr\(l\.key\)\) \|\| 0, l\.costPerBF, costFx\)/.test(w) &&
-      !/p < \(l\.costPerBF \|\| 0\) \* LOW_PRICE_TRIGGER/.test(w), null);
+  ok('review: no low-price trigger is evaluated by the wizard any more',
+    !/isLowPricedAt\(/.test(w) && !/LOW_PRICE_TRIGGER/.test(w) && !/Pricing check/.test(w), null);
 }
 
 // Feedback 6 item 12. The order endpoint authorises READS by the deployment
@@ -1240,11 +1252,14 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /costPerBF: l\.costPerBF \* rate/.test(w) && /exchangeRate/.test(src('hooks/useArchOpenOrders.ts')), null);
   // 10c: the rates the screen prints are the rates the money used.
   ok('economics recompute when the milling rates change',
-    /\[lines, split, reman, price, costFx, liveRates\]/.test(w), null);
+    // Feedback 17: and the order currency, which picks the USD lot-cost rung.
+    /\[lines, split, reman, price, costFx, liveRates, orderCurrency\]/.test(w), null);
   // 9b + 10c: no literal rate anywhere in the prose.
-  ok('the pricing note reads the live rates rather than a literal',
+  // Feedback 17 removed the pricing note; the legend under the table carries the
+  // rates, still read from the live variables and never a literal.
+  ok('the pricing legend reads the live rates rather than a literal',
     !/reman rates are confirmed at \$0\.20/.test(w) &&
-      /The reman rates are \{fmtMoney\(planingRate, COST_CURRENCY\)\}/.test(w), null);
+      /\{planingRate\.toFixed\(2\)\}\/BF planing/.test(w), null);
   // 10b + 11: the rate is stated on the step that commits, not only on Pricing.
   ok('review states the conversion and the availability consequence',
     /\{fxNote &&[\s\S]{0,400}reviewBody|reviewBody[\s\S]{0,900}\{fxNote &&/.test(w) &&
@@ -1287,9 +1302,8 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
 {
   const w = src('components/arch/SOWizard.tsx');
   const decl = w.indexOf('const costFx = fx && fx.status');
-  const reader = w.indexOf('isLowPricedAt(parseFloat(pr(l.key))');
-  ok('costFx is declared before the low-price predicate that reads it',
-    decl > 0 && reader > 0 && decl < reader, { decl, reader });
+  // (The low-price predicate that used to read it is gone, Feedback 17.)
+  ok('costFx is declared', decl > 0, { decl });
   const eco = w.indexOf('const economics = React.useMemo');
   ok('  ...and before the economics memo that passes it', decl > 0 && decl < eco, { decl, eco });
   const shown = w.indexOf('const costShown = costFx === 1');
@@ -1581,8 +1595,14 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // `SOWizard` multiplies every line by `costFx` to reach the order's currency at
   // the ORDER's stamped rate. Feed it an already-converted cost and it converts
   // twice: measured once at 11 margin points, in the direction that hides a loss.
-  ok('f9-1: the cart still carries the CAD cost, so the wizard cannot convert twice',
-    !/costPerUnitUsd/.test(scr) && !/avgCostPerUnitUsd/.test(scr), null);
+  // Feedback 17 item 8b: the cart ALSO carries the USD figure now, under its own
+  // name, so a USD order is costed at the main screen's receipt-date rate. The
+  // CAD figure is still `costPerBF`, and the pricing module never multiplies the
+  // USD one by a rate, so nothing can be converted twice.
+  ok('f9-1: the cart carries the CAD cost as costPerBF and the USD one only as costPerBFUsd',
+    /costPerBF: lot\.costPerUnit === null \|\| lot\.costPerUnit === undefined\s*\? row\.avgCostPerUnit\s*: lot\.costPerUnit,/.test(scr) &&
+      /costPerBFUsd: lot\.costPerUnit === null/.test(scr) &&
+      /const unitCost = useLotUsd \? usdLot : \(line\.costPerBF \|\| 0\) \* fx;/.test(src('lib/archOrderPricing.ts')), null);
   ok('f9-1:  ...and the builder still emits the CAD figure beside the USD one',
     /avgCostPerUnit: avgCostPerUnit,/.test(mr) &&
       /avgCostPerUnitUsd: avgCostPerUnitUsd,/.test(mr), null);
@@ -2054,10 +2074,10 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   ok('7b:  ...shown on Review and the confirmation only when there is one',
     /\['Note', customerNote\.trim\(\)\]/.test(wiz) &&
       /\['Note on the order', draft\.header\.customerNote\]/.test(dlg), null);
-  // Read back off the saved order, like every other fact in that email.
-  ok('7b:  ...and the confirmation email prints what the order carries',
-    /t\.memo                             AS memo/.test(oc) &&
-      /\['Note', summary \? summary\.memo : null\]/.test(oc), null);
+  // Feedback 17 item 12: the confirmation email's body is empty by MA's request,
+  // so the note is on the order (and its PDF), no longer repeated in the email.
+  ok('7b:  ...and the confirmation email no longer repeats it',
+    !/\['Note', summary \? summary\.memo : null\]/.test(oc) && /subject: 'Sales Order #' \+ tranId/.test(oc), null);
 }
 
 // Feedback 12, 2026-09-22. MA: « Ajuster la query des Open SOs svp », on a

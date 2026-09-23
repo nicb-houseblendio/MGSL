@@ -340,8 +340,10 @@ test('SOURCE: every split-fee sentence comes from the tested module', () => {
   // Split row (item 10c) and falls back to SPLIT_FEE_PLACEHOLDER otherwise, which
   // is what `splitQuoted` resolves. What must not change is that the sentence
   // still comes from the tested module rather than being written inline.
-  assert.match(w, /splitFeeMarginSentence\(feeState, splitFee\(\), splitQuoted\)/);
-  assert.match(w, /: SPLIT_FEE_PLACEHOLDER;/);
+  // Feedback 17 (MA, 2026-09-23) removed the Pricing step's operations &
+  // insurance box, which was where that sentence lived. What must still hold: no
+  // split-fee claim is written inline in the wizard.
+  assert.doesNotMatch(w, /split line currently costs nothing in this margin/);
   // The Bundle split step no longer carries a fee sentence at all: Marc-Antoine
   // asked for that warning box to go on 2026-09-14 (Feedback 6 item 8). What must
   // never come back is a LITERAL, so the absence is pinned instead.

@@ -264,4 +264,27 @@ ok('incoterms: the wizard sends the ID, not just the text',
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archOrderApi ok');
+/* Feedback 17 B1: the endpoint health answer (charge items) is fetched once and
+ * shared, so Freight & other charges do not wait 4-5 s on every wizard open. */
+{
+  const { fetchWriteAuth, resetWriteAuthCache } = await import('./archOrderApi.ts');
+  globalThis.window = { MCGI_CONFIG: { orderEndpointUrl: 'https://example.invalid/order' } };
+  let calls = 0;
+  let answer = { ok: true, role: 3, permittedRoles: [3], chargeItems: [{ id: '1', name: 'Freight' }] };
+  globalThis.fetch = () => { calls++; return Promise.resolve({ json: async () => answer }); };
+  resetWriteAuthCache();
+  const [a, b] = await Promise.all([fetchWriteAuth(), fetchWriteAuth()]);
+  const c = await fetchWriteAuth();
+  ok('F17-B1 one health call shared by every caller, in flight or resolved', calls === 1 && a === b && b === c && a.status === 'ok', calls);
+  ok('F17-B1  ...and it carries the charge items', a.chargeItems.length === 1, a.chargeItems);
+  resetWriteAuthCache();
+  answer = { ok: false };
+  calls = 0;
+  const f1 = await fetchWriteAuth();
+  await Promise.resolve();
+  const f2 = await fetchWriteAuth();
+  ok('F17-B1  ...but a failed answer is not remembered', calls === 2 && f1.status === 'unknown' && f2.status === 'unknown', calls);
+  resetWriteAuthCache();
+}
+
 process.exit(fail ? 1 : 0);

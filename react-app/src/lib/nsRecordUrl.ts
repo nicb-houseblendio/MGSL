@@ -41,6 +41,8 @@
  */
 const RECORD_PATH: Record<string, string> = {
   salesorder: '/app/accounting/transactions/salesord.nl',
+  // Feedback 17 items 9 and 10: PO numbers on the drill-downs link to their PO.
+  purchaseorder: '/app/accounting/transactions/purchord.nl',
 };
 
 /**
@@ -91,6 +93,11 @@ export const nsRecordUrl = (
 };
 
 /** The sales-order form, which is what clicking an SO number must open. */
+export const purchaseOrderUrl = (
+  internalId?: string | number | null,
+  accountId?: string | null
+): string => nsRecordUrl('purchaseorder', internalId, accountId);
+
 export const salesOrderUrl = (
   internalId?: string | number | null,
   accountId?: string | null

@@ -31,6 +31,38 @@ import { TallyButton, TallyImageDialog, TallyMatrixPanel } from '@/components/ar
 import { demoTallyProps } from '@/lib/archTallyFixtures';
 import { ArchReservedSection } from '@/components/arch/ArchReservedSection';
 import type { ArchSummaryRow, ArchDetailKey, ArchLot, ArchLotOrder } from '@/types/arch';
+import { salesOrderUrl, purchaseOrderUrl } from '@/lib/nsRecordUrl';
+import { useNetSuite } from '@/context/NetSuiteContext';
+
+/**
+ * Feedback 17 item 11 (MA, 2026-09-23): « Hyperlink sur le numéro du SO ». The
+ * first SO is a link to it in NetSuite; more than one reads "+N" with the rest in
+ * the cell's title, exactly as `joinValues` has always shown them.
+ */
+const SoLinks = ({ orders, accountId }: { orders: ArchLotOrder[]; accountId?: string | null }) => {
+  const seen = new Set<string>();
+  const distinct = orders.filter((o) => {
+    const k = (o.soNumber || '').trim();
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  if (!distinct.length) return <>{'—'}</>;
+  const first = distinct[0];
+  const url = salesOrderUrl(first.tranId, accountId);
+  return (
+    <>
+      {url ? (
+        <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
+          {first.soNumber}
+        </a>
+      ) : (
+        first.soNumber
+      )}
+      {distinct.length > 1 ? ` +${distinct.length - 1}` : ''}
+    </>
+  );
+};
 
 
 /**
@@ -225,6 +257,8 @@ export const ArchLotTable = ({
   dataSource = 'netsuite',
   costCurrency = 'USD',
 }: ArchLotTableProps) => {
+  // Feedback 17 items 9 and 11: SO and PO numbers link into NetSuite.
+  const { accountId } = useNetSuite();
   /* 🔴 THE ONE PLACE THAT DECIDES WHETHER A FIXTURE MAY BE DRAWN.
    * Derived once and passed to every `demoTallyProps` call in this file, so the caret,
    * the inline panel and the modal cannot disagree about whether a lot has a matrix. */
@@ -407,7 +441,7 @@ export const ArchLotTable = ({
           label: 'SO #',
           mono: true,
           color: () => ARCH_BUCKET_META.outbound.color,
-          render: (l) => (claims(l).length ? joinValues(claims(l).map((o) => o.soNumber)).text : NO_VALUE),
+          render: (l) => (claims(l).length ? <SoLinks orders={claims(l)} accountId={accountId} /> : NO_VALUE),
           title: (l) =>
             claims(l).length > 1 ? `${l.lotNo} is on ${claims(l).length} orders: ${joinValues(claims(l).map((o) => o.soNumber)).title}` : undefined,
         },
@@ -500,7 +534,7 @@ export const ArchLotTable = ({
           mono: true,
           color: () => ARCH_BUCKET_META[bucket].color,
           render: (l) =>
-            claims(l).length ? joined(l, (o) => o.soNumber).text : fallback(l, (f) => f.soNumber),
+            claims(l).length ? <SoLinks orders={claims(l)} accountId={accountId} /> : fallback(l, (f) => f.soNumber),
           title: (l) =>
             claims(l).length > 1
               ? `${l.lotNo} is held by ${claims(l).length} sales orders: ${joined(l, (o) => o.soNumber).title}`
@@ -578,7 +612,7 @@ export const ArchLotTable = ({
      * one routing change puts a fabricated arrival date back on live wood, and
      * the tab was empty for so long that nobody would notice. */
     return [];
-  }, [bucket]);
+  }, [bucket, accountId]);
 
   const reservedTotal = isOnHand ? row.lots.reduce((s, l) => s + Math.round(l.reserve || 0), 0) : 0;
   /**
@@ -651,7 +685,8 @@ export const ArchLotTable = ({
    * adds two more (Res. and the second Avail. column), and `leadColumns` is
    * whatever the bucket contributes in between.
    */
-  const tallyColSpan = 10 + leadColumns.length + (isOnHand ? 2 : 0);
+  // +1 for the PO column on Available / On hand (Feedback 17 item 9).
+  const tallyColSpan = 10 + leadColumns.length + (isOnHand ? 2 : 0) + (isSellableView ? 1 : 0);
 
   return (
     <div style={{ padding: '14px 18px 22px' }}>
@@ -948,6 +983,9 @@ export const ArchLotTable = ({
                       style={{ width: 13, height: 13, accentColor: ARCH_SURFACE.navy, margin: 0, cursor: 'pointer' }}
                     />
                   </th>
+                  {/* Feedback 17 item 9 (MA): « Ajouter 1ère colonne le numéro du PO
+                      (et un link vers la commande dans NS) ». */}
+                  {isSellableView && <th style={headerCellStyle}>PO</th>}
                   <th style={headerCellStyle}>Lot #</th>
                   {/* Feedback 9 item 2 let this cell hold a Lot Vessel as well as
                       an ISO container code, so the header stops promising a
@@ -1108,6 +1146,28 @@ export const ArchLotTable = ({
                             </div>
                           )}
                         </td>
+                        {isSellableView && (
+                          <td style={{ ...cellStyle, fontWeight: 600, color: ARCH_SURFACE.navyMid }} className="font-mono">
+                            {/* The NetSuite PO it was received on, linked; else the
+                                PO in the lot number (MA's nomenclature), as text,
+                                because no NetSuite PO exists to open. */}
+                            {lot.receiptPoId && lot.receiptPoNumber && purchaseOrderUrl(lot.receiptPoId, accountId) ? (
+                              <a
+                                href={purchaseOrderUrl(lot.receiptPoId, accountId)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{ color: 'inherit', textDecoration: 'underline' }}
+                                title={'Open ' + lot.receiptPoNumber + ' in NetSuite'}
+                              >
+                                {lot.receiptPoNumber}
+                              </a>
+                            ) : (
+                              <span title={lot.po ? 'From the lot number: no NetSuite PO was received for this bundle' : undefined}>
+                                {lot.po || '—'}
+                              </span>
+                            )}
+                          </td>
+                        )}
                         <td style={{ ...cellStyle, fontWeight: 700, color: ARCH_SURFACE.navyMid }} className="font-mono">
                           {lot.lotNo}
                         </td>

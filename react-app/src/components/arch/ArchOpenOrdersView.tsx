@@ -67,6 +67,13 @@ import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archO
 /* ── Derived figures ────────────────────────────────────────────────────────*/
 
 /**
+ * The quantity ON THE ORDER. Review 2026-09-23 (H1): since Feedback 16 a split
+ * line's `preSplitQty` is the bundle it is cut from (473 on SO-ARC-26 line 1, of
+ * which 100 is ordered), and this tab summed 935 BF for an order of 562.
+ */
+const onOrder = (l: ArchCartLine): number => l.orderedQty ?? l.preSplitQty;
+
+/**
  * Revenue: NetSuite's own amount when we have it, derived only when we do not.
  *
  * 🔴 This used to always compute `preSplitQty * pricePerBF`, rebuilding a figure
@@ -79,11 +86,11 @@ import type { ArchCartLine, ArchOpenOrder, ArchOrderStatus } from '@/types/archO
  * and genuinely has no amount — that is the case the fallback is for.
  */
 const lineRevenue = (l: ArchCartLine) =>
-  l.amount !== undefined ? l.amount : l.preSplitQty * (l.pricePerBF ?? 0);
+  l.amount !== undefined ? l.amount : onOrder(l) * (l.pricePerBF ?? 0);
 // `?? 0` on cost is arithmetic-only. A line with unknown cost reports as pure
 // profit here, which is why the cost CELL renders an em dash rather than $0.00 —
 // the number must never look measured. See ArchOrderTotals.
-const lineProfit = (l: ArchCartLine) => lineRevenue(l) - l.preSplitQty * (l.costPerBF ?? 0);
+const lineProfit = (l: ArchCartLine) => lineRevenue(l) - onOrder(l) * (l.costPerBF ?? 0);
 const lineMargin = (l: ArchCartLine) => {
   const r = lineRevenue(l);
   return r > 0 ? lineProfit(l) / r : 0;
@@ -106,7 +113,7 @@ const allCostsKnown = (rows: ArchCartLine[]) => rows.every(costKnown);
 const UNKNOWN = '—';
 
 /** Quantities of an order grouped by unit — an order may mix Lumber and Veneer. */
-const orderQtys = (o: ArchOpenOrder) => o.lines.map((l) => ({ unit: l.unit, qty: l.preSplitQty }));
+const orderQtys = (o: ArchOpenOrder) => o.lines.map((l) => ({ unit: l.unit, qty: onOrder(l) }));
 const orderRevenue = (o: ArchOpenOrder) => o.lines.reduce((s, l) => s + lineRevenue(l), 0);
 const orderProfit = (o: ArchOpenOrder) => o.lines.reduce((s, l) => s + lineProfit(l), 0);
 const orderMargin = (o: ArchOpenOrder) => {
@@ -149,6 +156,8 @@ const profitColor = (margin: number) =>
 const STATUS_STYLE: Record<ArchOrderStatus, { bg: string; fg: string }> = {
   Reserved: { bg: '#FEF3C7', fg: '#A16207' },
   'Ready to Build': { bg: '#CCFBF1', fg: '#0F766E' },
+  // Feedback 17 item 13. Green: the order is complete and waiting for the truck.
+  'Ready to Ship': { bg: '#DCFCE7', fg: '#15803D' },
   'In Transit': { bg: '#F3E8FF', fg: '#7E22CE' },
 };
 
@@ -928,7 +937,9 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
             <colgroup>
               <col style={{ width: 34 }} />
               <col style={{ width: 158 }} />
-              <col style={{ width: 118 }} />
+              {/* Status: wide enough for the pill AND the Build tick on ONE line
+                  (Feedback 17 item 13: « à côté sur la même ligne »). */}
+              <col style={{ width: 196 }} />
               <col style={{ width: 206 }} />
               <col style={{ width: 132 }} />
               <col style={{ width: 132 }} />
@@ -1046,7 +1057,10 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
                        * le Edit, mais qui le mentionne au trader ». Only a fixture order
                        * (no internalId, so no write target) is genuinely uneditable. */
                       const editable = !!o.internalId;
-                      const buildWarning = o.status === 'Ready to Build';
+                      /* The FLAG, not the pill: since Feedback 17 a ready-to-build order
+                       * that is also ready to ship reads 'Ready to Ship', and the warning
+                       * is about the build flag. A shipped order still gets none. */
+                      const buildWarning = o.status !== 'In Transit' && (o.readyToBuild ?? o.status === 'Ready to Build');
                       /* Something has already left the building, so Ready to Build
                        * can no longer change anything. 'In Transit' is exactly the
                        * D/E/F case: `archStatusFor` maps those three and only those
@@ -1197,7 +1211,7 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
                                 </button>
                               )}
                             </td>
-                            <td style={td}>
+                            <td style={{ ...td, whiteSpace: 'nowrap' }}>
                               <StatusPill status={o.status} />
                               {/*
                                 The manual tick behind `readyToBuild`. Only on a
@@ -1403,7 +1417,7 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
                                   ${(l.pricePerBF ?? 0).toFixed(2)}/{unitLabel(l.unit)}
                                 </td>
                                 <td style={{ ...num, padding: '6px 12px' }} className="font-mono">
-                                  {formatQty(l.preSplitQty, l.unit)}
+                                  {formatQty(onOrder(l), l.unit)}
                                 </td>
                                 <td style={{ ...num, padding: '6px 12px' }} />
                                 <td style={{ ...num, padding: '6px 12px' }} className="font-mono">

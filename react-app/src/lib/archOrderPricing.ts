@@ -8,6 +8,12 @@
  * Review steps. Do not quote a customer from these numbers, and do not let them
  * harden into fact because they have been in the codebase a while.
  *
+ * 🔴 SUPERSEDED 2026-09-23, Feedback 17 (MA): « Retirer la section en jaune...
+ * Le profit devrait être simplement : Price - lot cost - reman charges - split ».
+ * Operations & insurance is no longer in the trader's profit at all (it is in
+ * MGSL's profitability report), so `opsInsuranceCost` is 0 and the notice this
+ * paragraph points at is gone. The history below is kept for whoever reopens it.
+ *
  * ⚠️ Operations & insurance is a REAL rate that this screen nonetheless gets
  * wrong twice, and the earlier version of this note claimed the opposite. It
  * said NetSuite "has been carrying the real rate all along on the SO header",
@@ -226,10 +232,30 @@ export interface ArchLineEconomics {
    * Canadian or because no rate was available. See `lineEconomics`.
    */
   costFx: number;
+  /**
+   * Feedback 17 (MA, 2026-09-23): the line's cost per unit IN THE ORDER'S
+   * CURRENCY, as the Pricing step shows it. On a USD order it is the lot's own
+   * USD cost at its receipt-date rate, the figure the main screen shows, when
+   * the cache has one; otherwise CAD times `costFx`.
+   */
+  unitCost: number;
   splitCost: number;
   planingCost: number;
   cuttingCost: number;
   processingCost: number;
+  /**
+   * Feedback 17 item 8c: planing plus cutting in CAD, UNCONVERTED. « Service cost
+   * est toujours en CAD (notre coût interne), et ce, peu importe la devise du
+   * SO. » What the Remanufacturing step displays; the profit still subtracts the
+   * converted `planingCost + cuttingCost`.
+   */
+  servicesCad: number;
+  /**
+   * Always 0 since Feedback 17 (MA, 2026-09-23): « Le profit devrait être
+   * simplement : Price - lot cost - reman charges - split ». Kept so totals and
+   * older callers read a number; operations & insurance belongs to the
+   * profitability report, not to this screen.
+   */
   opsInsuranceCost: number;
   profit: number;
   marginPct: number;
@@ -295,7 +321,14 @@ export const lineEconomics = (
    * for that service alone. Losing the charge entirely would understate the cost,
    * which is the failure this screen is repeatedly corrected for.
    */
-  rates?: { planing?: number | null; cut?: number | null }
+  rates?: { planing?: number | null; cut?: number | null },
+  /**
+   * Feedback 17 item 8b: the order's currency. On 'USD' a line that carries
+   * `costPerBFUsd` (the lot's receipt-date-rate USD cost, the figure the main
+   * screen shows) is costed at THAT, « au même taux que l'on a sur le Trader
+   * screen à l'écran principal », instead of CAD times the order-date rate.
+   */
+  orderCurrency?: string
 ): ArchLineEconomics => {
   const fx = Number.isFinite(costFx) && costFx > 0 ? costFx : 1;
   const rate = (given: number | null | undefined, fallback: number): number =>
@@ -314,7 +347,11 @@ export const lineEconomics = (
    * print a figure when it is false. Same split the Open SO tab uses.
    */
   const costKnown = line.costPerBF !== null && line.costPerBF !== undefined;
-  const lotCost = bf * (line.costPerBF || 0) * fx;
+  const usdLot = Number(line.costPerBFUsd);
+  const useLotUsd =
+    String(orderCurrency || '').toUpperCase() === 'USD' && Number.isFinite(usdLot) && usdLot > 0;
+  const unitCost = useLotUsd ? usdLot : (line.costPerBF || 0) * fx;
+  const lotCost = bf * unitCost;
 
   const splitCost = (split?.on ? splitFee() : 0) * fx;
   /*
@@ -334,36 +371,21 @@ export const lineEconomics = (
    * The split fee is untouched -- it is a flat charge per split, not per unit.
    */
   const remanChargeable = line.unit === 'BF';
+  const servicesCad =
+    (reman?.planing && remanChargeable ? bf * planingRate : 0) +
+    (reman?.cutting && remanChargeable ? bf * cuttingRate : 0);
   const planingCost = (reman?.planing && remanChargeable ? bf * planingRate : 0) * fx;
   const cuttingCost = (reman?.cutting && remanChargeable ? bf * cuttingRate : 0) * fx;
   const processingCost = splitCost + planingCost + cuttingCost;
-  /* Charged on MATERIAL COST, not revenue. The prototype is explicit about this
-   * (`opIns = l.mbf * l.avgPriceMBF * OPINS_RATE` -- quantity x lot cost), and the
-   * rationale is real: costing it on revenue makes the charge rise with the price
-   * the trader types, so raising the price makes the margin look worse.
-   *
-   * ⚠️ BUT PRODUCTION DOES THE OPPOSITE, and this comment used to read as
-   * though the question were settled. MCGI_SUE_SalesPurchaseDiscount posts
-   * (subtotal * rate) / 100 off the invoice, i.e. REVENUE, and the GL agrees to
-   * the cent on five sampled prod documents (see the header for the figures).
-   * Across the four ARCH item lines this endpoint has written (sbx 126449,
-   * 126450, 126654), revenue runs 1.607x to 2.135x each line's OWN lot cost:
-   * PUR44KD at 6.94225 against 4.32, and ZEB84KD at 25.80844, 26.840775 and
-   * 26.15255 against 14.15, 14.15 and 12.25 CAD/BF. So the real charge is 61% to
-   * 113% larger than this line computes, and the error is optimistic at every
-   * data point. An earlier draft quoted the 61% floor as the measurement.
-   *
-   * Those four prices were typed in testing, not traded, so read the range as
-   * the spread seen so far and not as a measurement of ARCH pricing.
-   *
-   * Deliberately NOT changed here. Which basis is right is MGSL's call, not
-   * ours: the prototype's reasoning is sound and the GL's behaviour is a fact,
-   * and they disagree. Until it is settled the screen states the divergence in
-   * its own copy rather than quietly picking a side. Do not "fix" this line
-   * without that answer. */
-  const opsInsuranceCost = lotCost * opsInsuranceRate();
+  /* 🔴 NO OPERATIONS & INSURANCE HERE since Feedback 17 (MA, 2026-09-23):
+   * « Le profit devrait être simplement le calcul suivant : Price - lot cost -
+   * reman charges (si applicable) - split (si applicable) ». The 0.30% charge was
+   * computed on lot cost while NetSuite computes it on revenue, and the screen
+   * spent a warning box explaining the difference; « les coûts additionnels
+   * seront présentés dans leur profitability report ». */
+  const opsInsuranceCost = 0;
 
-  const profit = revenue - lotCost - processingCost - opsInsuranceCost;
+  const profit = revenue - lotCost - processingCost;
 
   return {
     orderedQty: bf,
@@ -371,10 +393,12 @@ export const lineEconomics = (
     lotCost,
     costKnown,
     costFx: fx,
+    unitCost,
     splitCost,
     planingCost,
     cuttingCost,
     processingCost,
+    servicesCad,
     opsInsuranceCost,
     profit,
     // Margin on revenue. Zero revenue means no margin rather than a division blow-up.

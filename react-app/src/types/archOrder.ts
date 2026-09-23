@@ -37,6 +37,13 @@ export interface ArchCartLine {
    */
   existingSplit?: ArchSplitIntent;
   existingReman?: ArchRemanIntent;
+  /**
+   * An existing line's quantity ON THE ORDER, in its unit. Review 2026-09-23 (H1):
+   * since Feedback 16 `preSplitQty` is the BUNDLE size on a split line (473 on
+   * SO-ARC-26 line 1, of which 100 is ordered), so anything that means "on the
+   * order" reads this instead. Absent on new cart lines, where the two agree.
+   */
+  orderedQty?: number;
   internalId: string;
   itemCode: string;
   description: string;
@@ -92,6 +99,14 @@ export interface ArchCartLine {
    * with unknown cost reads as pure margin — see the note on `ArchOrderTotals`.
    */
   costPerBF: number | null;
+  /**
+   * Feedback 17 item 8b: the SAME bundle's cost in USD at its receipt-date rate,
+   * i.e. the figure the main screen shows, from the same rung `costPerBF` came
+   * from (the lot's own, else the row average). A USD order is costed at this;
+   * absent or null means CAD times the order-date rate, as before. Never set on
+   * a line read back from an existing order.
+   */
+  costPerBFUsd?: number | null;
   /**
    * Set ONLY on a line read back from an existing sales order: that order's own
    * exchange rate, order currency to CAD.
@@ -366,7 +381,9 @@ export interface ArchOrderTotals {
 }
 
 /** Where an order sits in the flow. Drives the pill colour and Edit gating. */
-export type ArchOrderStatus = 'Reserved' | 'Ready to Build' | 'In Transit';
+// 'Ready to Ship' since Feedback 17 item 13: custbody_so_ready_to_ship ticked,
+// ranked above Ready to Build and below a shipped order (server: archStatusFor).
+export type ArchOrderStatus = 'Reserved' | 'Ready to Build' | 'Ready to Ship' | 'In Transit';
 
 /** An open SO the trader can append lines to. */
 export interface ArchOpenOrder {
@@ -400,6 +417,13 @@ export interface ArchOpenOrder {
   shipDateSource?: '' | 'week' | 'date';
   /** A Ship Week or ship date existed but was only a default, so none is shown. */
   shipDateDefaulted?: boolean;
+  /** Feedback 17: the date the order actually HOLDS (Ship Week, else ship date),
+   *  default or not. What Edit restores; the grid keeps using `shipDate`. */
+  shipDateStored?: string;
+  /** Feedback 17: the order's Equipment and customer note, restored by Edit. */
+  equipment?: string;
+  equipmentId?: string;
+  memo?: string;
   salesTeam: string;
   lines: ArchCartLine[];
 }

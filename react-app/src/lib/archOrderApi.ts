@@ -715,7 +715,7 @@ export interface ArchWriteAuth {
   chargeItems: ArchChargeItem[];
 }
 
-export const fetchWriteAuth = async (): Promise<ArchWriteAuth> => {
+const loadWriteAuth = async (): Promise<ArchWriteAuth> => {
   const unknown: ArchWriteAuth = {
     status: 'unknown', allowed: true, role: null, permittedRoles: [], chargeItems: [],
   };
@@ -745,6 +745,35 @@ export const fetchWriteAuth = async (): Promise<ArchWriteAuth> => {
   } catch {
     return unknown;
   }
+};
+
+/**
+ * The endpoint's health answer, MEMOISED (Feedback 17, MA 2026-09-23): « L'ajout
+ * de Freight & other charge prend 4-5 sec à load quand on ouvre la section item ».
+ * The charge picker waits for `chargeItems`, which come from this health GET, and
+ * the wizard remounts on every open, so every open paid the slow Suitelet round
+ * trip again. One call is shared by every caller (an in-flight one included) for
+ * WRITE_AUTH_TTL_MS; an answer that is not 'ok' is not kept, so a failure is
+ * retried on the next open rather than remembered. ArchScreen prefetches it on
+ * mount, so the first wizard open is usually instant too.
+ */
+export const WRITE_AUTH_TTL_MS = 10 * 60 * 1000;
+let writeAuthCache: { at: number; promise: Promise<ArchWriteAuth> } | null = null;
+
+export const fetchWriteAuth = (): Promise<ArchWriteAuth> => {
+  const now = Date.now();
+  if (writeAuthCache && now - writeAuthCache.at < WRITE_AUTH_TTL_MS) return writeAuthCache.promise;
+  const entry = { at: now, promise: loadWriteAuth() };
+  writeAuthCache = entry;
+  entry.promise.then((r) => {
+    if (r.status !== 'ok' && writeAuthCache === entry) writeAuthCache = null;
+  });
+  return entry.promise;
+};
+
+/** Test hook: forget the memoised answer. */
+export const resetWriteAuthCache = (): void => {
+  writeAuthCache = null;
 };
 
 /**

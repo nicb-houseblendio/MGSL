@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
+import { formatQty, unitLabel, uomLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import {
   useArchCustomers,
@@ -25,15 +25,11 @@ import {
   type ArchWriteAuth,
 } from '@/lib/archOrderApi';
 import {
-  SPLIT_FEE_PLACEHOLDER,
   splitFee,
   splitFeeEnabled,
   PLANING_RATE,
   CUT_RATE,
   COST_CURRENCY,
-  LOW_PRICE_TRIGGER,
-  isLowPricedAt,
-  opsInsuranceRate,
   lineEconomics,
   sumEconomics,
   orderedBF,
@@ -66,7 +62,6 @@ import {
 import { fetchArchSalesTeams } from '@/lib/archSalesTeamsApi';
 import {
   splitFeeState,
-  splitFeeMarginSentence,
   splitFeeBadge,
   splitFeeFormulaAmount,
 } from '@/lib/archSplitFeeCopy';
@@ -129,7 +124,44 @@ const STEPS: { key: StepKey; label: string }[] = [
 // 9' added 2026-09-22 (Feedback 15): « on ajoute le 9 pieds », confirmed kept in code.
 const CUT_LENGTHS = ["6'", "7'", "8'", "9'", "10'", "12'", "14'", "16'"];
 
+/**
+ * What the wizard remembers across a close, Feedback 17 item 8d (MA, 2026-09-23):
+ * « Si je quitte le SO creation avant d'avoir complété (je retourne au TS, les
+ * items restent, mais l'info entrée sur le customer & terms disparaît). » The cart
+ * already lived in ArchScreen; this is everything else the trader typed. Held in
+ * memory only, by ArchScreen, and dropped on a successful order, on Clear, and
+ * whenever the wizard is opened by Edit.
+ */
+export interface ArchWizardDraft {
+  stepIndex: number;
+  charges: ArchChargeLine[];
+  millingCharge: Record<string, string>;
+  mode: ArchOrderMode;
+  existingSO: string;
+  customer: string;
+  customerId: string;
+  shipAddressId: string;
+  repTeam: ArchRepTeamState;
+  salesTeamId: string;
+  customerPO: string;
+  customerNote: string;
+  shipTo: string;
+  currency: string;
+  shipDate: string;
+  preloadedShipDate: string;
+  incoterms: string;
+  incotermsId: string;
+  equipment: string;
+  equipmentId: string;
+  split: Record<string, ArchSplitIntent>;
+  reman: Record<string, ArchRemanIntent>;
+  price: Record<string, string>;
+}
+
 interface SOWizardProps {
+  /** Feedback 17 item 8d: the state to start from, and where to report it. */
+  initialDraft?: ArchWizardDraft | null;
+  onDraftChange?: (draft: ArchWizardDraft) => void;
   open: boolean;
   cart: ArchCartLine[];
   onClose: () => void;
@@ -633,8 +665,13 @@ export const SOWizard = ({
   onAddMoreItems,
   initialExistingSO,
   ordersState,
+  initialDraft,
+  onDraftChange,
 }: SOWizardProps) => {
-  const [stepIndex, setStepIndex] = React.useState(0);
+  // Feedback 17 item 8d: every field below starts from the remembered draft when
+  // there is one. Read once, at mount; the wizard remounts on every open.
+  const d0 = initialDraft || null;
+  const [stepIndex, setStepIndex] = React.useState(d0 ? d0.stepIndex : 0);
   /*
    * Feedback 9 item 10: non-inventory charge lines, added from the Items step.
    *
@@ -643,7 +680,7 @@ export const SOWizard = ({
    * it, and a second line would silently double it. The affordance is hidden in
    * 'existing' mode so a trader is never offered something that will be refused.
    */
-  const [charges, setCharges] = React.useState<ArchChargeLine[]>([]);
+  const [charges, setCharges] = React.useState<ArchChargeLine[]>(d0 ? d0.charges : []);
   /*
    * Customer-facing MILLING charge, per line, keyed by line key.
    *
@@ -668,22 +705,22 @@ export const SOWizard = ({
    * thing type-broke six call sites that had nothing to do with it. Two
    * different meanings of the same word: the rate MGSL pays, and the amount the
    * customer is charged. */
-  const [millingCharge, setMillingCharge] = React.useState<Record<string, string>>({});
+  const [millingCharge, setMillingCharge] = React.useState<Record<string, string>>(d0 ? d0.millingCharge : {});
   /** Hover on the step rail. Inline styles carry no :hover, and without a hover
    *  state the tabs gave no sign they could be clicked. */
   const [hoverStep, setHoverStep] = React.useState<number | null>(null);
-  const [mode, setMode] = React.useState<ArchOrderMode>('new');
-  const [existingSO, setExistingSO] = React.useState('');
+  const [mode, setMode] = React.useState<ArchOrderMode>(d0 ? d0.mode : 'new');
+  const [existingSO, setExistingSO] = React.useState(d0 ? d0.existingSO : '');
   const [soSearch, setSoSearch] = React.useState('');
 
-  const [customer, setCustomer] = React.useState('');
+  const [customer, setCustomer] = React.useState(d0 ? d0.customer : '');
   /**
    * The customer's NetSuite internal id, and the thing that makes an order
    * submittable. Empty while the picker is on fixture names, which is why a demo
    * customer cannot reach NetSuite and be refused confusingly — it simply cannot
    * be submitted.
    */
-  const [customerId, setCustomerId] = React.useState('');
+  const [customerId, setCustomerId] = React.useState(d0 ? d0.customerId : '');
 
   /**
    * Live customers, fetched when the wizard opens rather than on screen mount:
@@ -738,7 +775,7 @@ export const SOWizard = ({
    * rest of the wizard renders.
    */
   const [liveAddresses, setLiveAddresses] = React.useState<ArchCustomerAddress[]>([]);
-  const [shipAddressId, setShipAddressId] = React.useState('');
+  const [shipAddressId, setShipAddressId] = React.useState(d0 ? d0.shipAddressId : '');
 
   /**
    * Real sales reps, and the id is what the write path needs. Loaded once with
@@ -756,7 +793,7 @@ export const SOWizard = ({
    * picking a rep overwrote the team name, the lookup missed, and the panel
    * vanished. See archSalesTeamSplit for the model and the tests.
    */
-  const [repTeam, setRepTeam] = React.useState<ArchRepTeamState>(emptyRepTeam);
+  const [repTeam, setRepTeam] = React.useState<ArchRepTeamState>(d0 ? d0.repTeam : emptyRepTeam);
   /** The OWNER's employee id. This, and only this, reaches the write path. */
   const salesRepId = repTeam.salesRepId;
   const [repsLoaded, setRepsLoaded] = React.useState(false);
@@ -785,7 +822,7 @@ export const SOWizard = ({
     teams: [],
     notice: null,
   });
-  const [salesTeamId, setSalesTeamId] = React.useState('');
+  const [salesTeamId, setSalesTeamId] = React.useState(d0 ? d0.salesTeamId : '');
   React.useEffect(() => {
     fetchArchSalesTeams().then(setTeamsResult);
   }, []);
@@ -827,16 +864,23 @@ export const SOWizard = ({
     () => liveTeams.map((t) => ({ id: t.id, label: teamOptionLabel(t) })),
     [liveTeams]
   );
-  const [customerPO, setCustomerPO] = React.useState('');
+  const [customerPO, setCustomerPO] = React.useState(d0 ? d0.customerPO : '');
   /** Feedback 6 item 7b. Written to the order's native `memo`. */
-  const [customerNote, setCustomerNote] = React.useState('');
-  const [shipTo, setShipTo] = React.useState('');
-  const [currency, setCurrency] = React.useState('');
-  const [shipDate, setShipDate] = React.useState('');
+  const [customerNote, setCustomerNote] = React.useState(d0 ? d0.customerNote : '');
+  const [shipTo, setShipTo] = React.useState(d0 ? d0.shipTo : '');
+  const [currency, setCurrency] = React.useState(d0 ? d0.currency : '');
+  // A draft kept across a close never restores a PAST ship date: it would price
+  // FX on a stale day, the rule Edit applies too (review 2026-09-23, L3).
+  const [shipDate, setShipDate] = React.useState(() => {
+    const d = d0 ? d0.shipDate : '';
+    const now = new Date();
+    const today = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    return d && d >= today ? d : '';
+  });
   /* What an APPEND preloaded, so an untouched date is not written back
    * (Feedback 13 final review): the endpoint writes a sent date into Ship Week
    * AND shipdate, which would turn the order's Monday WEEK into an exact day. */
-  const [preloadedShipDate, setPreloadedShipDate] = React.useState('');
+  const [preloadedShipDate, setPreloadedShipDate] = React.useState(d0 ? d0.preloadedShipDate : '');
   /*
    * Incoterms: the display text AND the list id, because only the id is safe to
    * write.
@@ -856,12 +900,12 @@ export const SOWizard = ({
    * existing orders: it is a valid option that no order in the account has ever
    * used, so a data-derived list would still have been missing one.
    */
-  const [incoterms, setIncoterms] = React.useState('');
-  const [incotermsId, setIncotermsId] = React.useState('');
+  const [incoterms, setIncoterms] = React.useState(d0 ? d0.incoterms : '');
+  const [incotermsId, setIncotermsId] = React.useState(d0 ? d0.incotermsId : '');
   const [incotermsOpts, setIncotermsOpts] = React.useState<ArchIncotermsResult | null>(null);
   /* Feedback 10 item 1. Optional field, so a failed read must not block the step. */
-  const [equipment, setEquipment] = React.useState('');
-  const [equipmentId, setEquipmentId] = React.useState('');
+  const [equipment, setEquipment] = React.useState(d0 ? d0.equipment : '');
+  const [equipmentId, setEquipmentId] = React.useState(d0 ? d0.equipmentId : '');
   const [equipmentOpts, setEquipmentOpts] = React.useState<ArchEquipmentResult | null>(null);
   React.useEffect(() => {
     let live = true;
@@ -870,9 +914,9 @@ export const SOWizard = ({
     return () => { live = false; };
   }, []);
 
-  const [split, setSplit] = React.useState<Record<string, ArchSplitIntent>>({});
-  const [reman, setReman] = React.useState<Record<string, ArchRemanIntent>>({});
-  const [price, setPrice] = React.useState<Record<string, string>>({});
+  const [split, setSplit] = React.useState<Record<string, ArchSplitIntent>>(d0 ? d0.split : {});
+  const [reman, setReman] = React.useState<Record<string, ArchRemanIntent>>(d0 ? d0.reman : {});
+  const [price, setPrice] = React.useState<Record<string, string>>(d0 ? d0.price : {});
 
   /**
    * "Apply to all" settings for the Remanufacturing step. Held separately from
@@ -1169,9 +1213,8 @@ export const SOWizard = ({
   /** What the screen is actually charging, record first, constant second. */
   const planingRate = liveRates.planing ?? PLANING_RATE;
   const cuttingRate = liveRates.cut ?? CUT_RATE;
-  const splitQuoted = (milling && milling.status === 'ok' && milling.split !== null)
-    ? milling.split
-    : SPLIT_FEE_PLACEHOLDER;
+  // (The quoted split figure fed only the operations & insurance box, removed by
+  // Feedback 17; the margin still uses `splitFee()` behind its switch.)
   /**
    * 🔴 BOTH, not either. The legend under the reman table says where the rates
    * came from, and with an `||` it claimed the record while quietly printing a
@@ -1402,21 +1445,20 @@ export const SOWizard = ({
     return hit.currencyCode ? [hit.currencyCode] : [];
   }, [mode, currency, customer, customersAreLive, liveCustomer]);
 
-  /** Priced, but under the trigger. Warns only — pricing is never blocked on it. */
-  /**
-   * The low-price floor. The rule and the currency trap behind it live in
-   * `archOrderPricing.isLowPricedAt`, which is tested against the boundary; this
-   * only supplies the typed price and the rate the margins are already using.
-   */
-  const isLowPriced = (l: ArchCartLine) =>
-    isLowPricedAt(parseFloat(pr(l.key)) || 0, l.costPerBF, costFx);
-  const lowPricedLines = lines.filter(isLowPriced);
+  /* 🔴 NO "PRICING CHECK" (cost + 10%) since Feedback 17 (MA, 2026-09-23): « merci
+   * de retirer le pop-up jaune ». It was placeholder logic the client never gave
+   * a rule for. The negative-profit warning on Review stays: that one is a fact,
+   * not a threshold. `archOrderPricing.isLowPricedAt` is kept, tested, for when a
+   * real floor is decided. */
 
   /** Push the bulk settings onto every line, resolving the dressing per lot. */
   const applyBulkReman = () => {
     setReman((prev) => {
       const next = { ...prev };
       lines.forEach((l) => {
+        // Not onto a line already on the order (read-only, Feedback 16), nor onto a
+        // non-BF line: « On ne fait pas de reman pour ces items » (Feedback 17).
+        if (l.existing || l.unit !== 'BF') return;
         const current = next[l.key] || emptyReman();
         const opts = planingOptions(l.thickness || l.description);
         const idx = parseInt(bulkReman.planingLevel, 10);
@@ -1495,7 +1537,25 @@ export const SOWizard = ({
     // and the trader must enter a real one. Preloading it priced FX and milling on
     // a stale date (115194: 2026-02-05, FX 1.3693 vs 1.4030 today) and printed
     // that date as the ship date. Same rule as shipWeekCell (round-2 review).
-    const preShip = o.shipDate && o.shipDate !== o.created ? o.shipDate : '';
+    /* Feedback 17 item 4 (MA, 2026-09-23): « Ship date et equipment ne semble pas
+     * suivre ». The rule above stays for a STALE default; what it also dropped was
+     * a date the trader typed as today (it equals the order date on a same-day
+     * order). So the date the order holds is restored when it is today or later:
+     * a past one would still price FX on a stale day, a future one is a plan. */
+    const todayIso = (() => {
+      const d = new Date();
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    })();
+    const stored = o.shipDateStored || '';
+    const preShip = o.shipDate && o.shipDate !== o.created
+      ? o.shipDate
+      : (stored && stored >= todayIso ? stored : '');
+    // Equipment and the customer note, which Edit never restored before.
+    if (o.equipmentId !== undefined) {
+      setEquipment(o.equipment || '');
+      setEquipmentId(o.equipmentId || '');
+    }
+    if (o.memo !== undefined) setCustomerNote(o.memo || '');
     setShipDate(preShip);
     setPreloadedShipDate(preShip);
     // Carry the agreed price across so Pricing is already satisfied for lines
@@ -1632,6 +1692,14 @@ export const SOWizard = ({
     });
   };
 
+  /* Feedback 17 item 8d: a restored customer needs its ship-to list again (it is
+   * fetched, not remembered). The restored ship-to label is preferred, so the
+   * trader's choice comes back selected. Once, at mount. */
+  React.useEffect(() => {
+    if (d0 && d0.customerId) loadAddressesFor(d0.customerId, d0.shipTo || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /** Fixture path: no id, so the order cannot be submitted. */
   const pickCustomerByName = (c: string) => {
     setCustomerId('');
@@ -1651,13 +1719,17 @@ export const SOWizard = ({
   /* ── Economics ────────────────────────────────────────────────────────────*/
 
   const economics = React.useMemo(
-    () => lines.map((l) => lineEconomics(l, sp(l.key), rm(l.key), parseFloat(pr(l.key)) || 0, costFx, liveRates)),
+    // Feedback 17 item 8b: the order currency is passed only while costs ARE being
+    // converted, so a missing rate leaves every line consistently in CAD rather
+    // than mixing receipt-date USD lines with unconverted CAD ones.
+    () => lines.map((l) => lineEconomics(l, sp(l.key), rm(l.key), parseFloat(pr(l.key)) || 0, costFx, liveRates,
+      costFx !== 1 ? orderCurrency : undefined)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // 🔴 `liveRates` IS A DEPENDENCY. Without it, changing the ship date refetched
     // the milling rates, the legend printed the new ones, and the money kept the
     // old: the screen stated a rate it had not used. `liveRates` is itself a memo,
     // so its identity is stable between real changes.
-    [lines, split, reman, price, costFx, liveRates]
+    [lines, split, reman, price, costFx, liveRates, orderCurrency]
   );
   const totals = React.useMemo(() => sumEconomics(economics), [economics]);
 
@@ -1817,6 +1889,7 @@ export const SOWizard = ({
     return v > 0 && v <= l.preSplitQty + 1e-9;
   });
   const remanOk = writableLines.every((l) => {
+    if (l.unit !== 'BF') return true;   // never sent, see the draft
     const r = rm(l.key);
     const planingDone =
       !r.planing || (!!r.planingSpec && (r.planingSpec !== 'other' || !!r.planingOther.trim()));
@@ -1929,7 +2002,8 @@ export const SOWizard = ({
     totals: sumEconomics(
       // Same rate as the screen, or the confirmation would quote a different
       // profit from the one the trader just approved.
-      writableLines.map((l) => lineEconomics(l, sp(l.key), rm(l.key), parseFloat(pr(l.key)) || 0, costFx, liveRates))
+      writableLines.map((l) => lineEconomics(l, sp(l.key), rm(l.key), parseFloat(pr(l.key)) || 0, costFx, liveRates,
+        costFx !== 1 ? orderCurrency : undefined))
     ),
     /* Feedback 9 item 10. Create only, and belt-and-braces: the endpoint refuses
      * charges on an append, and this makes sure the request never carries any.
@@ -1957,7 +2031,8 @@ export const SOWizard = ({
       costPerBF: l.costPerBF,
       pricePerBF: parseFloat(pr(l.key)) || 0,
       isSplit: sp(l.key).on && l.bucket !== 'inTransit',
-      reman: rm(l.key),
+      // Feedback 17: no reman on a non-BF line, whatever state says.
+      reman: l.unit === 'BF' ? rm(l.key) : emptyReman(),
     })),
   });
 
@@ -2183,7 +2258,8 @@ export const SOWizard = ({
                    * So the trader is told and decides. Blocking was us implementing
                    * the call and ignoring the written answer that replaced it.
                    */
-                  const readyToBuild = o.status === 'Ready to Build';
+                  // The flag, not the pill (Feedback 17: 'Ready to Ship' can sit above it).
+                  const readyToBuild = o.status !== 'In Transit' && (o.readyToBuild ?? o.status === 'Ready to Build');
                   // A demo order has no internal id, so nothing can be written to
                   // it. THAT still disables: it is not a judgement call, the write
                   // would have no target and the refusal would land on the last step.
@@ -2344,10 +2420,14 @@ export const SOWizard = ({
             <tr>
               <th style={th}>Location</th>
               <th style={th}>Item / Lot</th>
-              <th style={{ ...th, textAlign: 'right' }}>Lot BF</th>
+              {/* Feedback 17 item 8a (MA, 2026-09-23): « Renommer la colonne Lot BF à
+                  Quantity » and a UOM column, because decking is in LF and ovals in
+                  units and a "BF" header was wrong for them. */}
+              <th style={{ ...th, textAlign: 'right' }}>Quantity</th>
+              <th style={th}>UOM</th>
               {/* Same rule as the Pricing table: a cost column says which currency
                   it is in, because it is not the one the order is billed in. */}
-              <th style={{ ...th, textAlign: 'right' }}>Cost / BF ({COST_CURRENCY})</th>
+              <th style={{ ...th, textAlign: 'right' }}>Unit cost ({COST_CURRENCY})</th>
               <th style={{ ...th, textAlign: 'center', width: 44 }} />
             </tr>
           </thead>
@@ -2361,6 +2441,7 @@ export const SOWizard = ({
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
                   {formatQty(l.preSplitQty, l.unit)}
                 </td>
+                <td style={{ ...td, fontSize: 11.5, color: ARCH_SURFACE.textMid }}>{uomLabel(l.unit)}</td>
                 <td style={{ ...td, textAlign: 'right' }} className="font-mono">
                   {/*
                     'CAD' explicitly, and NOT `currency`. fmtMoney defaults to USD, so
@@ -3388,9 +3469,10 @@ export const SOWizard = ({
           <tr>
             <th style={th}>Location</th>
             <th style={th}>Item / Lot</th>
-            <th style={{ ...th, textAlign: 'right' }}>Lot BF</th>
+            <th style={{ ...th, textAlign: 'right' }}>Quantity</th>
+            <th style={th}>UOM</th>
             <th style={{ ...th, textAlign: 'center' }}>Split</th>
-            <th style={{ ...th, textAlign: 'right' }}>BF to pick</th>
+            <th style={{ ...th, textAlign: 'right' }}>Quantity to pick</th>
             <th style={th}>Status</th>
           </tr>
         </thead>
@@ -3408,6 +3490,7 @@ export const SOWizard = ({
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
                   {formatQty(l.preSplitQty, l.unit)}
                 </td>
+                <td style={{ ...td, fontSize: 11.5, color: ARCH_SURFACE.textMid }}>{uomLabel(l.unit)}</td>
                 <td style={{ ...td, textAlign: 'center' }}>
                   <input
                     type="checkbox"
@@ -3668,16 +3751,16 @@ export const SOWizard = ({
                 <td style={{ ...td, textAlign: 'center' }}>
                   <input
                     type="checkbox"
-                    checked={r.planing}
-                    disabled={!!l.existing}
-                    title={l.existing ? 'Already on the order: this screen shows it but cannot change a line NetSuite already holds.' : undefined}
+                    checked={r.planing && l.unit === 'BF'}
+                    disabled={!!l.existing || l.unit !== 'BF'}
+                    title={l.existing ? 'Already on the order: this screen shows it but cannot change a line NetSuite already holds.' : l.unit !== 'BF' ? 'No remanufacturing on items in ' + uomLabel(l.unit) + ': reman is quoted and done on board-foot lumber only.' : undefined}
                     onChange={(e2) => setRm(l.key, { planing: e2.target.checked, planingSpec: '', planingOther: '' })}
                     aria-label={`Plane ${l.lotNo}`}
                     style={{ width: 16, height: 16, accentColor: ARCH_SURFACE.green, cursor: 'pointer' }}
                   />
                 </td>
                 <td style={td}>
-                  {r.planing ? (
+                  {r.planing && l.unit === 'BF' ? (
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                       <select
                         value={r.planingSpec}
@@ -3714,16 +3797,16 @@ export const SOWizard = ({
                 <td style={{ ...td, textAlign: 'center' }}>
                   <input
                     type="checkbox"
-                    checked={r.cutting}
-                    disabled={!!l.existing}
-                    title={l.existing ? 'Already on the order: this screen shows it but cannot change a line NetSuite already holds.' : undefined}
+                    checked={r.cutting && l.unit === 'BF'}
+                    disabled={!!l.existing || l.unit !== 'BF'}
+                    title={l.existing ? 'Already on the order: this screen shows it but cannot change a line NetSuite already holds.' : l.unit !== 'BF' ? 'No remanufacturing on items in ' + uomLabel(l.unit) + ': reman is quoted and done on board-foot lumber only.' : undefined}
                     onChange={(e2) => setRm(l.key, { cutting: e2.target.checked, cutLength: '' })}
                     aria-label={`Cut ${l.lotNo}`}
                     style={{ width: 16, height: 16, accentColor: ARCH_SURFACE.green, cursor: 'pointer' }}
                   />
                 </td>
                 <td style={td}>
-                  {r.cutting ? (
+                  {r.cutting && l.unit === 'BF' ? (
                     <select
                       value={r.cutLength}
                       disabled={!!l.existing}
@@ -3752,19 +3835,12 @@ export const SOWizard = ({
                       MGSL confirmed is CA$0.20. Same treatment the lot-cost cells
                       already get: the cost side of this screen is CAD, the
                       revenue side is the order's. */}
-                  {e.planingCost + e.cuttingCost > 0 ? (
-                    fmtMoney(e.planingCost + e.cuttingCost, costShown)
-                  ) : (r.planing || r.cutting) && l.unit !== 'BF' ? (
-                    <span
-                      style={{ color: '#7C2D12', fontSize: 10.5 }}
-                      title={
-                        'The confirmed reman rate is per board foot and this line is in ' +
-                        l.unit +
-                        '. The instructions are recorded, but no fee is estimated.'
-                      }
-                    >
-                      no {l.unit} rate
-                    </span>
+                  {/* Feedback 17 item 8c (MA, 2026-09-23): « Service cost est toujours
+                      en CAD (notre coût interne), et ce, peu importe la devise du
+                      SO. » So the UNCONVERTED CAD figure; the profit on Pricing still
+                      subtracts it converted. */}
+                  {e.servicesCad > 0 ? (
+                    fmtMoney(e.servicesCad, COST_CURRENCY)
                   ) : (
                     <span style={{ color: ARCH_SURFACE.textLight }}>—</span>
                   )}
@@ -3851,94 +3927,20 @@ export const SOWizard = ({
             does not equal board feet times the rate and there was nothing on this
             step to say why. The note lives on Pricing as well; a trader who never
             opens Pricing still sees the arithmetic here. */}
-        {costFx !== 1 && (
-          <>
-            {' '}The <strong>Service cost</strong> column is converted into {orderCurrency} at{' '}
-            {(1 / costFx).toFixed(4)} {COST_CURRENCY} per {orderCurrency}, so it is not board feet
-            times the rate above.
-          </>
-        )} These are <strong>board foot</strong> rates: a line
-        measured in SQFT, LF or UNIT records its instructions but is not costed, because there is no
-        confirmed rate for those units.
+        {/* Feedback 17: the Service cost column is CAD, unconverted, so it IS board
+            feet times the rate above; the "converted" sentence and the board-foot
+            caveat are gone (non-BF lines cannot take reman at all now). */}
       </div>
     </div>
   );
 
   const priceBody = (
     <div>
-      <ProvisionalNote>
-        Profit is computed against the <strong>lot cost</strong>, which is real, and a{' '}
-        {(opsInsuranceRate() * 100).toFixed(2)}% operations &amp; insurance charge. That charge is the
-        one cost here that NetSuite computes <strong>differently</strong>: NetSuite takes the rate
-        from the customer, not from this screen, and applies it to revenue rather than to lot cost.
-        For every ARCH customer today that makes the real charge larger than shown, so this margin
-        is optimistic. {/* A literal with no currency, which is both halves of the
-          item 9b defect on one line: on a US order it read US$0.20 for a Canadian
-          rate, and it kept saying 0.20 after the milling record started supplying
-          the figure, so the legend on the previous step and this sentence could
-          disagree. Reads from the same two variables the money does. */}
-        The reman rates are {fmtMoney(planingRate, COST_CURRENCY)}/BF for planing and{' '}
-        {fmtMoney(cuttingRate, COST_CURRENCY)}/BF for cutting.{' '}
-        {/*
-          🔴 THIS SENTENCE USED TO BE UNCONDITIONAL, and it is a claim about a
-          SCRIPT PARAMETER rather than about this code: it read "it stays switched
-          off ... so a split line currently costs nothing in this margin" whatever
-          `MCGI_CONFIG.splitFeeEnabled` said. The day MGSL tick that box the margin
-          below starts deducting $200 a split while the note over it denies there is
-          a fee — a fee silently in the margin is the one outcome this copy exists
-          to prevent. The amount IS the client's (his checklist: "Presentment
-          200$/split"); the instruction to charge it has been asked twice and never
-          answered, so the switch stays off and the copy follows the switch.
-        */}
-        {/* The QUOTED figure now comes from the milling rate record when it has a
-            usable Split row, item 10c, and falls back to the constant otherwise.
-            What is NOT taken from the record is whether to charge it: that stays
-            on the deployment switch, because the amount and the instruction to
-            apply it are different questions and only the first has been answered. */}
-        {splitFeeMarginSentence(feeState, splitFee(), splitQuoted)}{' '}
-        <strong>Do not quote a customer from these margins.</strong>
-      </ProvisionalNote>
-      {lowPricedLines.length > 0 && (
-        <div
-          style={{
-            marginBottom: 12,
-            padding: '11px 14px',
-            borderRadius: 9,
-            border: '1px solid #FDE68A',
-            background: '#FEF9C3',
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: 10,
-          }}
-        >
-          <span style={{ fontSize: 16, lineHeight: 1 }}>⚠</span>
-          <div style={{ flex: 1, fontSize: 12.5, color: '#713F12', lineHeight: 1.5 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2, flexWrap: 'wrap' }}>
-              <span style={{ fontWeight: 700, fontSize: 13 }}>
-                Pricing check — {lowPricedLines.length} line{lowPricedLines.length !== 1 ? 's' : ''} under
-                trigger
-              </span>
-              <span
-                style={{
-                  padding: '1px 6px',
-                  borderRadius: 4,
-                  fontSize: 9.5,
-                  fontWeight: 800,
-                  background: '#92400E',
-                  color: '#fff',
-                  textTransform: 'uppercase',
-                  letterSpacing: 0.5,
-                }}
-              >
-                placeholder logic — TBD
-              </span>
-            </div>
-            Sell price is below <strong>cost + {((LOW_PRICE_TRIGGER - 1) * 100).toFixed(0)}%</strong> on the
-            highlighted rows. The real trigger conditions (customer floor, deal type, currency) are not
-            decided yet, and this warns only — it does not block.
-          </div>
-        </div>
-      )}
+      {/* 🔴 NO OPERATIONS & INSURANCE BOX AND NO "PRICING CHECK" since Feedback 17
+          (MA, 2026-09-23): « Retirer la section en jaune, je crois que ça crée plus
+          de confusion pour les traders et ce n'est pas dynamique », and « merci de
+          retirer le pop-up jaune ». Profit is now price minus lot cost minus reman
+          minus split; see the legend under the table. */}
       <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
         <thead>
           <tr>
@@ -3948,7 +3950,10 @@ export const SOWizard = ({
                 all three at once. */}
             <th style={th}>Location</th>
             <th style={th}>Item / Lot</th>
-            <th style={{ ...th, textAlign: 'right' }}>BF</th>
+            {/* Feedback 17 item 8b: Quantity, UOM, Unit cost and Price / Unit, as he
+                marked them up (image (21)). */}
+            <th style={{ ...th, textAlign: 'right' }}>Quantity</th>
+            <th style={th}>UOM</th>
             {/* 🔴 THE TWO COLUMNS HE RINGED. Feedback 6 item 10a, `image (1).png`,
                 "ajouter currency" against Cost/BF and Price/BF: "ici c'est difficile
                 de savoir le cost est en quel devise et le prix de vente est en quelle
@@ -3957,8 +3962,8 @@ export const SOWizard = ({
                 1 and is Canadian, the price is what the customer is billed in. Said
                 in the header rather than on every cell, so the table stays readable
                 and the two are visibly different. */}
-            <th style={{ ...th, textAlign: 'right' }}>Cost / BF ({COST_CURRENCY})</th>
-            <th style={{ ...th, textAlign: 'right' }}>Price / BF ({orderCurrency}) *</th>
+            <th style={{ ...th, textAlign: 'right' }}>Unit cost ({costFx !== 1 ? orderCurrency : COST_CURRENCY})</th>
+            <th style={{ ...th, textAlign: 'right' }}>Price / Unit ({orderCurrency}) *</th>
             <th style={{ ...th, textAlign: 'right' }}>Revenue ({orderCurrency})</th>
             <th style={{ ...th, textAlign: 'right' }}>Profit</th>
             <th style={{ ...th, textAlign: 'right' }}>Margin</th>
@@ -3969,7 +3974,7 @@ export const SOWizard = ({
             const e = economics[i];
             const entered = (parseFloat(pr(l.key)) || 0) > 0;
             return (
-              <tr key={l.key} style={isLowPriced(l) ? { background: '#FFFBEB' } : undefined}>
+              <tr key={l.key}>
                 <td style={{ ...td, fontSize: 11.5, color: ARCH_SURFACE.textMid, whiteSpace: 'nowrap' }}>
                   {l.locationName}
                 </td>
@@ -3977,10 +3982,14 @@ export const SOWizard = ({
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
                   {formatQty(e.orderedQty, l.unit)}
                 </td>
+                <td style={{ ...td, fontSize: 11.5, color: ARCH_SURFACE.textMid }}>{uomLabel(l.unit)}</td>
                 <td style={{ ...td, textAlign: 'right', color: ARCH_SURFACE.textMid }} className="font-mono">
                   {/* 'CAD', not `currency` — see the note on the same cell in the
                       split step. Book 1 is CAD; the SO currency is the customer's. */}
-                  {l.costPerBF === null ? '—' : fmtMoney(l.costPerBF, COST_CURRENCY)}
+                  {/* Feedback 17 item 8b: in the ORDER's currency, the same figure the
+                      profit uses. On a USD order that is the bundle's own USD cost at
+                      its receipt-date rate, as on the main screen. */}
+                  {!e.costKnown ? '—' : fmtMoney(e.unitCost, costFx !== 1 ? orderCurrency : COST_CURRENCY)}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }}>
                   <input
@@ -4171,12 +4180,15 @@ export const SOWizard = ({
         >
           How profit is calculated
         </div>
-        Profit = Revenue − Lot cost − Services − Operations &amp; insurance.
+        Profit = Revenue − Lot cost − Services.
         <br />
-        Revenue = BF × price/BF · Lot cost = BF × cost/BF · Services = CA$
+        Revenue = Quantity × price per unit · Lot cost = Quantity × unit cost
+        {orderCurrency === 'USD' && costFx !== 1
+          ? ' (each bundle\u2019s own USD cost at its receipt-date rate, as on the main screen; converted at the rate below where a bundle has none)'
+          : costFx !== 1 ? ' (converted at the rate below)' : ''}{' '}
+        · Services = CA$
         {splitFeeFormulaAmount(feeState, splitFee())} per split lot + CA$
         {planingRate.toFixed(2)}/BF planing + CA${cuttingRate.toFixed(2)}/BF cutting ·
-        Operations &amp; insurance = {(opsInsuranceRate() * 100).toFixed(2)}% of lot cost ·
         Margin % = Profit ÷ Revenue
         {/* 🔴 THE CONVERSION, NAMED. Item 10b: costs are Canadian and revenue is the
             customer's, so the profit above is only meaningful once one side has
@@ -4305,8 +4317,9 @@ export const SOWizard = ({
             <th style={th}>Location</th>
             <th style={th}>Item / Lot</th>
             <th style={th}>Services</th>
-            <th style={{ ...th, textAlign: 'right' }}>BF</th>
-            <th style={{ ...th, textAlign: 'right' }}>Price / BF ({orderCurrency})</th>
+            <th style={{ ...th, textAlign: 'right' }}>Quantity</th>
+            <th style={th}>UOM</th>
+            <th style={{ ...th, textAlign: 'right' }}>Price / Unit ({orderCurrency})</th>
             <th style={{ ...th, textAlign: 'right' }}>Revenue ({orderCurrency})</th>
             <th style={{ ...th, textAlign: 'right' }}>Profit</th>
           </tr>
@@ -4354,6 +4367,7 @@ export const SOWizard = ({
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
                   {formatQty(e.orderedQty, l.unit)}
                 </td>
+                <td style={{ ...td, fontSize: 11.5, color: ARCH_SURFACE.textMid }}>{uomLabel(l.unit)}</td>
                 <td style={{ ...td, textAlign: 'right' }} className="font-mono">
                   {/* The PRICE, so the order's currency, not the cost book's. */}
                   {fmtMoney(parseFloat(pr(l.key)) || 0, orderCurrency)}
@@ -4500,7 +4514,8 @@ export const SOWizard = ({
              profit therefore still subtracts CAD costs from revenue that may be
              in USD. That is his item 10b and is NOT fixed by relabelling. */
           ['Lot cost', fmtMoney(totals.lotCost, costShown, 0), 'rgba(255,255,255,0.75)'],
-          ['Services + ops', fmtMoney(totals.processingCost + totals.opsInsuranceCost, costShown, 0), 'rgba(255,255,255,0.75)'],
+          // Feedback 17: no operations & insurance on this screen any more.
+          ['Services', fmtMoney(totals.processingCost, costShown, 0), 'rgba(255,255,255,0.75)'],
           // Unknown reads as a dash in the neutral colour. A green "Estimated
           // profit" on the final review screen, computed without a lot cost, is
           // the last thing a trader sees before submitting.
@@ -4624,7 +4639,7 @@ export const SOWizard = ({
         would announce that a line loses money when we do not know its cost. That
         is the same dishonesty as the pure-profit bug, pointing the other way.
       */}
-      {(lowPricedLines.length > 0 || economics.some((e) => e.costKnown && e.profit < 0)) && (
+      {economics.some((e) => e.costKnown && e.profit < 0) && (
         <div
           style={{
             padding: '11px 14px',
@@ -4639,17 +4654,13 @@ export const SOWizard = ({
           <span style={{ fontSize: 16, lineHeight: 1 }}>⚠</span>
           <div style={{ flex: 1, fontSize: 12.5, color: '#713F12', lineHeight: 1.5 }}>
             <strong>
-              {economics.filter((e) => e.costKnown && e.profit < 0).length > 0
-                ? `${economics.filter((e) => e.costKnown && e.profit < 0).length} ${
-                    economics.filter((e) => e.costKnown && e.profit < 0).length === 1
-                      ? 'line loses'
-                      : 'lines lose'
-                  } money on this order`
-                : `${lowPricedLines.length} line${lowPricedLines.length === 1 ? '' : 's'} priced under the trigger`}
+              {`${economics.filter((e) => e.costKnown && e.profit < 0).length} ${
+                economics.filter((e) => e.costKnown && e.profit < 0).length === 1 ? 'line loses' : 'lines lose'
+              } money on this order`}
             </strong>{' '}
             — the order total above can still look healthy while an individual line does not.{' '}
             {lines
-              .filter((l, i) => (economics[i].costKnown && economics[i].profit < 0) || isLowPriced(l))
+              .filter((_l, i) => economics[i].costKnown && economics[i].profit < 0)
               .map((l) => l.lotNo)
               .join(', ')}
             . Go <strong>Back</strong> to Pricing to change it, or create the order as it stands.
@@ -4720,6 +4731,18 @@ export const SOWizard = ({
       */}
     </div>
   );
+
+  /* Feedback 17 item 8d: report the draft on every change, so a close keeps it.
+   * The parent holds it in a ref, so this re-renders nothing. */
+  React.useEffect(() => {
+    onDraftChange?.({
+      stepIndex, charges, millingCharge, mode, existingSO, customer, customerId, shipAddressId,
+      repTeam, salesTeamId, customerPO, customerNote, shipTo, currency, shipDate, preloadedShipDate,
+      incoterms, incotermsId, equipment, equipmentId, split, reman, price,
+    });
+  }, [onDraftChange, stepIndex, charges, millingCharge, mode, existingSO, customer, customerId, shipAddressId,
+    repTeam, salesTeamId, customerPO, customerNote, shipTo, currency, shipDate, preloadedShipDate,
+    incoterms, incotermsId, equipment, equipmentId, split, reman, price]);
 
   const bodies: Record<StepKey, React.ReactNode> = {
     start: startBody,

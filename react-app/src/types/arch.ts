@@ -149,6 +149,13 @@ export interface ArchLot {
    */
   po: string;
   /**
+   * Feedback 17 item 9: the NetSuite PO this bundle was RECEIVED on (its first
+   * receipt), id and number. Empty for stock that came in by adjustment, which
+   * has no PO record; the screen then shows `po` (the lot-number prefix) as text.
+   */
+  receiptPoId?: string;
+  receiptPoNumber?: string;
+  /**
    * What THIS bundle cost, per display unit, Feedback 6 item 18: "IA-CWP-730. Le
    * MBF price est 12.76 vs 14.15."
    *
@@ -274,6 +281,8 @@ export interface ArchLot {
      * prefix is under five digits (`1333-1`).
      */
     poNumber: string;
+    /** Feedback 17 item 10: the PO's internal id, for its link. Absent on older payloads. */
+    poId?: string;
     /** Vendor name off the PO header. */
     supplier: string;
     /**
@@ -544,6 +553,8 @@ export interface ArchTotals {
 
 /** One PO line's quantity that no bundle claims (see `ArchSummaryRow.unbundled`). */
 export interface ArchUnbundledLine {
+  /** Feedback 17 item 10: the PO's internal id, for its link. */
+  poId?: string;
   /** The PO document number, e.g. "PO-ARC-000007". */
   poNumber: string;
   supplier: string;

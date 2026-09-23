@@ -95,6 +95,14 @@ export const unitLabel = (unit: ArchUnit = DEFAULT_ARCH_UNIT): string => {
   }
 };
 
+/**
+ * The UOM column of the SO wizard, Feedback 17 item 8a (MA, 2026-09-23): « Ajouter
+ * une colonne avec le UOM ». Singular and capitalised like NetSuite's own UOM
+ * column ("Unit", not the "units" suffix totals use).
+ */
+export const uomLabel = (unit: ArchUnit = DEFAULT_ARCH_UNIT): string =>
+  unit === 'UNIT' ? 'Unit' : unitLabel(unit);
+
 /** Long form, for prose and tooltips — "650 board feet", "3 pieces". */
 export const unitLabelLong = (unit: ArchUnit = DEFAULT_ARCH_UNIT, qty = 2): string => {
   const plural = Math.abs(qty) !== 1;

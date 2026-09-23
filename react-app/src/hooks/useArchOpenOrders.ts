@@ -113,6 +113,8 @@ export interface ArchLiveOpenOrder extends ArchOpenOrder {
    * of silently reading unticked.
    */
   readyToBuild?: boolean;
+  /** Feedback 17 item 13: the raw `custbody_so_ready_to_ship` flag. */
+  readyToShip?: boolean;
 }
 
 interface RawLine {
@@ -259,6 +261,8 @@ export const toCartLine = (l: RawLine): ArchCartLine & { unattributed?: boolean;
   // Feedback 16: a SPLIT line is cut from a bigger bundle, so its "Lot BF" is the
   // bundle's size, not the part on this order (SO-ARC-26 showed 100, not 473).
   preSplitQty: l.split?.on && Number(l.lotQty) > 0 ? Number(l.lotQty) : Number(l.bf) || 0,
+  // What is ON THE ORDER, whatever the bundle's size (review H1).
+  orderedQty: Number(l.bf) || 0,
   existingSplit: l.split?.on ? { on: true, targetBF: String(l.split.bf || l.bf || '') } : undefined,
   existingReman: l.reman
     ? { planing: !!l.reman.planing, planingSpec: l.reman.planeTarget || '', planingOther: '',
