@@ -919,8 +919,10 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // `inArchScope`, which refuses decking BEFORE testing either arm of the
   // department/subsidiary union -- a stronger form of the same rule, because it
   // cannot be forgotten on the new arm.
-  ok('  ...and honouring the same decking exclusions as the line check',
-    /if \(NON_ARCH_DEPARTMENT_ITEMS\.indexOf\(code\) !== -1\) return false;/.test(s) &&
+  // Feedback 14 follow-up (2026-09-23): decking in ARC is ARCH, so the scope
+  // predicate is the subsidiary alone and there is no exclusion to honour.
+  ok('  ...through the same scope predicate as the line check, decking included',
+    !/NON_ARCH_DEPARTMENT_ITEMS\.indexOf/.test(s) &&
       /if \(inArchScope\(dept, rows\[i\]\.sub, code\)\)/.test(s), null);
 
   // The distinction that matters: a read that FAILED must not be reported as a
@@ -1926,8 +1928,10 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
       !/dept === HARDWOOD_DEPARTMENT \|\|/.test(oc), null);
   // 🔴 AND DECKING IS EXCLUDED FROM BOTH ARMS. Hanging the exclusion off the
   // department arm would make IPE orderable the moment it sits in ARC.
-  ok('scope:  ...with decking excluded regardless of which arm matched',
-    /if \(NON_ARCH_DEPARTMENT_ITEMS\.indexOf\(code\) !== -1\) return false;/.test(oc), null);
+  // Reversed 2026-09-23: decking in ARC is ARCH (MA re-imported it into ARC,
+  // MGSL sold it on SO-ARC-20..24, his test PO-ARC-000014 carries it).
+  ok('scope:  ...and decking is NOT excluded any more, the subsidiary alone decides',
+    !/NON_ARCH_DEPARTMENT_ITEMS\.indexOf/.test(oc), null);
   // Selecting the column is not enough: it has to reach the lot state, or the
   // predicate reads undefined and every ARC lot is refused exactly as before.
   ok('scope:  ...and the subsidiary is both SELECTED and mapped into the lot state',

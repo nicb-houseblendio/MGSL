@@ -52,13 +52,27 @@ test('the split queue is scoped to subsidiary ARC, like the other three sites', 
 });
 
 // Feedback 14 round-2 review: the two MR tripwires that could not fire.
-test('MR tripwires: decking by CATEGORY, and ARC-location stock on an out-of-scope item', () => {
+// Feedback 14 follow-up (2026-09-23): decking in ARC is ARCH, so the decking
+// tripwires went with the exclusion they policed. The shared-subsidiary one stays.
+test('MR tripwires: ARC-location stock on an out-of-scope item stays; the decking ones are gone', () => {
   const mr = readFileSync(join(here, '../../../src/FileCabinet/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_trader_screen_cache_arch.js'), 'utf8');
-  assert.match(mr, /AND BUILTIN\.DF\(i\.csegitem_category\) = \?',\s*\n\s*params: ARCH_SCOPE_PARAMS\.concat\(\['Decking'\]\)/);
   assert.match(mr, /'WHERE BUILTIN\.DF\(loc\.subsidiary\) = \? ' \+/);
-  // the name-LIKE version is gone: it could never see an include-children item
   assert.doesNotMatch(mr, /BUILTIN\.DF\(i\.subsidiary\) LIKE \?/);
-  // each has its own try, so neither can take down a rebuild
-  assert.match(mr, /Decking-category check failed \(non-fatal\)/);
   assert.match(mr, /Shared-subsidiary check failed \(non-fatal\)/);
+  assert.doesNotMatch(mr, /Decking-category check failed|DECKING_LEAK_SQL|NON_ARCH_ITEMS_SQL/);
+});
+
+test('decking is IN the ARCH scope at all three sites (Feedback 14 follow-up)', () => {
+  const root = join(here, '../../../src/FileCabinet/SuiteScripts/mcgi_services/trader_screen');
+  const mr = readFileSync(join(root, 'entry_points/mr/mcgi_mr_trader_screen_cache_arch.js'), 'utf8');
+  const svc = readFileSync(join(root, 'service/trader_screen_service_arch.js'), 'utf8');
+  const oc = readFileSync(join(root, 'shared/archOrderCreate.js'), 'utf8');
+  for (const [n, s] of [['mr', mr], ['service', svc], ['orderCreate', oc]]) {
+    assert.doesNotMatch(s, /NON_ARCH_DEPARTMENT_ITEMS\.|NON_ARCH_ITEMS_SQL|'IPE44DECKD'/, n);
+  }
+  // the endpoint's scope predicate is the subsidiary alone
+  const at = oc.indexOf('const inArchScope');
+  const pred = oc.slice(at, oc.indexOf('};', at));
+  assert.match(pred, /return sub === ARCH_SUBSIDIARY_NAME;/);
+  assert.doesNotMatch(pred, /indexOf\(code\)/);
 });

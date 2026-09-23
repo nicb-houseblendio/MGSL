@@ -254,11 +254,10 @@ define([
      * ("Hardwood") carry the segment at all.
      *
      * Scoping is now `department = "Hardwood"` (by name, not id 11 — see
-     * `HARDWOOD_DEPARTMENT`'s own comment below), minus a hardcoded exclusion list
-     * (`NON_ARCH_DEPARTMENT_ITEMS` below) for the one real distinction inside
-     * that department: decking, a different product line sold by a different
-     * unit with a different tally shape, not the lumber-lot stock this screen
-     * tracks. Measured: 7 of the 149 department items are decking by name
+     * `HARDWOOD_DEPARTMENT`'s own comment below), minus a hardcoded decking
+     * exclusion list. ⚠️ SUPERSEDED TWICE: the scope is subsidiary ARC alone
+     * since 2026-09-22, and the decking exclusion was removed 2026-09-23 because
+     * decking in ARC is ARCH (see where the list used to be). Measured: 7 of the 149 department items are decking by name
      * (`*DECKD*`); the other 142, including the 6 that already carried the
      * segment, are the same species-thickness-KD shape as every known ARCH
      * SKU.
@@ -324,7 +323,7 @@ define([
     const ARCH_SUBSIDIARY = 'ARC';
     /**
      * The scope predicate, one definition, three query sites (LOT_SQL,
-     * BUCKET_SQL, DECKING_LEAK_SQL). `ARCH_SCOPE_PARAMS` is the matching array and
+     * BUCKET_SQL; the decking tripwire that was the third is gone). `ARCH_SCOPE_PARAMS` is the matching array and
      * the two must be edited together, which is why they sit on adjacent lines.
      *
      * ── 🔴 SUBSIDIARY ALONE since 2026-09-22 (Feedback 14) ────────────────────
@@ -349,22 +348,15 @@ define([
     const ARCH_SCOPE_SQL = 'BUILTIN.DF(i.subsidiary) = ?';
     const ARCH_SCOPE_PARAMS = [ARCH_SUBSIDIARY];
     const UNTAGGED_PARAMS = [HARDWOOD_DEPARTMENT, ARCH_SUBSIDIARY];
-    /**
-     * The one real distinction inside Department 11: decking is a different
-     * product line (sold by the linear foot, not board-feet lots) that shares
-     * the trading department for accounting reasons only. Hardcoded rather
-     * than another segment/flag, deliberately — see the note above on why an
-     * opt-in per-item flag is the thing that just failed twice. A short,
-     * reviewable list beats a field someone has to remember to set.
-     */
-    const NON_ARCH_DEPARTMENT_ITEMS = [
-        'IPE44DECKD', 'IPE54DECKD', 'IPE54DECKDDNU',
-        'NRM44DECKDS4S', 'NRM44DECKDTNG',
-        'RBL44DECKD', 'RBL54DECKD',
-    ];
-    // Fixed, hardcoded item codes, never user input — safe to inline as SQL
-    // literals rather than bind as parameters.
-    const NON_ARCH_ITEMS_SQL = NON_ARCH_DEPARTMENT_ITEMS.map((id) => "'" + id + "'").join(',');
+    /* No decking exclusion any more. Feedback 14 follow-up, 2026-09-23: DECKING IS ARCH, and the exclusion that
+     * kept it off was our own assumption from the department era (fc6e899, "a
+     * different product line sold by a different unit"). Measured: 6 of the 7
+     * decking SKUs are in subsidiary ARC (the 7th is an inactive DNU in CWP MTL),
+     * 5 of them are stocked in BOARD FEET, Marc-Antoine re-imported their stock
+     * into ARC locations himself (IA2682 onwards, 2026-09-16), MGSL sold them on
+     * SO-ARC-20 to SO-ARC-24, and his own ARCH test PO-ARC-000014 carries the
+     * linear-foot IPE16ELO304030KD. The agreed scope is the ARC subsidiary, so
+     * everything in it is on the screen; the screen already handles LF. */
     const EXCLUDED_UNITS_TYPES = [2];   // Manual — MTL dunnage. Used ONLY by the untagged-SKU warning.
 
     /**
@@ -1945,7 +1937,6 @@ define([
         'JOIN item i              ON i.id  = inv.item ' +
         'LEFT JOIN unitstypeuom u ON u.internalid = i.stockunit ' +
         'WHERE ' + ARCH_SCOPE_SQL + ' ' +
-        '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
         /*
          * ── 🔴 A BUNDLE ON ORDER HAS AN inventorynumberlocation ROW AT ZERO ─────
          *
@@ -2016,43 +2007,6 @@ define([
          */
         "  AND NVL(BUILTIN.DF(i.subsidiary), '~none~') <> ?";
 
-    /**
-     * ── 🔴 THE MIRROR OF THE WARNING ABOVE: IN SCOPE AND SHOULD NOT BE ──────────
-     *
-     * `UNTAGGED_SQL` catches hardwood the screen cannot see. This catches the
-     * opposite and newer risk: NON-hardwood the screen CAN see.
-     *
-     * `NON_ARCH_DEPARTMENT_ITEMS` is seven decking SKUs excluded by literal name,
-     * and until 2026-09-17 that list was only lightly loaded, because an item had
-     * to carry department Hardwood to be in scope at all. The scope union changed
-     * that: every item in subsidiary ARC is now in scope automatically, and MA is
-     * still importing. ARC held 98 items on 2026-09-17 and 149 on 2026-09-21, so
-     * the aperture is both wider and moving.
-     *
-     * It held, and it held by luck of implementation rather than design. Measured
-     * 2026-09-21: SIX of the seven decking SKUs have ALREADY migrated into ARC
-     * (IPE44DECKD, IPE54DECKD, NRM44DECKDS4S, NRM44DECKDTNG, RBL44DECKD,
-     * RBL54DECKD) and all six are still excluded — because the list keys on NAME,
-     * not on department. Had it been written as a department test it would have
-     * failed silently the day the migration ran, and decking sold by the linear
-     * foot would have appeared on a board-feet screen.
-     *
-     * So this is the tripwire for the next one. It does NOT gate anything: the
-     * explicit list stays the gate, deliberately, because an exclusion by name
-     * pattern would be a guess about every future SKU and `DEC` is three letters
-     * that a real species abbreviation could carry. It only means nobody has to
-     * REMEMBER the list exists.
-     *
-     * ⚠️ Scoped to ARCH_SCOPE_SQL itself, which since 2026-09-22 is subsidiary
-     * ARC alone (the department arm is gone). Reusing the constant means this
-     * cannot drift away from what the real queries match. Expected result: zero
-     * rows.
-     */
-    const DECKING_LEAK_SQL =
-        'SELECT i.itemid FROM item i ' +
-        'WHERE ' + ARCH_SCOPE_SQL + ' ' +
-        '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
-        "  AND UPPER(i.itemid) LIKE '%DEC%'";
 
     /**
      * ═══ THE FOUR SOURCED BUCKETS ════════════════════════════════════════════
@@ -2236,7 +2190,6 @@ define([
         '       ON ia.transaction = t.id AND ia.transactionline = tl.id ' +
         'LEFT JOIN inventorynumber inv ON inv.id = ia.inventorynumber ' +
         'WHERE ' + ARCH_SCOPE_SQL + ' ' +
-        '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
         "  AND tl.mainline = 'F' " +
         "  AND tl.isclosed = 'F' " +
         "  AND t.type IN ('SalesOrd', 'PurchOrd')";
@@ -3426,67 +3379,8 @@ define([
                 log.audit('ARCH cache', 'Shared-subsidiary check failed (non-fatal): ' + e.message);
             }
 
-            /*
-             * Tripwire for a decking SKU that has entered scope without being on
-             * the exclusion list — see DECKING_LEAK_SQL for why this exists and
-             * why it warns rather than excludes.
-             *
-             * AUDIT, not ERROR, for the same reason as its sibling above: once it
-             * fires it will fire on EVERY rebuild until someone edits the list,
-             * and at 96 rebuilds a day an error-level standing condition is the
-             * thing that trains people to ignore the error channel. The
-             * difference from the sibling is that this one is expected to be zero
-             * forever, so if it appears at all it is worth acting on rather than
-             * a known state of the account.
-             *
-             * Its own try/catch: a failure here must not cost the rebuild, and
-             * must not be mistaken for the untagged check failing.
-             */
-            try {
-                const leaked = query.runSuiteQL({
-                    query: DECKING_LEAK_SQL,
-                    params: ARCH_SCOPE_PARAMS,
-                }).asMappedResults();
-                if (leaked.length) {
-                    log.audit('ARCH cache — POSSIBLE NON-HARDWOOD ON THIS SCREEN',
-                        leaked.length + ' item(s) in ARCH scope look like decking by name but are ' +
-                        'NOT in NON_ARCH_DEPARTMENT_ITEMS, so their stock IS being shown and can be ' +
-                        'sold from this screen: ' + leaked.map((r) => r.itemid).join(', ') +
-                        '. Decking is a different product line sold by the linear foot, not in board ' +
-                        'feet. Add them to NON_ARCH_DEPARTMENT_ITEMS in this file, or confirm they ' +
-                        'really are hardwood.');
-                }
-            } catch (e) {
-                log.audit('ARCH cache', 'Decking-leak check failed (non-fatal): ' + e.message);
-            }
-
-            /*
-             * The same tripwire by CATEGORY, round-2 review 2026-09-22. The name
-             * test above cannot see decking whose code has no "DEC": measured,
-             * IPE16ELO304030KD (25,800 LF at Pioneer.) and IPE5416ELO304030KD are
-             * category Decking, stocked in Linear Feet, in ARC, on the grid and
-             * orderable. Its OWN query and try, so a custom segment that N/query
-             * refuses costs only this check, never the name test above.
-             * Warns; the explicit list stays the gate (that is a client decision).
-             */
-            try {
-                const byCategory = query.runSuiteQL({
-                    query: 'SELECT i.itemid FROM item i ' +
-                           'WHERE ' + ARCH_SCOPE_SQL + ' ' +
-                           '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
-                           '  AND BUILTIN.DF(i.csegitem_category) = ?',
-                    params: ARCH_SCOPE_PARAMS.concat(['Decking']),
-                }).asMappedResults();
-                if (byCategory.length) {
-                    log.audit('ARCH cache — DECKING BY CATEGORY ON THIS SCREEN',
-                        byCategory.length + ' item(s) in ARCH scope are category Decking but are not in ' +
-                        'NON_ARCH_DEPARTMENT_ITEMS, so their stock IS shown and can be sold here: ' +
-                        byCategory.map((r) => r.itemid).join(', ') + '. Add them to the list in all ' +
-                        'three copies (this MR, the service, archOrderCreate) if decking stays off ARCH.');
-                }
-            } catch (e) {
-                log.audit('ARCH cache', 'Decking-category check failed (non-fatal): ' + e.message);
-            }
+            // The two decking tripwires are gone with the exclusion they policed
+            // (Feedback 14 follow-up, 2026-09-23): decking in ARC is ARCH.
 
             const holds = loadActiveHolds();
             const buckets = loadBuckets();

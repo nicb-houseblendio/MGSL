@@ -732,12 +732,9 @@ define([
         sql: 'BUILTIN.DF(i.subsidiary) = ?',
         params: [ARCH_SUBSIDIARY_NAME],
     });
-    const NON_ARCH_DEPARTMENT_ITEMS = [
-        'IPE44DECKD', 'IPE54DECKD', 'IPE54DECKDDNU',
-        'NRM44DECKDS4S', 'NRM44DECKDTNG',
-        'RBL44DECKD', 'RBL54DECKD',
-    ];
-    const NON_ARCH_ITEMS_SQL = NON_ARCH_DEPARTMENT_ITEMS.map((id) => "'" + id + "'").join(',');
+    /* No decking exclusion: decking in ARC is ARCH (Feedback 14 follow-up,
+     * 2026-09-23). The full evidence sits where the list used to be in the ARCH
+     * cache MR. */
 
     /**
      * Open ARCH sales orders — for the second tab, and for the wizard's
@@ -946,7 +943,6 @@ define([
         // is `itemtype = 'Assembly'`, measured with zero exceptions, and
         // those charge lines never are.
         'WHERE %DEPT% ' +
-        '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ') ' +
         "  AND tl.mainline = 'F' " +
         "  AND tl.isclosed = 'F' " +
         "  AND t.type = 'SalesOrd' " +
@@ -965,8 +961,7 @@ define([
     /** Counts the items in the ARCH scope (subsidiary ARC since 2026-09-22, Department 11
      *  before that), so an empty tab can explain itself. The name is historical. */
     const HARDWOOD_ITEM_COUNT_SQL =
-        'SELECT COUNT(*) AS n FROM item i WHERE %DEPT% ' +
-        '  AND i.itemid NOT IN (' + NON_ARCH_ITEMS_SQL + ')';
+        'SELECT COUNT(*) AS n FROM item i WHERE %DEPT%';
 
     /**
      * yyyy-mm-dd from whatever SuiteQL hands back, or '' — never a guess.
