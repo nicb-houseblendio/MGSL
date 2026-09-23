@@ -183,6 +183,8 @@ define(['N/query', 'N/log', './archSalesTeam', './archShipWeek'], (query, log, A
             // (the field is not on the SO record), so every job fell back to its
             // TRANSACTION date and the "Ships in N d" pill counted from the day the
             // order was entered. The order wizard now writes `shipdate` too.
+            // Since Feedback 13 this is only the FALLBACK: the job's ship week is
+            // resolved by shared/archShipWeek.js (Ship Week first), see below.
             "  TO_CHAR(t.shipdate, 'YYYY-MM-DD')                       AS shipdate, " +
             "  TO_CHAR(t.trandate, 'YYYY-MM-DD')                       AS trandate, " +
             '  tl.id                            AS lineid, ' +

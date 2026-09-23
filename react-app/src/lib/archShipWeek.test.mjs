@@ -27,6 +27,11 @@ test('SO-ARC-25: default Ship Week, typed ship date -> the ship date', () => {
     { date: '2026-09-30', source: 'date', defaulted: false });
 });
 
+test('the wizard typed one day into BOTH fields: read as a date, late the next day', () => {
+  assert.deepEqual(W.resolve({ shipWeek: '2026-09-30', shipDate: '2026-09-30', tranDate: '2026-09-22', createdDate: '2026-09-22' }),
+    { date: '2026-09-30', source: 'date', defaulted: false });
+});
+
 test('SAP import: Ship Week = import day, ship date = order date -> nothing, flagged', () => {
   assert.deepEqual(W.resolve({ shipWeek: '2026-09-18', shipDate: '2026-09-09', tranDate: '2026-09-09', createdDate: '2026-09-18' }),
     { date: '', source: '', defaulted: true });

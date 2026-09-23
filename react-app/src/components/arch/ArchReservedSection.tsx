@@ -303,14 +303,12 @@ export const ArchReservedSection = ({
                   >
                     {ageValue === null ? NO_VALUE : `${ageValue} d`}
                   </td>
-                  {/* THE SHIP DATE, under a column the client's prototype called
-                      "Ship Week". `t.shipdate` is one date and it is what NetSuite
-                      holds; the prototype derived the Monday of its week from a
-                      generated date, and deriving one here would print a day the
-                      order does not name. The shipped Open Orders tab already
-                      renders the raw date under a "Ship week" header for the same
-                      reason. If Marc-Antoine wants the week's Monday, it is one
-                      formatter in lib/archLotOrders.ts. */}
+                  {/* THE SHIP WEEK, resolved server-side since Feedback 13 by
+                      shared/archShipWeek.js: `custbody_ship_week` (usually a
+                      Monday, which is what his prototype's `mondayOf(ship)`
+                      showed), else the trader's typed ship date, else a dash
+                      with the reason. Printed as stored, never re-derived, so
+                      it never names a day the order does not hold. */}
                   <td style={{ ...cell, color: ARCH_SURFACE.textMid }} title={shipCell?.title}>{shipWeek}</td>
                   <td style={cell}>{customer}</td>
                   {/* The Sales Team rep, not the record's creator, and the tooltip

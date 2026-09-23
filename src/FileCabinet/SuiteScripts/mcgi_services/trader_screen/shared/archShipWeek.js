@@ -27,12 +27,17 @@
  * that its first day has passed (see `dueInfo` in react-app/src/lib/archSplit.ts).
  *
  * ── The resolution, in order ────────────────────────────────────────────────
- *   1. Ship Week, unless it is a default.
+ *   1. Ship Week, unless it is a default. Equal to a real ship date, it is the
+ *      wizard's typed day in both fields, so it is read as a DATE.
  *   2. The native ship date, unless it is a default. Kept because the wizard
  *      wrote ONLY `shipdate` until 2026-09-22: SO-ARC-25 (9/30) and SO-ARC-26
  *      (9/23) carry the trader's typed date there and a default Ship Week.
  *   3. Nothing, flagged `defaulted` when a value existed but was a default, so
  *      the screen can say why it shows none.
+ *
+ * Marc-Antoine's own V4 prototype defines the column the same way: "Ship Week"
+ * is `mondayOf(ship)`, the Monday of the expected ship date, beside a separate
+ * "Exp. Ship Date".
  *
  * A DEFAULT is a value equal to the order date OR to the day the record was
  * created. NetSuite fills both fields with the order date when nobody enters
@@ -64,6 +69,10 @@ define([], () => {
         const isDefault = (d) => d === td || (cd !== '' && d === cd);
         const sw = isoDate(o.shipWeek);
         const sd = isoDate(o.shipDate);
+        // Both real and EQUAL means one exact day was typed into both, which is
+        // what the wizard writes since Feedback 13: read it as a date, so it is
+        // late the next day rather than a week later.
+        if (sw && !isDefault(sw) && sw === sd) return { date: sd, source: 'date', defaulted: false };
         if (sw && !isDefault(sw)) return { date: sw, source: 'week', defaulted: false };
         if (sd && !isDefault(sd)) return { date: sd, source: 'date', defaulted: false };
         return { date: '', source: '', defaulted: !!(sw || sd) };
