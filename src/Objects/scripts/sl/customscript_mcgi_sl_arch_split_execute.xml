@@ -86,7 +86,12 @@
            SELECT scriptid, name FROM role WHERE scriptid = 'customrole2183'
            there; it must be the Hardwood Logistics Coordinator. Durable fix: give
            the role a descriptive script id and ship it as an SDF object. -->
-      <custscript_arch_split_roles>customrole2183</custscript_arch_split_roles>
+      <!-- Feedback 17 item 6 (MA, 2026-09-23): the Hardwood Trader (2182) and the
+           Hardwood AP/AR Analyst (2184) added to the Logistics Coordinator (2183).
+           Set live on deployment 4657 the same day; the health GET reports all
+           three. "MGSL - Hardwood Reload Access", the third he named, exists in
+           neither account yet. -->
+      <custscript_arch_split_roles>customrole2183,customrole2182,customrole2184</custscript_arch_split_roles>
       <allemployees>F</allemployees>
       <allpartners>F</allpartners>
       <!-- allroles stays F. This Suitelet runs as Administrator and posts
@@ -97,7 +102,7 @@
            barrier. The audience decides who can reach the URL, the parameter
            decides who the script will act for, and both must list the role. -->
       <allroles>F</allroles>
-      <audslctrole>ADMINISTRATOR|[scriptid=customrole2183]</audslctrole>
+      <audslctrole>ADMINISTRATOR|[scriptid=customrole2183]|[scriptid=customrole2182]|[scriptid=customrole2184]</audslctrole>
       <eventtype></eventtype>
       <isdeployed>T</isdeployed>
       <isonline>F</isonline>

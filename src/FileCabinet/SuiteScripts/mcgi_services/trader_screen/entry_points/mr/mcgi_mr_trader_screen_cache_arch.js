@@ -1606,11 +1606,16 @@ define([
                     "  TO_CHAR(t.custbody4, 'YYYY-MM-DD') AS lotdt, " +
                     '  t.custbody5           AS vessel, ' +
                     '  crr.exchangerate       AS fxrec, ' +
-                    '  crt.exchangerate       AS fxtran ' +
+                    '  crt.exchangerate       AS fxtran, ' +
+                    // Feedback 17 item 9: the PO a RECEIPT came from (an IR line's
+                    // createdfrom). Null for an adjustment: no PO in NetSuite.
+                    '  tl.createdfrom         AS poid, ' +
+                    '  po.tranid              AS pono ' +
                     'FROM inventoryassignment ia ' +
                     'JOIN transactionline tl ON tl.id = ia.transactionline ' +
                     '                       AND tl.transaction = ia.transaction ' +
                     'JOIN transaction t ON t.id = ia.transaction ' +
+                    "LEFT JOIN transaction po ON po.id = tl.createdfrom AND po.type = 'PurchOrd' " +
                     'JOIN currency bc ON UPPER(bc.symbol) = ? ' +
                     'JOIN currency tc ON UPPER(tc.symbol) = ? ' +
                     'LEFT JOIN currencyrate crr ON crr.basecurrency = bc.id ' +
@@ -1677,6 +1682,9 @@ define([
                     // vessel needs the lot NUMBER, which this query does not carry,
                     // so it happens where the lot is emitted.
                     vessel: String(r.vessel || '').trim(),
+                    // Feedback 17 item 9: the PO of the lot's FIRST receipt, or none.
+                    poId:     r.poid && r.pono ? String(r.poid) : '',
+                    poNumber: r.poid && r.pono ? String(r.pono) : '',
                 };
             });
             return out;
@@ -3156,6 +3164,7 @@ define([
             if (!isSale && open > 0 && !bucket.poLines[lineKey]) {
                 bucket.poLines[lineKey] = {
                     poNumber: String(r.docno || ''),
+                    poId:     String(r.tranid || ''),
                     supplier: String(r.customer || ''),
                     eta:      poEta(r),
                     etaDefaulted: poEtaDefaulted(r),
@@ -3381,6 +3390,8 @@ define([
                      * nobody can verify. */
                     bucket.lots[r.lotno].incoming = {
                         poNumber: String(r.docno || ''),
+                        // Feedback 17 item 10: the PO's internal id, for its link.
+                        poId:     String(r.tranid || ''),
                         supplier: String(r.customer || ''),
                         // ISO, or empty. The browser must not be handed a NetSuite
                         // date string to parse — `isoDate` is the one place this
@@ -3567,7 +3578,7 @@ define([
                 const mk = [p.poNumber, p.arm, p.eta, p.billedAhead, p.partlyReceived].join('|');
                 if (!merged[mk]) {
                     merged[mk] = {
-                        poNumber: p.poNumber, supplier: p.supplier, eta: p.eta, etaDefaulted: p.etaDefaulted,
+                        poNumber: p.poNumber, poId: p.poId || '', supplier: p.supplier, eta: p.eta, etaDefaulted: p.etaDefaulted,
                         container: p.container || '',
                         arm: p.arm, billedAhead: p.billedAhead, partlyReceived: p.partlyReceived,
                         lineCount: 0, inTransitLines: 0, onOrderLines: 0, inTransit: 0, onOrder: 0,
@@ -4378,6 +4389,16 @@ define([
                     // Derived from the lot-number prefix, which IS the PO by
                     // Marc-Antoine's own bundle nomenclature — see poFromLotNo.
                     po:            poFromLotNo(l.lotNo),
+                    /* Feedback 17 item 9 (MA, 2026-09-23): « Ajouter 1ère colonne le
+                     * numéro du PO (et un link vers la commande dans NS) ». The PO the
+                     * lot was RECEIVED on, from NetSuite, not inferred from the lot
+                     * number. Empty for stock that came in by adjustment (MA's
+                     * 2026-09-16 re-import): there is no PO record to link to. */
+                    // Omitted (undefined) when there is none, not ''. Measured: '' on
+                    // every lot added ~40 KB to a summary already near N/cache's
+                    // 500 KB value ceiling, for 1,036 lots with nothing to say.
+                    receiptPoId:     (lotFacts[String(l.lotId)] || {}).poId || undefined,
+                    receiptPoNumber: (lotFacts[String(l.lotId)] || {}).poNumber || undefined,
                     /*
                      * A container can span several POs (2026-08-19), so the lot-number
                      * prefix that gives `po` above can never give a container. The
@@ -4763,7 +4784,7 @@ define([
                 // The same gap per PO line, with PO, supplier, ETA and the In
                 // Transit rule, so the drill-down can list it (Feedback 8, 2.8c).
                 unbundled: ((bk && bk.unbundled) || []).map((u) => ({
-                    poNumber: u.poNumber, supplier: u.supplier, eta: u.eta, etaDefaulted: !!u.etaDefaulted,
+                    poNumber: u.poNumber, poId: u.poId || '', supplier: u.supplier, eta: u.eta, etaDefaulted: !!u.etaDefaulted,
                     container: u.container || '',
                     arm: u.arm, billedAhead: !!u.billedAhead, partlyReceived: !!u.partlyReceived,
                     lineCount: u.lineCount || 1,

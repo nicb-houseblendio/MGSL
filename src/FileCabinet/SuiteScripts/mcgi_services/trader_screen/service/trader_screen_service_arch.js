@@ -891,13 +891,19 @@ define([
      * have left the trader able to create the contradiction and then explained it
      * afterwards. This function stays as it is, and 'SHIPPED WINS' still holds.
      */
-    const archStatusFor = (raw, readyToBuild) => {
+    /* Feedback 17 item 13 (MA, 2026-09-23): « Ajouter le statut : ready to ship
+     * (custbody_so_ready_to_ship est coché) ». Precedence, most advanced first:
+     * shipped (D/E/F) is In Transit whatever the flags say; then Ready to Ship
+     * (the whole-SO flag MGSL's own engine sets); then Ready to Build; else
+     * Reserved. */
+    const archStatusFor = (raw, readyToBuild, readyToShip) => {
         switch (statusLetter(raw)) {
             case 'D':
             case 'E':
             case 'F':
                 return 'In Transit';
             default:
+                if (readyToShip) return 'Ready to Ship';
                 return readyToBuild ? 'Ready to Build' : 'Reserved';
         }
     };
@@ -1312,6 +1318,25 @@ define([
          * OPEN_ORDERS_SQL they would blank the whole tab there. A failed read only
          * leaves lines without `split` / `reman` / `lotQty`, which is today's
          * behaviour. `bf` stays the assigned quantity (the hook's wire contract). */
+        /* Feedback 17 item 13: the Ready to Ship flag, ISOLATED like Ready to Build
+         * above (a custom body field on the trader's role). Unreadable = no order
+         * reads Ready to Ship, which is the behaviour before this existed. */
+        const readyToShipIds = {};
+        for (let i = 0; i < rtbIdList.length; i += RTB_CHUNK) {
+            const slice = rtbIdList.slice(i, i + RTB_CHUNK);
+            try {
+                query.runSuiteQL({
+                    query: 'SELECT id AS tranid FROM transaction ' +
+                           'WHERE id IN (' + slice.map(() => '?').join(',') + ") AND custbody_so_ready_to_ship = 'T'",
+                    params: slice,
+                }).asMappedResults().forEach((x) => { readyToShipIds[String(x.tranid)] = true; });
+            } catch (e) {
+                log.audit('ARCH open orders — Ready to Ship field not readable (non-fatal): ' +
+                    (e.name || '') + ': ' + (e.message || String(e)));
+                break;
+            }
+        }
+
         const lineIntent = {};
         const lotOnHand = {};
         const INTENT_CHUNK = 500;
@@ -1356,6 +1381,30 @@ define([
                     params: slice,
                 }).asMappedResults().forEach((x) => {
                     lotOnHand[String(x.lotid) + '|' + String(x.loc)] = Math.abs(parseFloat(x.qoh) || 0);
+                });
+            } catch (e) {
+                intentError = intentError || ((e.name || '') + ': ' + (e.message || String(e)));
+            }
+        }
+        /* Feedback 17 item 4 (MA, 2026-09-23): « Ship date et equipment ne semble
+         * pas suivre » in Edit. Equipment and the customer note were never in
+         * this payload. ISOLATED: custbody_equipment is a custom body field and
+         * this service runs as the trader's role, so it must not be able to fail
+         * the main query. A failed read shows Edit without them, as before. */
+        const orderExtras = {};
+        for (let i = 0; i < rtbIdList.length; i += INTENT_CHUNK) {
+            const slice = rtbIdList.slice(i, i + INTENT_CHUNK);
+            try {
+                query.runSuiteQL({
+                    query: 'SELECT id AS soid, custbody_equipment AS eq, BUILTIN.DF(custbody_equipment) AS eqname, memo AS note ' +
+                           'FROM transaction WHERE id IN (' + slice.map(() => '?').join(',') + ')',
+                    params: slice,
+                }).asMappedResults().forEach((x) => {
+                    orderExtras[String(x.soid)] = {
+                        equipmentId: x.eq ? String(x.eq) : '',
+                        equipment:   String(x.eqname || ''),
+                        memo:        String(x.note || ''),
+                    };
                 });
             } catch (e) {
                 intentError = intentError || ((e.name || '') + ': ' + (e.message || String(e)));
@@ -1435,14 +1484,27 @@ define([
                     ...(() => {
                         const sw = ArchShipWeek.forOrder(shipRead, tranId,
                             { shipDate: r.shipdate, tranDate: r.trandate });
-                        return { shipDate: sw.date, shipDateSource: sw.source, shipDateDefaulted: sw.defaulted };
+                        /* Feedback 17 item 4: what the order HOLDS, for Edit. The
+                         * resolved `shipDate` stays '' for a date equal to the
+                         * order date (NetSuite's default), which is right for the
+                         * grid's lateness but lost a trader's same-day date in
+                         * Edit. The native ship date first: a defaulted Ship Week
+                         * beside a real ship date (SO-ARC-26) must not win. */
+                        const rec = shipRead && shipRead.byId ? shipRead.byId[tranId] : null;
+                        const stored = rec ? (rec.shipDate || rec.shipWeek || '') : isoDate(r.shipdate);
+                        return { shipDate: sw.date, shipDateSource: sw.source, shipDateDefaulted: sw.defaulted, shipDateStored: stored || '' };
                     })(),
+                    // Feedback 17 item 4: restored by Edit. Absent = unread.
+                    equipment:   orderExtras[tranId] ? orderExtras[tranId].equipment : undefined,
+                    equipmentId: orderExtras[tranId] ? orderExtras[tranId].equipmentId : undefined,
+                    memo:        orderExtras[tranId] ? orderExtras[tranId].memo : undefined,
                     // The sublist is read for the TRADER above. This field stays
                     // blank: the wizard's header field is one rep (custbody_sales_rep),
                     // not a team, and a name under a "team" label would be a guess
                     // dressed up as data.
                     salesTeam:  '',
-                    status:     archStatusFor(letter, !!readyToBuildIds[tranId]),
+                    status:     archStatusFor(letter, !!readyToBuildIds[tranId], !!readyToShipIds[tranId]),
+                    readyToShip: !!readyToShipIds[tranId],
                     nsStatus:   letter,
                     nsStatusLabel: NS_STATUS_LABEL[letter] || letter,
                     readyToBuild: !!readyToBuildIds[tranId],
@@ -1553,7 +1615,7 @@ define([
                         // Same flag as the header `status` above, so a line
                         // never disagrees with its own order about whether it
                         // is ready to build.
-                        lineStatus:   archStatusFor(String(r.status || ''), !!readyToBuildIds[tranId]),
+                        lineStatus:   archStatusFor(String(r.status || ''), !!readyToBuildIds[tranId], !!readyToShipIds[tranId]),
                     },
                 };
                 lineOrder.push(lineKey);

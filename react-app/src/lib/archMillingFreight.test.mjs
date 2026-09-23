@@ -99,7 +99,8 @@ ok('  named, so the response does not depend on an id', autoFreight(FOB_RELOAD, 
 ok('  at rate 0, because they do not know the price yet', autoFreight(FOB_RELOAD, []).rate, 0);
 ok('  quantity 1', autoFreight(FOB_RELOAD, []).quantity, 1);
 ok('  flagged so the response can say it was not asked for', autoFreight(FOB_RELOAD, []).autoAdded, true);
-ok('  and the description says why', /FOB Reload/.test(autoFreight(FOB_RELOAD, []).description), true);
+// Feedback 17 (MA, 2026-09-23, SO-ARC-25): « Juste inscrire Freight dans la description ».
+ok('  and the description is just Freight', autoFreight(FOB_RELOAD, []).description, 'Freight');
 
 /* Any other incoterm must do nothing at all. */
 for (const other of [3, 4, 6, 7, 8]) {

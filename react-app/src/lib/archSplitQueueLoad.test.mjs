@@ -132,10 +132,12 @@ test('suitelet: roles match by internal id OR script id', () => {
   assert.equal(c.rolePermitted({ role: 2183, roleId: 'customrole2183' }, c.permittedRoles()), false);
 });
 
-test('SDF: the Logistics Coordinator role is in BOTH the parameter and the audience, and allroles stays F', () => {
+test('SDF: the three Hardwood roles are in BOTH the parameter and the audience, and allroles stays F', () => {
   const dep = sdf.slice(sdf.indexOf('<scriptdeployment scriptid="customdeploy_mcgi_sl_arch_split_execute">'));
-  assert.match(dep, /<custscript_arch_split_roles>customrole2183<\/custscript_arch_split_roles>/);
-  assert.match(dep, /<audslctrole>ADMINISTRATOR\|\[scriptid=customrole2183\]<\/audslctrole>/);
+  // Feedback 17 item 6 (MA): the Hardwood Trader (2182) and AP/AR Analyst (2184) joined
+  // the Logistics Coordinator (2183). Same list in both places, or one of them lies.
+  assert.match(dep, /<custscript_arch_split_roles>customrole2183,customrole2182,customrole2184<\/custscript_arch_split_roles>/);
+  assert.match(dep, /<audslctrole>ADMINISTRATOR\|\[scriptid=customrole2183\]\|\[scriptid=customrole2182\]\|\[scriptid=customrole2184\]<\/audslctrole>/);
   assert.match(dep, /<allroles>F<\/allroles>/);
   assert.match(dep, /<runasrole>ADMINISTRATOR<\/runasrole>/);
   // The production preflight must stay next to the value it protects.

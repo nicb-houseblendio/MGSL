@@ -2107,6 +2107,19 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * Mandatory fields are deliberately NOT routed through this. If `department`
      * or `location` ever vanished, failing loudly is correct.
      */
+    /** An employee's display name ('' when unreadable). For the Sales Rep (PDF)
+     *  text, Feedback 17 item 7. */
+    const employeeName = (id) => {
+        if (!int(id)) return '';
+        try {
+            const r = query.runSuiteQL({ query: 'SELECT entityid FROM employee WHERE id = ?', params: [int(id)] })
+                .asMappedResults();
+            return r.length ? String(r[0].entityid || '').trim() : '';
+        } catch (e) {
+            return '';
+        }
+    };
+
     const setIfPresent = (rec, fieldId, value, label) => {
         let field = null;
         try {
@@ -3038,7 +3051,10 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             itemCode: AUTO_FREIGHT_NAME,
             quantity: 1,
             rate: 0,
-            description: 'Added automatically: FOB Reload. Rate to be confirmed.',
+            // Feedback 17 (MA, 2026-09-23, SO-ARC-25): « Juste inscrire Freight dans
+            // la description ». That it was added automatically stays in the audit
+            // log and in `autoAdded`, not on the customer's order.
+            description: 'Freight',
             autoAdded: true,
         };
     };
@@ -4350,72 +4366,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         };
     };
 
-    /**
-     * The facts for the email, read from the SAVED order.
-     *
-     * Not passed in and not recomputed. The body claims to describe what NetSuite
-     * holds, so it reads what NetSuite holds; anything assembled from the request
-     * could differ from the document by the time it is sent. `BUILTIN.DF` is used 40
-     * times in deployed SuiteScript here, so the dialect is proven.
-     *
-     * Returns null on any failure, and the caller then sends the plain body. An
-     * email that is a little bare is fine; one carrying a figure that disagrees with
-     * the order is not.
-     */
-    const orderSummary = (soId) => {
-        try {
-            const rows = query.runSuiteQL({
-                query:
-                    'SELECT BUILTIN.DF(t.entity)               AS customer, ' +
-                    '       BUILTIN.DF(t.custbody_incoterms)   AS incoterms, ' +
-                    '       t.shipdate                         AS shipdate, ' +
-                    '       t.foreigntotal                     AS total, ' +
-                    '       c.symbol                           AS iso, ' +
-                    // Feedback 6 item 7b. Read back off the SAVED order like every
-                    // other fact in this email, so what it prints is the note the
-                    // order actually carries rather than the one that was sent.
-                    '       t.memo                             AS memo ' +
-                    'FROM transaction t ' +
-                    '  LEFT JOIN currency c ON c.id = t.currency ' +
-                    'WHERE t.id = ?',
-                params: [soId],
-            }).asMappedResults();
-            return rows.length ? rows[0] : null;
-        } catch (e) {
-            log.audit('ARCH Order PDF',
-                'Could not read the summary for order ' + soId + ', so the email is ' +
-                'sent without it: ' + (e.message || String(e)));
-            return null;
-        }
-    };
-
-    /** A money figure with thousands separators. No currency symbol guessing. */
-    const money = (n) => {
-        const v = parseFloat(n);
-        if (!isFinite(v)) return null;
-        const fixed = v.toFixed(2);
-        const parts = fixed.split('.');
-        return parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + parts[1];
-    };
-
-    /**
-     * `label   value` rows, aligned, and a row is OMITTED when its value is unknown
-     * rather than printed as a blank or a zero. A blank line in a summary reads as
-     * "this order has none of that", which for a total would be a lie.
-     */
-    const summaryBlock = (rows) => {
-        const present = rows.filter((r) => r[1] !== null && r[1] !== undefined && r[1] !== '');
-        if (!present.length) return '';
-        let width = 0;
-        present.forEach((r) => { if (r[0].length > width) width = r[0].length; });
-        return present
-            .map((r) => {
-                let pad = r[0];
-                while (pad.length < width) pad += ' ';
-                return pad + '   ' + r[1];
-            })
-            .join('\n');
-    };
+    /* The order summary and its aligned text block went with Feedback 17 item 12:
+     * the email body is empty now, by MA's request, so nothing reads them. */
 
     const sendOrderPdf = (soId, tranId, creatorId, appending, facts) => {
         /* READ DEFENSIVELY. `param()` already swallows a throwing getParameter and
@@ -4512,61 +4464,22 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             });
             pdf.name = tranId + '.pdf';
 
-            const summary = orderSummary(soId);
-            const total = summary && money(summary.total)
-                ? (summary.iso ? summary.iso + ' ' : '') + money(summary.total)
-                : null;
-
             email.send({
                 // Author must be an employee with an email address. The creating
                 // user is one by definition — they just saved a transaction.
                 author: creatorId,
                 recipients: recipients,
-                /* The customer is in the SUBJECT because these land in a working
-                 * inbox: two orders were otherwise indistinguishable without opening
-                 * them. Internal only, so a customer name here reaches nobody outside
-                 * MGSL. Falls back to the bare form when the summary is unreadable. */
-                subject: 'Sales order ' + tranId +
-                         (summary && summary.customer ? ' for ' + summary.customer : ''),
-                body: (function () {
-                    const lots = (facts && facts.lots ? facts.lots : [])
-                        .filter(function (x) { return x; });
-                    const block = summaryBlock([
-                        ['Customer', summary ? summary.customer : null],
-                        ['Total', total],
-                        ['Incoterms', summary ? summary.incoterms : null],
-                        // Omitted entirely when there is none: `summaryBlock` drops
-                        // an empty row rather than printing a bare label.
-                        ['Note', summary ? summary.memo : null],
-                        ['Ship date', summary ? summary.shipdate : null],
-                        [lots.length === 1 ? 'Bundle' : 'Bundles', lots.join(', ') || null],
-                    ]);
-
-                    /* Reman is mentioned ONLY when reman was actually asked for, and
-                     * then it says which way it went. Printed unconditionally until
-                     * 2026-09-09, hedged as "if any were entered", on every order --
-                     * including the great majority that have no reman at all. The
-                     * server knows: it computes remanRequested and remanStored a few
-                     * lines from the call site. The case genuinely worth an email is
-                     * requested-but-not-stored, and that was buried under the same
-                     * sentence as everything else. */
-                    let reman = '';
-                    if (facts && facts.remanRequested) {
-                        reman = facts.remanStored
-                            ? '\n\nReman instructions were entered and are stored on the order ' +
-                              'lines. They are NOT part of the printed PDF.'
-                            : '\n\nReman instructions were entered but did NOT reach the order. ' +
-                              'They are not on the lines and not in the PDF, so they need ' +
-                              'entering by hand.';
-                    }
-
-                    return 'Sales order ' + tranId +
-                           (appending ? ' has been updated' : ' has been created') +
-                           ' from the CWP ARCH trader screen.' +
-                           (block ? '\n\n' + block : '') +
-                           '\n\nThe PDF is attached and shows what NetSuite holds.' +
-                           reman;
-                }()),
+                /* Feedback 17 item 12 (MA, 2026-09-23): « Subject : Sales Order #(SO
+                 * number). Body : peut le garder vide ». The one line kept is the case
+                 * that needs someone to act: reman asked for but NOT on the order.
+                 * Otherwise one plain line, not an empty body: `email.send` needs a
+                 * body, and a blank one risks every confirmation silently not
+                 * sending (review M3). « Peut le garder vide » allows as little. */
+                subject: 'Sales Order #' + tranId,
+                body: (facts && facts.remanRequested && !facts.remanStored)
+                    ? 'Reman instructions were entered but did NOT reach the order. They are not on ' +
+                      'the lines and not in the PDF, so they need entering by hand.'
+                    : 'Sales Order #' + tranId + ' attached.',
                 attachments: [pdf],
             });
 
@@ -4791,7 +4704,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             }
 
             if (h.customerPO) setIfPresent(so, H_CUSTOMER_PO, String(h.customerPO), 'the customer PO');
-            if (h.salesRep)   setIfPresent(so, H_SALES_REP,   String(h.salesRep),   'the sales rep name');
+            // Capped: custbody_sales_rep is Free-Form Text, 300 characters (review M1).
+            if (h.salesRep)   setIfPresent(so, H_SALES_REP,   String(h.salesRep).slice(0, 300), 'the sales rep name');
 
             // ── Mandatory on the sales-order form, so not optional here ──────
             //
@@ -4955,6 +4869,29 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 // the TYPED number (50) rather than the stored fraction. This
                 // single-line path is the one the six orders this endpoint has
                 // created already prove, so it is left exactly as it was.
+            }
+
+            /* Feedback 17 item 7 (MA, 2026-09-23): « Sales rep pdf : le workflow ne
+             * semble pas rouler ». No workflow is involved: the SALES REP field the
+             * Order Confirmation prints is `custbody_sales_rep`, free text that
+             * client script 3611 (SetSalesRep_CS) fills in the UI from the Sales
+             * Team, names joined " / ". A client script never runs for an order
+             * saved by this endpoint, so every screen-created SO printed it blank
+             * (SO-ARC-25, 26, 28, 32, while the UI ones carry it). Written here in
+             * the same format, on CREATE only (the append path explains why an
+             * existing order's text is left alone), and never over a value the
+             * request sent itself. */
+            if (!String(h.salesRep || '').trim()) {
+                const names = namedTeam
+                    ? namedTeam.members.map((m) => String(m.name || '').trim()).filter(Boolean)
+                    : [employeeName(repId)].filter(Boolean);
+                if (names.length) {
+                    setIfPresent(so, H_SALES_REP, names.join(' / ').slice(0, 300), 'the Sales Rep (PDF) text');
+                } else {
+                    // Said, not silent: this is exactly the defect being fixed (review M2).
+                    log.audit('ARCH Order Create', 'Sales Rep (PDF) text left blank: no team member name ' +
+                        'could be read for ' + (namedTeam ? 'team ' + namedTeam.teamId : 'rep ' + repId) + '.');
+                }
             }
 
             applyIncoterms(so, h, true);

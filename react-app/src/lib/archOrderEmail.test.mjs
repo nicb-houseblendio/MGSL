@@ -75,7 +75,8 @@ reset(); params.custscript_arch_pdf_email_to = 'CREATOR';
 r = sendOrderPdf(126868, 'SO-CWP-001354', -5, false);
 ok('CREATOR with creator -5: sent', r.sent === true && r.to.length === 1 && /creator \(-5\)/.test(r.to[0]), r);
 ok('CREATOR with creator -5: author and the one recipient are both -5', sent.length === 1 && sent[0].author === -5 && Array.isArray(sent[0].recipients) && sent[0].recipients.length === 1 && sent[0].recipients[0] === -5, sent[0]);
-ok('CREATOR: subject names the SO', sent[0].subject === 'Sales order SO-CWP-001354', sent[0].subject);
+// Feedback 17 item 12 (MA, 2026-09-23): « Subject : Sales Order #(SO number) ».
+ok('CREATOR: subject names the SO', sent[0].subject === 'Sales Order #SO-CWP-001354', sent[0].subject);
 ok('CREATOR: the PDF is attached under the SO number', Array.isArray(sent[0].attachments) && sent[0].attachments[0].name === 'SO-CWP-001354.pdf', sent[0].attachments);
 
 // ── CREATOR with no resolvable creator ────────────────────────────────────────
@@ -93,10 +94,11 @@ ok('address: recipient is the address, author is the creator', sent[0].recipient
 // ── wording follows what happened ─────────────────────────────────────────────
 reset(); params.custscript_arch_pdf_email_to = 'CREATOR';
 sendOrderPdf(126868, 'SO-CWP-001354', -5, false);
-ok('create: body says created', /has been created from the CWP ARCH trader screen/.test(sent[0].body) && !/has been updated/.test(sent[0].body), sent[0].body);
+// Feedback 17 item 12: « Body : peut le garder vide ». One plain line: email.send wants a body.
+ok('create: the body is empty', sent[0].body === 'Sales Order #SO-CWP-001354 attached.', sent[0].body);
 reset();
 sendOrderPdf(126868, 'SO-CWP-001354', -5, true);
-ok('append: body says updated, not created', /has been updated from the CWP ARCH trader screen/.test(sent[0].body) && !/has been created/.test(sent[0].body), sent[0].body);
+ok('append: the body is empty too', sent[0].body === 'Sales Order #SO-CWP-001354 attached.', sent[0].body);
 /*
  * REPLACED 2026-09-09. This used to assert the reman caveat was ALWAYS present.
  * That was the defect: it printed on every order, hedged as "if any were
@@ -292,8 +294,7 @@ const MAILABLE = [{ id: '3297', email: 'alec@cwpwood.com' }];
   const res = h.mod.sendOrderPdf(126906, 'SO-CWP-001356', -5, true);
   ok('append: SALESREP still resolves, because it reads the order not the request',
     res.sent === true && h.sent[0].recipients[0] === 3297, res);
-  ok('append: and the body still says updated rather than created',
-    /has been updated/.test(h.sent[0].body) && !/has been created/.test(h.sent[0].body), h.sent[0].body);
+  ok('append: and the body is the one plain line', h.sent[0].body === 'Sales Order #SO-CWP-001356 attached.', h.sent[0].body);
 }
 
 // ── the parameter's own documentation must describe what the code does ────
@@ -309,64 +310,38 @@ const MAILABLE = [{ id: '3297', email: 'alec@cwpwood.com' }];
 }
 
 
-/* ════ the body and subject ════════════════════════════════════════════════
+/* ════ the body and subject, Feedback 17 item 12 ═══════════════════════════
  *
- * Andrei, seeing a delivered one: "how would you make this more elegant and clean?"
- *
- * Two faults behind the terseness. The subject was `Sales order SO-CWP-001366`, so
- * two orders in an inbox were indistinguishable without opening them. And the reman
- * caveat was printed on EVERY order hedged as "if any were entered", when the server
- * computes remanRequested and remanStored a few lines from the call site.
- *
- * Everything reported is read back from the SAVED order. That is the point: the body
- * says it describes what NetSuite holds, so it must not assemble figures of its own.
+ * MA, 2026-09-23: « Email une fois le SO créé : Subject : Sales Order #(SO number).
+ * Body : peut le garder vide ». The summary block this section used to test is
+ * gone with that request. The one line kept is the case someone must act on:
+ * reman asked for but NOT on the order.
  */
-const SUMMARY = [{
-  customer: '84 Lumber Company',
-  incoterms: 'Delivered',
-  shipdate: '9/9/2026',
-  total: '38950',
-  iso: 'USD',
-}];
 const FACTS = { lots: ['315643-18'], remanRequested: false, remanStored: false };
 
 {
   params.custscript_arch_pdf_email_to = 'ops@mcgillstlaurent.com';
-  const h = loadWith([SUMMARY]);        // an ADDRESS token, so the summary is query #1
+  const h = loadWith([]);
   h.mod.sendOrderPdf(127517, 'SO-CWP-001366', -5, false, FACTS);
   const m = h.sent[0];
-
-  ok('subject: names the customer, so an inbox can be triaged',
-    m.subject === 'Sales order SO-CWP-001366 for 84 Lumber Company', m.subject);
-  ok('body: carries the customer', /Customer\s+84 Lumber Company/.test(m.body), m.body);
-  ok('body: the total is formatted with its ISO code and separators',
-    /Total\s+USD 38,950\.00/.test(m.body), m.body);
-  ok('body: incoterms and ship date', /Incoterms\s+Delivered/.test(m.body) && /Ship date\s+9\/9\/2026/.test(m.body), m.body);
-  ok('body: the bundle, singular when there is one',
-    /Bundle\s+315643-18/.test(m.body) && !/Bundles/.test(m.body), m.body);
-  ok('body: still says what happened and that the PDF is attached',
-    /has been created from the CWP ARCH trader screen/.test(m.body) &&
-    /The PDF is attached and shows what NetSuite holds/.test(m.body), m.body);
-  ok('body: says NOTHING about reman when none was entered',
-    !/[Rr]eman/.test(m.body), m.body);
+  ok('subject: Sales Order #<number>, as asked', m.subject === 'Sales Order #SO-CWP-001366', m.subject);
+  ok('body: one plain line when there is nothing to act on (a blank body risks no mail)', m.body === 'Sales Order #SO-CWP-001366 attached.', m.body);
+  ok('no summary query any more: the email reads nothing from the order', h.calls.length === 0, h.calls);
 }
 
-// Reman entered AND stored: mentioned, and only then.
+// Reman entered AND stored: nothing to act on, so the body stays empty.
 {
   params.custscript_arch_pdf_email_to = 'ops@mcgillstlaurent.com';
-  const h = loadWith([SUMMARY]);
+  const h = loadWith([]);
   h.mod.sendOrderPdf(127517, 'SO-CWP-001366', -5, false,
     { lots: ['315643-18', '316027-2'], remanRequested: true, remanStored: true });
-  const b = h.sent[0].body;
-  ok('reman stored: the email says so', /were entered and are stored on the order/.test(b), b);
-  ok('reman stored: and still warns it is not in the PDF', /NOT part of the printed PDF/.test(b), b);
-  ok('body: two lots read as Bundles, plural', /Bundles\s+315643-18, 316027-2/.test(b), b);
+  ok('reman stored: the plain line only', h.sent[0].body === 'Sales Order #SO-CWP-001366 attached.', h.sent[0].body);
 }
 
-// Requested but NOT stored: the one case genuinely worth an email.
+// Requested but NOT stored: the one case still worth a line.
 {
   params.custscript_arch_pdf_email_to = 'ops@mcgillstlaurent.com';
-  const h = loadWith([SUMMARY]);
+  const h = loadWith([]);
   h.mod.sendOrderPdf(127517, 'SO-CWP-001366', -5, false,
     { lots: ['315643-18'], remanRequested: true, remanStored: false });
   const b = h.sent[0].body;
@@ -374,40 +349,13 @@ const FACTS = { lots: ['315643-18'], remanRequested: false, remanStored: false }
   ok('reman lost: and that it needs entering by hand', /entering by hand/.test(b), b);
 }
 
-// An unknown value is OMITTED, never printed blank. A blank Total would read as zero.
+// An append: same subject, same empty body.
 {
   params.custscript_arch_pdf_email_to = 'ops@mcgillstlaurent.com';
-  const h = loadWith([[{ customer: 'Ab Martin Roofing Supply LLC', incoterms: null, shipdate: null, total: null, iso: null }]]);
-  h.mod.sendOrderPdf(127517, 'SO-CWP-001366', -5, false, { lots: [], remanRequested: false });
-  const b = h.sent[0].body;
-  ok('omission: the customer row is there', /Customer\s+Ab Martin/.test(b), b);
-  ok('omission: no empty Total row rather than a blank or a zero',
-    !/Total/.test(b), b);
-  ok('omission: no Bundle row when no lot is known', !/Bundle/.test(b), b);
-}
-
-// An unreadable summary must still send, with the bare subject.
-{
-  params.custscript_arch_pdf_email_to = 'ops@mcgillstlaurent.com';
-  const h = loadWith([new Error('Search error occurred')]);
-  const r = h.mod.sendOrderPdf(127517, 'SO-CWP-001366', -5, false, FACTS);
-  ok('unreadable summary: the email is still SENT', r.sent === true && h.sent.length === 1, r);
-  ok('unreadable summary: the subject falls back to the bare form',
-    h.sent[0].subject === 'Sales order SO-CWP-001366', h.sent[0].subject);
-  ok('unreadable summary: and no half-built block is printed',
-    !/Customer/.test(h.sent[0].body), h.sent[0].body);
-  ok('unreadable summary: audited, not errored', h.logged.error.length === 0, h.logged.error);
-}
-
-// An append still says updated, with the summary.
-{
-  params.custscript_arch_pdf_email_to = 'ops@mcgillstlaurent.com';
-  const h = loadWith([SUMMARY]);
+  const h = loadWith([]);
   h.mod.sendOrderPdf(127517, 'SO-CWP-001366', -5, true, FACTS);
-  const b = h.sent[0].body;
-  ok('append: says updated, not created',
-    /has been updated/.test(b) && !/has been created/.test(b), b);
-  ok('append: and still carries the summary', /Customer\s+84 Lumber/.test(b), b);
+  ok('append: same subject', h.sent[0].subject === 'Sales Order #SO-CWP-001366', h.sent[0].subject);
+  ok('append: the plain line', h.sent[0].body === 'Sales Order #SO-CWP-001366 attached.', h.sent[0].body);
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archOrderEmail ok');
