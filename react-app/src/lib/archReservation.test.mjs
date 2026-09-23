@@ -59,9 +59,8 @@ test('readClaims says so when the record cannot be read, rather than returning a
   assert.match(c.error, /customrecord_arch_res/);
 });
 
-test('the claims read reads only live claims and the lot stock over all locations', () => {
+test('the claims read reads EVERY claim (inactive included, see F4) and the lot stock over all locations', () => {
   assert.match(Reservation.CLAIMS_SQL, /FROM customrecord_arch_res c/);
-  assert.match(Reservation.CLAIMS_SQL, /c\.isinactive = 'F'/);
   assert.match(Reservation.CLAIMS_SQL, /SUM\(inl\.quantityonhand\) FROM inventorynumberlocation inl\s+WHERE inl\.inventorynumber = c\.custrecord_arch_res_lot/);
 });
 
@@ -269,7 +268,7 @@ test('C3 the unattributed read selects the line uniquekey it needs', () => {
 const SRC = readFileSync(join(SHARED, 'archOrderCreate.js'), 'utf8');
 
 test('D1 claims are taken AFTER the lines are built and BEFORE the save', () => {
-  const take = SRC.indexOf('takeClaims(preLines);');
+  const take = SRC.indexOf('takeClaims(preLines, idempotencyKey);');
   const save = SRC.indexOf('soId = so.save({ enableSourcing: true, ignoreMandatoryFields: false });');
   const lines = SRC.indexOf('const lineWrites = resolved.lines.map(');
   assert.ok(take > lines && take < save, { take, lines, save });
@@ -369,4 +368,46 @@ test('R11 supply-side exceptions are KEPT and named, never released', () => {
     const d = decide(HELD, FACTS(o));
     assert.equal(d.action, 'keep', code); assert.equal(d.exception, code);
   }
+});
+
+/* ══ 5. Review 2026-09-23 fixes ══════════════════════════════════════════ */
+
+test('F1 (HIGH 1) second run after a SHORT hand-off keeps and reports, never re-gives the same wood', () => {
+  const d = decide(HELD, FACTS({ stock: [{ location: 22, onHandBase: 1.0 }], assignedOnLineBase: 1.0, assignedAllOnLineBase: 1.0 }));
+  assert.equal(d.action, 'keep'); assert.equal(d.exception, 'VAL_RECEIVED_SHORT'); assert.equal(d.handoffBase, 0);
+});
+
+test('F2 (HIGH 2) a line already covered by ANOTHER bundle releases this claim', () => {
+  const d = decide(HELD, FACTS({ assignedOnLineBase: 0, assignedAllOnLineBase: 1.4 }));
+  assert.equal(d.action, 'release'); assert.match(d.reason, /covered by another bundle/);
+});
+
+test('F3 (HIGH 2) a hand-off is capped by what the line still lacks from ALL lots', () => {
+  const d = decide(HELD, FACTS({ stock: [{ location: 22, onHandBase: 1.4 }], assignedOnLineBase: 0, assignedAllOnLineBase: 0.5 }));
+  assert.equal(d.action, 'handoff'); assert.ok(Math.abs(d.handoffBase - 0.9) < 1e-9, d.handoffBase); assert.equal(d.releaseAfterHandoff, true);
+});
+
+test('F4 an inactivated claim is released, and still read (it blocks a new claim otherwise)', () => {
+  assert.equal(decide({ ...HELD, inactive: true }, FACTS()).action, 'release');
+  assert.doesNotMatch(Reservation.CLAIMS_SQL, /WHERE c\.isinactive/);
+  assert.match(Reservation.CLAIMS_SQL, /c\.custrecord_arch_res_key AS orderkey, c\.isinactive AS inactive/);
+});
+
+test('F5 (HIGH 3) the claim carries the order key, and claims are named even when the stock save throws', () => {
+  const r = recFake(() => 41);
+  Reservation.claim(r, 52870, 3150, 'hbres-real-0002');
+  assert.equal(r.made[0].custrecord_arch_res_key, 'hbres-real-0002');
+  assert.match(SRC, /takeClaims\(preLines, idempotencyKey\);/);
+  const at = SRC.indexOf('unplaced = assignLots(soId, resolved.lines, priorLineKeys);');
+  const fin = SRC.indexOf('Reservation.finalize(record, l.claimId, soId, l.lineKey)', at);
+  const rethrow = SRC.indexOf('if (assignError) throw assignError;', fin);
+  assert.ok(at > 0 && fin > at && rethrow > fin, { at, fin, rethrow });
+  assert.match(SRC.slice(at - 120, at), /try \{\s*$/);
+});
+
+test('F6 the reconciler recovers a pending claim by its key and hands failures to the lot, not to null', () => {
+  const mr = readFileSync(join(SHARED, '../entry_points/mr/mcgi_mr_arch_reservation.js'), 'utf8');
+  assert.match(mr, /'ARCH-ORDER-' \+ c\.orderKey, '%\[ARCH-APPEND:' \+ c\.orderKey \+ '\]%'/);
+  assert.match(mr, /exception: 'VAL_HANDOFF_FAILED'/);
+  assert.match(mr, /f\.assignedAllOnLineBase = onLine\.reduce/);
 });

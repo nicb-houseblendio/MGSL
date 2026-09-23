@@ -142,9 +142,12 @@ define(['N/query', 'N/record', 'N/log', '../../shared/archReservation'],
                         qtyBase: Math.abs(num(ln[0].qty)), shippedBase: Math.abs(num(ln[0].shipped)),
                         closed: String(ln[0].closed) === 'T',
                     };
-                    f.assignedOnLineBase = rows('SELECT ia.quantity AS q FROM inventoryassignment ia ' +
-                        'WHERE ia.transaction = ? AND ia.transactionline = ? AND ia.inventorynumber = ?',
-                        [c.soId, f.line.lineId, c.lotId]).reduce((s, r) => s + Math.abs(num(r.q)), 0);
+                    const onLine = rows('SELECT ia.inventorynumber AS lot, ia.quantity AS q FROM inventoryassignment ia ' +
+                        'WHERE ia.transaction = ? AND ia.transactionline = ?', [c.soId, f.line.lineId]);
+                    f.assignedOnLineBase = onLine.filter((r) => int(r.lot) === c.lotId)
+                        .reduce((s, r) => s + Math.abs(num(r.q)), 0);
+                    // Every lot on the line (review HIGH 2).
+                    f.assignedAllOnLineBase = onLine.reduce((s, r) => s + Math.abs(num(r.q)), 0);
                 }
             }
         }
@@ -205,6 +208,28 @@ define(['N/query', 'N/record', 'N/log', '../../shared/archReservation'],
         so.save({ enableSourcing: false, ignoreMandatoryFields: true });
     };
 
+    /**
+     * A pending claim whose order DID save (review HIGH 3): find it by the request
+     * key and its bare line (same item and location, no inventory detail, not named
+     * by another claim), then complete the claim. Returns the line key or 0.
+     */
+    const recoverPending = (c) => {
+        if (!c.orderKey || c.soId) return 0;
+        const so = rows('SELECT id FROM transaction WHERE type = ? AND (externalid = ? OR externalid LIKE ?)',
+            ['SalesOrd', 'ARCH-ORDER-' + c.orderKey, '%[ARCH-APPEND:' + c.orderKey + ']%']);
+        if (so.length !== 1) return 0;
+        const soId = int(so[0].id);
+        const claimed = {};
+        Reservation.readClaims(query).rows.forEach((x) => { if (x.soId === soId && x.lineKey) claimed[x.lineKey] = true; });
+        const lines = rows("SELECT tl.id AS lineid, tl.uniquekey AS uk FROM transactionline tl " +
+            "WHERE tl.transaction = ? AND tl.mainline = 'F' AND tl.item = ? AND tl.isclosed = 'F' " +
+            'AND NOT EXISTS (SELECT 1 FROM inventoryassignment ia WHERE ia.transaction = tl.transaction AND ia.transactionline = tl.id)',
+            [soId, c.itemId]).filter((r) => !claimed[int(r.uk)]);
+        if (lines.length !== 1) return 0;   // ambiguous: a person decides, the TTL still applies
+        Reservation.finalize(record, c.claimId, soId, int(lines[0].uk));
+        return { soId: soId, lineKey: int(lines[0].uk) };
+    };
+
     const map = (context) => {
         const item = JSON.parse(context.value);
         if (item.kind === 'stale') {
@@ -212,7 +237,15 @@ define(['N/query', 'N/record', 'N/log', '../../shared/archReservation'],
             context.write({ key: changed ? 'staleCleared' : 'noop', value: String(item.lotId) });
             return;
         }
-        const c = item.c;
+        let c = item.c;
+        if (!c.soId && c.orderKey && !c.inactive) {
+            const got = recoverPending(c);
+            if (got) {
+                log.audit('ARCH reservation - claim completed from its order key',
+                    (c.lotNo || c.lotId) + ' -> SO ' + got.soId + ' line ' + got.lineKey);
+                c = Object.assign({}, c, { soId: got.soId, lineKey: got.lineKey, pending: false });
+            }
+        }
         const f = factsFor(c);
         let d = Reservation.decideClaim(c, f);
         const tag = (c.lotNo || c.lotId) + (c.soNumber ? ' on ' + c.soNumber : '');
@@ -225,10 +258,15 @@ define(['N/query', 'N/record', 'N/log', '../../shared/archReservation'],
                     ? Object.assign({}, d, { action: 'release', reason: 'handed over at receipt' })
                     : Object.assign({}, d, { action: 'keep' });
             } catch (e) {
-                // Kept, never released: the bundle stays locked and the next run retries.
-                log.error('ARCH reservation - HAND-OFF FAILED, bundle stays reserved',
-                    tag + ': ' + (e.name || '') + ': ' + (e.message || String(e)));
-                d = Object.assign({}, d, { action: 'keep' });
+                /* Kept, never released: the bundle stays locked and the next run
+                 * retries. Reported ON THE LOT (review HIGH 1: a null here wiped a
+                 * received-short flag), and at ERROR only the first time, when the
+                 * mirror changes, so a stuck hand-off is not an error every 15 min. */
+                const why = (e.name || '') + ': ' + (e.message || String(e));
+                const first = writeMirror(c.lotId, { so: c.soId, line: c.lineKey, exception: 'VAL_HANDOFF_FAILED' });
+                (first ? log.error : log.audit)('ARCH reservation - HAND-OFF FAILED, bundle stays reserved', tag + ': ' + why);
+                context.write({ key: 'exception', value: tag + ' | hand-off failed: ' + why });
+                return;
             }
         }
 

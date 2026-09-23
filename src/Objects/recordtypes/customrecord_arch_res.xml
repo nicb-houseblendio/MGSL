@@ -189,5 +189,38 @@
       <sourcelist></sourcelist>
       <storevalue>T</storevalue>
     </customrecordcustomfield>
+    <customrecordcustomfield scriptid="custrecord_arch_res_key">
+      <accesslevel>2</accesslevel>
+      <allowquickadd>F</allowquickadd>
+      <applyformatting>F</applyformatting>
+      <checkspelling>F</checkspelling>
+      <defaultchecked>F</defaultchecked>
+      <defaultselection></defaultselection>
+      <defaultvalue></defaultvalue>
+      <description>The order request's idempotency key, written with the claim BEFORE the sales order exists. If the endpoint fails after saving the order but before naming it here, the reconciler finds the order by this key (externalid on a create, the ARCH-APPEND marker on an append) and completes the claim instead of releasing a real reservation as abandoned.</description>
+      <displaytype>NORMAL</displaytype>
+      <dynamicdefault></dynamicdefault>
+      <encryptatrest>F</encryptatrest>
+      <fieldtype>TEXT</fieldtype>
+      <globalsearch>F</globalsearch>
+      <help>Idempotency key of the order request that took this bundle.</help>
+      <isformula>F</isformula>
+      <ismandatory>F</ismandatory>
+      <isparent>F</isparent>
+      <label>Order Request Key</label>
+      <linktext></linktext>
+      <maxlength>64</maxlength>
+      <onparentdelete></onparentdelete>
+      <rolerestrict>F</rolerestrict>
+      <searchcomparefield></searchcomparefield>
+      <searchdefault></searchdefault>
+      <searchlevel>2</searchlevel>
+      <selectrecordtype></selectrecordtype>
+      <showinlist>F</showinlist>
+      <sourcefilterby></sourcefilterby>
+      <sourcefrom></sourcefrom>
+      <sourcelist></sourcelist>
+      <storevalue>T</storevalue>
+    </customrecordcustomfield>
   </customrecordcustomfields>
 </customrecordtype>

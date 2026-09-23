@@ -38,6 +38,13 @@ define([], () => {
     const F_ITEM = 'custrecord_arch_res_item';
     const F_SO   = 'custrecord_arch_res_so';
     const F_LINE = 'custrecord_arch_res_line';
+    /* The order request's idempotency key, written WITH the claim, before the SO
+     * exists. Review 2026-09-23 (HIGH 3): if anything fails between the SO save and
+     * `finalize`, a claim with no SO used to be swept as abandoned after 30 min
+     * while its SO line still wanted the bundle. With the key, the reconciler finds
+     * the order (externalid ARCH-ORDER-<key>, or the [ARCH-APPEND:<key>] marker)
+     * and completes the claim instead. */
+    const F_KEY  = 'custrecord_arch_res_key';
 
     /** Minutes a claim may stay without an SO before the reconciler releases it. */
     const PENDING_TTL_MIN = 30;
@@ -58,6 +65,7 @@ define([], () => {
         '       c.' + F_SO + ' AS soid, t.tranid AS sonumber, ' +
         '       BUILTIN.DF(t.entity) AS customer, ' +
         '       c.' + F_LINE + ' AS linekey, c.' + F_ITEM + ' AS itemid, ' +
+        '       c.' + F_KEY + ' AS orderkey, c.isinactive AS inactive, ' +
         "       TO_CHAR(c.created, 'YYYY-MM-DD HH24:MI:SS') AS since, " +
         /* 🔴 CURRENT_DATE, NOT SYSDATE. Measured 2026-09-23 from N/query: a claim
          * created at 05:00:38Z formats `created` as 01:00:38, CURRENT_DATE as
@@ -72,8 +80,11 @@ define([], () => {
         '         WHERE inl.inventorynumber = c.' + F_LOT + ') AS lotonhand ' +
         'FROM ' + TYPE + ' c ' +
         'LEFT JOIN inventorynumber inv ON inv.id = c.' + F_LOT + ' ' +
-        'LEFT JOIN transaction t ON t.id = c.' + F_SO + ' ' +
-        "WHERE c.isinactive = 'F'";
+        'LEFT JOIN transaction t ON t.id = c.' + F_SO;
+    /* 🔴 INACTIVE CLAIMS ARE READ TOO (review 2026-09-23). Their externalId still
+     * blocks a new claim, so filtering them out made a bundle inactivated by hand
+     * unreservable forever with nothing showing why. They count as held here, and
+     * the reconciler releases them. */
 
     /**
      * Every live claim. Small by nature (one per bundle sold off a boat), so it
@@ -105,6 +116,8 @@ define([], () => {
                 customer: r.customer == null ? '' : String(r.customer),
                 lineKey:  int(r.linekey),
                 itemId:   int(r.itemid),
+                orderKey: r.orderkey == null ? '' : String(r.orderkey),
+                inactive: String(r.inactive || 'F') === 'T',
                 since:    r.since == null ? '' : String(r.since),
                 nowAcct:  r.nowacct == null ? '' : String(r.nowacct),
                 lotOnHand: Number(r.lotonhand) || 0,
@@ -155,11 +168,12 @@ define([], () => {
      * when another claim holds it; any other failure throws, because a write path
      * that cannot tell whether it holds the lock must not go on to sell the wood.
      */
-    const claim = (record, lotId, itemId) => {
+    const claim = (record, lotId, itemId, orderKey) => {
         const rec = record.create({ type: TYPE });
         rec.setValue({ fieldId: 'externalid', value: externalIdFor(lotId) });
         rec.setValue({ fieldId: F_LOT, value: int(lotId) });
         if (int(itemId)) rec.setValue({ fieldId: F_ITEM, value: int(itemId) });
+        if (orderKey) rec.setValue({ fieldId: F_KEY, value: String(orderKey).slice(0, 64) });
         try {
             return { ok: true, claimId: rec.save() };
         } catch (e) {
@@ -215,7 +229,8 @@ define([], () => {
      * facts = { nowAcct, so: {type, status} | null, line: {item, location,
      *   qtyBase, shippedBase, closed} | null, stock: [{location, onHandBase,
      *   onOrderBase}], assignedOnLineBase, otherCommitBase, poLines: [{closedLine,
-     *   closedPo, orderedBase, receivedBase, bundleBase}], poHasReceipt }
+     *   closedPo, orderedBase, receivedBase, bundleBase}], poHasReceipt,
+     *   assignedAllOnLineBase (every lot on the line, not only this one) }
      *
      * Returns { action: 'release' | 'handoff' | 'keep', reason, exception,
      *           handoffBase, releaseAfterHandoff, alert } */
@@ -223,6 +238,7 @@ define([], () => {
     const decideClaim = (c, f) => {
         const out = (action, reason, extra) => Object.assign(
             { action, reason, exception: null, handoffBase: 0, releaseAfterHandoff: false, alert: false }, extra || {});
+        if (c.inactive) return out('release', 'the claim was inactivated by hand');
         if (!c.soId) {
             if (c.lineKey) return out('release', 'the sales order was deleted');
             const age = ageMinutes(c.since, c.nowAcct || f.nowAcct);
@@ -243,8 +259,17 @@ define([], () => {
         }
         const open = Math.max(0, Math.abs(line.qtyBase) - Math.abs(line.shippedBase || 0));
         if (open <= EPS) return out('release', 'the line is fulfilled');
+        /* Two figures, review 2026-09-23 (HIGH 2): this bundle on the line, and
+         * EVERY lot on the line. A line a person filled with another bundle by hand
+         * no longer needs this one, so it is released; and a hand-off is capped by
+         * what the line still lacks from all lots, never only from this one. */
         const assigned = Math.abs(f.assignedOnLineBase || 0);
-        if (assigned >= open - EPS) return out('release', 'handed over: the line carries the bundle');
+        const assignedAll = Math.max(assigned, Math.abs(f.assignedAllOnLineBase || 0));
+        if (assignedAll >= open - EPS) {
+            return out('release', assigned >= open - EPS
+                ? 'handed over: the line carries the bundle'
+                : 'the line is already covered by another bundle');
+        }
 
         const stock = f.stock || [];
         const total = stock.reduce((s, x) => s + Math.max(0, x.onHandBase || 0), 0);
@@ -255,8 +280,14 @@ define([], () => {
             const here = stock.filter((x) => String(x.location) === String(line.location))
                 .reduce((s, x) => s + Math.max(0, x.onHandBase || 0), 0);
             if (here <= EPS) return out('keep', 'landed at another location', { exception: 'VAL_LOCATION_CHANGED' });
-            const give = Math.min(open - assigned, here);
-            const full = assigned + give >= open - EPS;
+            /* 🔴 NET OF WHAT IS ALREADY ON THE LINE (review 2026-09-23, HIGH 1). An
+             * assignment does not lower on-hand, so after a short hand-off `here`
+             * still counts the part already given, and the next run handed it out a
+             * second time. `free` is what of this bundle is not on the line yet. */
+            const free = here - assigned;
+            if (free <= EPS) return out('keep', 'landed short, all of it is on the line', { exception: 'VAL_RECEIVED_SHORT' });
+            const give = Math.min(open - assignedAll, free);
+            const full = assignedAll + give >= open - EPS;
             return out('handoff', full ? 'landed: handing the bundle to its line' : 'landed short',
                 { handoffBase: give, releaseAfterHandoff: full, exception: full ? null : 'VAL_RECEIVED_SHORT' });
         }
@@ -277,7 +308,7 @@ define([], () => {
     };
 
     return {
-        TYPE, F_LOT, F_ITEM, F_SO, F_LINE, PENDING_TTL_MIN, CLAIMS_SQL,
+        TYPE, F_LOT, F_ITEM, F_SO, F_LINE, F_KEY, PENDING_TTL_MIN, CLAIMS_SQL,
         externalIdFor, readClaims, readExceptions, claim, finalize, release, isDuplicate, ageMinutes, decideClaim,
     };
 });

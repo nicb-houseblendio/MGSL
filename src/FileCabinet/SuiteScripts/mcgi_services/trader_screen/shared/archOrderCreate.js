@@ -3844,13 +3844,13 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * is refused as a duplicate means another order took the bundle between the
      * read in `resolveLines` and now: everything this request took is released
      * and the order is refused, before anything is written. */
-    const takeClaims = (preLines) => {
+    const takeClaims = (preLines, orderKey) => {
         const held = [];
         for (let i = 0; i < preLines.length; i++) {
             const l = preLines[i];
             let res;
             try {
-                res = Reservation.claim(record, l.lotId, l.itemId);
+                res = Reservation.claim(record, l.lotId, l.itemId, orderKey);
             } catch (e) {
                 releaseClaims(held, 'a claim could not be written');
                 throw refusal('Bundle ' + l.lotName + ' could not be reserved (' + (e.name || '') + ': ' +
@@ -5327,7 +5327,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
          * check and every line, so nothing above can leave a claim behind. */
         const preLines = resolved.lines.filter((l) => l.preArrival);
         const stockLines = resolved.lines.filter((l) => !l.preArrival);
-        takeClaims(preLines);
+        takeClaims(preLines, idempotencyKey);
 
         let soId;
         try {
@@ -5400,7 +5400,17 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         // Phase two. The order already exists at this point, so a failure here is
         // reported rather than thrown: throwing would tell the trader the order
         // failed when it is sitting in NetSuite with correct quantities.
-        const unplaced = assignLots(soId, resolved.lines, priorLineKeys);
+        /* 🔴 THE CLAIMS ARE NAMED EVEN IF THE STOCK SAVE THROWS (review 2026-09-23,
+         * HIGH 3). `assignLots` captures every pre-arrival line key BEFORE its own
+         * save, so a refused stock assignment must not leave the order's bundles on
+         * claims that name no SO. The error is re-thrown after, as before. */
+        let unplaced = [];
+        let assignError = null;
+        try {
+            unplaced = assignLots(soId, resolved.lines, priorLineKeys);
+        } catch (e) {
+            assignError = e;
+        }
 
         /* Name the order and line on each claim. The order EXISTS now, so a
          * failure is reported, never thrown. A claim left without its SO still
@@ -5423,8 +5433,10 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             log.error('ARCH Order Create - RESERVATION NOT RECORDED on SO ' + soId,
                 reservationProblems.join('; ') + ' | The order exists and its line(s) are right, but the ' +
                 'claim does not name the line, so the reconciler will release the bundle as abandoned in ' +
-                Reservation.PENDING_TTL_MIN + ' minutes. Set custrecord_arch_res_so and _line by hand.');
+                Reservation.PENDING_TTL_MIN + ' minutes unless it finds the order by its request key. ' +
+                'Set custrecord_arch_res_so and _line by hand if this persists.');
         }
+        if (assignError) throw assignError;
 
         const wrongForm = unplaced.length ? formWarning(soId) : null;
         if (unplaced.length) {

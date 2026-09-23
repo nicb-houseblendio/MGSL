@@ -28,5 +28,9 @@
       <value>Location changed</value>
       <isinactive>F</isinactive>
     </customvalue>
+    <customvalue scriptid="val_handoff_failed">
+      <value>Landed, could not be put on the order</value>
+      <isinactive>F</isinactive>
+    </customvalue>
   </customvalues>
 </customlist>
