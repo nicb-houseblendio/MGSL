@@ -1486,7 +1486,7 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // would have been the easy and wrong way to make this file green.
   const lots = src('lib/archLots.ts');
   ok('18:  ...and so is the drawer column that used to repeat one number per row',
-    /lotCostDisplay\(lot, row\)/.test(drw) &&
+    /lotCostDisplay\(lot, row, costCurrency\)/.test(drw) &&
       /if \(hasCost\(lot\.costPerUnit\)\) return \{ value: lot\.costPerUnit/.test(lots), null);
   // Null is not zero: an uncosted lot would otherwise price at free, and the row
   // average has always excluded those from both sides rather than counting them.
@@ -1607,8 +1607,8 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // someone who never saw the screen. It now routes through the same selector.
   const exp = src('lib/exportARCH.ts');
   ok('f9-1: the export uses the same selector as the grid, and names the currency',
-    /rowCostDisplay\(r\)\.value/.test(exp) &&
-      /rowCostDisplay\(r\)\.currency/.test(exp) &&
+    /rowCostDisplay\(r, costCurrency\)\.value/.test(exp) &&
+      /rowCostDisplay\(r, costCurrency\)\.currency/.test(exp) &&
       /'Cost Currency'/.test(exp) &&
       !/r\.avgCostPerUnit/.test(exp), null);
   // A partial average is qualified on screen by a tooltip and a spreadsheet has

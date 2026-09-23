@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { formatQty, formatCostPerUnit, displaySuffix, unitLabel } from '@/lib/archUom';
-import { isLotLocked, lockReason, lotQuantity, commitmentOn, lotCostDisplay } from '@/lib/archLots';
+import { isLotLocked, lockReason, lotQuantity, commitmentOn, lotCostDisplay, type ArchCostCurrency } from '@/lib/archLots';
 import { bucketLots, bucketGap, bucketGapReason, notSourcedNote } from '@/lib/archBuckets';
 import { lotAllocation, formatShortDate } from '@/lib/archFixtures';
 import {
@@ -129,6 +129,8 @@ const LengthRangeSlider = ({
  */
 
 interface ArchLotTableProps {
+  /** Feedback 16: which currency the bundle cost shows. USD by default. */
+  costCurrency?: ArchCostCurrency;
   row: ArchSummaryRow;
   bucket: ArchDetailKey;
   uom: string;
@@ -221,6 +223,7 @@ export const ArchLotTable = ({
   onAddToCart,
   cartLotNos,
   dataSource = 'netsuite',
+  costCurrency = 'USD',
 }: ArchLotTableProps) => {
   /* 🔴 THE ONE PLACE THAT DECIDES WHETHER A FIXTURE MAY BE DRAWN.
    * Derived once and passed to every `demoTallyProps` call in this file, so the caret,
@@ -1312,7 +1315,7 @@ export const ArchLotTable = ({
                               keeps this bundle's own CAD figure rather than
                               reaching for the row's USD average. */}
                           {(() => {
-                            const cost = lotCostDisplay(lot, row);
+                            const cost = lotCostDisplay(lot, row, costCurrency);
                             return formatCostPerUnit(cost.value, row.unit, cost.currency);
                           })()}
                         </td>

@@ -354,14 +354,22 @@ export const lotQuantity = (lot: ArchLot, bucket: ArchDetailKey): number => {
 
 export type ArchCostDisplay = { value: number | null; currency: 'USD' | 'CAD' };
 
+/**
+ * Feedback 16 (2026-09-22): a toggle so costs can show in CAD, USD staying the
+ * default. 'CAD' is what NetSuite holds, for every costed lot, so it needs no
+ * rate and has no partial case; 'USD' is Feedback 9's rule, unchanged.
+ */
+export type ArchCostCurrency = 'USD' | 'CAD';
+
 const hasCost = (v: number | null | undefined): v is number =>
   v !== null && v !== undefined && Number.isFinite(v);
 
 /** Row-level AVG COST: the USD average where it exists, else the CAD one. */
-export const rowCostDisplay = (row: ArchSummaryRow): ArchCostDisplay =>
-  hasCost(row.avgCostPerUnitUsd)
-    ? { value: row.avgCostPerUnitUsd, currency: 'USD' }
-    : { value: hasCost(row.avgCostPerUnit) ? row.avgCostPerUnit : null, currency: 'CAD' };
+export const rowCostDisplay = (row: ArchSummaryRow, pref: ArchCostCurrency = 'USD'): ArchCostDisplay => {
+  const cad: ArchCostDisplay = { value: hasCost(row.avgCostPerUnit) ? row.avgCostPerUnit : null, currency: 'CAD' };
+  if (pref === 'CAD') return cad;
+  return hasCost(row.avgCostPerUnitUsd) ? { value: row.avgCostPerUnitUsd, currency: 'USD' } : cad;
+};
 
 /**
  * One bundle's cost.
@@ -376,8 +384,29 @@ export const rowCostDisplay = (row: ArchSummaryRow): ArchCostDisplay =>
  *      predates this change and is kept: it is the best honest estimate
  *      available and it is what this cell has always shown.
  */
-export const lotCostDisplay = (lot: ArchLot, row: ArchSummaryRow): ArchCostDisplay => {
+export const lotCostDisplay = (lot: ArchLot, row: ArchSummaryRow, pref: ArchCostCurrency = 'USD'): ArchCostDisplay => {
+  // CAD: this bundle's own CAD cost, else the row's CAD average. Never a USD figure.
+  if (pref === 'CAD') return hasCost(lot.costPerUnit) ? { value: lot.costPerUnit, currency: 'CAD' } : rowCostDisplay(row, 'CAD');
   if (hasCost(lot.costPerUnitUsd)) return { value: lot.costPerUnitUsd, currency: 'USD' };
   if (hasCost(lot.costPerUnit)) return { value: lot.costPerUnit, currency: 'CAD' };
   return rowCostDisplay(row);
+};
+
+const COST_PREF_KEY = 'arch.costCurrency.v1';
+
+/** The viewer's own choice, remembered in this browser. USD when unset or unreadable. */
+export const readArchCostCurrency = (): ArchCostCurrency => {
+  try {
+    return window.localStorage.getItem(COST_PREF_KEY) === 'CAD' ? 'CAD' : 'USD';
+  } catch {
+    return 'USD';
+  }
+};
+
+export const writeArchCostCurrency = (c: ArchCostCurrency): void => {
+  try {
+    window.localStorage.setItem(COST_PREF_KEY, c);
+  } catch {
+    /* private window or blocked storage: the choice lasts this page only */
+  }
 };

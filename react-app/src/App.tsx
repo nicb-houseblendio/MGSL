@@ -20,6 +20,7 @@ import { ArchScreen } from '@/components/ArchScreen';
 import { WarehouseSplitScreen } from '@/components/warehouse/WarehouseSplitScreen';
 import { ARCH_UOMS } from '@/lib/archUom';
 import { ArchFreshnessBadge } from '@/components/arch/ArchFreshnessBadge';
+import { readArchCostCurrency, writeArchCostCurrency, type ArchCostCurrency } from '@/lib/archLots';
 import { defaultViewFor } from '@/lib/traderDefaultView';
 import type { ArchDataSource, ArchCacheMeta } from '@/hooks/useArchSummaryData';
 
@@ -119,6 +120,12 @@ function TraderScreenContent() {
   );
 
   const [uom, setUom] = React.useState('Packs');
+  // Feedback 16: the ARCH cost currency, remembered per viewer. USD by default.
+  const [archCostCur, setArchCostCurState] = React.useState<ArchCostCurrency>(() => readArchCostCurrency());
+  const setArchCostCur = React.useCallback((c: ArchCostCurrency) => {
+    setArchCostCurState(c);
+    writeArchCostCurrency(c);
+  }, []);
   React.useEffect(() => {
     const options = uomOptionsFor(activeView);
     setUom((prev) => options.includes(prev) ? prev : options[0]);
@@ -401,6 +408,31 @@ function TraderScreenContent() {
               ))}
             </select>
           </div>
+          {/* Feedback 16: ARCH costs in USD (default) or CAD. ARCH only. */}
+          {isARCH && (
+            <div
+              className="flex items-center gap-1.5"
+              title="Which currency the ARCH cost columns and the export show. USD is at each lot's receipt-date rate; CAD is what NetSuite holds."
+            >
+              <span className="text-white text-[10px] font-bold uppercase tracking-wider">Cost</span>
+              <div className="flex rounded-md overflow-hidden border border-[#CBD5E1]">
+                {(['USD', 'CAD'] as const).map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    aria-pressed={archCostCur === c}
+                    onClick={() => setArchCostCur(c)}
+                    className={
+                      'py-1 px-2 text-xs font-semibold cursor-pointer ' +
+                      (archCostCur === c ? 'bg-white text-[#0D1F33]' : 'bg-transparent text-white hover:bg-white/10')
+                    }
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="w-px h-5 bg-white/15" />
           <span className="text-white text-[11px]">{today}</span>
           {/* ARCH runs on local demo data — say so, and never show the IND/MTL
@@ -554,7 +586,7 @@ function TraderScreenContent() {
           components/ArchScreen.tsx. Keeping it behind one branch leaves the
           IND/MTL render path below completely untouched. */}
       {isARCH ? (
-        <ArchScreen uom={uom} tab={archTab} onSourceChange={handleArchSource} onReloadReady={handleArchReloadReady} />
+        <ArchScreen uom={uom} costCurrency={archCostCur} tab={archTab} onSourceChange={handleArchSource} onReloadReady={handleArchReloadReady} />
       ) : (
       <>
       {/* Filters */}

@@ -26,7 +26,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { formatQty, formatCostPerUnit, displaySuffix, unitListLabel } from '@/lib/archUom';
-import { rowCostDisplay } from '@/lib/archLots';
+import { rowCostDisplay, type ArchCostCurrency } from '@/lib/archLots';
 import { noPackingListFlag } from '@/lib/archUnbundled';
 import { ARCH_METRIC_COLORS, ARCH_FOOTER_COLORS } from '@/components/arch/archColors';
 import type { ArchSummaryRow, ArchDetailKey, ArchTotals } from '@/types/arch';
@@ -48,6 +48,8 @@ interface InventoryTableARCHProps {
    * column is sourced when it might not be.
    */
   readyToBuildSourced?: boolean;
+  /** Feedback 16: which currency AVG COST shows. USD by default. */
+  costCurrency?: ArchCostCurrency;
 }
 
 /**
@@ -302,6 +304,7 @@ export const InventoryTableARCH = ({
   rowCount,
   uom,
   readyToBuildSourced = false,
+  costCurrency = 'USD',
 }: InventoryTableARCHProps) => {
   const [sorting, setSorting] = React.useState<SortingState>([]);
   const [rowSelection, setRowSelection] = React.useState<Record<string, boolean>>({});
@@ -388,12 +391,14 @@ export const InventoryTableARCH = ({
         // legitimately differ from the row above it here, so the currency
         // cannot move up into the header.
         cell: ({ row }) => {
-          const cost = rowCostDisplay(row.original);
+          const cost = rowCostDisplay(row.original, costCurrency);
           return (
             <span
               className="tabular-nums font-mono text-xs text-right block"
               title={
-                cost.currency === 'CAD'
+                costCurrency === 'CAD'
+                  ? 'CAD, the currency NetSuite holds this cost in.'
+                  : cost.currency === 'CAD'
                   ? 'Shown in CAD: no lot on this row has a receipt date covered by '
                     + 'the NetSuite exchange rate table.'
                   : row.original.costUsdPartial
@@ -409,7 +414,7 @@ export const InventoryTableARCH = ({
         size: 115,
       },
     ];
-  }, [uom, onDrillDown, onCellFilter, activeFilters, readyToBuildSourced]);
+  }, [uom, onDrillDown, onCellFilter, activeFilters, readyToBuildSourced, costCurrency]);
 
   const defaultOrder = React.useMemo(
     () => columns.map((c) => c.id as string),

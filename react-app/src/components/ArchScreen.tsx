@@ -10,6 +10,7 @@ import { ArchOrderDraftDialog } from '@/components/arch/ArchOrderDraftDialog';
 import { lotQuantity } from '@/lib/archLots';
 import { useArchSummaryData, setArchAutoRefreshHeld, addArchOrderOverlay } from '@/hooks/useArchSummaryData';
 import { overlayFromOrder, cartTakenNote } from '@/lib/archOrderOverlay';
+import type { ArchCostCurrency } from '@/lib/archLots';
 import type { ArchDataSource, ArchCacheMeta } from '@/hooks/useArchSummaryData';
 import { exportToExcelARCH } from '@/lib/exportARCH';
 import type { FilterState } from '@/types';
@@ -36,6 +37,8 @@ const EMPTY_FILTERS: FilterState = {};
 
 interface ArchScreenProps {
   uom: string;
+  /** Feedback 16: which currency the cost columns and export show. Owned by App. */
+  costCurrency?: ArchCostCurrency;
   /** Which of the two ARCH tabs to show. Owned by App so this stays mounted. */
   tab?: 'inventory' | 'orders';
   /** Reports whether the grid is showing NetSuite data or fixtures. */
@@ -53,7 +56,7 @@ interface ArchScreenProps {
   onReloadReady?: (reload: () => void | Promise<unknown>) => void;
 }
 
-export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadReady }: ArchScreenProps) => {
+export const ArchScreen = ({ uom, costCurrency = 'USD', tab = 'inventory', onSourceChange, onReloadReady }: ArchScreenProps) => {
   const { allRows, loading, error, reload, getFilteredRows, getTotals, getFilterOptions, source, meta, sourceError } =
     useArchSummaryData(true);
 
@@ -435,8 +438,8 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
 
   const handleExport = React.useCallback(() => {
     const rows = selectedArchRows(filteredRows, rowSelectionRef.current);
-    exportToExcelARCH(rows, getTotals(rows), uom);
-  }, [filteredRows, getTotals, uom]);
+    exportToExcelARCH(rows, getTotals(rows), uom, costCurrency);
+  }, [filteredRows, getTotals, uom, costCurrency]);
 
   // The grid refreshes itself now, so a cart can hold a bundle someone else just
   // took. Said on the cart bar, next to any note of our own.
@@ -535,6 +538,7 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
           )}
           {allRows ? (
             <InventoryTableARCH
+              costCurrency={costCurrency}
               data={filteredRows}
               onDrillDown={handleDrillDown}
               onCellFilter={handleCellFilter}
@@ -575,6 +579,7 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
 
       {detail && detailRow && (
         <DetailDrawerARCH
+          costCurrency={costCurrency}
           open={detailOpen}
           onOpenChange={setDetailOpen}
           row={detailRow}

@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx';
 import { convertQty, displaySuffix, unitListLabel, ARCH_UOM_M3 } from '@/lib/archUom';
 import type { ArchUnit } from '@/lib/archUom';
 import type { ArchSummaryRow, ArchTotals } from '@/types/arch';
-import { rowCostDisplay } from '@/lib/archLots';
+import { rowCostDisplay, type ArchCostCurrency } from '@/lib/archLots';
 
 /**
  * Excel export for CWP ARCH.
@@ -36,7 +36,8 @@ const qty = (value: number, unit: ArchUnit, uom: string): number => {
   return uom === ARCH_UOM_M3 && v !== (value || 0) ? Math.round(v * 1000) / 1000 : Math.round(v);
 };
 
-export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uom: string) => {
+// `costCurrency` follows the screen's toggle (Feedback 16), so the sheet says what was on screen.
+export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uom: string, costCurrency: ArchCostCurrency = 'USD') => {
   // The quantity headers can no longer name a unit — the sheet may hold BF,
   // SQFT and piece rows together — so a Unit column is added and each row
   // declares its own. That is also the shape a pivot table wants.
@@ -108,7 +109,7 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
     //
     // Routed through the SAME selector the grid uses, so the sheet cannot drift
     // from what the trader saw when they pressed export.
-    rowCostDisplay(r).value ?? '',
+    rowCostDisplay(r, costCurrency).value ?? '',
     /* 🔴 THE PARTIAL CASE HAS TO SURVIVE THE EXPORT, and it did not.
 
        On screen a row whose USD average covers only SOME of its costed lots
@@ -118,9 +119,10 @@ export const exportToExcelARCH = (rows: ArchSummaryRow[], totals: ArchTotals, uo
        forwarded and totalled by someone who never saw the screen, so anything
        the screen qualifies and the sheet does not is a number they will trust
        further than it deserves. */
-    rowCostDisplay(r).value === null
+    rowCostDisplay(r, costCurrency).value === null
       ? ''
-      : rowCostDisplay(r).currency + (r.costUsdPartial ? ' (partial)' : ''),
+      : rowCostDisplay(r, costCurrency).currency +
+        (rowCostDisplay(r, costCurrency).currency === 'USD' && r.costUsdPartial ? ' (partial)' : ''),
   ]);
 
   const totalsRow: (string | number)[] = [

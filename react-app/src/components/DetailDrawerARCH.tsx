@@ -3,6 +3,7 @@ import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { formatQty, displaySuffix } from '@/lib/archUom';
 import { ARCH_BUCKET_META } from '@/components/arch/archColors';
 import { ArchLotTable } from '@/components/arch/ArchLotTable';
+import type { ArchCostCurrency } from '@/lib/archLots';
 import type { ArchDataSource } from '@/hooks/useArchSummaryData';
 import { ArchPOListView } from '@/components/arch/ArchPOListView';
 import type { ArchSummaryRow, ArchDetailKey } from '@/types/arch';
@@ -23,6 +24,8 @@ import type { ArchSummaryRow, ArchDetailKey } from '@/types/arch';
  */
 
 interface DetailDrawerARCHProps {
+  /** Feedback 16: passed to the lot table's cost column. */
+  costCurrency?: ArchCostCurrency;
   /**
    * Whether this screen is reading the real ARCH cache or local demo fixtures.
    *
@@ -97,6 +100,7 @@ export const DetailDrawerARCH = ({
   onAddToCart,
   cartLotNos,
   dataSource = 'netsuite',
+  costCurrency = 'USD',
 }: DetailDrawerARCHProps) => {
   const [activeBucket, setActiveBucket] = React.useState<ArchDetailKey>(() => resolveTab(triggerBucket));
   // Land with reserved expanded when that is the column the trader actually clicked.
@@ -285,6 +289,7 @@ export const DetailDrawerARCH = ({
             />
           ) : (
             <ArchLotTable
+              costCurrency={costCurrency}
               row={row}
               bucket={activeBucket}
               uom={uom}
