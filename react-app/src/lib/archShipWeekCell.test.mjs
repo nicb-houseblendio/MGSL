@@ -79,7 +79,8 @@ test('round 2: the Reserved panel container dash explains itself too', () => {
 
 test('round 2 (F12): an append does not preload a defaulted ship date', () => {
   const wiz = read('components/arch/SOWizard.tsx');
-  assert.match(wiz, /setShipDate\(o\.shipDate && o\.shipDate !== o\.created \? o\.shipDate : ''\);/);
+  // Same rule, now through `preShip` so the preload is remembered (Feedback 13).
+  assert.match(wiz, /const preShip = o\.shipDate && o\.shipDate !== o\.created \? o\.shipDate : '';/);
   assert.doesNotMatch(wiz, /setShipDate\(o\.shipDate \|\| ''\);/);
 });
 

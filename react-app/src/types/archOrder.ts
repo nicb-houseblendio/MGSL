@@ -223,6 +223,9 @@ export interface ArchOrderHeader {
    */
   currencyId?: string;
   shipDate: string;
+  /** False on an append whose ship date is still the one preloaded from the
+   *  order: then it is not sent, so the order's Ship Week is left as it is. */
+  shipDateChanged?: boolean;
   /** Display text, for the Review row. */
   incoterms: string;
   /**

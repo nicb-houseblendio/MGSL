@@ -81,3 +81,11 @@ test('the three server consumers use the shared module, and none reinvents the r
   }
   assert.doesNotMatch(q, /r\.shipdate !== r\.trandate/);
 });
+
+test('an append that keeps the preloaded ship date does not send it back (final review)', () => {
+  const wiz = readFileSync(join(here, '../components/arch/SOWizard.tsx'), 'utf8');
+  const api = readFileSync(join(here, './archOrderApi.ts'), 'utf8');
+  assert.match(wiz, /setShipDate\(preShip\);\s*setPreloadedShipDate\(preShip\);/);
+  assert.match(wiz, /shipDateChanged: mode === 'existing' \? shipDate !== preloadedShipDate : true,/);
+  assert.match(api, /shipDate: draft\.header\.shipDateChanged === false \? undefined : \(draft\.header\.shipDate \|\| undefined\),/);
+});

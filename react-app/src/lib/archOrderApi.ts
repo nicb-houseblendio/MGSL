@@ -233,7 +233,9 @@ const toRequest = (draft: ArchOrderDraft, idempotencyKey: string) => ({
     incotermsId: draft.header.incotermsId || undefined,
     equipment: draft.header.equipment || undefined,
     equipmentId: draft.header.equipmentId || undefined,
-    shipDate: draft.header.shipDate || undefined,
+    // Feedback 13: an append that kept the preloaded date sends none, so the
+    // endpoint does not rewrite the order's Ship Week WEEK as an exact day.
+    shipDate: draft.header.shipDateChanged === false ? undefined : (draft.header.shipDate || undefined),
   },
   /*
    * Feedback 9 item 10. Sent as its own array, never merged into `lines`: the

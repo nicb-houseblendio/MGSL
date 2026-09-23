@@ -833,6 +833,10 @@ export const SOWizard = ({
   const [shipTo, setShipTo] = React.useState('');
   const [currency, setCurrency] = React.useState('');
   const [shipDate, setShipDate] = React.useState('');
+  /* What an APPEND preloaded, so an untouched date is not written back
+   * (Feedback 13 final review): the endpoint writes a sent date into Ship Week
+   * AND shipdate, which would turn the order's Monday WEEK into an exact day. */
+  const [preloadedShipDate, setPreloadedShipDate] = React.useState('');
   /*
    * Incoterms: the display text AND the list id, because only the id is safe to
    * write.
@@ -1470,7 +1474,9 @@ export const SOWizard = ({
     // and the trader must enter a real one. Preloading it priced FX and milling on
     // a stale date (115194: 2026-02-05, FX 1.3693 vs 1.4030 today) and printed
     // that date as the ship date. Same rule as shipWeekCell (round-2 review).
-    setShipDate(o.shipDate && o.shipDate !== o.created ? o.shipDate : '');
+    const preShip = o.shipDate && o.shipDate !== o.created ? o.shipDate : '';
+    setShipDate(preShip);
+    setPreloadedShipDate(preShip);
     // Carry the agreed price across so Pricing is already satisfied for lines
     // that are already sold. The trader only has to price what they just added.
     setPrice((prev) => {
@@ -1832,6 +1838,8 @@ export const SOWizard = ({
       currency,
       currencyId: currencyIdFor(currency),
       shipDate,
+      // Only an append can leave it unchanged; a new order always writes it.
+      shipDateChanged: mode === 'existing' ? shipDate !== preloadedShipDate : true,
       incoterms,
       incotermsId: incotermsId || undefined,
       equipment: equipment || undefined,
