@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { formatQty, unitLabel, formatUnitTotals } from '@/lib/archUom';
+import { formatQty, unitLabel, uomLabel, formatUnitTotals } from '@/lib/archUom';
 import { ARCH_SURFACE } from '@/components/arch/archColors';
 import { fmtMoney, fmtPct, marginColor } from '@/lib/archOrderPricing';
 import type { ArchOrderDraft } from '@/types/archOrder';
@@ -368,32 +368,12 @@ export const ArchOrderDraftDialog = ({
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', background: '#fff' }}>
-          <div
-            style={{
-              display: 'flex',
-              gap: 9,
-              alignItems: 'flex-start',
-              padding: '10px 12px',
-              borderRadius: 9,
-              background: '#FFF8E1',
-              border: '1px solid #E6B800',
-              fontSize: 11.5,
-              color: '#7A4100',
-              lineHeight: 1.55,
-              marginBottom: 16,
-            }}
-          >
-            <span style={{ fontSize: 13, lineHeight: 1 }}>⚠️</span>
-            <span>
-              The <strong>split fee</strong> is not charged at all until it is configured.
-              Operations &amp; insurance is a real rate, but NetSuite reads it from the customer
-              and charges it on revenue, not on lot cost, so the operations &amp; insurance cost
-              folded into the margin below is too small and the margin reads better than the
-              order will record.{' '}
-              <strong>Do not quote a customer from these margins.</strong>
-            </span>
-          </div>
-
+          {/* 🔴 NO OPERATIONS & INSURANCE BOX, Feedback 17 item 8b (MA, 2026-09-23):
+              « Retirer la section en jaune ». The Pricing step lost it in the first
+              pass and this dialog kept a copy, visible in his own image (22). It was
+              also no longer TRUE: operations & insurance left the profit that day
+              (opsInsuranceCost 0), so it described a cost the margin below no longer
+              contains. The profit here is price - lot cost - reman - split. */}
           <OutcomeNotice result={result} submitting={submitting} />
 
           <div
@@ -452,11 +432,14 @@ export const ArchOrderDraftDialog = ({
               <tr>
                 <th style={head}>Lot</th>
                 <th style={head}>Item</th>
-                <th style={{ ...head, textAlign: 'right' }}>BF</th>
-                {/* The currency, because this dialog quotes both sides: a bare
-                    Price/BF beside a CA$ revenue invited the reader to assume they
-                    match. */}
-                <th style={{ ...head, textAlign: 'right' }}>Price/BF ({cur})</th>
+                {/* Feedback 17 item 8: Quantity, UOM and Price / Unit, the Review
+                    step's own headers. Board-foot headers were wrong on a LF or
+                    Unit line, which is the confusion he raised (image 22). The
+                    currency stays: a bare price beside a CA$ revenue invited the
+                    reader to assume they match. */}
+                <th style={{ ...head, textAlign: 'right' }}>Quantity</th>
+                <th style={head}>UOM</th>
+                <th style={{ ...head, textAlign: 'right' }}>Price / Unit ({cur})</th>
                 <th style={head}>Intent</th>
               </tr>
             </thead>
@@ -473,6 +456,7 @@ export const ArchOrderDraftDialog = ({
                       <span style={{ color: ARCH_SURFACE.textLight, fontWeight: 400 }}> / {formatQty(l.lotBF, l.unit)}</span>
                     )}
                   </td>
+                  <td style={{ ...cell, fontSize: 11.5, color: ARCH_SURFACE.textMid }}>{uomLabel(l.unit)}</td>
                   <td style={{ ...cell, textAlign: 'right' }} className="font-mono">
                     {/* 🔴 `cur`, not the default. fmtMoney falls back to USD, and
                         en-US prints USD as a bare $, so on a Canadian order this

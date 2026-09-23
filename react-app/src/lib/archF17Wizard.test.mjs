@@ -126,3 +126,13 @@ test('8d: dropped on success (and frozen until close), on Clear, and on Edit', (
 test('B1: ArchScreen warms the endpoint health answer once', () => {
   assert.match(S, /React\.useEffect\(\(\) => \{\s*void fetchWriteAuth\(\);\s*\}, \[\]\);/);
 });
+
+test('8a/8b in the confirmation dialog too: no operations & insurance box, Quantity / UOM / Price / Unit', () => {
+  // His image (22) is this dialog, not the Pricing step: the first pass missed it.
+  const d = src('components/arch/ArchOrderDraftDialog.tsx');
+  assert.doesNotMatch(d, /Operations &amp; insurance is a real rate/);
+  assert.doesNotMatch(d, /Do not quote a customer from these margins/);
+  assert.doesNotMatch(d, />BF<\/th>|Price\/BF/);
+  assert.match(d, />Quantity<\/th>\s*<th style=\{head\}>UOM<\/th>\s*<th style=\{\{ \.\.\.head, textAlign: 'right' \}\}>Price \/ Unit \(\{cur\}\)<\/th>/);
+  assert.match(d, /\{uomLabel\(l\.unit\)\}<\/td>/);
+});

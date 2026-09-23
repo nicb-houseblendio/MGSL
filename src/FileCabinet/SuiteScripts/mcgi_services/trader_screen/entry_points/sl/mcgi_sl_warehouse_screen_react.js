@@ -22,9 +22,10 @@
  * build into two entry points — the component boundary is already clean.
  *
  * ⚠️ The deployment currently has allemployees=T so it can be demoed. It MUST be
- * restricted to the warehouse role before production. That role is 2183
- * (customrole2183, Hardwood Logistics Coordinator), settled 2026-09-22 in
- * Feedback 11; the split endpoint already lists it.
+ * restricted to the roles the split endpoint admits before production: 2183
+ * (Hardwood Logistics Coordinator, Feedback 11, 2026-09-22), plus 2182
+ * (Hardwood Trader) and 2184 (Hardwood AP/AR Analyst) from Feedback 17. Keep
+ * this audience and `custscript_arch_split_roles` the same list.
  *
  * Lives under trader_screen/ because it loads that folder's bundle and is
  * therefore covered by the same deploy.xml files path. Move both together.

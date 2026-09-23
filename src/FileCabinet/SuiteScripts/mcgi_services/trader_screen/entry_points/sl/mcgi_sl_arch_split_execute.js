@@ -27,7 +27,10 @@
  * is deliberate: an unconfigured deployment must refuse everyone rather than
  * admit everyone. The warehouse role was settled 2026-09-22 (Feedback 11): MA
  * opened the screen as 2183 Hardwood Logistics Coordinator, so the SDF ships
- * `customrole2183` for this parameter and in the audience. The warehouse page
+ * `customrole2183` for this parameter and in the audience. Feedback 17
+ * (2026-09-23) added 2182 Hardwood Trader and 2184 Hardwood AP/AR Analyst to
+ * both. His third role, "MGSL - Hardwood Reload Access", does not exist in
+ * either account, so it is not listed. The warehouse page
  * (script 6495, deployment 4656) is allemployees=T, and since 2026-09-22 also
  * allroles=T and run-as Administrator by the client's hand, which is exactly the
  * shape of mistake this guards against.
