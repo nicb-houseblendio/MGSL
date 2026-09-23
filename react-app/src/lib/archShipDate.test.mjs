@@ -36,9 +36,10 @@ test('no executable code reads or writes custbody_mgsl_expectedshipdate any more
   assert.doesNotMatch(code(splitQueue), /custbody_mgsl_expectedshipdate/);
 });
 
-test('the split queue reads the native ship date, and a defaulted one (== order date) is no date', () => {
+test('the split queue resolves the ship week through the shared rule (Feedback 13)', () => {
   assert.match(splitQueue, /TO_CHAR\(t\.shipdate, 'YYYY-MM-DD'\)\s+AS shipdate/);
-  assert.match(splitQueue, /shipDate:\s+\(r\.shipdate && r\.shipdate !== r\.trandate\) \? r\.shipdate : '',/);
+  assert.match(splitQueue, /ArchShipWeek\.readShipWeeks\(query, log, rows\.map\(\(r\) => r\.soid\)\)/);
+  assert.match(splitQueue, /ArchShipWeek\.forOrder\(shipRead, r\.soid,\s*\{ shipDate: r\.shipdate, tranDate: r\.trandate \}\)/);
   // the trandate fallback made "nobody entered a date" read as "13d late"
   assert.doesNotMatch(splitQueue, /r\.shipdate \|\| r\.trandate/);
 });

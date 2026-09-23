@@ -77,8 +77,14 @@ export interface ArchSplitJob {
   /** The trader who sold it — they get the comment notification. */
   trader: string;
   locationName: string;
-  /** ISO date the order ships. Drives the urgency pill. */
+  /** ISO date the order ships. Drives the urgency pill. Resolved server-side since
+   *  Feedback 13: Ship Week, else ship date, '' when either is only a default. */
   shipDate: string;
+  /** Feedback 13: which field `shipDate` came from, resolved server-side by
+   *  shared/archShipWeek.js. 'week' is a WEEK (usually its Monday), not a day. */
+  shipDateSource?: '' | 'week' | 'date';
+  /** A Ship Week or ship date existed but was only a default, so none is shown. */
+  shipDateDefaulted?: boolean;
   bundles: ArchSplitBundle[];
 }
 

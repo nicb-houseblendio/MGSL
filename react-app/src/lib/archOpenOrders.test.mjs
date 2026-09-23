@@ -20,6 +20,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..', '..', 'src', 'FileCabinet', 'SuiteScripts', 'mcgi_services', 'trader_screen');
 const SERVICE = join(ROOT, 'service', 'trader_screen_service_arch.js');
 const TEAM = join(ROOT, 'shared', 'archSalesTeam.js');
+const SHIPWEEK = join(ROOT, 'shared', 'archShipWeek.js');
 
 let fail = 0;
 const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (cond ? '' : '   got: ' + JSON.stringify(got))); if (!cond) fail++; };
@@ -103,7 +104,12 @@ const query = {
   runSuiteQL: ({ query: sql }) => {
     sqlLog.push(sql);
     let rows;
-    if (/FROM transactionsalesteam/.test(sql)) rows = TEAM_ROWS;
+    // Feedback 13: the isolated Ship Week read (shared/archShipWeek.js).
+    if (/custbody_ship_week/.test(sql)) rows = [
+      { tranid: '126868', sw: '2026-09-28', sd: '2026-09-15', td: '2026-09-01', cd: '2026-09-01' },
+      { tranid: '126999', sw: '2026-09-18', sd: '2026-09-01', td: '2026-09-01', cd: '2026-09-18' },
+    ];
+    else if (/FROM transactionsalesteam/.test(sql)) rows = TEAM_ROWS;
     else if (/FROM transactionline tl/.test(sql) && /otherrefnum/.test(sql)) rows = OPEN_ROWS;
     else if (/COUNT\(\*\) AS n FROM item/.test(sql)) rows = [{ n: '6' }];
     else if (/FROM customer c/.test(sql)) rows = customerRows;
@@ -140,13 +146,15 @@ const load = (file, resolve) => {
 };
 const team = load(TEAM, (d) => ({ 'N/query': query, 'N/log': log })[d]);
 ok('archSalesTeam loaded', !!team && typeof team.repByTransaction === 'function');
+// Feedback 13: the real ship-week module, like archSalesTeam (no dependencies).
+const shipWeekMod = load(SHIPWEEK, () => { throw new Error('no deps'); });
 
 const service = load(SERVICE, (d) => {
   const table = {
     'N/runtime': runtime, 'N/log': log, 'N/query': query,
     '../shared/cacheKeys_arch': CacheKeysARCH,
     '../shared/cacheClient': CacheClient,
-    '../shared/archSalesTeam': team,
+    '../shared/archShipWeek': shipWeekMod, '../shared/archSalesTeam': team,
   };
   if (!(d in table)) throw new Error('service asked for an unfaked dependency: ' + d);
   return table[d];
@@ -161,6 +169,18 @@ const res = service.getRouter({ action: 'openOrders' });
 const roleQueriesOnHealthyRun = sqlLog.filter((s) => /FROM role\b/.test(s)).length;
 ok('openOrders succeeds', res && res.success === true, res && res.error);
 const orders = (res && res.orders) || [];
+{
+  // Feedback 13: Ship Week resolved by the shared rule, on the open-orders payload.
+  const byNo = (n) => orders.find((o) => o.soNo === n) || {};
+  ok('F13: a hand-set Ship Week wins over the ship date, source week',
+    byNo('SO-CWP-001354').shipDate === '2026-09-28' && byNo('SO-CWP-001354').shipDateSource === 'week', byNo('SO-CWP-001354'));
+  ok('F13: an import-day Ship Week (= created) is a default, and the order-date ship date too: no date, flagged',
+    byNo('SO-CWP-001399').shipDate === '' && byNo('SO-CWP-001399').shipDateDefaulted === true, byNo('SO-CWP-001399'));
+  ok('F13: an order the ship-week read did not return falls back to its own ship date',
+    byNo('SO-CWP-001400').shipDate === '2026-09-15' && byNo('SO-CWP-001400').shipDateSource === 'date', byNo('SO-CWP-001400'));
+  ok('F13: the ship week is its OWN query, never a column of the open-orders query',
+    !sqlLog.some((q) => /otherrefnum/.test(q) && /custbody_ship_week/.test(q)));
+}
 const by = Object.fromEntries(orders.map((o) => [o.soNo, o]));
 ok('four orders come back', orders.length === 4, orders.map((o) => o.soNo));
 
@@ -192,7 +212,7 @@ const brokenTeam = { repByTransaction: () => { throw new Error('SSS_MISSING_REQD
 const rec2 = recording();
 const service2 = load(SERVICE, (d) => ({
   'N/runtime': runtime, 'N/log': rec2.log, 'N/query': query,
-  '../shared/cacheKeys_arch': CacheKeysARCH, '../shared/cacheClient': CacheClient, '../shared/archSalesTeam': brokenTeam,
+  '../shared/cacheKeys_arch': CacheKeysARCH, '../shared/cacheClient': CacheClient, '../shared/archShipWeek': shipWeekMod, '../shared/archSalesTeam': brokenTeam,
 })[d]);
 const res2 = service2.getRouter({ action: 'openOrders' });
 ok('a failing sublist read degrades to the header rep instead of failing the tab', res2.success === true && res2.orders.length === 4 && res2.orders.every((o) => o.trader === 'Unassigned' || o.trader === 'Header Rep'), res2.orders && res2.orders.map((o) => o.trader));
@@ -255,7 +275,7 @@ const namelessTeam = {
 const rec4 = recording();
 const service4 = load(SERVICE, (d) => ({
   'N/runtime': runtime, 'N/log': rec4.log, 'N/query': query,
-  '../shared/cacheKeys_arch': CacheKeysARCH, '../shared/cacheClient': CacheClient, '../shared/archSalesTeam': namelessTeam,
+  '../shared/cacheKeys_arch': CacheKeysARCH, '../shared/cacheClient': CacheClient, '../shared/archShipWeek': shipWeekMod, '../shared/archSalesTeam': namelessTeam,
 })[d]);
 const res4 = service4.getRouter({ action: 'openOrders' });
 const o4 = res4.orders.find((o) => o.soNo === 'SO-CWP-001352');
@@ -295,7 +315,7 @@ ok('G: and it asks for the subsidiary name, so the exclusion can describe itself
 const recC = recording();
 const serviceC = load(SERVICE, (d) => ({
   'N/runtime': runtime, 'N/log': recC.log, 'N/query': query,
-  '../shared/cacheKeys_arch': CacheKeysARCH, '../shared/cacheClient': CacheClient, '../shared/archSalesTeam': team,
+  '../shared/cacheKeys_arch': CacheKeysARCH, '../shared/cacheClient': CacheClient, '../shared/archShipWeek': shipWeekMod, '../shared/archSalesTeam': team,
 })[d]);
 customerRows = [cust('900', 'Industriel Client One', '7', 'IND')];
 const resC2 = serviceC.getRouter({ action: 'customers' });
@@ -414,7 +434,7 @@ ok('H: a partly-degraded read still names the role, because that is what to chec
 const recT = recording();
 const serviceT = load(SERVICE, (d) => ({
   'N/runtime': runtime, 'N/log': recT.log, 'N/query': query,
-  '../shared/cacheKeys_arch': CacheKeysARCH, '../shared/cacheClient': CacheClient, '../shared/archSalesTeam': team,
+  '../shared/cacheKeys_arch': CacheKeysARCH, '../shared/cacheClient': CacheClient, '../shared/archShipWeek': shipWeekMod, '../shared/archSalesTeam': team,
 })[d]);
 teamGroupRows = [];
 const resT2 = serviceT.getRouter({ action: 'salesTeams' });
@@ -438,7 +458,7 @@ const throwing = {
 const recT3 = recording();
 const serviceT3 = load(SERVICE, (d) => ({
   'N/runtime': runtime, 'N/log': recT3.log, 'N/query': throwing,
-  '../shared/cacheKeys_arch': CacheKeysARCH, '../shared/cacheClient': CacheClient, '../shared/archSalesTeam': team,
+  '../shared/cacheKeys_arch': CacheKeysARCH, '../shared/cacheClient': CacheClient, '../shared/archShipWeek': shipWeekMod, '../shared/archSalesTeam': team,
 })[d]);
 let threw = false;
 let resT3 = null;

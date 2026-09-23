@@ -163,7 +163,10 @@ define([
     // Every call here is wrapped: costing must never take down the cache build.
     '/SuiteScripts/MCGI_LIB_LotCost',
     '../../shared/archSalesTeam',
-], (query, search, log, runtime, task, CacheKeys, CacheClient, LotCostLib, ArchSalesTeam) => {
+    // Feedback 13: the ONE ship-week rule, shared with the open-orders service
+    // and the split queue so the three can never describe one order differently.
+    '../../shared/archShipWeek',
+], (query, search, log, runtime, task, CacheKeys, CacheClient, LotCostLib, ArchSalesTeam, ArchShipWeek) => {
 
     /**
      * 🔴 SUPERSEDED 2026-09-22: ARCH stock IS now scoped by subsidiary ARC, see
@@ -2451,6 +2454,11 @@ define([
         }
         const rtsIds = Object.keys(readyToShipIds).map((k) => parseInt(k, 10)).filter((n) => n > 0);
 
+        /* Feedback 13: Ship Week, resolved by `archShipWeek` for every SO this run
+         * found. Isolated like the reads above; a failure falls back to the native
+         * ship date on each order, exactly the behaviour before this existed. */
+        const shipRead = ArchShipWeek.readShipWeeks(query, log, soIdsForFlag);
+
         /* DAYS READY: the date of the LATEST tick, from the system notes.
          *
          * A checkbox carries no date. NetSuite writes a system note on every change
@@ -2997,7 +3005,15 @@ define([
                             customerId: r.custid ? String(r.custid) : '',
                             customer:   String(r.customer || ''),
                             created:    isoDate(r.trandate),
-                            shipDate:   isoDate(r.shipdate),
+                            // Feedback 13: the RESOLVED ship week (Ship Week, else
+                            // the ship date, else '' when either is only a default).
+                            // See shared/archShipWeek.js; `created` above stays the
+                            // SO date because Reserved For / Building For count from it.
+                            ...(() => {
+                                const sw = ArchShipWeek.forOrder(shipRead, oid,
+                                    { shipDate: r.shipdate, tranDate: r.trandate });
+                                return { shipDate: sw.date, shipDateSource: sw.source, shipDateDefaulted: sw.defaulted };
+                            })(),
                             // The HEADER Sales Rep, which is null on every ARCH
                             // order. The sublist read below overwrites it where
                             // it resolves; this is the second rung, not the first.
@@ -4052,6 +4068,9 @@ define([
                                     customer:   o.customer,
                                     created:    o.created,
                                     shipDate:   o.shipDate,
+                                    // Feedback 13. Copied on purpose, see readyToBuild below.
+                                    shipDateSource:    o.shipDateSource || '',
+                                    shipDateDefaulted: !!o.shipDateDefaulted,
                                     repId:      o.repId,
                                     rep:        o.rep,
                                     repSource:  o.repSource,

@@ -38,9 +38,10 @@ test('every ARCH Ship Week cell goes through shipWeekCell', () => {
   const lot = read('components/arch/ArchLotTable.tsx');
   const res = read('components/arch/ArchReservedSection.tsx');
   const oo = read('components/arch/ArchOpenOrdersView.tsx');
-  assert.match(lot, /shipWeekCell\(o\.shipDate, o\.created\)\.text/);
-  assert.match(res, /shipWeekCell\(order\.shipDate, order\.created\)/);
-  assert.match(oo, /shipWeekCell\(o\.shipDate, o\.created, shipWeek\)\.text/);
+  // Feedback 13: each passes the server's `defaulted` flag so the dash can say why.
+  assert.match(lot, /shipWeekCell\(o\.shipDate, o\.created, undefined, o\.shipDateDefaulted\)\.text/);
+  assert.match(res, /shipWeekCell\(order\.shipDate, order\.created, undefined, order\.shipDateDefaulted\)/);
+  assert.match(oo, /shipWeekCell\(o\.shipDate, o\.created, shipWeek, o\.shipDateDefaulted\)\.text/);
   assert.doesNotMatch(oo, /\{shipWeek\(o\.shipDate\)\}/);
 });
 

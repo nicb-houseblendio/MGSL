@@ -68,7 +68,7 @@
  * RETURNED, with `lotMissing: true`, rather than filtered out. Hiding them would
  * make a broken order look like no order at all.
  */
-define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
+define(['N/query', 'N/log', './archSalesTeam', './archShipWeek'], (query, log, ArchSalesTeam, ArchShipWeek) => {
 
     const STATUS_PENDING = 'Pending';
     /** Claimed by the split endpoint before it posts. See archSplitExecute. */
@@ -357,6 +357,8 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
         const rateless = [];
         // Same second query as the open-orders tab, for the same reason: joined
         // into the line query a two-rep order would double its bundles.
+        // Feedback 13: Ship Week, resolved by the rule the trader screen uses.
+        const shipRead = ArchShipWeek.readShipWeeks(query, log, rows.map((r) => r.soid));
         let teamRep = {};
         try {
             teamRep = ArchSalesTeam.repByTransaction(rows.map((r) => r.soid));
@@ -394,7 +396,13 @@ define(['N/query', 'N/log', './archSalesTeam'], (query, log, ArchSalesTeam) => {
                     // Feedback 13; the same rule as shipWeekCell on the trader screen).
                     // The old fallback to trandate is gone for the same reason: it
                     // turned "nobody entered a date" into an overdue deadline.
-                    shipDate:     (r.shipdate && r.shipdate !== r.trandate) ? r.shipdate : '',
+                    // Feedback 13: Ship Week first, then the ship date, '' when
+                    // either is only a default. shared/archShipWeek.js.
+                    ...(() => {
+                        const sw = ArchShipWeek.forOrder(shipRead, r.soid,
+                            { shipDate: r.shipdate, tranDate: r.trandate });
+                        return { shipDate: sw.date, shipDateSource: sw.source, shipDateDefaulted: sw.defaulted };
+                    })(),
                     bundles:      [],
                 };
             }

@@ -525,11 +525,11 @@ export const ArchLotTable = ({
           label: 'Ship Week',
           render: (l) =>
             claims(l).length
-              ? joinValues(claims(l).map((o) => shipWeekCell(o.shipDate, o.created).text).filter((t) => t !== NO_VALUE)).text
+              ? joinValues(claims(l).map((o) => shipWeekCell(o.shipDate, o.created, undefined, o.shipDateDefaulted).text).filter((t) => t !== NO_VALUE)).text
               : fallback(l, (f) => formatShortDate(f.shipWeek)),
           // A dash that is only NetSuite's default ship date says so (see shipWeekCell).
           title: (l) =>
-            claims(l).length && claims(l).every((o) => shipWeekCell(o.shipDate, o.created).title)
+            claims(l).length && claims(l).every((o) => shipWeekCell(o.shipDate, o.created, undefined, o.shipDateDefaulted).title)
               ? SHIP_DATE_DEFAULTED_TITLE
               : undefined,
         },

@@ -244,7 +244,7 @@ export const ArchReservedSection = ({
                   : fixture
                     ? formatShortDate(fixture.createdDate)
                     : NO_VALUE;
-                const shipCell = order ? shipWeekCell(order.shipDate, order.created) : null;
+                const shipCell = order ? shipWeekCell(order.shipDate, order.created, undefined, order.shipDateDefaulted) : null;
                 const shipWeek = shipCell
                   ? shipCell.text
                   : fixture

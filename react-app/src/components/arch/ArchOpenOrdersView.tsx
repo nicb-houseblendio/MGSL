@@ -1312,9 +1312,9 @@ export const ArchOpenOrdersView = ({ onEditOrder, ordersState }: ArchOpenOrdersV
                             </td>
                             <td
                               style={{ ...td, color: ARCH_SURFACE.textMid, whiteSpace: 'nowrap' }}
-                              title={shipWeekCell(o.shipDate, o.created, shipWeek).title}
+                              title={shipWeekCell(o.shipDate, o.created, shipWeek, o.shipDateDefaulted).title}
                             >
-                              {shipWeekCell(o.shipDate, o.created, shipWeek).text}
+                              {shipWeekCell(o.shipDate, o.created, shipWeek, o.shipDateDefaulted).text}
                             </td>
                             <td style={{ ...num, fontWeight: 700 }} className="font-mono">
                               {formatUnitTotals(orderQtys(o))}

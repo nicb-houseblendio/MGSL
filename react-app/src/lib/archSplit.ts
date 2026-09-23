@@ -273,12 +273,23 @@ export interface DueInfo {
   background: string;
 }
 
-export const dueInfo = (shipDate: string): DueInfo => {
+/**
+ * Feedback 13: `source` 'week' means `shipDate` is a Ship WEEK (MGSL store its
+ * Monday 62% of the time, and a week can start before the order was entered), so
+ * the order is late only once the whole week is over, and "Ships this week"
+ * while inside it. A 'date' (or unknown) source keeps the exact-day reading.
+ */
+export const dueInfo = (shipDate: string, source?: string, today: Date = new Date()): DueInfo => {
   if (!shipDate) return { label: 'No date', color: '#64748B', background: '#F1F5F9' };
-  const today = new Date();
+  today = new Date(today.getTime());
   today.setHours(0, 0, 0, 0);
   const d = new Date(`${shipDate}T00:00:00`);
   const days = Math.round((d.getTime() - today.getTime()) / 86400000);
+  if (source === 'week' && days <= 0) {
+    const over = -days - 6;
+    if (over > 0) return { label: `${over}d late`, color: '#B91C1C', background: '#FEE2E2' };
+    return { label: 'Ships this week', color: '#A16207', background: '#FEF3C7' };
+  }
   if (days < 0) return { label: `${Math.abs(days)}d late`, color: '#B91C1C', background: '#FEE2E2' };
   if (days === 0) return { label: 'Ships today', color: '#A16207', background: '#FEF3C7' };
   if (days <= 2) return { label: `Ships in ${days}d`, color: '#A16207', background: '#FEF3C7' };

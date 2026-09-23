@@ -42,6 +42,7 @@ import {
   NO_VALUE,
   daysReady,
   bfPriceText,
+  shipWeekCell,
 } from './archLotOrders.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -286,7 +287,7 @@ const TEAM_ROWS = [
   { tranid: '126500', repid: '2090', rep: 'Justin Loveland', contribution: '0.5', isprimary: 'F' },
 ];
 
-const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [], transitRows = [], sealRows = [], poSealRows = [], rtsRows = [], rtsThrows = false, noteRows = [], noteThrows = false, priceRows = [] } = {}) => {
+const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [], transitRows = [], sealRows = [], poSealRows = [], rtsRows = [], rtsThrows = false, noteRows = [], noteThrows = false, priceRows = [], shipWeekRows = [], shipWeekThrows = false } = {}) => {
   const sqlLog = [];
   const errors = [];
   const audits = [];
@@ -310,6 +311,10 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
         return { asMappedResults: () => noteRows };
       }
       if (/tl\.foreignamount/.test(sql)) return { asMappedResults: () => priceRows };
+      if (/custbody_ship_week/.test(sql) && /FROM transaction WHERE id IN/.test(sql)) {
+        if (shipWeekThrows) throw new Error('Unknown identifier custbody_ship_week');
+        return { asMappedResults: () => shipWeekRows };
+      }
       if (/FROM transactionsalesteam/.test(sql)) {
         if (teamThrows) throw new Error('Search error occurred: permission');
         rows = teamRows;
@@ -357,6 +362,8 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
     if (/cacheClient$/.test(id)) return CacheClientFake;
     if (/MCGI_LIB_LotCost$/.test(id)) return LotCostFake;
     if (/archSalesTeam$/.test(id)) return team;
+    // Feedback 13: loaded for real, it has no dependencies.
+    if (/archShipWeek$/.test(id)) return load(join(SHARED, 'archShipWeek.js'), () => { throw new Error('no deps'); });
     throw new Error('unmocked module: ' + id);
   });
 
@@ -393,9 +400,11 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   ok('B3 the order carries the customer NetSuite records, not a generated one',
     !!so1344 && so1344.customer === 'County Line Materials LLC' && so1344.customerId === '2853',
     so1344 && so1344.customer);
-  ok('B4 both dates come through as ISO, not in the account display format',
-    !!so1344 && so1344.created === '2026-08-20' && so1344.shipDate === '2026-08-20',
-    so1344 && [so1344.created, so1344.shipDate]);
+  // Feedback 13: the fixture's ship date equals its order date, NetSuite's default,
+  // so the resolved ship week is '' and flagged. `created` is still ISO.
+  ok('B4 dates come through as ISO, and a default ship date is served as none (flagged)',
+    !!so1344 && so1344.created === '2026-08-20' && so1344.shipDate === '' && so1344.shipDateDefaulted === true,
+    so1344 && [so1344.created, so1344.shipDate, so1344.shipDateDefaulted]);
   ok('B5 the trader is the SALES TEAM rep — the header field is null on every ARCH order',
     !!so1344 && so1344.rep === 'Camil Perrault' && so1344.repId === '2085' && so1344.repSource === 'salesTeam',
     so1344 && [so1344.rep, so1344.repSource]);
@@ -972,6 +981,32 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
     bf && [bf.outbound, bf.readyToBuild, bf.available]);
   ok('I18 ...and logs it at audit, not error', badFlag.audits.some((a) => /Ready to Ship field not readable/.test(a)) &&
     badFlag.errors.length === 0, badFlag.errors);
+}
+
+/* ════ J. Ship Week on the lot drawer's orders (Feedback 13) ═══════════════════
+ * SO-CWP-001344 (126449) gets a hand-set Monday week; SO-CWP-001360 (126500) an
+ * import-day week with an order-date ship date, i.e. both defaults. */
+{
+  const res = runMr({ shipWeekRows: [
+    { tranid: '126449', sw: '2026-09-28', sd: '2026-08-20', td: '2026-08-20', cd: '2026-08-20' },
+    { tranid: '126500', sw: '2026-09-18', sd: '2026-09-01', td: '2026-09-01', cd: '2026-09-18' },
+  ] });
+  const held = res.written.find((r) => String(r.internalId) === '2915')?.lots.find((l) => l.lotNo === '316027-12');
+  const o = (n) => (held?.orders || []).find((x) => x.soNumber === n) || {};
+  ok('J1 a hand-set Ship Week reaches the payload, source week',
+    o('SO-CWP-001344').shipDate === '2026-09-28' && o('SO-CWP-001344').shipDateSource === 'week', o('SO-CWP-001344'));
+  ok('J2 two defaults give no date, flagged defaulted, and the cell says why',
+    o('SO-CWP-001360').shipDate === '' && o('SO-CWP-001360').shipDateDefaulted === true &&
+    shipWeekCell(o('SO-CWP-001360').shipDate, o('SO-CWP-001360').created, undefined, o('SO-CWP-001360').shipDateDefaulted).title,
+    o('SO-CWP-001360'));
+  ok('J3 the ship week is its own read, not a BUCKET_SQL column change',
+    res.sqlLog.some((q) => /custbody_ship_week/.test(q) && /FROM transaction WHERE id IN/.test(q)));
+  const bad = runMr({ shipWeekThrows: true });
+  const bh = bad.written.find((r) => String(r.internalId) === '2915')?.lots.find((l) => l.lotNo === '316027-12');
+  const b1344 = (bh?.orders || []).find((x) => x.soNumber === 'SO-CWP-001344') || {};
+  ok('J4 an unreadable Ship Week falls back to the ship date rule, logged at audit',
+    b1344.shipDate === '' && b1344.shipDateDefaulted === true &&
+    bad.audits.some((a) => /ship week not readable/.test(a)) && bad.errors.length === 0, [b1344, bad.errors]);
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archLotOrders ok');

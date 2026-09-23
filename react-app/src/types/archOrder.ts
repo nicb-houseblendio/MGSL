@@ -382,8 +382,14 @@ export interface ArchOpenOrder {
   incoterms: string;
   created: string;
   status: ArchOrderStatus;
-  /** ISO date already on the order — inherited so the header step is complete. */
+  /** ISO date already on the order — inherited so the header step is complete.
+   *  Resolved server-side since Feedback 13: Ship Week, else ship date, '' when default. */
   shipDate: string;
+  /** Feedback 13: which field `shipDate` came from, resolved server-side by
+   *  shared/archShipWeek.js. 'week' is a WEEK (usually its Monday), not a day. */
+  shipDateSource?: '' | 'week' | 'date';
+  /** A Ship Week or ship date existed but was only a default, so none is shown. */
+  shipDateDefaulted?: boolean;
   salesTeam: string;
   lines: ArchCartLine[];
 }

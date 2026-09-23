@@ -347,7 +347,8 @@ export const WarehouseSplitScreen = () => {
     const started = jobStarted(job);
     const remaining = job.bundles.filter((b) => !entryDone(entryFor(job, b.lotNo), b.systemBF)).length;
     const flagged = job.bundles.filter((b) => evaluateEntry(entryFor(job, b.lotNo), b.systemBF).flagged).length;
-    const due = dueInfo(job.shipDate);
+    // Feedback 13: a Ship Week is late only once the week is over.
+    const due = dueInfo(job.shipDate, job.shipDateSource);
     const jobNotes = notes[job.soNo] || [];
     const latest = jobNotes.length ? jobNotes[jobNotes.length - 1].text : '';
 

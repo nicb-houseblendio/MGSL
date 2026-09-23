@@ -200,15 +200,21 @@ export const formatOrderDate = (iso: string | undefined | null): string => {
  * check the SO, and a confident wrong week is the worse error.
  */
 export const SHIP_DATE_DEFAULTED_TITLE =
-  'The ship date equals the order date, which is what NetSuite fills in when none is entered, ' +
-  'so it is not shown as a planned week. Open the sales order to confirm.';
+  'The Ship Week (or ship date) on this order is only NetSuite\'s default, the order date or the ' +
+  'day it was imported, so it is not shown as a planned week. Open the sales order to confirm.';
 
+/**
+ * Feedback 13: the server now resolves `shipDate` (shared/archShipWeek.js) and
+ * blanks a default, so `defaulted` is what carries the reason. The equality check
+ * below stays as a guard for a cache written before that change.
+ */
 export const shipWeekCell = (
   shipDate: string | undefined | null,
   created: string | undefined | null,
   format: (iso: string) => string = formatOrderDate,
+  defaulted?: boolean,
 ): { text: string; title?: string } => {
-  if (!shipDate) return { text: NO_VALUE };
+  if (!shipDate) return defaulted ? { text: NO_VALUE, title: SHIP_DATE_DEFAULTED_TITLE } : { text: NO_VALUE };
   if (created && shipDate === created) return { text: NO_VALUE, title: SHIP_DATE_DEFAULTED_TITLE };
   return { text: format(shipDate) };
 };

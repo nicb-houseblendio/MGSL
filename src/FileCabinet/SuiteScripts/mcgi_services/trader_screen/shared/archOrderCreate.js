@@ -264,6 +264,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * and it is what the Open Orders tab and the split queue read back, so the date
      * a trader types is now the date the screens show. */
     const H_SHIP_DATE   = 'shipdate';
+    const H_SHIP_WEEK   = 'custbody_ship_week';
     /* Feedback 10 item 1. Exists in BOTH accounts as id 6218, already on the ARC
      * sales-order form, in the Logistics group, and OPTIONAL there. Nothing had
      * to be created in NetSuite; this is wiring only. */
@@ -4689,6 +4690,9 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 const d = parseIsoDate(h.shipDate);
                 if (d) {
                     setIfPresent(so, H_SHIP_DATE, d, 'the expected ship date');
+                    // Feedback 13: and Ship Week, the field MGSL plan with
+                    // (shared/archShipWeek.js). Same typed date, both fields.
+                    setIfPresent(so, H_SHIP_WEEK, d, 'the ship week');
                 } else {
                     // Still not fatal: the order is correct without it. But it is
                     // now a refusal to guess rather than a swallowed exception.
@@ -4890,6 +4894,9 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 const d = parseIsoDate(h.shipDate);
                 if (d) {
                     setIfPresent(so, H_SHIP_DATE, d, 'the expected ship date');
+                    // Feedback 13: and Ship Week, the field MGSL plan with
+                    // (shared/archShipWeek.js). Same typed date, both fields.
+                    setIfPresent(so, H_SHIP_WEEK, d, 'the ship week');
                 } else {
                     log.audit('ARCH Order Create',
                         'Ship date "' + h.shipDate + '" is not YYYY-MM-DD and was not set.');

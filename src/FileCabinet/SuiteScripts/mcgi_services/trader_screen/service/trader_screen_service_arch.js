@@ -27,7 +27,9 @@ define([
     '../shared/cacheKeys_arch',
     '../shared/cacheClient',
     '../shared/archSalesTeam',
-], (runtime, log, query, CacheKeysARCH, CacheClient, ArchSalesTeam) => {
+    // Feedback 13: the ship-week rule shared with the ARCH cache and split queue.
+    '../shared/archShipWeek',
+], (runtime, log, query, CacheKeysARCH, CacheClient, ArchSalesTeam, ArchShipWeek) => {
 
     const getMyCache = () => CacheClient.getCache();
 
@@ -1258,6 +1260,10 @@ define([
                 rtbLastError);
         }
 
+        // Feedback 13: Ship Week in its own read (this runs as the trader's role,
+        // so a custom column in OPEN_ORDERS_SQL could take the whole tab down).
+        const shipRead = ArchShipWeek.readShipWeeks(query, log, rtbIdList);
+
         try {
             teamRep = ArchSalesTeam.repByTransaction(rows.map((r) => r.tranid));
         } catch (e) {
@@ -1317,7 +1323,13 @@ define([
                     incoterms:  String(r.incoterms || ''),
                     termsName:  r.termsname ? String(r.termsname) : null,
                     created:    isoDate(r.trandate),
-                    shipDate:   isoDate(r.shipdate),
+                    // Feedback 13: resolved by shared/archShipWeek.js, the same
+                    // rule the lot drawer and the split queue use.
+                    ...(() => {
+                        const sw = ArchShipWeek.forOrder(shipRead, tranId,
+                            { shipDate: r.shipdate, tranDate: r.trandate });
+                        return { shipDate: sw.date, shipDateSource: sw.source, shipDateDefaulted: sw.defaulted };
+                    })(),
                     // The sublist is read for the TRADER above. This field stays
                     // blank: the wizard's header field is one rep (custbody_sales_rep),
                     // not a team, and a name under a "team" label would be a guess
