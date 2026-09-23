@@ -531,11 +531,15 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
 // juste disparaitre du TS". Source guard: App.tsx cannot be rendered in this repo.
 {
   const a = src('App.tsx');
-  ok('app: the ARCH header renders its own freshness badge', /archFreshness\(archMeta\?\.lastUpdated, Date\.now\(\)\)/.test(a));
-  ok('app: it imports the tested module rather than inlining a threshold', /from '@\/lib\/archFreshness'/.test(a));
+  // 2026-09-23: the badge is its own component so it TICKS (it froze between
+  // renders); the guards follow it there.
+  const b = src('components/arch/ArchFreshnessBadge.tsx');
+  ok('app: the ARCH header renders its own freshness badge', /<ArchFreshnessBadge lastUpdated=\{archMeta\?\.lastUpdated\} \/>/.test(a));
+  ok('app: it imports the tested module rather than inlining a threshold', /from '@\/lib\/archFreshness'/.test(b) && /archFreshness\(lastUpdated, now\)/.test(b));
   ok('app: the shared badge stays gated off for ARCH, whose interval it misreads', /\{!isARCH && meta\?\.lastUpdated/.test(a));
-  ok('app: the badge carries a tooltip explaining the age', /title=\{f\.title\}/.test(a));
-  ok('app: all three states get a colour, so overdue does not read as fresh', /f\.state === 'fresh'/.test(a) && /f\.state === 'due'/.test(a));
+  ok('app: the badge carries a tooltip explaining the age', /title=\{f\.title\}/.test(b));
+  ok('app: all three states get a colour, so overdue does not read as fresh', /f\.state === 'fresh'/.test(b) && /f\.state === 'due'/.test(b));
+  ok('app: the badge ticks on its own, so its age never freezes', /setInterval\(\(\) => setNow\(Date\.now\(\)\), 30 \* 1000\)/.test(b));
 }
 
 // 🔴 READY TO BUILD WARNS, IT NEVER BLOCKS. The client superseded his own call remark

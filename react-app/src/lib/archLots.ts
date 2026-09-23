@@ -174,6 +174,14 @@ export const reservationText = (lot: ArchLot): { badge: string; detail: string }
   if (!r) return null;
   if (r.pending) return { badge: 'Reserving', detail: 'An order taking this bundle is being saved right now.' };
   const who = r.soNumber || (r.soId ? 'SO ' + r.soId : 'a sales order');
+  // This screen's own order, not yet in the cache (lib/archOrderOverlay).
+  if (r.local) {
+    return {
+      badge: r.local === 'split' ? `${who} · split` : who,
+      detail: `On ${who}${r.customer ? ' for ' + r.customer : ''}, ordered just now from this screen` +
+        (r.local === 'split' ? ', to be split' : '') + '. The screen confirms it at the next refresh.',
+    };
+  }
   const base = `Reserved on ${who}${r.customer ? ' for ' + r.customer : ''}`;
   if (r.exception) return { badge: `${who} · ${r.exception.label}`, detail: `${base}. ${r.exception.label} (since ${r.exception.since}).` };
   if (r.landed) return { badge: `${who} · landed`, detail: `${base}. It has arrived and is being put on the order.` };

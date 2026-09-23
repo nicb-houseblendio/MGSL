@@ -190,6 +190,33 @@ define([
         catch (e) { return ''; }
     };
 
+    /**
+     * Is the summary THERE, without parsing it? For `meta`, which the screen now
+     * polls every 30 s per open tab (2026-09-23): parsing ~450 KB of rows on every
+     * poll put a summary's worth of CPU on RESTlet 4720, shared with IND and MTL, to
+     * answer a yes/no. Same misses as readSummary, same reasons: an absent key, a
+     * pointer to a chunk that is gone. What it does not re-verify is that an
+     * unchunked value is valid JSON; the builder writes it with JSON.stringify and
+     * the summary action still parses it in full.
+     */
+    const summaryPresence = (myCache) => {
+        const raw = myCache.get({ key: CacheKeysARCH.SUMMARY });
+        if (!raw) return { present: false, reason: 'SUMMARY_MISSING' };
+        const head = String(raw).replace(/^\s+/, '').charAt(0);
+        if (head === '[') return { present: true, reason: null };
+        let parsed;
+        try { parsed = JSON.parse(raw); } catch (e) { return { present: false, reason: 'SUMMARY_UNREADABLE' }; }
+        if (parsed && parsed.chunked && parsed.chunkCount) {
+            for (let i = 0; i < parsed.chunkCount; i++) {
+                const chunkRaw = myCache.get({ key: CacheKeysARCH.buildSummaryDataKey(i) });
+                if (!chunkRaw) return { present: false, reason: 'SUMMARY_CHUNK_MISSING' };
+                if (String(chunkRaw).replace(/^\s+/, '').charAt(0) !== '[') return { present: false, reason: 'SUMMARY_CHUNK_UNREADABLE' };
+            }
+            return { present: true, reason: null };
+        }
+        return { present: false, reason: 'SUMMARY_UNREADABLE' };
+    };
+
     const handleGetMeta = () => {
         try {
             const myCache = getMyCache();
@@ -202,7 +229,7 @@ define([
             // the very next request contradicts. `lastUpdated` is still returned
             // so the UI can say WHEN the data it cannot show was last built,
             // rather than just failing blank.
-            const summary = readSummary(myCache);
+            const summary = summaryPresence(myCache);
             if (!summary.present) {
                 return {
                     available:   false,
@@ -252,6 +279,9 @@ define([
                 // part of the builder's META. Stale while claims exist = hand-offs
                 // at receipt have stopped.
                 reconLastRun: readReconLastRun(myCache),
+                // When the run that built these rows STARTED (ISO, null if unknown).
+                // A change saved after it may not be in them yet.
+                startedAt: meta.startedAt || null,
             };
         } catch (e) {
             log.error({ title: 'trader_screen_service_arch.getMeta', details: e.message });
@@ -309,6 +339,10 @@ define([
                     costBook:         meta.costBook || 0,
                     costedRowCount:   meta.costedRowCount == null ? null : meta.costedRowCount,
                     uncostedRowCount: meta.uncostedRowCount == null ? null : meta.uncostedRowCount,
+                    // 2026-09-23: when the run that built these rows STARTED. The
+                    // screen keeps its own just-placed orders on screen until a
+                    // run that started after them has been loaded.
+                    startedAt:        meta.startedAt || null,
                 },
             };
         } catch (e) {

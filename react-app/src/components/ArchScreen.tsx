@@ -8,7 +8,8 @@ import { SOCartBar } from '@/components/arch/SOCartBar';
 import { SOWizard } from '@/components/arch/SOWizard';
 import { ArchOrderDraftDialog } from '@/components/arch/ArchOrderDraftDialog';
 import { lotQuantity } from '@/lib/archLots';
-import { useArchSummaryData } from '@/hooks/useArchSummaryData';
+import { useArchSummaryData, setArchAutoRefreshHeld, addArchOrderOverlay } from '@/hooks/useArchSummaryData';
+import { overlayFromOrder } from '@/lib/archOrderOverlay';
 import type { ArchDataSource, ArchCacheMeta } from '@/hooks/useArchSummaryData';
 import { exportToExcelARCH } from '@/lib/exportARCH';
 import type { FilterState } from '@/types';
@@ -107,6 +108,14 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
    * lands straight on that order instead of asking which one again.
    */
   const [editingSO, setEditingSO] = React.useState<string | null>(null);
+
+  /* 2026-09-23: the grid refreshes itself now (lib/archAutoRefresh), but never
+   * under an open SO wizard, whose prices, lots and coverage come from the loaded
+   * rows. A refresh that arrives meanwhile is applied when the wizard closes. */
+  React.useEffect(() => {
+    setArchAutoRefreshHeld(wizardOpen);
+    return () => setArchAutoRefreshHeld(false);
+  }, [wizardOpen]);
 
   const closeWizard = React.useCallback(() => {
     setWizardOpen(false);
@@ -350,6 +359,9 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
       // destroy the trader's selection while the stock is still sellable, which
       // is worse than leaving a cart they can retry from.
       setCart([]);
+      // 2026-09-23: lock this order's bundles on screen NOW, until the cache
+      // rebuilds with them (lib/archOrderOverlay). Not for refused lots.
+      addArchOrderOverlay(overlayFromOrder(draft.lines, result, draft.header.customer, Date.now()));
       /*
        * 🔴 REFRESH THE ORDER LIST, or the next Edit shows the order as it was
        * BEFORE this write. Nothing reloaded it before either, but the wizard used

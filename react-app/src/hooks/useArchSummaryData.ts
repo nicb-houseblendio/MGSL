@@ -14,6 +14,21 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { getArchFixtureRows } from '@/lib/archFixtures';
 import { apiGet } from '@/lib/api';
+import {
+  applyOverlay,
+  loadOverlay,
+  pruneOverlay,
+  saveOverlay,
+  type ArchOverlayEntry,
+} from '@/lib/archOrderOverlay';
+import {
+  ARCH_POLL_MS,
+  ARCH_POLL_BACKOFF_MS,
+  ARCH_VISIBILITY_MIN_GAP_MS,
+  pollVerdict,
+  isRateLimited,
+  type ArchMetaPoll,
+} from '@/lib/archAutoRefresh';
 import type { ArchSummaryRow, ArchTotals } from '@/types/arch';
 import type { FilterState } from '@/types';
 
@@ -149,6 +164,8 @@ export interface ArchCacheMeta {
   rowCount?: number;
   /** Buckets with a real source behind them. */
   bucketsBuilt?: string[];
+  /** When the run that built these rows STARTED (ISO). 2026-09-23. */
+  startedAt?: string | null;
   /**
    * Reads 0 on every row this run, for want of a source. `readyToBuild` lands
    * here until `custbody_arch_ready_to_build` exists in the account; it moves
@@ -271,10 +288,89 @@ const notify = (): void => {
 let liveStarted = false;
 let inFlightPromise: Promise<void> | null = null;
 
+/* The trader's own orders, locked on screen until the cache shows them
+ * (lib/archOrderOverlay). A NEW array on every change, so a memo keyed on it
+ * recomputes. */
+let overlay: ArchOverlayEntry[] = typeof window === 'undefined' ? [] : loadOverlay(Date.now());
+
+/** Called by the order flow on a saved order. Marks its bundles at once. */
+export const addArchOrderOverlay = (entries: ArchOverlayEntry[]): void => {
+  if (!entries.length) return;
+  const ids = new Set(entries.map((e) => e.lotId));
+  overlay = overlay.filter((e) => !ids.has(e.lotId)).concat(entries);
+  saveOverlay(overlay);
+  archDbg('overlay:add', entries.map((e) => [e.lotNo, e.soNumber, e.kind]));
+  notify();
+};
+
+/* ══ Auto-refresh (2026-09-23), see lib/archAutoRefresh for the rules ═════════
+ *
+ * Module scope like the data itself: ONE poller however many components read
+ * the hook. Started by the first live load, and idle whenever no component is
+ * subscribed (the ARCH view is not open) or the tab is hidden. */
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+let pollInFlight = false;
+let pollBackoffUntil = 0;
+let lastPollAt = 0;
+let refreshHeld = false;
+let refreshPending = false;
+
+const checkForNewData = async (): Promise<void> => {
+  if (pollInFlight || inFlightPromise) return;
+  if (subscribers.size === 0) return;
+  if (typeof document !== 'undefined' && document.hidden) return;
+  const now = Date.now();
+  if (now < pollBackoffUntil) return;
+  pollInFlight = true;
+  lastPollAt = now;
+  try {
+    const m = await apiGet<ArchMetaPoll>('meta', { subsidiaryId: ARCH_SUBSIDIARY_ID });
+    if (pollVerdict(live.meta?.lastUpdated, !!live.rows, m) === 'reload') {
+      archDbg('poll:new-data', { loaded: live.meta?.lastUpdated ?? null, cache: m.lastUpdated, held: refreshHeld });
+      if (refreshHeld) {
+        refreshPending = true;
+      } else {
+        await startLive(true);
+      }
+    }
+  } catch (e) {
+    // Quiet: the next tick retries. A rate limit backs the poll off, since the
+    // RESTlet is shared with IND and MTL.
+    if (isRateLimited(e)) pollBackoffUntil = Date.now() + ARCH_POLL_BACKOFF_MS;
+    archDbg('poll:error', e instanceof Error ? e.message : String(e));
+  } finally {
+    pollInFlight = false;
+  }
+};
+
+const startPoll = (): void => {
+  if (pollTimer || typeof window === 'undefined') return;
+  pollTimer = setInterval(() => void checkForNewData(), ARCH_POLL_MS);
+  // Chrome freezes timers in a hidden tab, so coming back checks at once.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && Date.now() - lastPollAt >= ARCH_VISIBILITY_MIN_GAP_MS) void checkForNewData();
+  });
+};
+
+/**
+ * Hold the auto-refresh while the SO wizard is open: its prices, lots and
+ * coverage are computed from the loaded rows, and swapping them underneath a
+ * half-built order is worse than showing them a minute late. A refresh that
+ * arrived while held is applied when released.
+ */
+export const setArchAutoRefreshHeld = (held: boolean): void => {
+  refreshHeld = held;
+  if (!held && refreshPending) {
+    refreshPending = false;
+    void startLive(true);
+  }
+};
+
 const startLive = (force = false): Promise<void> => {
   if (inFlightPromise) return inFlightPromise;
   if (liveStarted && !force) return Promise.resolve();
   liveStarted = true;
+  startPoll();
   live.inFlight = true;
   archDbg('fetch:start', { force });
 
@@ -291,6 +387,13 @@ const startLive = (force = false): Promise<void> => {
       live.rows = res.rows;
       live.meta = res.meta ?? null;
       live.error = null;
+      // Let go of every overlay entry this payload answers for.
+      const kept = pruneOverlay(overlay, res.rows, res.meta?.startedAt ?? null, Date.now());
+      if (kept.length !== overlay.length) {
+        archDbg('overlay:pruned', { before: overlay.length, after: kept.length });
+        overlay = kept;
+        saveOverlay(overlay);
+      }
       archDbg('fetch:ok', { rows: res.rows.length, meta: res.meta ?? null });
     })
     .catch((e: unknown) => {
@@ -332,7 +435,13 @@ export const useArchSummaryData = (enabled: boolean) => {
   // Gated on `enabled` so opening IND or MTL never fires an ARCH request.
   if (enabled) void startLive();
 
-  const allRows = live.rows ?? fixtureRows;
+  const baseRows = live.rows ?? fixtureRows;
+  // The overlay only ever ADDS a lock to bundles this trader just ordered.
+  const overlayNow = overlay;
+  const allRows = useMemo(
+    () => (baseRows && overlayNow.length ? applyOverlay(baseRows, overlayNow) : baseRows),
+    [baseRows, overlayNow],
+  );
   const source: ArchDataSource = live.rows ? 'netsuite' : 'fixtures';
   // Only a hard failure — one that leaves nothing to draw. A failed live fetch
   // while fixtures are showing is reported by `sourceError` and the badge, not

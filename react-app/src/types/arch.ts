@@ -316,6 +316,12 @@ export interface ArchLot {
     since: string;
     landed: boolean;
     exception: { label: string; since: string } | null;
+    /**
+     * 2026-09-23: set ONLY by this screen's own order overlay (lib/archOrderOverlay),
+     * never by the cache. The trader just ordered it here and the cache has not
+     * rebuilt with it yet. 'split' = part of the bundle, to be split.
+     */
+    local?: 'sold' | 'split';
   } | null;
   /** SO-line quantity reserving this bundle while it is on the water. Not On Hand. */
   preReserved?: number;
