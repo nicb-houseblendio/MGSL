@@ -314,6 +314,10 @@ let pollBackoffUntil = 0;
 let lastPollAt = 0;
 let refreshHeld = false;
 let refreshPending = false;
+/* The cache build a poll-driven reload FAILED to load (review L4). Not retried
+ * until meta names a different build, or a failing summary would be re-fetched,
+ * ~450 KB and an AUDIT line, every 30 s. */
+let failedBuild: string | null = null;
 
 const checkForNewData = async (): Promise<void> => {
   if (pollInFlight || inFlightPromise) return;
@@ -325,18 +329,21 @@ const checkForNewData = async (): Promise<void> => {
   lastPollAt = now;
   try {
     const m = await apiGet<ArchMetaPoll>('meta', { subsidiaryId: ARCH_SUBSIDIARY_ID });
-    if (pollVerdict(live.meta?.lastUpdated, !!live.rows, m) === 'reload') {
+    if (pollVerdict(live.meta?.lastUpdated, !!live.rows, m) === 'reload' && m.lastUpdated !== failedBuild) {
       archDbg('poll:new-data', { loaded: live.meta?.lastUpdated ?? null, cache: m.lastUpdated, held: refreshHeld });
       if (refreshHeld) {
         refreshPending = true;
       } else {
         await startLive(true);
+        failedBuild = live.error && live.meta?.lastUpdated !== m.lastUpdated ? m.lastUpdated ?? null : null;
       }
     }
   } catch (e) {
-    // Quiet: the next tick retries. A rate limit backs the poll off, since the
-    // RESTlet is shared with IND and MTL.
-    if (isRateLimited(e)) pollBackoffUntil = Date.now() + ARCH_POLL_BACKOFF_MS;
+    // Quiet, and backed off: the RESTlet is shared with IND and MTL. Review M2:
+    // apiGet turns NetSuite's {error:{code,message}} body into "[object Object]",
+    // so a rate limit cannot be recognised reliably; every failure waits a minute
+    // and a recognisable rate limit waits two.
+    pollBackoffUntil = Date.now() + (isRateLimited(e) ? ARCH_POLL_BACKOFF_MS : 60 * 1000);
     archDbg('poll:error', e instanceof Error ? e.message : String(e));
   } finally {
     pollInFlight = false;

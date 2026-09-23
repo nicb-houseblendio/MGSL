@@ -9,7 +9,7 @@ import { SOWizard } from '@/components/arch/SOWizard';
 import { ArchOrderDraftDialog } from '@/components/arch/ArchOrderDraftDialog';
 import { lotQuantity } from '@/lib/archLots';
 import { useArchSummaryData, setArchAutoRefreshHeld, addArchOrderOverlay } from '@/hooks/useArchSummaryData';
-import { overlayFromOrder } from '@/lib/archOrderOverlay';
+import { overlayFromOrder, cartTakenNote } from '@/lib/archOrderOverlay';
 import type { ArchDataSource, ArchCacheMeta } from '@/hooks/useArchSummaryData';
 import { exportToExcelARCH } from '@/lib/exportARCH';
 import type { FilterState } from '@/types';
@@ -438,11 +438,15 @@ export const ArchScreen = ({ uom, tab = 'inventory', onSourceChange, onReloadRea
     exportToExcelARCH(rows, getTotals(rows), uom);
   }, [filteredRows, getTotals, uom]);
 
+  // The grid refreshes itself now, so a cart can hold a bundle someone else just
+  // took. Said on the cart bar, next to any note of our own.
+  const takenNote = React.useMemo(() => cartTakenNote(cart, allRows), [cart, allRows]);
+
   return (
     <>
       <SOCartBar
         cart={cart}
-        note={cartNote}
+        note={[takenNote, cartNote].filter(Boolean).join(' ') || null}
         onOpenWizard={() => setWizardOpen(true)}
         onClear={() => {
           setCart([]);

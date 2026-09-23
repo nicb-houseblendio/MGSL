@@ -15,6 +15,7 @@ import {
   applyOverlay,
   OVERLAY_MAX_MS,
   OVERLAY_SKEW_MS,
+  cartTakenNote,
 } from './archOrderOverlay.ts';
 import { isLotLocked, reservationText } from './archLots.ts';
 
@@ -125,4 +126,30 @@ test('overlay: lets go when the cache answers, never before', () => {
   const sold = overlayFromOrder([{ lotId: '7', lotNo: '316027-7' }], ok, '', NOW);
   assert.equal(pruneOverlay(sold, [row([lot({ lotId: '7', onHand: 50, inTransit: 0 })])], before, NOW + 60000).length, 1, 'no commitment yet: keep');
   assert.equal(pruneOverlay(sold, [row([lot({ lotId: '7', onHand: 50, inTransit: 0, reserve: 50 })])], before, NOW + 60000).length, 0, 'commitment: drop');
+});
+
+test('cart: a bundle taken since it was added is named (review M1)', () => {
+  const cart = [{ lotId: '101', lotNo: '344950-1' }, { lotId: '7', lotNo: '316027-7' }, { lotId: '8', lotNo: '316027-8' }];
+  const other = { soId: '9', soNumber: 'SO-ARC-31', customer: '', pending: false, since: '', landed: false, exception: null };
+  const rows = [row([
+    lot({ reservation: other }),
+    lot({ lotId: '7', lotNo: '316027-7', onHand: 50, inTransit: 0, reserve: 50 }),
+    lot({ lotId: '8', lotNo: '316027-8', onHand: 50, inTransit: 0 }),
+  ])];
+  assert.equal(cartTakenNote(cart, rows),
+    '2 bundles in the cart were taken since you added them: 344950-1 on SO-ARC-31, 316027-7 on another order. Remove them before ordering.');
+  assert.equal(cartTakenNote([cart[2]], rows), '', 'still free: no note');
+  // Still on the water and unreserved is NOT taken, and neither is this screen's own mark.
+  assert.equal(cartTakenNote([{ lotId: '101', lotNo: '344950-1' }], [row([lot()])]), '');
+  assert.equal(cartTakenNote([{ lotId: '101', lotNo: '344950-1' }], [row([lot({ reservation: Object.assign({}, other, { local: 'sold' }) })])]), '');
+  assert.match(cartTakenNote([cart[2]], [row([lot({ lotId: '8', lotNo: '316027-8', onHand: 50, onHold: true })])]), /316027-8 on hold/);
+  assert.equal(cartTakenNote(cart, null), '');
+});
+
+test('poll: backs off after ANY failure, and never re-fetches a build that failed (review M2, L4)', () => {
+  const h = src('hooks/useArchSummaryData.ts');
+  assert.match(h, /pollBackoffUntil = Date\.now\(\) \+ \(isRateLimited\(e\) \? ARCH_POLL_BACKOFF_MS : 60 \* 1000\);/);
+  assert.match(h, /=== 'reload' && m\.lastUpdated !== failedBuild\)/);
+  const s = src('components/ArchScreen.tsx');
+  assert.match(s, /cartTakenNote\(cart, allRows\)/);
 });

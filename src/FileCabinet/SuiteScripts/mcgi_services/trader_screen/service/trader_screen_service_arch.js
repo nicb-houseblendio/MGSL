@@ -202,15 +202,15 @@ define([
     const summaryPresence = (myCache) => {
         const raw = myCache.get({ key: CacheKeysARCH.SUMMARY });
         if (!raw) return { present: false, reason: 'SUMMARY_MISSING' };
-        const head = String(raw).replace(/^\s+/, '').charAt(0);
-        if (head === '[') return { present: true, reason: null };
+        // A regex on the value, not a trimmed copy of up to 450 KB (review L5).
+        if (/^\s*\[/.test(raw)) return { present: true, reason: null };
         let parsed;
         try { parsed = JSON.parse(raw); } catch (e) { return { present: false, reason: 'SUMMARY_UNREADABLE' }; }
         if (parsed && parsed.chunked && parsed.chunkCount) {
             for (let i = 0; i < parsed.chunkCount; i++) {
                 const chunkRaw = myCache.get({ key: CacheKeysARCH.buildSummaryDataKey(i) });
                 if (!chunkRaw) return { present: false, reason: 'SUMMARY_CHUNK_MISSING' };
-                if (String(chunkRaw).replace(/^\s+/, '').charAt(0) !== '[') return { present: false, reason: 'SUMMARY_CHUNK_UNREADABLE' };
+                if (!/^\s*\[/.test(chunkRaw)) return { present: false, reason: 'SUMMARY_CHUNK_UNREADABLE' };
             }
             return { present: true, reason: null };
         }

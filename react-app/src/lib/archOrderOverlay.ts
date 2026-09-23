@@ -135,6 +135,39 @@ export const applyOverlay = (rows: ArchSummaryRow[], entries: ArchOverlayEntry[]
   return touched ? next : rows;
 };
 
+/**
+ * Cart lines whose bundle was TAKEN after it was added (review 2026-09-23, M1).
+ * The cart holds snapshots, so a bundle another trader sold since stays in it
+ * with no mark and the trader learns only when the server refuses the order.
+ * "Taken" = the refreshed row now shows a reservation that is not this screen's
+ * own, a commitment, or a hold. Not isLotLocked: a bundle on the water is
+ * "locked" for a stock sale and is still reservable. Returns '' when none.
+ */
+export const cartTakenNote = (
+  cart: { lotId: string; lotNo: string }[],
+  rows: ArchSummaryRow[] | null | undefined,
+): string => {
+  if (!cart || !cart.length || !rows) return '';
+  const byId = new Map<string, ArchLot>();
+  rows.forEach((r) => (r.lots || []).forEach((l) => { if (l.lotId) byId.set(String(l.lotId), l); }));
+  const taken: string[] = [];
+  const seen = new Set<string>();
+  cart.forEach((c) => {
+    const l = byId.get(String(c.lotId));
+    if (!l || seen.has(String(c.lotId))) return;
+    const r = l.reservation;
+    const by = r && !r.local ? r.soNumber || 'another order' : '';
+    if (by || commitmentOn(l) > 0 || l.onHold) {
+      seen.add(String(c.lotId));
+      taken.push(c.lotNo + (by ? ' on ' + by : l.onHold ? ' on hold' : ' on another order'));
+    }
+  });
+  if (!taken.length) return '';
+  return (taken.length === 1 ? '1 bundle in the cart was' : taken.length + ' bundles in the cart were') +
+    ' taken since you added ' + (taken.length === 1 ? 'it' : 'them') + ': ' + taken.join(', ') +
+    '. Remove ' + (taken.length === 1 ? 'it' : 'them') + ' before ordering.';
+};
+
 const STORE_KEY = 'arch.orderOverlay.v1';
 
 /** Per-viewer convenience only: a reload inside the window keeps the marks. */
