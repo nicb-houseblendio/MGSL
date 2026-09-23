@@ -95,3 +95,10 @@ test('H1: an existing split line keeps its ordered quantity apart from the bundl
   assert.match(v, /qty: onOrder\(l\)/);
   assert.doesNotMatch(v, /formatQty\(l\.preSplitQty, l\.unit\)/, 'the line cell shows what is ordered');
 });
+
+test('H1 in the wizard: the Lines step shows the ordered quantity, the Split step the bundle', () => {
+  const w = src('components/arch/SOWizard.tsx');
+  assert.equal((w.match(/formatQty\(l\.orderedQty \?\? l\.preSplitQty, l\.unit\)/g) || []).length, 1, 'the Lines step cell');
+  assert.match(w, /formatUnitTotals\(lines\.map\(\(l\) => \(\{ unit: l\.unit, qty: l\.orderedQty \?\? l\.preSplitQty \}\)\)\)/, 'and its total');
+  assert.equal((w.match(/\{formatQty\(l\.preSplitQty, l\.unit\)\}/g) || []).length, 3, 'only the Split step keeps the bundle size (cell, placeholder, over-bundle message)');
+});

@@ -2439,7 +2439,10 @@ export const SOWizard = ({
                 </td>
                 <LotCell line={l} />
                 <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="font-mono">
-                  {formatQty(l.preSplitQty, l.unit)}
+                  {/* An existing line shows what is ON THE ORDER, not the bundle it
+                      was cut from (review 2026-09-23, same defect as H1). The split
+                      step's Quantity stays the bundle: it sits beside Quantity to pick. */}
+                  {formatQty(l.orderedQty ?? l.preSplitQty, l.unit)}
                 </td>
                 <td style={{ ...td, fontSize: 11.5, color: ARCH_SURFACE.textMid }}>{uomLabel(l.unit)}</td>
                 <td style={{ ...td, textAlign: 'right' }} className="font-mono">
@@ -2517,7 +2520,7 @@ export const SOWizard = ({
                 }}
                 className="font-mono"
               >
-                {formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: l.preSplitQty })))}
+                {formatUnitTotals(lines.map((l) => ({ unit: l.unit, qty: l.orderedQty ?? l.preSplitQty })))}
               </td>
               <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
               <td style={{ ...td, borderTop: '2px solid #CBD5E1' }} />
