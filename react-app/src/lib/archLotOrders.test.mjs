@@ -287,7 +287,7 @@ const TEAM_ROWS = [
   { tranid: '126500', repid: '2090', rep: 'Justin Loveland', contribution: '0.5', isprimary: 'F' },
 ];
 
-const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [], transitRows = [], sealRows = [], poSealRows = [], rtsRows = [], rtsThrows = false, noteRows = [], noteThrows = false, priceRows = [], shipWeekRows = [], shipWeekThrows = false } = {}) => {
+const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [], transitRows = [], sealRows = [], poSealRows = [], rtsRows = [], rtsThrows = false, noteRows = [], noteThrows = false, priceRows = [], shipWeekRows = [], shipWeekThrows = false, captureRows = [] } = {}) => {
   const sqlLog = [];
   const errors = [];
   const audits = [];
@@ -330,7 +330,7 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
       else if (/custbody_seal_trailer_number/.test(sql) && /FROM inventoryassignment/.test(sql)) rows = sealRows;
       else if (/custbody_seal_trailer_number/.test(sql)) rows = poSealRows;
       else if (/FROM item i/.test(sql)) rows = [];                      // untagged check
-      else if (/customrecord_msl_plc_capture/i.test(sql)) rows = [];     // tallies
+      else if (/customrecord_msl_plc_capture/i.test(sql)) rows = captureRows;     // tallies
       return { asMappedResults: () => rows };
     },
   };
@@ -1023,6 +1023,28 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   ok('K3 no cut code reads nothing, even with FC inside the item CODE', g('Zebrawood 8/4 KD') === '', g('Zebrawood 8/4 KD'));
   ok('K4 ambiguous SP / RFP are left unmapped, not guessed', g('Walnut Veneer SP FSC') === '' && g('European White Oak Veneer RFP A FSC') === '');
   ok('K5 FSC is not read as FC', g('Walnut Veneer FSC') === '');
+}
+
+/* ════ L. A packing-list tally matches lot <PO>-<bundle> (2026-09-23) ═════════
+ * A PL names bundles by the SUPPLIER's number, and MA's re-import named the lots
+ * <PO>-<that number> (PL 314307 bundle 1535 = lot 314307-1535). */
+{
+  const payload = (lot) => JSON.stringify({ schema: 'mgsl.tally.v1', po: '316027', bundles: [
+    { bundleNo: lot, lot, species: 'Zebrawood', thickness: { raw: '8/4', inches: 2 },
+      matrix: { widthsIn: [6], rows: [{ lengthFt: 8, pieces: { 6: 10 } }] } }] });
+  const cap = (id, lot) => ({ captureid: id, statusname: 'PARSED', lastmodified: '2026-09-20 10:00:00',
+    container: 'MEDU7574050', intake: JSON.stringify({ docType: 'TALLY' }), payload: payload(lot), fileurl: null });
+  const lotOf = (res, n) => res.written.find((r) => String(r.internalId) === '2915')?.lots.find((l) => l.lotNo === n);
+  const bare = runMr({ captureRows: [cap(9, '12')] });
+  ok('L1 a bare supplier bundle number matches lot <PO>-<bundle>',
+    !!lotOf(bare, '316027-12')?.tally, lotOf(bare, '316027-12')?.tally);
+  const full = runMr({ captureRows: [cap(9, '316027-12')] });
+  ok('L2 a full lot name still matches exactly, and is not double-prefixed',
+    !!lotOf(full, '316027-12')?.tally && !lotOf(full, '316027-2')?.tally);
+  const other = runMr({ captureRows: [cap(9, '20')] });
+  ok('L3 the PO prefix comes from the capture, so it only matches that PO',
+    !!lotOf(other, '316027-20')?.tally && !lotOf(other, '316027-12')?.tally);
+  ok('L4 no error logged', bare.errors.length === 0 && full.errors.length === 0, [bare.errors, full.errors]);
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archLotOrders ok');

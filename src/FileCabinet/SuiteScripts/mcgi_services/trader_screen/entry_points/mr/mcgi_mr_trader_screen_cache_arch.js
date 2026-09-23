@@ -1824,10 +1824,22 @@ define([
                 const prov = payload.provenance || {};
                 for (let j = 0; j < payload.bundles.length; j++) {
                     const b = payload.bundles[j];
-                    const lot = b && b.lot != null ? String(b.lot).trim().toUpperCase() : '';
+                    const rawLot = b && b.lot != null ? String(b.lot).trim().toUpperCase() : '';
                     // The whole point. An unmatched bundle is expected, not an error.
-                    if (!lot) continue;
+                    if (!rawLot) continue;
 
+                    /* ALSO UNDER <PO>-<bundle>, since 2026-09-23. A packing list names a
+                     * bundle by the SUPPLIER's number ("1535"), and Marc-Antoine's
+                     * 2026-09-16 re-import named the lots <PO>-<that number>: PL 314307's
+                     * 14 bundles 1535..1548 are lots 314307-1535..-1548, their on-hand
+                     * equal to the PL's figures. Exact keys are kept too, because 12 ARC
+                     * lots have no dash at all. Each key gets the same merge and
+                     * conflict rules below, so the two can never disagree. */
+                    const capPo = String(payload.po || '').trim().toUpperCase();
+                    const lotKeys = [rawLot];
+                    if (capPo && rawLot.indexOf(capPo + '-') !== 0) lotKeys.push(capPo + '-' + rawLot);
+                    for (let k = 0; k < lotKeys.length; k++) {
+                    const lot = lotKeys[k];
                     const held = byLot[lot];
 
                     /* SAME capture, second entry for this lot. LEGITIMATE, and it must be
@@ -1887,6 +1899,7 @@ define([
                         docUrl:     r.fileurl || null,
                         bundles:    [b],
                     };
+                    }   // lotKeys
                 }
             }
             _tallyCache = byLot;
