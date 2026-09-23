@@ -165,7 +165,7 @@ const define = (deps, factory) => {
     'N/record': inert, 'N/query': query, 'N/search': inert, 'N/runtime': runtime,
     'N/log': log, 'N/render': inert, 'N/email': inert,
     'N/currency': { exchangeRate: () => 0.719115 },
-    './archSplitExecute': {},
+    './archSplitExecute': {}, './archReservation': {},
   };
   mod = factory(...deps.map((d) => {
     if (!(d in table)) throw new Error('unfaked dep ' + d);
@@ -591,7 +591,7 @@ for (const [why, getParameter] of [
       'N/record': inert, 'N/query': query, 'N/search': inert, 'N/log': log,
       'N/render': inert, 'N/email': inert,
       'N/currency': { exchangeRate: () => 0.719115 },
-      './archSplitExecute': {},
+      './archSplitExecute': {}, './archReservation': {},
       'N/runtime': { getCurrentScript: () => ({ getParameter }), getCurrentUser: () => ({ id: 3136 }) },
     };
     m = factory(...deps.map((d) => table[d]));

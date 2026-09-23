@@ -85,11 +85,12 @@
  * money goes TO. See `resolveSalesTeam`.
  */
 define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/email',
-        'N/currency', './archSplitExecute'],
+        'N/currency', './archSplitExecute', './archReservation'],
 // AMD BINDS POSITIONALLY. N/render and N/email were appended to the array and
 // their parameters inserted at the SAME positions, before splitLib, in one edit.
 // N/currency was appended the same way on 2026-09-15, again before splitLib.
-(record, query, search, runtime, log, render, email, currencyMod, splitLib) => {
+// ./archReservation was appended LAST, after splitLib, on 2026-09-23 (Feedback 8).
+(record, query, search, runtime, log, render, email, currencyMod, splitLib, Reservation) => {
 
     /**
      * ⚠️ SUPERSEDED 2026-09-10 — see the cache MR's header comment for the full
@@ -2544,10 +2545,16 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
      * strictly necessary; erring the other way oversells real wood. The builder
      * publishes the same figure as `unattributed` rather than hiding it.
      */
-    const readUnattributedCommitments = (itemLocationPairs) => {
+    const readUnattributedCommitments = (itemLocationPairs, claimedLines) => {
         const items = dedupe(itemLocationPairs.map((p) => p.itemId).filter(Boolean));
         const locs  = dedupe(itemLocationPairs.map((p) => p.locationId).filter(Boolean));
         if (!items.length || !locs.length) return {};
+        /* 🔴 A RESERVED PRE-ARRIVAL LINE IS NOT UNATTRIBUTED (Feedback 8, 2.5).
+         * It carries no inventory detail because NetSuite refuses one on a lot
+         * with no stock, but its bundle is known: the claim names the SO and the
+         * line's uniquekey. Counted here, one such line would lock EVERY other
+         * bundle of that item at that location. Keyed `<soId>:<uniquekey>`. */
+        const claimed = claimedLines || {};
 
         const rows = query.runSuiteQL({
             query:
@@ -2555,6 +2562,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 '  tl.item             AS itemid, ' +
                 '  tl.location         AS locationid, ' +
                 '  tl.id               AS lineid, ' +
+                '  tl.uniquekey        AS linekey, ' +
                 '  t.id                AS tranid, ' +
                 '  tl.quantity         AS lineqty, ' +
                 '  tl.quantityshiprecv AS shipped, ' +
@@ -2575,6 +2583,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         // as the cache builder's own dedupe.
         const lines = {};
         rows.forEach((r) => {
+            if (claimed[String(int(r.tranid)) + ':' + String(int(r.linekey))]) return;
             const lineKey = String(r.tranid) + '#' + String(r.lineid);
             const pairKey = String(int(r.itemid)) + '__' + String(int(r.locationid));
             if (!lines[lineKey]) {
@@ -2637,6 +2646,100 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             return true;
         });
         return held;
+    };
+
+    /**
+     * Bundles still on a purchase order, keyed by lot id (Feedback 8, phase 2).
+     *
+     * A pre-arrival bundle is a lot minted as inventory detail on an open PO line
+     * (Generate Tags), holding 0 on hand. This returns, per lot, every open PO line
+     * carrying it, with the In Transit test the cache applies to the row, so the
+     * endpoint and the screen agree on what is "on the water":
+     *
+     *   closed PO                  -> not in transit (a closed PO keeps open lines here)
+     *   take-ownership journal set -> in transit, the whole open quantity
+     *   agency PO, no journal      -> not in transit (MTL's filter)
+     *   otherwise                  -> billed ahead of receipt, clamped to ordered
+     *
+     * The journal/agency/status read is its OWN query, exactly as in the cache:
+     * a custom body field in the line query would take the whole read down if it
+     * ever went unreadable. A failed flag read here marks every line NOT in
+     * transit, which refuses the sale rather than guessing (a write path).
+     *
+     * Quantities in BASE units, like every other read in this file.
+     */
+    const readIncomingBundles = (lotIds) => {
+        const lots = dedupe(lotIds.map(int).filter(Boolean));
+        if (!lots.length) return {};
+        const rows = query.runSuiteQL({
+            query:
+                'SELECT ia.inventorynumber AS lotid, t.id AS poid, t.tranid AS ponumber, ' +
+                '       tl.id AS lineid, tl.location AS locationid, ia.quantity AS assignedqty, ' +
+                '       tl.quantity AS lineqty, tl.quantityshiprecv AS received, ' +
+                '       tl.quantitybilled AS billed ' +
+                'FROM transactionline tl ' +
+                'JOIN transaction t ON t.id = tl.transaction ' +
+                'JOIN inventoryassignment ia ' +
+                '       ON ia.transaction = t.id AND ia.transactionline = tl.id ' +
+                "WHERE t.type = 'PurchOrd' " +
+                "  AND tl.mainline = 'F' " +
+                "  AND tl.isclosed = 'F' " +
+                '  AND ia.inventorynumber IN (' + lots.join(',') + ')',
+        }).asMappedResults();
+
+        const poIds = dedupe(rows.map((r) => int(r.poid)).filter(Boolean));
+        const flags = {};
+        let flagsRead = poIds.length === 0;
+        if (poIds.length) {
+            try {
+                query.runSuiteQL({
+                    query: 'SELECT id AS poid, custbody_po_intransit_journal AS je, ' +
+                           '       custbody_po_is_agency AS agency, status AS tstatus ' +
+                           'FROM transaction WHERE id IN (' + poIds.join(',') + ')',
+                }).asMappedResults().forEach((p) => {
+                    flags[String(int(p.poid))] = {
+                        je: String(p.je || '').trim(),
+                        agency: String(p.agency || 'F').toUpperCase() === 'T',
+                        // REST SuiteQL says 'H', N/query says 'PurchOrd:H'.
+                        closed: String(p.tstatus || '').split(':').pop() === 'H',
+                    };
+                });
+                flagsRead = true;
+            } catch (e) {
+                log.error('ARCH Order - PO take-ownership flags UNREADABLE, no in-transit bundle can be sold',
+                    (e.name || '') + ': ' + (e.message || String(e)));
+            }
+        }
+
+        const byLot = {};
+        const seen = {};
+        rows.forEach((r) => {
+            const lotKey = String(int(r.lotid));
+            const lineKey = lotKey + '|' + String(int(r.poid)) + '#' + String(int(r.lineid));
+            if (seen[lineKey]) return;
+            seen[lineKey] = true;
+            const f = flags[String(int(r.poid))] || null;
+            const ordered  = Math.abs(numOr(r.lineqty, 0));
+            const received = Math.abs(numOr(r.received, 0));
+            const billed   = Math.abs(numOr(r.billed, 0));
+            const open     = Math.max(0, ordered - received);
+            const water = (!flagsRead || !f || f.closed) ? 0
+                : (f.je ? open : (f.agency ? 0 : Math.max(0, Math.min(billed, ordered) - received)));
+            if (!byLot[lotKey]) byLot[lotKey] = [];
+            byLot[lotKey].push({
+                poId: int(r.poid),
+                poNumber: String(r.ponumber || ''),
+                locationId: int(r.locationid),
+                bundleBase: Math.abs(numOr(r.assignedqty, 0)),
+                ordered: ordered,
+                received: received,
+                open: open,
+                closedPo: !!(f && f.closed),
+                inTransit: open > 0 && water >= open - 1e-9,
+                flagsRead: flagsRead,
+            });
+        });
+        return byLot;
     };
 
     /**
@@ -3032,13 +3135,31 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         );
         const committed = readCommitments(rawLines.map((l) => l && l.lotId));
         const holds = readActiveHolds();
+        /* ── Pre-arrival reservations (Feedback 8, phase 2) ──────────────────
+         * 🔴 FAILS CLOSED. A bundle reserved off a boat carries no inventory
+         * detail anywhere in NetSuite; the claim record is the ONLY thing saying
+         * it is sold. If that cannot be read, every lot here might be one, so
+         * nothing is sold. Same trade `readActiveHolds` makes on this path. */
+        const claims = Reservation.readClaims(query);
+        if (!claims.sourced) {
+            log.error('ARCH Order - RESERVATIONS UNREADABLE, order refused',
+                claims.error + ' | customrecord_arch_res could not be read, so a bundle reserved ' +
+                'before arrival could be sold twice. Deploy the record type (Feedback 8, 2.1) or ' +
+                'fix its access before retrying.');
+            return {
+                lines: [],
+                problems: ['The bundle reservations could not be read, so nothing can be sold safely ' +
+                           'right now. Nothing was written. Tell an administrator: ' + claims.error],
+            };
+        }
+        const incoming = readIncomingBundles(rawLines.map((l) => l && l.lotId));
         // Pair-level commitment that no lot claims. Read from the resolved states
         // rather than the raw request so the ids are the ones the lot actually
         // belongs to, not the ones the caller asserted.
         const unattributed = readUnattributedCommitments(
             Object.keys(states).map((k) => ({
                 itemId: states[k].itemId, locationId: states[k].locationId,
-            })));
+            })), claims.byLine);
 
         // Two lines drawing on the SAME lot at the same location would each pass
         // an individual on-hand check and jointly oversell it. Accumulated here
@@ -3149,6 +3270,22 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 return;
             }
 
+            /* ── Reserved before arrival: the second of the two places a bundle
+             * can be sold (Feedback 8, 2.6). The first is NetSuite's own
+             * inventory detail, checked below. This one covers a bundle on the
+             * water AND one that has landed but not yet been handed to its SO by
+             * the reconciler: both are sold, and neither shows an assignment. */
+            const heldBy = claims.byLotId[String(st.lotId)];
+            if (heldBy) {
+                problems.push(label + ': bundle ' + st.lotName + ' is already reserved' +
+                              (heldBy.pending
+                                  ? ' by an order being saved right now.'
+                                  : ' on ' + (heldBy.soNumber || ('SO ' + heldBy.soId)) +
+                                    (heldBy.customer ? ' for ' + heldBy.customer : '') + '.') +
+                              ' A bundle cannot be sold twice.');
+                return;
+            }
+
             // ── Commitment nothing can attribute to a lot ───────────────────
             //
             // Exists on this item at this location but names no lot, so it could
@@ -3238,6 +3375,95 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             if (wanted === null || wanted <= 0) {
                 problems.push(label + ': ' + (isSplit ? 'the split target' : 'the quantity') +
                               ' must be a number greater than zero.');
+                return;
+            }
+
+            /* ── A BUNDLE STILL ON THE WATER (Feedback 8, 2.5) ────────────────
+             *
+             * No stock here yet, and the lot sits on an open PO line. NetSuite
+             * will not let a sales order carry it (section 5 of the plan, four
+             * ways), so the line is written with NO inventory detail and the
+             * bundle is held by a claim record taken just before the save. The
+             * reconciler hands it over as a real assignment once it lands.
+             *
+             * WHOLE BUNDLE, true or false (MA and Nic, 2026-09-16): the quantity
+             * must be the bundle's, and a split is refused because there is no
+             * wood to cut. Only IN TRANSIT: MA has said twice that On Order is
+             * visibility only. */
+            const inc = incoming[String(st.lotId)] || [];
+            if (st.storedQty <= 1e-9 && inc.length) {
+                if (inc.length > 1) {
+                    // Make Copy leaves one lot on two PO lines (344948-1/-2): one
+                    // reservation would then cover two containers.
+                    problems.push(label + ': bundle ' + st.lotName + ' sits on ' + inc.length +
+                                  ' open PO lines (' + dedupe(inc.map((x) => x.poNumber)).join(', ') +
+                                  '), so it cannot be told which container it is. Fix the PO first.');
+                    return;
+                }
+                const pl = inc[0];
+                if (!pl.flagsRead) {
+                    problems.push(label + ': bundle ' + st.lotName + ' is on ' + pl.poNumber + ', but ' +
+                                  'whether it is in transit could not be read. Nothing was written. Retry.');
+                    return;
+                }
+                if (pl.locationId !== st.locationId) {
+                    problems.push(label + ': bundle ' + st.lotName + ' arrives at a different location ' +
+                                  'than the one picked. Reload the screen.');
+                    return;
+                }
+                if (pl.received > 0 || !pl.inTransit) {
+                    problems.push(label + ': bundle ' + st.lotName + ' on ' + pl.poNumber + ' is ' +
+                                  (pl.closedPo ? 'on a closed PO' : (pl.received > 0 ? 'partly received'
+                                      : 'on order, not in transit yet')) +
+                                  ', so it cannot be reserved. Only bundles on the water can be sold before they land.');
+                    return;
+                }
+                if (isSplit) {
+                    problems.push(label + ': bundle ' + st.lotName + ' has not arrived, so it cannot be ' +
+                                  'split yet. Reserve the whole bundle; the split happens after it lands.');
+                    return;
+                }
+                // Rounded to 5 places: 1.4 MBF / 0.001 is 1399.9999999999998 in
+                // floating point, and that is what would land on the SO line.
+                const bundleQty = Math.round(splitLib.toDisplay(pl.bundleBase, rate) * 1e5) / 1e5;
+                if (!(bundleQty > 0) || Math.abs(wanted - bundleQty) > Math.max(1e-6, bundleQty * 1e-6)) {
+                    problems.push(label + ': bundle ' + st.lotName + ' is ' + bundleQty.toFixed(3) +
+                                  ' and a bundle on the water is reserved whole, so ' + wanted.toFixed(3) +
+                                  ' cannot be ordered.');
+                    return;
+                }
+                if (claimed[key]) {
+                    problems.push(label + ': bundle ' + st.lotName + ' is on another line of this order already.');
+                    return;
+                }
+                const prePrice = num(raw.pricePerUnit);
+                if (prePrice === null || prePrice < 0) {
+                    problems.push(label + ': the price must be a number and cannot be negative.');
+                    return;
+                }
+                if (prePrice > MAX_PRICE_PER_UNIT) {
+                    problems.push(label + ': a price of ' + prePrice + ' per unit is not credible. ' +
+                                  'Check the figure before committing the order.');
+                    return;
+                }
+                claimed[key] = bundleQty;
+                lines.push({
+                    itemId:       st.itemId,
+                    itemCode:     st.itemCode,
+                    locationId:   st.locationId,
+                    lotId:        st.lotId,
+                    lotName:      st.lotName,
+                    rate:         rate,
+                    displayQty:   bundleQty,
+                    storedQty:    pl.bundleBase,
+                    pricePerUnit: prePrice,
+                    isSplit:      false,
+                    reman:        reman,
+                    bundleDisplayQty: bundleQty,
+                    // Written with no inventory detail and held by a claim.
+                    preArrival:   true,
+                    poNumber:     pl.poNumber,
+                });
                 return;
             }
 
@@ -3529,11 +3755,28 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 }
             }
             if (target < 0) {
+                if (line.preArrival) {
+                    line.lineKeyError = 'no saved line matched item ' + line.itemCode +
+                                        ' at location ' + line.locationId + ' for ' + line.displayQty;
+                    return;
+                }
                 unplaced.push(line.lotName + ' (no saved line matched item ' + line.itemCode +
                               ' at location ' + line.locationId + ' for ' + line.displayQty + ')');
                 return;
             }
             used[target] = true;
+
+            /* A bundle still on the water: NetSuite refuses inventory detail on a
+             * lot with no stock, so the line stays bare and only its key is taken,
+             * for the claim. Matched in the SAME pass as the stock lines so the two
+             * kinds can never both take one saved line. */
+            if (line.preArrival) {
+                line.lineKey = int(so.getSublistValue({
+                    sublistId: 'item', fieldId: 'lineuniquekey', line: target,
+                }));
+                if (!line.lineKey) line.lineKeyError = 'the saved line has no uniquekey';
+                return;
+            }
 
             try {
                 const detail = so.getSublistSubrecord({
@@ -3586,10 +3829,58 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             }
         });
 
-        if (unplaced.length < lines.length) {
+        const stockCount = lines.filter((l) => !l.preArrival).length;
+        if (stockCount > 0 && unplaced.length < stockCount) {
             so.save({ enableSourcing: false, ignoreMandatoryFields: true });
         }
         return unplaced;
+    };
+
+    /* ── Claims around the save (Feedback 8, 2.5b) ───────────────────────────
+     *
+     * Taken AFTER every check and immediately before `so.save`, so a refusal
+     * anywhere above costs nothing, and released if the save fails. A claim that
+     * is refused as a duplicate means another order took the bundle between the
+     * read in `resolveLines` and now: everything this request took is released
+     * and the order is refused, before anything is written. */
+    const takeClaims = (preLines) => {
+        const held = [];
+        for (let i = 0; i < preLines.length; i++) {
+            const l = preLines[i];
+            let res;
+            try {
+                res = Reservation.claim(record, l.lotId, l.itemId);
+            } catch (e) {
+                releaseClaims(held, 'a claim could not be written');
+                throw refusal('Bundle ' + l.lotName + ' could not be reserved (' + (e.name || '') + ': ' +
+                              (e.message || String(e)) + '). Nothing was written.');
+            }
+            if (!res.ok) {
+                releaseClaims(held, 'another order took ' + l.lotName);
+                throw refusal('Bundle ' + l.lotName + ' was reserved by another order a moment ago. ' +
+                              'Nothing was written. Reload the screen.');
+            }
+            l.claimId = res.claimId;
+            held.push(l);
+        }
+        return held;
+    };
+
+    const releaseClaims = (held, why) => {
+        (held || []).forEach((l) => {
+            if (!l.claimId) return;
+            try {
+                Reservation.release(record, l.claimId);
+            } catch (e) {
+                // The reconciler releases a pending claim after PENDING_TTL_MIN, so
+                // this bundle is blocked for that long, not forever.
+                log.error('ARCH Order - claim NOT released',
+                    'claim ' + l.claimId + ' on ' + l.lotName + ' (' + why + '): ' + (e.name || '') + ': ' +
+                    (e.message || String(e)) + ' | The reconciler releases it once it is ' +
+                    Reservation.PENDING_TTL_MIN + ' minutes old.');
+            }
+            l.claimId = null;
+        });
     };
 
     /**
@@ -5031,10 +5322,18 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
             addChargeLine(so, charge, firstNewLine + resolved.lines.length + j);
         });
 
+        /* Feedback 8: the bundles still on the water are claimed LAST, after every
+         * check and every line, so nothing above can leave a claim behind. */
+        const preLines = resolved.lines.filter((l) => l.preArrival);
+        const stockLines = resolved.lines.filter((l) => !l.preArrival);
+        takeClaims(preLines);
+
         let soId;
         try {
             soId = so.save({ enableSourcing: true, ignoreMandatoryFields: false });
         } catch (e) {
+            // Nothing was saved, so nothing may stay reserved for it.
+            releaseClaims(preLines, 'the order did not save');
             // The unique externalid doing its job: this exact request already
             // created an order. Report the refusal rather than a raw NetSuite
             // error, so a retried double-click reads as "already done".
@@ -5101,16 +5400,42 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         // reported rather than thrown: throwing would tell the trader the order
         // failed when it is sitting in NetSuite with correct quantities.
         const unplaced = assignLots(soId, resolved.lines, priorLineKeys);
+
+        /* Name the order and line on each claim. The order EXISTS now, so a
+         * failure is reported, never thrown. A claim left without its SO still
+         * holds the bundle, but the reconciler would release it as pending after
+         * PENDING_TTL_MIN, so this is logged at ERROR for a person to fix. */
+        const reservationProblems = [];
+        preLines.forEach((l) => {
+            if (!l.lineKey) {
+                reservationProblems.push(l.lotName + ': ' + (l.lineKeyError || 'no line key'));
+                return;
+            }
+            try {
+                Reservation.finalize(record, l.claimId, soId, l.lineKey);
+                l.reservationRecorded = true;
+            } catch (e) {
+                reservationProblems.push(l.lotName + ': ' + (e.name || '') + ': ' + (e.message || String(e)));
+            }
+        });
+        if (reservationProblems.length) {
+            log.error('ARCH Order Create - RESERVATION NOT RECORDED on SO ' + soId,
+                reservationProblems.join('; ') + ' | The order exists and its line(s) are right, but the ' +
+                'claim does not name the line, so the reconciler will release the bundle as abandoned in ' +
+                Reservation.PENDING_TTL_MIN + ' minutes. Set custrecord_arch_res_so and _line by hand.');
+        }
+
         const wrongForm = unplaced.length ? formWarning(soId) : null;
         if (unplaced.length) {
             log.error('ARCH Order Create — LOTS NOT ATTRIBUTED on SO ' + soId,
                 'The order exists with correct quantities but ' + unplaced.length + ' of ' +
-                resolved.lines.length + ' line(s) carry no lot, so the bundles are NOT locked: ' +
+                stockLines.length + ' line(s) carry no lot, so the bundles are NOT locked: ' +
                 unplaced.join('; ') +
                 (wrongForm ? ' | LIKELY CAUSE: the order ' + wrongForm : ''));
         }
 
-        const check = verifyAssignments(soId, resolved.lines, priorAssignments);
+        // Stock lines only: a pre-arrival line has no assignment by design.
+        const check = verifyAssignments(soId, stockLines, priorAssignments);
 
         /* What the order's Sales Team actually holds, read back off the saved
          * record. Only when a team was named -- the single-rep path is what the
@@ -5138,7 +5463,7 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
         // Logging both put two error entries on the log for one condition, and
         // this account may email on error — `notifyowner` and `notifyemails` are
         // not readable from SuiteQL, so it cannot be ruled out.
-        const somethingLanded = unplaced.length < resolved.lines.length;
+        const somethingLanded = unplaced.length < stockLines.length;
         if (check.mismatches.length && somethingLanded) {
             // Deliberately ERROR: this is rare and abnormal, which is the bar
             // this codebase sets for the error level. A quantity that did not
@@ -5266,7 +5591,15 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 lotName:  l.lotName,
                 quantity: l.displayQty,
                 isSplit:  l.isSplit,
+                preArrival: !!l.preArrival,
             })),
+            // Feedback 8: bundles reserved before arrival, and whether the claim
+            // names its line. `recorded: false` is what a person must fix.
+            reservations: preLines.map((l) => ({
+                lotName: l.lotName, poNumber: l.poNumber || '', claimId: l.claimId || null,
+                lineKey: l.lineKey || null, recorded: !!l.reservationRecorded,
+            })),
+            reservationProblems: reservationProblems,
             /* Lines the warehouse will ACTUALLY be asked to split, not lines that
              * asked to be split. The confirmation dialog renders this as "N lines
              * queued for the warehouse to split", so counting intent here would
@@ -5435,6 +5768,8 @@ define(['N/record', 'N/query', 'N/search', 'N/runtime', 'N/log', 'N/render', 'N/
                 bundleQuantity:   l.bundleDisplayQty,
                 isSplit:          l.isSplit,
                 remainderIfSplit: l.isSplit ? l.bundleDisplayQty - l.displayQty : 0,
+                preArrival:       !!l.preArrival,
+                poNumber:         l.poNumber || '',
             })),
         };
     };

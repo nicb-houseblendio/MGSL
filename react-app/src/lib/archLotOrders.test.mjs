@@ -287,7 +287,7 @@ const TEAM_ROWS = [
   { tranid: '126500', repid: '2090', rep: 'Justin Loveland', contribution: '0.5', isprimary: 'F' },
 ];
 
-const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [], transitRows = [], sealRows = [], poSealRows = [], rtsRows = [], rtsThrows = false, noteRows = [], noteThrows = false, priceRows = [], shipWeekRows = [], shipWeekThrows = false, captureRows = [] } = {}) => {
+const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [], transitRows = [], sealRows = [], poSealRows = [], rtsRows = [], rtsThrows = false, noteRows = [], noteThrows = false, priceRows = [], shipWeekRows = [], shipWeekThrows = false, captureRows = [], claimRows = [], claimsThrow = false } = {}) => {
   const sqlLog = [];
   const errors = [];
   const audits = [];
@@ -300,6 +300,12 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
     runSuiteQL: ({ query: sql }) => {
       sqlLog.push(sql);
       let rows = [];
+      // Feedback 8 claims FIRST: the claims read has an inventorynumberlocation
+      // subquery and would otherwise be served lot rows.
+      if (/FROM customrecord_arch_res/.test(sql)) {
+        if (claimsThrow) throw new Error('Invalid search type: customrecord_arch_res');
+        return { asMappedResults: () => claimRows };
+      }
       // Feedback 10, BEFORE the transactionline route: the price read is a
       // `FROM transactionline tl` query too and would otherwise get bucket rows.
       if (/custbody_so_ready_to_ship/.test(sql)) {
@@ -364,6 +370,8 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
     if (/archSalesTeam$/.test(id)) return team;
     // Feedback 13: loaded for real, it has no dependencies.
     if (/archShipWeek$/.test(id)) return load(join(SHARED, 'archShipWeek.js'), () => { throw new Error('no deps'); });
+    // Feedback 8: loaded for real, it has no dependencies.
+    if (/archReservation$/.test(id)) return load(join(SHARED, 'archReservation.js'), () => { throw new Error('no deps'); });
     throw new Error('unmocked module: ' + id);
   });
 
@@ -1045,6 +1053,61 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   ok('L3 the PO prefix comes from the capture, so it only matches that PO',
     !!lotOf(other, '316027-20')?.tally && !lotOf(other, '316027-12')?.tally);
   ok('L4 no error logged', bare.errors.length === 0 && full.errors.length === 0, [bare.errors, full.errors]);
+}
+
+/* ════ M. A bundle reserved before arrival (Feedback 8, 2026-09-23) ══════════
+ * The SO line carries NO inventory detail, and its claim names the line by
+ * uniquekey. On the water it must not reach Reserved, Available or unattributed;
+ * landed and not yet handed over it must be Reserved on its bundle. */
+{
+  // Lot 316027-20 (2 MBF on hand in LOT_ROWS) plays the claimed bundle.
+  const bare = bkRow({ tranid: '130304', docno: 'SO-ARC-25', lineno: '4', linekey: '99001',
+    qty: '-2', lotno: null, assignedqty: null });
+  const claim = (onhand) => ({ claimid: 7, lotid: 49850, lotno: '316027-20', soid: 130304,
+    sonumber: 'SO-ARC-25', customer: 'Acme', linekey: 99001, itemid: 2915,
+    since: '2026-09-23 01:00:00', lotonhand: onhand });
+  const lotsNoStock = LOT_ROWS.map((r) => (r.lotno === '316027-20' ? { ...r, storedqty: '0' } : r));
+  const row = (res) => res.written.find((r) => String(r.internalId) === '2915');
+  const lot = (res, n) => row(res)?.lots.find((l) => l.lotNo === n);
+
+  const base = runMr({ bucketRows: BUCKET_ROWS });
+  const water = runMr({ bucketRows: BUCKET_ROWS.concat([bare]), lotRows: lotsNoStock, claimRows: [claim(0)] });
+  ok('M1 on the water: the claimed line adds NOTHING to the row Reserved',
+    Math.abs(row(water).reserve - row(base).reserve) < 1e-6, [row(water).reserve, row(base).reserve]);
+  ok('M2 on the water: nothing unattributed, so the pair stays sellable',
+    Math.abs(row(water).unattributed.reserve - row(base).unattributed.reserve) < 1e-6, row(water).unattributed);
+  ok('M3 on the water: the bundle carries preReserved 2,000 BF and its reservation',
+    Math.round(lot(water, '316027-20').preReserved) === 2000 &&
+    lot(water, '316027-20').reservation && lot(water, '316027-20').reservation.soNumber === 'SO-ARC-25' &&
+    lot(water, '316027-20').reservation.landed === false,
+    lot(water, '316027-20'));
+  ok('M4 on the water: reserve on the bundle stays 0 (it is not On Hand)',
+    lot(water, '316027-20').reserve === 0, lot(water, '316027-20').reserve);
+
+  const landed = runMr({ bucketRows: BUCKET_ROWS.concat([bare]), claimRows: [claim(2)] });
+  ok('M5 landed, not handed over: the line is Reserved ON ITS BUNDLE',
+    Math.round(lot(landed, '316027-20').reserve) === 2000, lot(landed, '316027-20').reserve);
+  ok('M6 landed: the row Reserved rises by the bundle and nothing is unattributed',
+    Math.round(row(landed).reserve - row(base).reserve) === 2000 &&
+    Math.abs(row(landed).unattributed.reserve - row(base).unattributed.reserve) < 1e-6,
+    [row(landed).reserve, row(base).reserve, row(landed).unattributed]);
+  ok('M7 landed: the order is named on the bundle',
+    (lot(landed, '316027-20').orders || []).some((o) => o.soNumber === 'SO-ARC-25'));
+
+  const unclaimed = runMr({ bucketRows: BUCKET_ROWS.concat([bare]) });
+  ok('M8 the same bare line WITHOUT a claim is still unattributed, as before',
+    Math.round((row(unclaimed).unattributed.reserve - row(base).unattributed.reserve)) === 2000,
+    row(unclaimed).unattributed);
+
+  const broken = runMr({ bucketRows: BUCKET_ROWS.concat([bare]), claimsThrow: true });
+  ok('M9 claims unreadable: ERROR logged, and the line falls back to unattributed (conservative)',
+    broken.errors.some((e) => /RESERVATION CLAIMS UNREADABLE/.test(e)) &&
+    Math.round(row(broken).unattributed.reserve - row(base).unattributed.reserve) === 2000,
+    broken.errors);
+  ok('M10 an unreserved bundle publishes reservation null and preReserved 0',
+    lot(base, '316027-2').reservation === null && lot(base, '316027-2').preReserved === 0);
+  ok('M11 BUCKET_SQL selects the native line key the claim names',
+    base.sqlLog.some((q) => /tl\.uniquekey\s+AS linekey/.test(q)));
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archLotOrders ok');

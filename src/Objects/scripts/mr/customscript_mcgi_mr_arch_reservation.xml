@@ -1,0 +1,32 @@
+<mapreducescript scriptid="customscript_mcgi_mr_arch_reservation">
+  <!--
+    CWP ARCH pre-arrival reservation reconciler (Feedback 8, 2.7 / 2.7b / 2.7c / 3.1).
+    Releases claims whose SO or line is gone, hands a landed bundle to its SO line,
+    reports supply-side exceptions on the lot, and mirrors every claim onto the lot.
+    Idempotent: a second run changes nothing the first did not. Sends no email.
+
+    Its OWN deployment and its own schedule. The "never schedule it" rule in this
+    repo is about the trader-screen CACHE MRs (their self-rescheduling chain);
+    this job has no chain and one concurrent run.
+  -->
+  <description>CWP ARCH bundle reservation reconciler. Releases a reservation when its sales order is cancelled or closed or its line is removed; hands a landed bundle to its sales order line; flags reserved bundles that will not arrive. Idempotent, sends no email.</description>
+  <isinactive>F</isinactive>
+  <name>MCGI MR ARCH Reservation Reconciler</name>
+  <notifyadmins>F</notifyadmins>
+  <notifyemails>aserban@houseblend.io</notifyemails>
+  <notifyowner>F</notifyowner>
+  <scriptfile>[/SuiteScripts/mcgi_services/trader_screen/entry_points/mr/mcgi_mr_arch_reservation.js]</scriptfile>
+  <scriptdeployments>
+    <scriptdeployment scriptid="customdeploy_mcgi_mr_arch_reservation">
+      <buffersize>1</buffersize>
+      <concurrencylimit>1</concurrencylimit>
+      <isdeployed>T</isdeployed>
+      <loglevel>DEBUG</loglevel>
+      <queueallstagesatonce>T</queueallstagesatonce>
+      <runasrole>ADMINISTRATOR</runasrole>
+      <status>NOTSCHEDULED</status>
+      <title>MCGI MR ARCH Reservation Reconciler</title>
+      <yieldaftermins>60</yieldaftermins>
+    </scriptdeployment>
+  </scriptdeployments>
+</mapreducescript>

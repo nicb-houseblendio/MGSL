@@ -166,7 +166,9 @@ define([
     // Feedback 13: the ONE ship-week rule, shared with the open-orders service
     // and the split queue so the three can never describe one order differently.
     '../../shared/archShipWeek',
-], (query, search, log, runtime, task, CacheKeys, CacheClient, LotCostLib, ArchSalesTeam, ArchShipWeek) => {
+    // Feedback 8, phase 2: the pre-arrival reservation claims. Appended LAST.
+    '../../shared/archReservation',
+], (query, search, log, runtime, task, CacheKeys, CacheClient, LotCostLib, ArchSalesTeam, ArchShipWeek, ArchReservation) => {
 
     /**
      * 🔴 SUPERSEDED 2026-09-22: ARCH stock IS now scoped by subsidiary ARC, see
@@ -2075,6 +2077,11 @@ define([
         // see the join below. Also the dedupe key, so a line that fans out
         // over several lots is still counted once in the row totals.
         '  tl.id                  AS lineno, ' +
+        /* The line's GLOBAL key, added 2026-09-23 (Feedback 8). A bundle reserved
+         * before arrival has no inventory detail, and its claim names the line by
+         * this key. NATIVE, so it cannot be the unknown column the note below
+         * warns about for custom fields. */
+        '  tl.uniquekey           AS linekey, ' +
         '  tl.quantity            AS qty, ' +
         '  tl.quantityshiprecv    AS shiprecv, ' +
         '  tl.quantitybilled      AS billed, ' +
@@ -2255,10 +2262,11 @@ define([
      * drill-down would show nothing while the column shows a number. Recording
      * it means that gap is visible instead of looking like a bug.
      */
-    const loadBuckets = () => {
+    const loadBuckets = (claimsRead) => {
         const byPair = {};
         const seenLines = {};
-        const blank = () => ({ reserve: 0, outbound: 0, onOrder: 0, inTransit: 0, readyToBuild: 0 });
+        const blank = () => ({ reserve: 0, outbound: 0, onOrder: 0, inTransit: 0, preReserve: 0, readyToBuild: 0 });
+        const claimByLine = (claimsRead && claimsRead.byLine) || {};
 
         let rows;
         try {
@@ -2644,6 +2652,36 @@ define([
             return !!sw && sw === (isoDate(r.trandate) || '');
         };
 
+        /* ── BUNDLES RESERVED BEFORE ARRIVAL (Feedback 8, 2.2 and 2.4) ─────────
+         *
+         * Such a sales-order line carries NO inventory detail (NetSuite refuses one
+         * on a lot with no stock), so the fold below would book its whole quantity
+         * as the row's Reserved and as `unattributed`. That subtracts wood that is
+         * still on a boat from Available, and an unattributed figure locks every
+         * other bundle of the item at the location.
+         *
+         * The claim names the line (`<soId>:<uniquekey>`) and the bundle, so:
+         *   - landed (the lot has stock) and not handed over yet: the line is
+         *     attributed to its bundle exactly as if it carried the assignment, so
+         *     it is Reserved on that bundle and off Available;
+         *   - still on the water: it goes to `preReserve`, row and lot, and to
+         *     nothing Available reads.
+         * A line that DOES carry an assignment is left alone: the assignment is the
+         * truth once the reconciler has handed the bundle over. */
+        const assignedLines = {};
+        rows.forEach((r) => {
+            if (r.lotno) assignedLines[String(r.tranid) + '#' + String(r.lineno)] = true;
+        });
+        const preSeen = {};
+        rows = rows.map((r) => {
+            if (String(r.trantype) !== 'SalesOrd' || r.lotno) return r;
+            if (assignedLines[String(r.tranid) + '#' + String(r.lineno)]) return r;
+            const c = claimByLine[String(r.tranid) + ':' + String(r.linekey)];
+            if (!c || !c.lotNo) return r;
+            if (c.lotOnHand > 0) return Object.assign({}, r, { lotno: c.lotNo, assignedqty: r.qty });
+            return Object.assign({}, r, { preArrivalLot: c.lotNo });
+        });
+
         rows.forEach((r) => {
             const key = String(r.itemid) + '__' + String(r.locationid);
             if (!byPair[key]) {
@@ -2681,6 +2719,18 @@ define([
                 };
             }
             const bucket = byPair[key];
+
+            if (r.preArrivalLot) {
+                // Once per line, so a line can never be counted twice here.
+                const lk = String(r.tranid) + '#' + String(r.lineno);
+                if (preSeen[lk]) return;
+                preSeen[lk] = true;
+                const openPre = Math.max(0, Math.abs(num(r.qty)) - Math.abs(num(r.shiprecv)));
+                bucket.totals.preReserve += openPre;
+                if (!bucket.lots[r.preArrivalLot]) bucket.lots[r.preArrivalLot] = blank();
+                bucket.lots[r.preArrivalLot].preReserve = (bucket.lots[r.preArrivalLot].preReserve || 0) + openPre;
+                return;
+            }
 
             const isSale = String(r.trantype) === 'SalesOrd';
             // SO quantities are signed negative by NetSuite.
@@ -3396,7 +3446,35 @@ define([
             // (Feedback 14 follow-up, 2026-09-23): decking in ARC is ARCH.
 
             const holds = loadActiveHolds();
-            const buckets = loadBuckets();
+            /* Feedback 8: every live pre-arrival claim, read ONCE. A failed read
+             * degrades to "no claims": claimed lines fall back to unattributed
+             * (conservative, they still subtract and still lock the pair) and no
+             * bundle shows its reservation. The endpoint refuses every sale while
+             * the claims are unreadable, so nothing can be sold twice; the screen
+             * only loses the badge. ERROR, because it is abnormal and a person has
+             * to fix the record type or its access. */
+            const claimsRead = ArchReservation.readClaims(query);
+            if (!claimsRead.sourced) {
+                log.error('ARCH cache - RESERVATION CLAIMS UNREADABLE, bundles reserved before arrival ' +
+                    'show no reservation (the order endpoint refuses every sale meanwhile)', claimsRead.error);
+            }
+            // 2.7c: the reconciler's exception on each claimed lot, display only,
+            // isolated so it can never take the claims read down with it.
+            const excRead = ArchReservation.readExceptions(query, claimsRead.rows.map((c) => c.lotId));
+            const claimsForItem = (itemId) => {
+                const out = {};
+                claimsRead.rows.forEach((c) => {
+                    if (String(c.itemId) === String(itemId) && c.lotId) {
+                        out[String(c.lotId)] = {
+                            soId: c.soId ? String(c.soId) : '', soNumber: c.soNumber, customer: c.customer,
+                            pending: !!c.pending, since: c.since, landed: c.lotOnHand > 0,
+                            exception: excRead.byLotId[String(c.lotId)] || null,
+                        };
+                    }
+                });
+                return out;
+            };
+            const buckets = loadBuckets(claimsRead);
 
             const byPair = {};
             const rateless = [];
@@ -3439,6 +3517,7 @@ define([
                         locationId:   String(r.locationid),
                         locationName: r.locationname || KNOWN_LOCATIONS[r.locationid] || '',
                         holds:        holds[key] || {},
+                        reservations: claimsForItem(r.itemid),
                         buckets:      buckets[key] || null,
                         // Carried per pair only so it can cross into `summarize`.
                         // See `readyToBuildSourced`.
@@ -3552,6 +3631,7 @@ define([
                     locationId:   String(b.locationId || String(key).split('__')[1]),
                     locationName: b.locationName || KNOWN_LOCATIONS[String(b.locationId)] || '',
                     holds:        holds[key] || {},
+                    reservations: claimsForItem(itemId),
                     buckets:      buckets[key],
                     // Same carrier as the pair above. A donor-recovered pair
                     // reaches `summarize` by the same route and must not be the
@@ -3956,6 +4036,15 @@ define([
                     outbound:      lb ? lb.outbound  / rate : 0,
                     onOrder:       lb ? lb.onOrder   / rate : 0,
                     inTransit:     lb ? lb.inTransit / rate : 0,
+                    /* Feedback 8: the part of an SO line reserving this bundle while it
+                     * is still on the water. Not On Hand, so not in Available; the
+                     * bundle is locked by `reservation` below, not by this number. */
+                    preReserved:   lb ? (lb.preReserve || 0) / rate : 0,
+                    /* The claim itself, or null. Whole bundle, true or false: present
+                     * means nobody else may sell it, whatever the quantities say.
+                     * `landed` = the lot has stock and the reconciler has not yet
+                     * handed it to the order. */
+                    reservation:   (pair.reservations && pair.reservations[String(l.lotId)]) || null,
                     /* Supplier and ETA for the On Order / In Transit drill-downs.
                      * NULL rather than an empty object where the lot sits on no
                      * open PO line, because the browser uses the distinction the

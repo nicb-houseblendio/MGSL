@@ -46,7 +46,7 @@ const define = (deps, factory) => {
     // Added 2026-09-15 with the fx rate for item 10b. The shim throws on an
     // unfaked dependency, which is the behaviour that caught this.
     'N/currency': { exchangeRate: () => 0.719115 },
-    './archSplitExecute': {},
+    './archSplitExecute': {}, './archReservation': {},
   };
   mod = factory(...deps.map((d) => { if (!(d in table)) throw new Error('unfaked dep ' + d); return table[d]; }));
 };
@@ -164,7 +164,7 @@ const loadWith = (rows) => {
       'N/render': { PrintMode: { PDF: 'PDF' }, transaction: () => ({ name: '' }) },
       'N/email': { send: (o) => sentHere.push(o) },
       'N/currency': { exchangeRate: () => 0.719115 },
-      './archSplitExecute': {},
+      './archSplitExecute': {}, './archReservation': {},
     };
     m = factory(...deps.map((d) => table[d]));
   };
