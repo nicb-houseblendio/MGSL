@@ -1420,7 +1420,7 @@ define([
      * shown" — an em dash — rather than lose the row's quantities, which are the
      * reason the screen exists.
      */
-    const loadLotCosts = (lotList, locationId) => {
+    const loadLotCosts = (lotList, locationId, strict) => {
         if (!lotList || !lotList.length) return {};
         try {
             const ids = [];
@@ -1430,6 +1430,7 @@ define([
             if (!ids.length) return {};
             return LotCostLib.getLotCostsAtLocation(ids, locationId, { book: costBookId() }) || {};
         } catch (e) {
+            if (strict) throw e;   // the batch falls back to per-pair; see attachLotBatches
             log.error('ARCH cache lot costing failed',
                 'location=' + locationId + ' book=' + costBookId() + ' — the row keeps its ' +
                 'quantities and reports no cost. ' + e.message);
@@ -1553,7 +1554,7 @@ define([
      * in both accounts and is set on one PO (PO-ARC-000014, "ABC1234"), whose
      * four bundles resolve through their receipt.
      */
-    const loadLotSeals = (lotList) => {
+    const loadLotSeals = (lotList, strict) => {
         const ids = (lotList || []).map((l) => l && l.lotId).filter(Boolean);
         if (!ids.length) return {};
         try {
@@ -1570,7 +1571,10 @@ define([
                     "                     OR (t.type = 'ItemRcpt' AND po.id = tl.createdfrom)) " +
                     'WHERE ia.inventorynumber IN (' + ids.map(() => '?').join(',') + ') ' +
                     "  AND t.type IN ('PurchOrd', 'ItemRcpt') " +
-                    '  AND po.custbody_seal_trailer_number IS NOT NULL',
+                    '  AND po.custbody_seal_trailer_number IS NOT NULL ' +
+                    // Deterministic "first seal per lot", so a batched and a per-pair
+                    // read can never disagree (a lot on two POs: the Make Copy defect).
+                    'ORDER BY ia.inventorynumber, t.trandate, t.id',
                 params: ids,
             }).asMappedResults() || [];
             const out = {};
@@ -1581,13 +1585,14 @@ define([
             });
             return out;
         } catch (e) {
+            if (strict) throw e;
             log.audit('ARCH cache', 'PO seal/trailer read failed (non-fatal, Container falls back to the vessel only): ' +
                 (e.name || '') + ': ' + (e.message || String(e)));
             return {};
         }
     };
 
-    const loadLotReceiptFacts = (lotList) => {
+    const loadLotReceiptFacts = (lotList, strict) => {
         if (!lotList || !lotList.length) return {};
         const ids = [];
         for (let i = 0; i < lotList.length; i++) {
@@ -1616,7 +1621,14 @@ define([
                     '                          AND crt.effectivedate = t.trandate ' +
                     'WHERE ia.inventorynumber IN (' + ids.map(() => '?').join(',') + ') ' +
                     "  AND t.type IN ('InvAdjst', 'ItemRcpt') " +
-                    'ORDER BY ia.inventorynumber, t.trandate',
+                    /* 🔴 DETERMINISTIC (2026-09-23). The account holds TWO CAD/USD
+                     * rates for some dates (2026-04-30: ids 2413 at 1.3664 and 2425
+                     * at 1.3682; prod has one such date too), so the join returns
+                     * two rows for one receipt and "first row per lot" took
+                     * whichever the database returned first. Found by the batch
+                     * shadow check, which read the same lot twice and got both.
+                     * The rate entered LAST wins, every time. */
+                    'ORDER BY ia.inventorynumber, t.trandate, t.id, crr.id DESC, crt.id DESC',
                 params: [CAD_SYMBOL, USD_SYMBOL].concat(ids),
             }).asMappedResults() || [];
             /*
@@ -1669,11 +1681,127 @@ define([
             });
             return out;
         } catch (e) {
+            if (strict) throw e;
             log.error('ARCH cache USD cost conversion failed',
                 'Every row keeps its CAD cost and reports no USD figure. ' +
                 (e.name || '') + ': ' + (e.message || String(e)));
             return {};
         }
+    };
+
+    /* == The per-lot reads, batched (2026-09-23) ================================
+     *
+     * A rebuild took ~80 s, ~74 of them in reduce, because each item x location
+     * pair ran four SuiteQL round trips of its own: receipt facts, PO seals, and
+     * LotCostLib's two. ~500 round trips a rebuild, and the change-driven gate now
+     * rebuilds on activity, so that time is paid many times an hour.
+     *
+     * All three are keyed by LOT and give a lot the same answer whatever else is
+     * in the call (LotCostLib keys its FIFO state per lot and location and sums
+     * landed-cost pools per receipt, not per call), so they run ONCE per run here
+     * (costs once per location, the library's unit) in chunks of LOT_BATCH_SIZE,
+     * and each pair carries its own slice to reduce. LotCostLib is not changed.
+     *
+     * Failure keeps today's behaviour: a batch that throws leaves its slice off,
+     * and reduce falls back to that pair's own read, which reports and degrades
+     * exactly as before (an em dash, never a lost row).
+     *
+     * LOT_BATCH_SHADOW: while true, reduce ALSO runs the per-pair reads and
+     * compares every lot's value; summarize logs the totals once per rebuild (at
+     * ERROR if anything differs). It doubles the queries, so it is a validation
+     * switch: turn it off once a few rebuilds read 0 mismatches.
+     */
+    const LOT_BATCH_SIZE = 400;       // well under Oracle's 1,000-item IN list
+    // OFF since 2026-09-23 09:30 PT: the 09:13 rebuild compared 2,113 lot values with
+    // 0 mismatches, and a full payload diff against the per-pair build showed 0
+    // differences over 125 rows and 1,056 lots. Turn it on for one rebuild to
+    // re-check after any change to the three loaders or to LotCostLib.
+    const LOT_BATCH_SHADOW = false;
+
+    const attachLotBatches = (byPair) => {
+        const t0 = Date.now();
+        const pairs = Object.keys(byPair).map((k) => byPair[k]);
+        const uniq = (lots) => {
+            const seen = {};
+            return (lots || []).filter((l) => l && l.lotId && !seen[l.lotId] && (seen[l.lotId] = true));
+        };
+        const inChunks = (lots, fn) => {
+            const m = {};
+            for (let i = 0; i < lots.length; i += LOT_BATCH_SIZE) Object.assign(m, fn(lots.slice(i, i + LOT_BATCH_SIZE)) || {});
+            return m;
+        };
+        const failed = [];
+        const all = uniq([].concat.apply([], pairs.map((p) => p.lots || [])));
+        let facts = null;
+        let seals = null;
+        const ms = {};
+        let t = Date.now();
+        try { facts = inChunks(all, (c) => loadLotReceiptFacts(c, true)); } catch (e) { failed.push('receipt facts: ' + e.message); }
+        ms.facts = Date.now() - t;
+        t = Date.now();
+        try { seals = inChunks(all, (c) => loadLotSeals(c, true)); } catch (e) { failed.push('seals: ' + e.message); }
+        ms.seals = Date.now() - t;
+        t = Date.now();
+        const byLoc = {};
+        pairs.forEach((p) => { (byLoc[p.locationId] = byLoc[p.locationId] || []).push.apply(byLoc[p.locationId], p.lots || []); });
+        const costs = {};
+        Object.keys(byLoc).forEach((loc) => {
+            try { costs[loc] = inChunks(uniq(byLoc[loc]), (c) => loadLotCosts(c, loc, true)); }
+            catch (e) { failed.push('costs at ' + loc + ': ' + e.message); }
+        });
+        const pick = (m, lots) => {
+            const o = {};
+            (lots || []).forEach((l) => {
+                const k = String(l.lotId);
+                if (Object.prototype.hasOwnProperty.call(m, k)) o[k] = m[k];
+            });
+            return o;
+        };
+        pairs.forEach((p) => {
+            if (facts) p.batchFacts = pick(facts, p.lots);
+            if (seals) p.batchSeals = pick(seals, p.lots);
+            if (costs[p.locationId]) p.batchCosts = pick(costs[p.locationId], p.lots);
+        });
+        ms.costs = Date.now() - t;
+        log.audit('ARCH cache lot data batched',
+            all.length + ' lot(s), ' + Object.keys(byLoc).length + ' location(s), ' + (Date.now() - t0) + ' ms' +
+            ' (facts ' + ms.facts + ', seals ' + ms.seals + ', costs ' + ms.costs + ')' +
+            (failed.length ? '. FELL BACK to per-pair reads for: ' + failed.join(' | ') : '.'));
+    };
+
+    /** A pair's batched slice, or its own read when there is none. In shadow
+     *  mode both, compared lot by lot into `shadow`. */
+    const fromBatch = (batched, perPair, label, shadow) => {
+        if (!batched) return perPair();
+        if (LOT_BATCH_SHADOW) {
+            const ref = perPair() || {};
+            const norm = (v) => JSON.stringify(v === undefined ? null : v);
+            Object.keys(Object.assign({}, ref, batched)).forEach((k) => {
+                shadow.checked++;
+                if (norm(ref[k]) !== norm(batched[k])) {
+                    shadow.mismatch++;
+                    if (shadow.sample.length < 3) shadow.sample.push(label + ' lot ' + k + ': ' + norm(ref[k]) + ' vs ' + norm(batched[k]));
+                }
+            });
+        }
+        return batched;
+    };
+
+    /** In summarize: total the shadow comparison, log it once, strip it off the rows. */
+    const reportLotBatchShadow = (rows) => {
+        let checked = 0;
+        let mismatch = 0;
+        const sample = [];
+        rows.forEach((r) => {
+            if (!r || !r._shadow) return;
+            checked += r._shadow.checked || 0;
+            mismatch += r._shadow.mismatch || 0;
+            (r._shadow.sample || []).forEach((x) => { if (sample.length < 5) sample.push(x); });
+            delete r._shadow;
+        });
+        if (!checked) return;
+        (mismatch ? log.error : log.audit)('ARCH cache lot batch shadow check',
+            checked + ' lot value(s) compared, ' + mismatch + ' mismatch(es)' + (sample.length ? ': ' + sample.join(' | ') : ''));
     };
 
     /* == Tally resolution (SDD Phase 1, section 3.2.3) =========================
@@ -3995,6 +4123,16 @@ define([
                     'location yet" case — check the item\'s unit record.');
             }
 
+            // 2026-09-23: the per-lot reads, once per run instead of once per pair.
+            // Wrapped: anything unexpected here must cost the batch, never the
+            // rebuild, and a pair without slices reads per pair as before.
+            try {
+                attachLotBatches(byPair);
+            } catch (e) {
+                log.audit('ARCH cache lot data batched', 'SKIPPED, every pair reads its own lots: ' +
+                    (e.name || '') + ': ' + (e.message || String(e)));
+            }
+
             const out = {};
             Object.keys(byPair).forEach((k) => { out[k] = JSON.stringify(byPair[k]); });
 
@@ -4139,9 +4277,12 @@ define([
             // One query per pair, carrying BOTH the receipt-date USD rate
             // (Feedback 9 item 1) and the Lot Vessel (item 2). Loaded here rather
             // than in the cost block below because the lot map needs the vessel.
-            const lotFacts = loadLotReceiptFacts(pair.lots);
+            // Batched in getInputData since 2026-09-23 (attachLotBatches); the
+            // per-pair read is the fallback when a batch failed or is absent.
+            const shadow = { checked: 0, mismatch: 0, sample: [] };
+            const lotFacts = fromBatch(pair.batchFacts, () => loadLotReceiptFacts(pair.lots), 'facts', shadow);
             // Feedback 15: the PO's Seal / Trailer # for bundles that came in on a PO.
-            const lotSeals = loadLotSeals(pair.lots);
+            const lotSeals = fromBatch(pair.batchSeals, () => loadLotSeals(pair.lots), 'seals', shadow);
 
             /**
              * The Lot Vessel for a lot, or '' when the stored value is really the
@@ -4421,7 +4562,7 @@ define([
              * where no lot is costed stays null so the grid shows an em dash.
              * Weighting by on-hand means an empty lot cannot drag the average.
              */
-            const lotCosts = loadLotCosts(pair.lots, pair.locationId);
+            const lotCosts = fromBatch(pair.batchCosts, () => loadLotCosts(pair.lots, pair.locationId), 'costs', shadow);
             let costQty = 0;
             let costVal = 0;
             /*
@@ -4778,6 +4919,8 @@ define([
             // keys — it does here, but it is not a documented guarantee, and a
             // change in that behaviour would collapse the whole grid to one row
             // with nothing failing loudly.
+            // Carried to summarize, which totals it and strips it before caching.
+            if (shadow.checked) summaryRow._shadow = shadow;
             context.write({ key: pair.itemId + '__' + pair.locationId, value: JSON.stringify(summaryRow) });
         } catch (e) {
             log.error('ARCH cache reduce failed for ' + context.key, e.message);
@@ -4858,6 +5001,8 @@ define([
             /* Read off the ROWS, never off `readyToBuildSourced` — this is a
              * different execution and that variable is a re-initialised `true`
              * here. See its note for what that used to make META claim. */
+            reportLotBatchShadow(rows);
+
             const rtbSourced = rtbSourcedFrom(rows);
             const bktSourced = bktSourcedFrom(rows);
 
