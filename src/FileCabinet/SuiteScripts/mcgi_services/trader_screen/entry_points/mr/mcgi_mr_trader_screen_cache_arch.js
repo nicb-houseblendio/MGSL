@@ -2168,6 +2168,48 @@ define([
                     ' cap. Lots beyond it silently show no tally. Add a PO or lot filter here ' +
                     'before this grows further.');
             }
+            /* The lot names one tally bundle may sit under, exact first.
+             *
+             * ALSO UNDER <PO>-<bundle>, since 2026-09-23. A packing list names a
+             * bundle by the SUPPLIER's number ("1535"), and Marc-Antoine's
+             * 2026-09-16 re-import named the lots <PO>-<that number>: PL 314307's
+             * 14 bundles 1535..1548 are lots 314307-1535..-1548, their on-hand
+             * equal to the PL's figures. Exact keys are kept too, because 12 ARC
+             * lots have no dash at all. Each key gets the same merge and conflict
+             * rules below, so they can never disagree.
+             *
+             * Second pass, 2026-09-23, reading Nic's contract (Tally/record-format.md
+             * and payload-template.json on houseblend-clients master):
+             *   - `po` is written in NetSuite's form, "PO-314888", while the lots
+             *     carry the bare supplier number, so the "PO-" prefix is also tried
+             *     without it.
+             *   - `lot` is set only where a RECEIPT created the lot and is left null
+             *     otherwise. 1,033 of the 1,053 on-hand ARC lots came in by inventory
+             *     adjustment, so a push that follows the contract leaves nearly all
+             *     of his wood unmatched. `bundleNo` is then tried under the PO, which
+             *     is his own naming rather than a guess: a key only ever meets a lot
+             *     that exists under exactly that name. A bare bundle number alone is
+             *     never a key, since "12" would meet any lot called 12. */
+            const tallyLotKeys = (po, b) => {
+                const up = (v) => (v == null ? '' : String(v).trim().toUpperCase());
+                const rawLot = up(b && b.lot);
+                const bundleNo = up(b && b.bundleNo);
+                const capPo = up(po);
+                const pos = [];
+                if (capPo) pos.push(capPo);
+                const bare = capPo.replace(/^PO[-\s#]*/, '');
+                if (bare && bare !== capPo) pos.push(bare);
+                const keys = [];
+                const add = (key) => { if (key && keys.indexOf(key) === -1) keys.push(key); };
+                add(rawLot);
+                pos.forEach((p) => {
+                    [rawLot, bundleNo].forEach((id) => {
+                        if (id && id.indexOf(p + '-') !== 0) add(p + '-' + id);
+                    });
+                });
+                return keys;
+            };
+
             const byLot = {};
             for (let i = 0; i < rows.length && i < TALLY_MAX; i++) {
                 const r = rows[i];
@@ -2198,20 +2240,9 @@ define([
                 const prov = payload.provenance || {};
                 for (let j = 0; j < payload.bundles.length; j++) {
                     const b = payload.bundles[j];
-                    const rawLot = b && b.lot != null ? String(b.lot).trim().toUpperCase() : '';
+                    const lotKeys = tallyLotKeys(payload.po, b);
                     // The whole point. An unmatched bundle is expected, not an error.
-                    if (!rawLot) continue;
-
-                    /* ALSO UNDER <PO>-<bundle>, since 2026-09-23. A packing list names a
-                     * bundle by the SUPPLIER's number ("1535"), and Marc-Antoine's
-                     * 2026-09-16 re-import named the lots <PO>-<that number>: PL 314307's
-                     * 14 bundles 1535..1548 are lots 314307-1535..-1548, their on-hand
-                     * equal to the PL's figures. Exact keys are kept too, because 12 ARC
-                     * lots have no dash at all. Each key gets the same merge and
-                     * conflict rules below, so the two can never disagree. */
-                    const capPo = String(payload.po || '').trim().toUpperCase();
-                    const lotKeys = [rawLot];
-                    if (capPo && rawLot.indexOf(capPo + '-') !== 0) lotKeys.push(capPo + '-' + rawLot);
+                    if (!lotKeys.length) continue;
                     for (let k = 0; k < lotKeys.length; k++) {
                     const lot = lotKeys[k];
                     const held = byLot[lot];

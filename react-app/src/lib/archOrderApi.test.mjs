@@ -285,6 +285,39 @@ console.log(fail ? ('# FAIL ' + fail) : '# archOrderApi ok');
   const f2 = await fetchWriteAuth();
   ok('F17-B1  ...but a failed answer is not remembered', calls === 2 && f1.status === 'unknown' && f2.status === 'unknown', calls);
   resetWriteAuthCache();
+
+  // Past the TTL: the last good answer comes back AT ONCE and a refresh runs behind it.
+  const { WRITE_AUTH_TTL_MS } = await import('./archOrderApi.ts');
+  const realNow = Date.now;
+  let clock = 1_000_000;
+  Date.now = () => clock;
+  try {
+    answer = { ok: true, role: 3, permittedRoles: [3], chargeItems: [{ id: '1', name: 'Freight' }] };
+    calls = 0;
+    const g1 = await fetchWriteAuth();
+    clock += WRITE_AUTH_TTL_MS + 1;
+    let release;
+    answer = { ok: true, role: 3, permittedRoles: [3], chargeItems: [{ id: '2', name: 'Freight v2' }] };
+    const slow = new Promise((r) => { release = r; });
+    globalThis.fetch = () => { calls++; return slow.then(() => ({ json: async () => answer })); };
+    const g2 = await fetchWriteAuth();
+    ok('F17-B1  ...past the TTL the last good answer is served without waiting', g2 === g1 && calls === 2, calls);
+    release();
+    await slow; await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const g3 = await fetchWriteAuth();
+    ok('F17-B1  ...and the refresh behind it is what the next open gets', g3.chargeItems[0].id === '2' && calls === 2, [g3.chargeItems, calls]);
+    // A refresh that fails keeps the last good answer and retries on the next call.
+    clock += WRITE_AUTH_TTL_MS + 1;
+    answer = { ok: false };
+    globalThis.fetch = () => { calls++; return Promise.resolve({ json: async () => answer }); };
+    const g4 = await fetchWriteAuth();
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const g5 = await fetchWriteAuth();
+    ok('F17-B1  ...a failed refresh keeps the last good answer and is retried', g4 === g3 && g5 === g3 && calls === 4, calls);
+  } finally {
+    Date.now = realNow;
+    resetWriteAuthCache();
+  }
 }
 
 process.exit(fail ? 1 : 0);

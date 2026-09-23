@@ -756,9 +756,18 @@ const loadWriteAuth = async (): Promise<ArchWriteAuth> => {
  * WRITE_AUTH_TTL_MS; an answer that is not 'ok' is not kept, so a failure is
  * retried on the next open rather than remembered. ArchScreen prefetches it on
  * mount, so the first wizard open is usually instant too.
+ *
+ * ⚠️ PAST THE TTL IT SERVES THE LAST GOOD ANSWER and refreshes behind it
+ * (second pass, 2026-09-23). Measured that afternoon, the health GET took 15.2 s,
+ * 11.1 s and 3.3 s on three calls, so a plain expiry put the full wait back on
+ * the first wizard open after ten idle minutes, which is most of a trader's day.
+ * A stale answer is safe here: the role list and the charge items change only
+ * when someone edits the deployment, and the endpoint re-checks both on every
+ * write, so the worst case is a picker that is one refresh behind.
  */
 export const WRITE_AUTH_TTL_MS = 10 * 60 * 1000;
 let writeAuthCache: { at: number; promise: Promise<ArchWriteAuth> } | null = null;
+let lastGoodWriteAuth: ArchWriteAuth | null = null;
 
 export const fetchWriteAuth = (): Promise<ArchWriteAuth> => {
   const now = Date.now();
@@ -766,14 +775,16 @@ export const fetchWriteAuth = (): Promise<ArchWriteAuth> => {
   const entry = { at: now, promise: loadWriteAuth() };
   writeAuthCache = entry;
   entry.promise.then((r) => {
-    if (r.status !== 'ok' && writeAuthCache === entry) writeAuthCache = null;
+    if (r.status === 'ok') lastGoodWriteAuth = r;
+    else if (writeAuthCache === entry) writeAuthCache = null;
   });
-  return entry.promise;
+  return lastGoodWriteAuth ? Promise.resolve(lastGoodWriteAuth) : entry.promise;
 };
 
-/** Test hook: forget the memoised answer. */
+/** Test hook: forget the memoised answer, the last good one included. */
 export const resetWriteAuthCache = (): void => {
   writeAuthCache = null;
+  lastGoodWriteAuth = null;
 };
 
 /**
