@@ -65,6 +65,18 @@ export interface ArchLotOrder {
    * may belong to the Reserved tab. Added 2026-09-14.
    */
   readyToBuild?: boolean;
+  /**
+   * Feedback 10: the order is ticked Ready to Ship (`custbody_so_ready_to_ship`),
+   * so its share of the bundle sits in `outbound`. Exclusive with `readyToBuild`:
+   * the cache clears that one when this is set. Optional for the same reason.
+   */
+  readyToShip?: boolean;
+  /** ISO date of the latest Ready to Ship tick; '' when it could not be read. */
+  readySince?: string;
+  /** What the customer pays per display unit, in `currency`. null when unpriced. */
+  bfPrice?: number | null;
+  /** ISO currency code of `bfPrice`, e.g. "USD". */
+  currency?: string;
   /** The document number, e.g. "SO-CWP-001344". `t.tranid`, not `t.id`. */
   soNumber: string;
   customerId: string;
@@ -395,7 +407,11 @@ export interface ArchSummaryRow {
    */
   unbundled?: ArchUnbundledLine[];
   /**
-   * onHand − reserve − readyToBuild − held, floored at 0.
+   * onHand − reserve − readyToBuild − outbound − held, floored at 0.
+   *
+   * ⚠️ `outbound` JOINED THIS SUM with Feedback 10 (2026-09-22). For ARC it is the
+   * open share of orders ticked Ready to Ship, still on hand and sold. The notes
+   * below that call it shipped wood describe the column before that.
    *
    * ⚠️ CORRECTED 2026-09-22: `onOrder` AND `inTransit` were both in this sum
    * and neither is any more. Available means what the order endpoint will

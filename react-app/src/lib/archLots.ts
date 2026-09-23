@@ -72,8 +72,14 @@ export const seededRandom = (key: string) => {
  * still right: a PARTIALLY committed bundle is locked, because a bundle is the unit
  * that ships, so a trader must not be able to sell round the part somebody else claimed.
  */
+/*
+ * 🔴 AND IT IS COUNTED AGAIN SINCE FEEDBACK 10, because the field changed meaning.
+ * For ARC, `outbound` is the open share of orders ticked Ready to Ship: still on
+ * the bundle, still sold, waiting for the carrier. The note above is right about
+ * the OLD field; applied to this one it would put sold wood back on sale.
+ */
 export const commitmentOn = (lot: ArchLot): number =>
-  (lot.reserve || 0) + (lot.readyToBuild || 0);
+  (lot.reserve || 0) + (lot.readyToBuild || 0) + (lot.outbound || 0);
 
 /**
  * Board feet of this bundle a trader could actually put on a sales order.
@@ -173,7 +179,7 @@ export const lockReason = (
   if ((lot.outbound || 0) > 0) {
     return {
       badge: 'Out',
-      detail: `${Math.round(lot.outbound)} BF already picked for shipment`,
+      detail: `${Math.round(lot.outbound)} BF ready to ship, waiting for the carrier`,
       color: '#880E4F',
     };
   }

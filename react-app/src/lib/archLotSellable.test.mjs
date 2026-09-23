@@ -102,13 +102,14 @@ ok('readyToBuild locks the same way reserve does', isLotLocked(partialBuild));
 ok('...with the build badge, not the reserved one',
   lockReason(partialBuild)?.badge === 'Bld', lockReason(partialBuild));
 
-// ── 4. Outbound is NOT a commitment, and that is deliberate ─────────────────
-// Shipped wood has already left; on-hand is net of it. Counting it locked
-// fixture bundles out of selling over wood that was gone.
+// ── 4. Outbound IS a commitment since Feedback 10 ───────────────────────────
+// It used to be shipped wood, and counting it was wrong. For ARC it is now the
+// share of an order ticked Ready to Ship: still on the bundle, still sold.
 const shipped = lot({ onHand: 400, outbound: 300 });
-ok('a bundle that has shipped some wood is still sellable on what is left',
-  !isLotLocked(shipped));
-ok('...because outbound is not counted as a commitment', commitmentOn(shipped) === 0);
+ok('a bundle on an order ticked Ready to Ship is locked, like any claimed bundle',
+  isLotLocked(shipped));
+ok('...because outbound now counts as a commitment', commitmentOn(shipped) === 300);
+ok('...and it says why', lockReason(shipped)?.badge === 'Out', lockReason(shipped));
 
 // ── 5. Totality: anything locked can say why ────────────────────────────────
 // A disabled checkbox with no badge beside it reads as a broken screen.

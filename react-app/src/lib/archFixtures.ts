@@ -108,7 +108,9 @@ const buildRow = (index: number): ArchSummaryRow => {
      * disagrees with the account on any row carrying a shipment.
      */
     const shipped = bucket === 'onHand' && lotInt(1, 10) <= 2 ? lotInt(1, Math.floor(qty * 0.4)) : 0;
-    const outbound = shipped;
+    /* Feedback 10: shipped wood no longer reaches `outbound`. It is still taken
+     * off onHand at source (the fulfillment relieved it), and `outbound` is now a
+     * Ready to Ship claim on what remains, assigned below. */
     // What is physically still on the floor, i.e. already net of the shipment.
     const onHand = bucket === 'onHand' ? qty - shipped : 0;
     // ~30% of on-hand bundles carry a reservation. Roughly a third of those are
@@ -120,6 +122,11 @@ const buildRow = (index: number): ArchSummaryRow => {
       bucket === 'onHand' && onHand > 0 && !hasReserve && lotInt(1, 10) <= 2
         ? lotInt(1, Math.max(1, Math.floor(onHand * 0.5)))
         : 0;
+    // A whole bundle on an order ticked Ready to Ship, disjoint from the two
+    // claims above like the cache's buckets are.
+    const outbound = bucket === 'onHand' && onHand > 0 && !hasReserve && readyToBuild === 0 && lotInt(1, 10) === 1
+      ? onHand
+      : 0;
 
     return {
       lotNo: `${itemCode}-${String(i + 1).padStart(3, '0')}`,
@@ -180,7 +187,9 @@ const buildRow = (index: number): ArchSummaryRow => {
     // the Available formula on 2026-09-22, because neither can be sold yet. A
     // fixture that disagrees with the server is how a demo proves a bug that
     // does not exist, or hides one that does.
-    available: Math.max(0, onHand - reserve - readyToBuild),
+    // Feedback 10: `outbound` is Ready to Ship wood, still on hand, so it is
+    // deducted like the other two claims. Same formula as the cache.
+    available: Math.max(0, onHand - reserve - readyToBuild - outbound),
     // Hardwood lot cost per unit — roughly $2.40 to $9.80. Same band across all
     // four categories: the fixtures exist to exercise layout, not to model
     // veneer pricing, and inventing a per-category band would read as real.

@@ -7,8 +7,9 @@
 // Both were reverted the same day. The rule below is the one the app actually
 // enforces, so these assertions can fail if either side drifts:
 //
-//   available = onHand + onOrder + inTransit - reserve - readyToBuild
-// (outbound is NOT subtracted: it has already left, so onHand is net of it)
+//   available = onHand - reserve - readyToBuild - outbound
+// (Feedback 10: outbound is Ready to Ship wood, still on hand, so it IS a claim.
+//  Before that it was shipped wood and was not subtracted.)
 //
 // and, the check that would have caught the bad change immediately, a row can never
 // report more Available than its own lots have free.
@@ -42,14 +43,14 @@ ok('some rows carry a nonzero readyToBuild, else these assertions prove nothing'
 
 // 1. the formula, stated once
 for (const r of rows) {
-  const expected = Math.max(0, r.onHand - r.reserve - r.readyToBuild);
+  const expected = Math.max(0, r.onHand - r.reserve - r.readyToBuild - r.outbound);
   if (r.available !== expected) {
     ok(r.itemCode + ' @ ' + r.locationName + ': available subtracts all three commitments',
       false, { available: r.available, expected, reserve: r.reserve, readyToBuild: r.readyToBuild, outbound: r.outbound });
   }
 }
-ok('every row: available = onHand - reserve - readyToBuild, WITHOUT outbound, onOrder or inTransit',
-  rows.every((r) => r.available === Math.max(0, r.onHand - r.reserve - r.readyToBuild)));
+ok('every row: available = onHand - reserve - readyToBuild - outbound, WITHOUT onOrder or inTransit',
+  rows.every((r) => r.available === Math.max(0, r.onHand - r.reserve - r.readyToBuild - r.outbound)));
 ok('🔴 and a row whose only stock is in transit reports Available 0',
   rows.filter((r) => (r.inTransit || 0) > 0 && (r.onHand || 0) === 0)
       .every((r) => r.available === 0));
@@ -91,18 +92,20 @@ ok('the generator keeps readyToBuild and reserve DISJOINT (why "already inside r
   rows.every((r) => r.lots.every((l) => !((l.readyToBuild || 0) > 0 && (l.reserve || 0) > 0))),
   rows.flatMap((r) => r.lots.filter((l) => (l.readyToBuild || 0) > 0 && (l.reserve || 0) > 0).map((l) => l.lotNo)));
 
-// 6. THE NEW INVARIANT, and the one that would have caught the live double-deduction:
-//    shipped wood is not on the floor, so a lot's onHand must never include it.
-ok('no lot counts its shipped quantity as still on hand',
-  rows.every((r) => r.lots.every((l) => (l.outbound || 0) === 0 || (l.onHand || 0) + (l.outbound || 0) <= (l.onHand || 0) + (l.outbound || 0))));
+// 6. Feedback 10: outbound is a Ready to Ship claim on wood STILL on the lot, so it
+//    must fit inside onHand, be disjoint from the other two claims, and lock.
 {
-  const shipped = rows.flatMap((r) => r.lots.filter((l) => (l.outbound || 0) > 0));
-  ok('some lots carry a shipped quantity, else this proves nothing', shipped.length > 0, shipped.length);
-  ok('a claim never exceeds the wood left after shipping',
-    shipped.every((l) => (l.reserve || 0) + (l.readyToBuild || 0) <= (l.onHand || 0) + 1e-9),
-    shipped.filter((l) => (l.reserve || 0) + (l.readyToBuild || 0) > (l.onHand || 0)).map((l) => l.lotNo));
-  ok('the fixture formula matches the ARCH cache formula, which excludes outbound, on order and in transit',
-    rows.every((r) => r.available === Math.max(0, r.onHand - r.reserve - r.readyToBuild)));
+  const ready = rows.flatMap((r) => r.lots.filter((l) => (l.outbound || 0) > 0));
+  ok('some lots carry a Ready to Ship quantity, else this proves nothing', ready.length > 0, ready.length);
+  ok('a Ready to Ship claim never exceeds the wood on the lot',
+    ready.every((l) => (l.outbound || 0) <= (l.onHand || 0) + 1e-9),
+    ready.filter((l) => (l.outbound || 0) > (l.onHand || 0)).map((l) => l.lotNo));
+  ok('Ready to Ship is disjoint from Reserved and Ready to Build on a lot',
+    ready.every((l) => !(l.reserve || 0) && !(l.readyToBuild || 0)),
+    ready.filter((l) => (l.reserve || 0) || (l.readyToBuild || 0)).map((l) => l.lotNo));
+  ok('a Ready to Ship bundle is locked out of selling', ready.every((l) => isLotLocked(l)));
+  ok('the fixture formula matches the ARCH cache formula: outbound in, on order and in transit out',
+    rows.every((r) => r.available === Math.max(0, r.onHand - r.reserve - r.readyToBuild - r.outbound)));
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archFixtures ok');

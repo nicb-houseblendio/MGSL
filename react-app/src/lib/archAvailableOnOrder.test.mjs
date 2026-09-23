@@ -95,12 +95,12 @@ const formulaText = (() => {
  * run against inputs. If someone puts `onOrder` or `inTransit` back, these
  * assertions fail on VALUES, not just on a text search that a reformat defeats. */
 const available = new Function(
-  'onHand', 'onOrder', 'inTransit', 'reserve', 'readyToBuild', 'held',
+  'onHand', 'onOrder', 'inTransit', 'reserve', 'readyToBuild', 'outbound', 'held',
   'return ' + formulaText,
 );
 const av = (o) => available(
   o.onHand || 0, o.onOrder || 0, o.inTransit || 0,
-  o.reserve || 0, o.readyToBuild || 0, o.held || 0,
+  o.reserve || 0, o.readyToBuild || 0, o.outbound || 0, o.held || 0,
 );
 
 ok('the formula compiles and runs', typeof available, 'function');
@@ -116,8 +116,12 @@ ok('on hand beside in transit counts only the on-hand part',
 ok('reserve is subtracted', av({ onHand: 500, reserve: 200 }), 300);
 ok('readyToBuild is subtracted', av({ onHand: 500, readyToBuild: 200 }), 300);
 ok('held is subtracted', av({ onHand: 500, held: 200 }), 300);
-ok('outbound is NOT subtracted, per the 2026-09-08 correction',
-  av({ onHand: 500, reserve: 0 }), 500);
+/* 🔴 REVERSED BY FEEDBACK 10. The 2026-09-08 rule ("outbound is NOT subtracted")
+ * was right for shipped wood. For ARC, outbound is now the open share of orders
+ * ticked Ready to Ship: still on hand, still sold, so it IS a claim. */
+ok('outbound (Ready to Ship, still on hand) IS subtracted, since Feedback 10',
+  av({ onHand: 500, outbound: 200 }), 300);
+ok('...and all three claims together', av({ onHand: 900, reserve: 100, readyToBuild: 200, outbound: 300 }), 300);
 ok('it floors at zero', av({ onHand: 100, reserve: 900 }), 0);
 ok('an over-reserved row does not go negative', av({ onHand: 0, reserve: 900 }), 0);
 

@@ -2400,6 +2400,137 @@ define([
             }
         }
 
+        /* ── Ready to Ship, Feedback 10, 2026-09-22 ──────────────────────────
+         *
+         * Marc-Antoine: « Colonne outbound -> C'est un peu différent pour ARC. Le
+         * statut est la commande est ready to ship (elle a bougée de ready to build
+         * à ready to ship) ... Le stock est donc toujours on hand », and on the
+         * 2026-09-21 call [11:06]: « les gars veulent savoir que la commande est
+         * prête et qu'on attend après le transporteur ... c'est le checkbox ready to
+         * ship dans le SO ». His field, `custbody_so_ready_to_ship` (12056).
+         *
+         * 🔴 IT IS MTL's FIELD TOO, AND THAT WAS MEASURED BEFORE USING IT. MR 5544
+         * writes it for MTL, and in prod a system write reversed a human's tick on
+         * 88 orders. It does not reach ARC: 5544's input search takes only lines
+         * with `cseg_po_segment_gl` set, and 0 ARC sales-order lines carry one
+         * (sandbox, 2026-09-22). If ARC lines ever get a PO Allocation segment,
+         * 5544 starts writing this box on ARC orders, silently.
+         *
+         * THE BUCKET IT DECIDES. An order ticked Ready to Ship puts its OPEN
+         * quantity in `outbound`, and in neither `readyToBuild` nor `reserve`,
+         * because he describes a move from one to the other, not a second copy.
+         * It beats Ready to Build, since nobody has to untick that box first.
+         * The wood is still on hand and still sold, so `available` subtracts it.
+         *
+         * Same isolation, chunking and all-or-nothing degrade as Ready to Build:
+         * a failed read leaves every order in the bucket it had before, which is
+         * still subtracted from Available, so nothing becomes sellable by accident.
+         */
+        let readyToShipIds = {};
+        const readyTrandate = {};
+        for (let i = 0; i < soIdsForFlag.length; i += FLAG_CHUNK) {
+            const slice = soIdsForFlag.slice(i, i + FLAG_CHUNK);
+            try {
+                query.runSuiteQL({
+                    query: "SELECT id AS tranid, TO_CHAR(trandate, 'YYYY-MM-DD') AS trandate " +
+                           'FROM transaction ' +
+                           'WHERE id IN (' + slice.map(() => '?').join(',') + ') ' +
+                           "  AND custbody_so_ready_to_ship = 'T'",
+                    params: slice,
+                }).asMappedResults().forEach((r) => {
+                    readyToShipIds[String(r.tranid)] = true;
+                    readyTrandate[String(r.tranid)] = String(r.trandate || '');
+                });
+            } catch (e) {
+                readyToShipIds = {};
+                log.audit('ARCH cache — Ready to Ship field not readable (non-fatal, ' +
+                    'those orders stay in Ready to Build or Reserved, still deducted): ' +
+                    (e.name || '') + ': ' + (e.message || String(e)));
+                break;
+            }
+        }
+        const rtsIds = Object.keys(readyToShipIds).map((k) => parseInt(k, 10)).filter((n) => n > 0);
+
+        /* DAYS READY: the date of the LATEST tick, from the system notes.
+         *
+         * A checkbox carries no date. NetSuite writes a system note on every change
+         * of it, UI ticks included (context UIF, measured in sandbox), so the last
+         * F -> T note is "le stamp date de quand on a coché". Latest, not first: an
+         * order unticked and ticked again has been ready since the second tick.
+         *
+         *   no note at all  -> ticked when the order was CREATED (a create writes no
+         *                      field note), so the order date is the right answer;
+         *   read failed     -> null, an em dash. Falling back to the order date here
+         *                      would print an order's AGE under "Days ready".
+         *
+         * ⚠️ UNVERIFIED IN THIS DIALECT when written: proven with REST SuiteQL, and
+         * N/query has differed before (see `transaction.status`). The degrade above
+         * is what makes that safe to find out live. */
+        const readySince = {};
+        let readySinceSourced = rtsIds.length > 0;
+        for (let i = 0; i < rtsIds.length; i += FLAG_CHUNK) {
+            const slice = rtsIds.slice(i, i + FLAG_CHUNK);
+            try {
+                query.runSuiteQL({
+                    query: "SELECT recordid AS tranid, TO_CHAR(date, 'YYYY-MM-DD HH24:MI:SS') AS ts " +
+                           'FROM systemnote ' +
+                           "WHERE field = 'CUSTBODY_SO_READY_TO_SHIP' AND newvalue = 'T' " +
+                           '  AND recordid IN (' + slice.map(() => '?').join(',') + ')',
+                    params: slice,
+                }).asMappedResults().forEach((r) => {
+                    const k = String(r.tranid);
+                    const ts = String(r.ts || '');
+                    if (ts && (!readySince[k] || ts > readySince[k])) readySince[k] = ts;
+                });
+            } catch (e) {
+                readySinceSourced = false;
+                log.audit('ARCH cache — Ready to Ship dates not readable (non-fatal, Days ready ' +
+                    'shows no value): ' + (e.name || '') + ': ' + (e.message || String(e)));
+                break;
+            }
+        }
+        const readyDate = (oid) => {
+            if (!readyToShipIds[oid]) return '';
+            if (readySince[oid]) return readySince[oid].slice(0, 10);
+            return readySinceSourced ? (readyTrandate[oid] || '') : '';
+        };
+
+        /* BF PRICE, for the Outbound drawer's « BF Price » column. What the customer
+         * pays, in the ORDER's currency: `foreignamount` is the transaction-currency
+         * amount (`amount` and `rate` are CAD, measured on USD SO-ARC-25: rate
+         * 16.83564 against foreignamount/quantity 12.00). Per BASE unit here; reduce
+         * multiplies by the stock unit's rate to reach per-BF.
+         *
+         * 🔴 KEYED BY ORDER AND LINE. `transactionline.id` restarts at 1 on every
+         * order, so a line id alone would hand one order's price to another. */
+        const linePrice = {};
+        for (let i = 0; i < rtsIds.length; i += FLAG_CHUNK) {
+            const slice = rtsIds.slice(i, i + FLAG_CHUNK);
+            try {
+                query.runSuiteQL({
+                    query: 'SELECT tl.transaction AS tranid, tl.id AS lineid, ' +
+                           '       tl.foreignamount AS famt, tl.quantity AS fqty, c.symbol AS cur ' +
+                           'FROM transactionline tl ' +
+                           'JOIN transaction t ON t.id = tl.transaction ' +
+                           'LEFT JOIN currency c ON c.id = t.currency ' +
+                           "WHERE tl.mainline = 'F' " +
+                           '  AND tl.transaction IN (' + slice.map(() => '?').join(',') + ')',
+                    params: slice,
+                }).asMappedResults().forEach((r) => {
+                    const q = num(r.fqty);
+                    if (!q) return;
+                    linePrice[String(r.tranid) + ':' + String(r.lineid)] = {
+                        perBase: num(r.famt) / q,
+                        currency: String(r.cur || ''),
+                    };
+                });
+            } catch (e) {
+                log.audit('ARCH cache — Ready to Ship prices not readable (non-fatal, BF Price ' +
+                    'shows no value): ' + (e.name || '') + ': ' + (e.message || String(e)));
+                break;
+            }
+        }
+
         /* ── The take-ownership journal, its own query over the PO ids this run
          * already found ─────────────────────────────────────────────────────
          *
@@ -2635,13 +2766,23 @@ define([
                     // decides which ONE bucket this line's open quantity lands
                     // in, never both, so the sum against `reserve + readyToBuild`
                     // matches what `reserve` alone used to carry.
-                    if (readyToBuildIds[String(r.tranid)]) {
+                    if (readyToShipIds[String(r.tranid)]) {
+                        // Feedback 10: ready and waiting for the carrier. Still
+                        // on hand, still sold. See the Ready to Ship read above.
+                        bucket.totals.outbound += open;
+                    } else if (readyToBuildIds[String(r.tranid)]) {
                         bucket.totals.readyToBuild += open;
                     } else {
                         bucket.totals.reserve += open;
                     }
-                    // Already gone out the door.
-                    bucket.totals.outbound += moved;
+                    /* 🔴 SHIPPED QUANTITY IS NO LONGER COUNTED, since Feedback 10.
+                     * `outbound += moved` stood here: wood already fulfilled, on
+                     * open lines, which nothing ever closes, so it only grew. He
+                     * redefined the column for ARC (« c'est un peu différent pour
+                     * ARC »), the lot's on-hand is already net of the shipment, and
+                     * `available` never subtracted it, so dropping it changes no
+                     * stock figure. It only stops the column mixing gone wood with
+                     * wood still in the yard. */
                 } else {
                     /*
                      * 🔴 ON ORDER AND IN TRANSIT ARE DISJOINT. Corrected 2026-09-09.
@@ -2767,7 +2908,9 @@ define([
                     // Same either/or split as the line-level totals above, on
                     // the same order id, so a lot's readyToBuild + reserve never
                     // disagrees with the row's.
-                    if (readyToBuildIds[String(r.tranid)]) {
+                    if (readyToShipIds[String(r.tranid)]) {
+                        bucket.lots[r.lotno].outbound += assigned * openShare;
+                    } else if (readyToBuildIds[String(r.tranid)]) {
                         bucket.lots[r.lotno].readyToBuild += assigned * openShare;
                     } else {
                         bucket.lots[r.lotno].reserve += assigned * openShare;
@@ -2883,13 +3026,30 @@ define([
                              * Per TRANSACTION, which is the right grain: the flag
                              * is a header field, so every line of one order shares
                              * it and there is no per-line case to worry about. */
-                            readyToBuild: !!readyToBuildIds[oid],
+                            // Exclusive with readyToShip, like the quantity above:
+                            // Ready to Ship wins, so an order is never listed under
+                            // both tabs.
+                            readyToBuild: !!readyToBuildIds[oid] && !readyToShipIds[oid],
+                            // Feedback 10, the Outbound tab.
+                            readyToShip: !!readyToShipIds[oid],
+                            readySince:  readyDate(oid),
+                            currency:    '',
+                            // Price x quantity in BASE units, so reduce can divide
+                            // by the priced quantity for a weighted per-BF price.
+                            priceQty:    0,
+                            pricedQty:   0,
                             // BASE units, converted in reduce with the same
                             // `/ rate` every other quantity goes through.
                             qty:        0,
                         };
                     }
                     lotRec.orders[oid].qty += assigned * openShare;
+                    const lp = readyToShipIds[oid] ? linePrice[oid + ':' + String(r.lineno)] : null;
+                    if (lp) {
+                        lotRec.orders[oid].priceQty  += lp.perBase * assigned * openShare;
+                        lotRec.orders[oid].pricedQty += assigned * openShare;
+                        lotRec.orders[oid].currency   = lp.currency;
+                    }
                 }
             }
         });
@@ -3906,6 +4066,15 @@ define([
                                     // archLotOrders.test.mjs section G, which runs THIS
                                     // output through the real resolver.
                                     readyToBuild: !!o.readyToBuild,
+                                    // Feedback 10. COPIED HERE ON PURPOSE: a field
+                                    // stamped above and not listed here never reaches
+                                    // the browser, which is exactly Feedback 13.
+                                    readyToShip:  !!o.readyToShip,
+                                    readySince:   o.readySince || '',
+                                    // Order currency per DISPLAY unit (per BF): the
+                                    // base-unit price times the stock unit's rate.
+                                    bfPrice:      o.pricedQty > 0 ? (o.priceQty / o.pricedQty) * rate : null,
+                                    currency:     o.currency || '',
                                     qty:        o.qty / rate,
                                 };
                             })
@@ -4283,8 +4452,14 @@ define([
                  * outright, so this brings the screen into line with an order endpoint
                  * that would have rejected the sale anyway.
                  */
+                /* 🔴 `outbound` IS SUBTRACTED AGAIN, since Feedback 10, and the
+                 * note above saying it must not be is about the OLD column. That
+                 * outbound was shipped wood, already out of `onHand`. This one is
+                 * Ready to Ship wood, still in `onHand` and sold, exactly like
+                 * `readyToBuild`, which it replaces for those orders. Leaving it
+                 * out would put every ticked order's wood back on sale. */
                 available:    Math.max(0, onHand
-                                          - reserve - readyToBuild
+                                          - reserve - readyToBuild - outbound
                                           - held),
                 // NULL, NOT ZERO, when nothing could be costed. 0 renders as
                 // "$0.00/BF" — indistinguishable from stock that genuinely cost

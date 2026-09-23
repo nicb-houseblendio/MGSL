@@ -93,6 +93,10 @@ export const NO_VALUE = '—';
 const ordersCarryBucket = (orders: ArchLotOrder[]): boolean =>
   orders.some((o) => typeof o.readyToBuild === 'boolean');
 
+/** Same guard for the Ready to Ship stamp, Feedback 10. */
+const ordersCarryShip = (orders: ArchLotOrder[]): boolean =>
+  orders.some((o) => typeof o.readyToShip === 'boolean');
+
 /**
  * Which of the three states a bundle is in for a given bucket.
  *
@@ -112,6 +116,11 @@ export const orderSource = (lot: ArchLot, bucket: ArchDetailKey): ArchOrderSourc
   // Only once the payload can tell the two buckets apart. Otherwise the old
   // honest em dash, not a list that might belong to the other tab.
   if (bucket === 'readyToBuild' && ordersCarryBucket(lot.orders)) return 'netsuite';
+  /* 🔴 SUPERSEDED, Feedback 10: `outbound` IS order-bearing now. It used to be
+   * shipped wood, attributed to no bundle; for ARC it is the open share of
+   * orders ticked Ready to Ship, still on the bundle, and the cache stamps
+   * `readyToShip` on each order the same way it stamps `readyToBuild`. */
+  if (bucket === 'outbound' && ordersCarryShip(lot.orders)) return 'netsuite';
   return 'unavailable';
 };
 
@@ -126,8 +135,26 @@ export const orderSource = (lot: ArchLot, bucket: ArchDetailKey): ArchOrderSourc
 export const ordersFor = (lot: ArchLot, bucket: ArchDetailKey): ArchLotOrder[] => {
   if (orderSource(lot, bucket) !== 'netsuite') return [];
   const orders = lot.orders as ArchLotOrder[];
+  if (bucket === 'outbound') return orders.filter((o) => o.readyToShip === true);
   if (!ordersCarryBucket(orders)) return orders;
-  return orders.filter((o) => (bucket === 'readyToBuild' ? o.readyToBuild === true : o.readyToBuild !== true));
+  return orders.filter((o) => (bucket === 'readyToBuild'
+    ? o.readyToBuild === true
+    // Reserved is what is in NEITHER later stage.
+    : o.readyToBuild !== true && o.readyToShip !== true));
+};
+
+/** Feedback 10, « Days ready ». null when the tick date could not be read. */
+export const daysReady = (o: ArchLotOrder, today: Date = new Date()): number | null =>
+  ageDays(o.readySince, today);
+
+/** The BF Price cell: order currency, or an em dash when unpriced. */
+export const bfPriceText = (o: ArchLotOrder): string => {
+  if (o.bfPrice === null || o.bfPrice === undefined || !Number.isFinite(o.bfPrice) || !o.currency) return NO_VALUE;
+  try {
+    return o.bfPrice.toLocaleString(undefined, { style: 'currency', currency: o.currency, minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  } catch {
+    return `${o.bfPrice.toFixed(2)} ${o.currency}`;
+  }
 };
 
 /**

@@ -156,8 +156,9 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // ── Marc-Antoine: the shipped lane exists on the grid again ──────────────
   ok('grid: OUTBOUND is a column, so a fulfilled order does not leave the screen',
     /key: 'outbound',\s*\n\s*label: 'OUTBOUND',/.test(t));
-  ok('grid: OUTBOUND is not offered as a drill-down (no bundle carries it)',
-    /key: 'outbound'[\s\S]{0,160}?drillable: false/.test(t));
+  // Reversed by Feedback 10: Outbound is Ready to Ship wood ON the bundle now.
+  ok('grid: OUTBOUND is a drill-down since Feedback 10 (Ready to Ship, on the bundle)',
+    /key: 'outbound'[\s\S]{0,400}?drillable: true/.test(t));
   ok('grid: the stale "no Outbound column" claim is gone',
     !/six buckets, no Outbound column/.test(t));
   ok('grid: a non-drillable column is rendered without the click handler',
@@ -195,8 +196,9 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /\{isOnHand && showReserved && \(/.test(l));
   ok('lot table: the quantity column is not called Total on the Available view',
     /bucket === 'available' \? 'Avail\.' : 'Total'/.test(l));
-  ok('lot table: Outbound reports elapsed time since shipment, not stock being held',
-    /bucket === 'outbound' \? 'Shipped'/.test(l) && !/'Held For'/.test(l));
+  ok('lot table: Outbound has his columns (SO #, Customer, Days ready, BF Price), not the shipped ones',
+    /if \(bucket === 'outbound'\) \{[\s\S]{0,2600}?label: 'Days ready'[\s\S]{0,1200}?label: 'BF Price'/.test(l) &&
+    !/'Shipped'/.test(l) && !/'Held For'/.test(l));
 
   // ── Both: a header total the bundles cannot account for is named ─────────
   ok('lot table: reads the gap and the not-sourced note from archBuckets',
@@ -263,8 +265,8 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
   // the client calls in-transit wood sellable but this code refuses it at three
   // gates, so counting it offered volume no trader could order. Available now
   // means what the order endpoint will accept.
-  ok('cache MR: available is on-hand net of claims, nothing incoming',
-    /available:\s*Math\.max\(0, onHand\s*\n\s*- reserve - readyToBuild\s*\n\s*- held\)/.test(mr));
+  ok('cache MR: available is on-hand net of claims (Ready to Ship included), nothing incoming',
+    /available:\s*Math\.max\(0, onHand\s*\n\s*- reserve - readyToBuild - outbound\s*\n\s*- held\)/.test(mr));
   ok('🔴 cache MR: onOrder is genuinely gone, not merely reordered',
     !/available:\s*Math\.max\([^)]*onOrder/.test(mr));
   ok('🔴 cache MR: and inTransit too',
@@ -290,10 +292,11 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /closedOrder/.test(mr) && /split\(':'\)/.test(mr));
   ok('cache MR: and the removal is documented, not silent',
     /`outbound` IS NOT SUBTRACTED/.test(mr));
-  ok('grid: the Outbound header does not claim a second deduction',
-    /NOT deducted from Available a second time/.test(t));
+  ok('grid: the Outbound header says it IS deducted, since Feedback 10',
+    /Deducted from Available, like Reserved and Ready to Build/.test(t) &&
+    !/NOT deducted from Available a second time/.test(t));
   ok('contract: types\\/arch.ts states the corrected formula',
-    /onHand − reserve − readyToBuild − held/.test(src('types/arch.ts')));
+    /onHand − reserve − readyToBuild − outbound − held/.test(src('types/arch.ts')));
   ok('contract: and it records that onOrder was removed rather than just omitting it',
     /CORRECTED 2026-09-22/.test(src('types/arch.ts')));
 
@@ -956,9 +959,12 @@ const ok = (name, cond, got) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + 
     /const ordersCarryBucket = /.test(lo) &&
       /typeof o\.readyToBuild === 'boolean'/.test(lo), null);
   ok('  ...and each tab is filtered, so neither shows the other tab\'s orders',
-    /bucket === 'readyToBuild' \? o\.readyToBuild === true : o\.readyToBuild !== true/.test(lo), null);
-  ok('  ...while outbound stays unresolvable, which was always correct',
-    !/'outbound'/.test(lo.split('export const orderSource')[1].split('};')[0] || ''), null);
+    /\? o\.readyToBuild === true[\s\S]{0,120}?: o\.readyToBuild !== true && o\.readyToShip !== true/.test(lo), null);
+  // Reversed by Feedback 10: outbound IS order-bearing now, gated on its own stamp.
+  ok('  ...and outbound resolves only on a payload stamped readyToShip',
+    /if \(bucket === 'outbound' && ordersCarryShip\(lot\.orders\)\) return 'netsuite';/.test(lo) &&
+    /typeof o\.readyToShip === 'boolean'/.test(lo) &&
+    /if \(bucket === 'outbound'\) return orders\.filter\(\(o\) => o\.readyToShip === true\);/.test(lo), null);
 
   // The server half. Without the stamp the client cannot tell the buckets apart,
   // which is why reading `orders` for both was reverted on 2026-09-10.

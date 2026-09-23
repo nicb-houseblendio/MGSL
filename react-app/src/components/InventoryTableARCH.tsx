@@ -53,6 +53,11 @@ interface InventoryTableARCHProps {
 /**
  * Metric columns, in the order stock moves through them.
  *
+ * 🔴 SUPERSEDED, Feedback 10 (2026-09-22): OUTBOUND CHANGED MEANING. For ARC it is
+ * the open quantity of orders ticked Ready to Ship, still on hand, and it IS
+ * deducted from Available and drillable. Everything below about Outbound being
+ * shipment history describes the column before that.
+ *
  * ✅ OUTBOUND IS BACK, 2026-09-08. The comment that used to sit here said so
  * itself: "If traders query the arithmetic, this is the first thing to put
  * back." Two of them did, on the same day.
@@ -117,8 +122,11 @@ const getMetricColumns = (
     key: 'outbound',
     label: 'OUTBOUND',
     width: 100,
-    drillable: false,
-    note: 'Already shipped out on a sales order. It has left On Hand, so it is NOT deducted from Available a second time. This column is history, not a claim on stock, and no bundle carries it, so there is nothing to drill into.',
+    // Feedback 10: « Colonne outbound -> C'est un peu différent pour ARC ». Orders
+    // ticked Ready to Ship, wood still on hand, waiting for the carrier. It is a
+    // claim on the bundle now, so it is drillable and it is deducted.
+    drillable: true,
+    note: 'Ready to ship: the sales order is ticked Ready to Ship and the wood is still on hand, waiting for the carrier. Deducted from Available, like Reserved and Ready to Build.',
   },
   { key: 'inTransit', label: 'IN TRANSIT', width: 105, drillable: true },
   { key: 'onOrder', label: 'ON ORDER', width: 100, drillable: true },

@@ -83,11 +83,11 @@ export const bucketGapReason = (bucket: ArchDetailKey): string | null => {
     case 'readyToBuild':
       return 'It sits on sales-order lines written without inventory detail, so no bundle is named on them';
     case 'outbound':
-      // Outbound's gap is normally the WHOLE figure, and by design: shipped wood
-      // has left the bundle, the lot's on-hand is already net of it, and the
-      // cache deliberately attributes none of it to a lot. This is not a data
-      // gap to be closed.
-      return 'It has already shipped, so it is no longer on any bundle. This column is shipment history';
+      // Feedback 10: Outbound is Ready to Ship wood, still on the bundle, so a
+      // gap has the same cause as Reserved's: a line with no inventory detail.
+      // The old text ("already shipped ... shipment history") described the
+      // column before he redefined it for ARC.
+      return 'It sits on sales-order lines ticked Ready to Ship that were written without inventory detail, so no bundle is named on them';
     case 'available':
       // Rewritten 2026-09-22. Available is now on-hand stock net of what is
       // claimed, so neither on-order nor in-transit wood reaches it and naming

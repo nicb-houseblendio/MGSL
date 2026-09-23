@@ -40,6 +40,8 @@ import {
   anyUnsourced,
   anyUnavailable,
   NO_VALUE,
+  daysReady,
+  bfPriceText,
 } from './archLotOrders.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -284,7 +286,7 @@ const TEAM_ROWS = [
   { tranid: '126500', repid: '2090', rep: 'Justin Loveland', contribution: '0.5', isprimary: 'F' },
 ];
 
-const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [], transitRows = [], sealRows = [], poSealRows = [] } = {}) => {
+const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, bucketRows = BUCKET_ROWS, flagIds = [], transitRows = [], sealRows = [], poSealRows = [], rtsRows = [], rtsThrows = false, noteRows = [], noteThrows = false, priceRows = [] } = {}) => {
   const sqlLog = [];
   const errors = [];
   const audits = [];
@@ -297,6 +299,17 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
     runSuiteQL: ({ query: sql }) => {
       sqlLog.push(sql);
       let rows = [];
+      // Feedback 10, BEFORE the transactionline route: the price read is a
+      // `FROM transactionline tl` query too and would otherwise get bucket rows.
+      if (/custbody_so_ready_to_ship/.test(sql)) {
+        if (rtsThrows) throw new Error('Unknown identifier custbody_so_ready_to_ship');
+        return { asMappedResults: () => rtsRows };
+      }
+      if (/FROM systemnote/.test(sql)) {
+        if (noteThrows) throw new Error('Invalid search type: systemnote');
+        return { asMappedResults: () => noteRows };
+      }
+      if (/tl\.foreignamount/.test(sql)) return { asMappedResults: () => priceRows };
       if (/FROM transactionsalesteam/.test(sql)) {
         if (teamThrows) throw new Error('Search error occurred: permission');
         rows = teamRows;
@@ -427,9 +440,12 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
    * same function that computes it. */
   ok('B17 reserve is unchanged: 1,080 + 640 + 1,080 BF of open sales-order lines',
     !!row && Math.round(row.reserve) === 2800, row && row.reserve);
-  ok('B18 outbound still reports the shipped 300 BF and is NOT subtracted from available',
-    !!row && Math.round(row.outbound) === 300 &&
-    Math.round(row.available) === Math.max(0, Math.round(row.onHand + row.onOrder + row.inTransit - row.reserve - (row.held || 0))),
+  /* Feedback 10: the shipped 300 BF no longer reaches Outbound, which is Ready to
+   * Ship wood now, and Available is unchanged by dropping it (it was never
+   * subtracted). Section I covers the new meaning. */
+  ok('B18 shipped wood no longer counts as Outbound, and Available does not move',
+    !!row && Math.round(row.outbound) === 0 &&
+    Math.round(row.available) === Math.max(0, Math.round(row.onHand - row.reserve - (row.held || 0))),
     row && [row.outbound, row.onHand, row.available]);
   ok('B19 on hand is still summed from the bundles (1.08 + 1.08 + 2 MBF)',
     !!row && Math.round(row.onHand) === 4160, row && row.onHand);
@@ -870,6 +886,92 @@ const runMr = ({ teamRows = TEAM_ROWS, teamThrows = false, lotRows = LOT_ROWS, b
   // Per-tab line counts on a merged entry.
   ok('H18 a merged entry counts its lines per tab',
     mgu.length === 1 && mgu[0].onOrderLines === 2 && mgu[0].inTransitLines === 0, mgu);
+}
+
+/* ════ I. Ready to Ship is the ARCH Outbound (Feedback 10) ═══════════════════
+ * « Colonne outbound -> C'est un peu différent pour ARC. Le statut est la
+ * commande est ready to ship (elle a bougée de ready to build à ready to ship)
+ * ... Le stock est donc toujours on hand. Lot #, So#, Customer, Days ready (basé
+ * sur le stamp date de quand on a coché "Ready to Ship"), Total BF, BF Price ».
+ * SO-CWP-001360 (126500, lines 9 and 10, 640 BF of bundle 316027-12) is ticked
+ * Ready to Ship AND still ticked Ready to Build. */
+{
+  const rts = runMr({
+    flagIds: ['126500'],
+    rtsRows: [{ tranid: '126500', trandate: '2026-09-01' }],
+    noteRows: [
+      { tranid: '126500', ts: '2026-09-10 08:00:00' },
+      { tranid: '126500', ts: '2026-09-15 09:30:00' },   // ticked again later: this one
+    ],
+    priceRows: [
+      { tranid: '126500', lineid: '9',  famt: '-6480', fqty: '-0.54', cur: 'USD' },   // 12.00 / BF
+      { tranid: '126500', lineid: '10', famt: '-1500', fqty: '-0.1',  cur: 'USD' },   // 15.00 / BF
+      // Another order's line 9. transactionline.id restarts per order, so a
+      // line-only key would hand this price to SO-CWP-001360.
+      { tranid: '126449', lineid: '9',  famt: '-99999', fqty: '-0.54', cur: 'CAD' },
+    ],
+  });
+  const row = rts.written.find((r) => String(r.internalId) === '2915');
+  const held = row && row.lots.find((l) => l.lotNo === '316027-12');
+  const ords = held && Array.isArray(held.orders) ? held.orders : [];
+  const o1360 = ords.find((o) => o.soNumber === 'SO-CWP-001360');
+  const o1344 = ords.find((o) => o.soNumber === 'SO-CWP-001344');
+
+  ok('I1 a Ready to Ship order puts its open share in Outbound, on the row and on the bundle',
+    !!row && Math.round(row.outbound) === 640 && !!held && Math.round(held.outbound) === 640,
+    row && { row: row.outbound, lot: held && held.outbound });
+  ok('I2 ...and NOT also in Ready to Build, although that box is still ticked',
+    !!row && Math.round(row.readyToBuild) === 0 && Math.round(held.readyToBuild) === 0,
+    row && { row: row.readyToBuild, lot: held && held.readyToBuild });
+  ok('I3 Reserved keeps only the other order', !!held && Math.round(held.reserve) === 1080, held && held.reserve);
+  ok('I4 🔴 Available subtracts it: still on hand, still sold (4,160 - 2,160 - 640)',
+    !!row && Math.round(row.available) === 1360, row && row.available);
+  ok('I5 the order is stamped readyToShip and NOT readyToBuild, so it is listed under one tab',
+    o1360?.readyToShip === true && o1360?.readyToBuild === false && o1344?.readyToShip === false,
+    ords.map((o) => [o.soNumber, o.readyToShip, o.readyToBuild]));
+  ok('I6 Days ready counts from the LATEST tick',
+    o1360?.readySince === '2026-09-15', o1360 && o1360.readySince);
+  ok('I7 BF Price is the order-currency price per BF, weighted over its lines',
+    !!o1360 && Math.abs(o1360.bfPrice - (6480 + 1500) / 0.64 * 0.001) < 1e-9 && o1360.currency === 'USD',
+    o1360 && [o1360.bfPrice, o1360.currency]);
+  ok('I8 🔴 prices are keyed by ORDER and line, so another order\'s line 9 does not leak in',
+    !!o1360 && o1360.bfPrice < 20, o1360 && o1360.bfPrice);
+  ok('I9 the resolver sources the Outbound tab and each tab lists its own order',
+    !!held && orderSource(held, 'outbound') === 'netsuite' &&
+    ordersFor(held, 'outbound').map((o) => o.soNumber).join() === 'SO-CWP-001360' &&
+    ordersFor(held, 'readyToBuild').length === 0 &&
+    ordersFor(held, 'reserve').map((o) => o.soNumber).join() === 'SO-CWP-001344',
+    held && ['outbound', 'readyToBuild', 'reserve'].map((b) => ordersFor(held, b).map((o) => o.soNumber)));
+  ok('I10 the Outbound tab\'s orders sum to the bundle\'s Outbound',
+    !!held && Math.abs(ordersFor(held, 'outbound').reduce((t, o) => t + o.qty, 0) - held.outbound) < 1e-6);
+  ok('I11 the helpers render his columns', !!o1360 &&
+    daysReady(o1360, new Date(2026, 8, 22)) === 7 && /12\.47/.test(bfPriceText(o1360)),
+    o1360 && [daysReady(o1360, new Date(2026, 8, 22)), bfPriceText(o1360)]);
+  ok('I12 clean run', rts.errors.length === 0, rts.errors);
+
+  // Ticked when the order was created: a create writes no field note.
+  const noNote = runMr({ rtsRows: [{ tranid: '126500', trandate: '2026-09-01' }] });
+  const nn = noNote.written.find((r) => String(r.internalId) === '2915')
+    ?.lots.find((l) => l.lotNo === '316027-12')?.orders.find((o) => o.soNumber === 'SO-CWP-001360');
+  ok('I13 no system note means ticked at creation: the order date', nn?.readySince === '2026-09-01', nn && nn.readySince);
+  ok('I14 no price row means an em dash, not a zero', nn?.bfPrice === null && bfPriceText(nn) === NO_VALUE, nn && nn.bfPrice);
+
+  // The notes could not be read: no date, never the order's age.
+  const badNote = runMr({ rtsRows: [{ tranid: '126500', trandate: '2026-09-01' }], noteThrows: true });
+  const bn = badNote.written.find((r) => String(r.internalId) === '2915')
+    ?.lots.find((l) => l.lotNo === '316027-12')?.orders.find((o) => o.soNumber === 'SO-CWP-001360');
+  ok('I15 an unreadable system note gives NO date, not the order date',
+    bn?.readySince === '' && daysReady(bn) === null, bn && bn.readySince);
+  ok('I16 ...and says so in the log, at audit', badNote.audits.some((a) => /Ready to Ship dates not readable/.test(a)));
+
+  // The field could not be read: the order stays where it was, still deducted.
+  const badFlag = runMr({ flagIds: ['126500'], rtsThrows: true });
+  const bf = badFlag.written.find((r) => String(r.internalId) === '2915');
+  ok('I17 an unreadable Ready to Ship field leaves the order in Ready to Build, still deducted',
+    !!bf && Math.round(bf.outbound) === 0 && Math.round(bf.readyToBuild) === 640 && Math.round(bf.available) === 1360,
+    bf && [bf.outbound, bf.readyToBuild, bf.available]);
+  ok('I18 ...and logs it at audit, not error', badFlag.audits.some((a) => /Ready to Ship field not readable/.test(a)) &&
+    badFlag.errors.length === 0, badFlag.errors);
 }
 
 console.log(fail ? ('# FAIL ' + fail) : '# archLotOrders ok');

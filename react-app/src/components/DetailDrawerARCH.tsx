@@ -69,6 +69,9 @@ const TABS: { key: ArchDetailKey; label: string }[] = [
   { key: 'available', label: 'Available' },
   { key: 'onHand', label: 'On Hand' },
   { key: 'readyToBuild', label: 'Ready to Build' },
+  // Feedback 10: the next stage, orders ticked Ready to Ship. It supersedes the
+  // note above saying Outbound has no tab.
+  { key: 'outbound', label: 'Outbound' },
   { key: 'inTransit', label: 'In Transit' },
   { key: 'onOrder', label: 'On Order' },
 ];

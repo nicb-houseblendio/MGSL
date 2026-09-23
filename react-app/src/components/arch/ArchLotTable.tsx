@@ -13,6 +13,8 @@ import {
   SHIP_DATE_DEFAULTED_TITLE,
   traderName,
   NO_VALUE,
+  daysReady,
+  bfPriceText,
 } from '@/lib/archLotOrders';
 import { ARCH_BUCKET_META, ARCH_RESERVE_INK, ARCH_SURFACE } from '@/components/arch/archColors';
 import { tallyStateNote, toLengthWidthGrid, filterGridByLength, bundleLengthChips } from '@/lib/archTally';
@@ -381,13 +383,60 @@ export const ArchLotTable = ({
 
   /** Columns between the identity block and the quantity block, per bucket. */
   const leadColumns = React.useMemo<LeadColumn[]>(() => {
-    if (bucket === 'reserve' || bucket === 'readyToBuild' || bucket === 'outbound') {
-      // Outbound's label used to say the stock was being held, which is the
-      // opposite of the truth: outbound is `quantityshiprecv`, wood that has
-      // already left on an Item Fulfillment. Nothing is holding it. The figure
-      // beside it is elapsed time since the shipment.
-      const durationLabel =
-        bucket === 'readyToBuild' ? 'Building For' : bucket === 'outbound' ? 'Shipped' : 'Reserved For';
+    /* ── OUTBOUND, Feedback 10 ───────────────────────────────────────────────
+     * His columns: « Lot #, So#, Customer, Days ready (basé sur le stamp date de
+     * quand on a coché "Ready to Ship"), Total BF, BF Price ». Lot # and Total BF
+     * are the table's own identity and quantity blocks; these are the rest. No
+     * fixture fallback: nothing ever generated Ready to Ship orders, so an
+     * unsourced bundle reads an em dash rather than an invented order. */
+    if (bucket === 'outbound') {
+      const claims = (l: ArchLot) => ordersFor(l, 'outbound');
+      const oldestReady = (l: ArchLot): number | null => {
+        const ages = claims(l).map((o) => daysReady(o)).filter((a): a is number => a !== null);
+        return ages.length ? Math.max(...ages) : null;
+      };
+      return [
+        {
+          label: 'SO #',
+          mono: true,
+          color: () => ARCH_BUCKET_META.outbound.color,
+          render: (l) => (claims(l).length ? joinValues(claims(l).map((o) => o.soNumber)).text : NO_VALUE),
+          title: (l) =>
+            claims(l).length > 1 ? `${l.lotNo} is on ${claims(l).length} orders: ${joinValues(claims(l).map((o) => o.soNumber)).title}` : undefined,
+        },
+        {
+          label: 'Customer',
+          render: (l) => (claims(l).length ? joinValues(claims(l).map((o) => o.customer)).text : NO_VALUE),
+          title: (l) => joinValues(claims(l).map((o) => o.customer)).title,
+        },
+        {
+          label: 'Days ready',
+          mono: true,
+          color: (l) => {
+            const a = oldestReady(l);
+            return a === null ? ARCH_SURFACE.textLight : ageColor(a);
+          },
+          render: (l) => {
+            const a = oldestReady(l);
+            return a === null ? NO_VALUE : `${a} d`;
+          },
+          title: (l) =>
+            claims(l).length && oldestReady(l) === null
+              ? 'The date this order was ticked Ready to Ship could not be read.'
+              : 'Since the order was ticked Ready to Ship.',
+        },
+        {
+          label: 'BF Price',
+          mono: true,
+          render: (l) => (claims(l).length ? joinValues(claims(l).map(bfPriceText)).text : NO_VALUE),
+          title: () => 'What the customer pays, in the order currency.',
+        },
+      ];
+    }
+    if (bucket === 'reserve' || bucket === 'readyToBuild') {
+      // Outbound has its own branch above since Feedback 10, so it no longer
+      // shares these columns (it used to render them under a "Shipped" label).
+      const durationLabel = bucket === 'readyToBuild' ? 'Building For' : 'Reserved For';
       /* ── REAL ORDERS WHERE THERE ARE ANY ─────────────────────────────────
        *
        * These six columns came entirely from `lotAllocation()`, a seeded
