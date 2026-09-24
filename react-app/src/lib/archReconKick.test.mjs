@@ -55,6 +55,16 @@ test('decision: when the chain submits the reconciler', () => {
   assert.equal(d({ claims: 2, submitAt: 1e12 + 5 * MIN }).submit, true, 'a stamp in the future counts as long ago');
 });
 
+test('decision: an ARC transaction change starts it within the minute (2026-09-24)', () => {
+  const d = (s) => Reservation.reconKickDecision(Object.assign({ now: 1e12, submitAt: 1e12 - 5 * MIN, newArcReceipt: false, claims: 2 }, s));
+  assert.equal(d({}).submit, false, 'no change, 5 min: wait for the backstop, as before');
+  assert.equal(d({ arcChangeAt: 1e12 - 2 * MIN }).reason, 'an ARC transaction changed', 'a change after the last run: go now');
+  assert.equal(d({ arcChangeAt: 1e12 - 6 * MIN }).submit, false, 'a change the last run already saw: nothing to do');
+  assert.equal(d({ arcChangeAt: 1e12 - 2 * MIN, claims: 0 }).submit, false, 'no claims: nothing to release or report');
+  assert.equal(d({ arcChangeAt: 1e12 - 2 * MIN, submitAt: 1e12 - 30 * 1000 }).submit, false, 'the one-minute throttle still holds');
+  assert.equal(d({ arcChangeAt: 1e12 + 2 * MIN }).submit, false, 'a flag from the future is ignored');
+});
+
 test('decision: busy refusals are recognised by name or message', () => {
   assert.equal(Reservation.isSubmitBusy({ name: 'MAP_REDUCE_ALREADY_RUNNING' }), true);
   assert.equal(Reservation.isSubmitBusy({ name: 'SSS_ERROR', message: 'FAILED_TO_SUBMIT_JOB_REQUEST_1: queued' }), true);

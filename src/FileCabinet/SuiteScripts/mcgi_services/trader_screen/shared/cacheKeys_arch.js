@@ -220,6 +220,7 @@ define([], () => {
         RECON_RCPT_ID:         'TS_ARCH_RECON_RCPT_ID',    // highest item receipt id seen
         RECON_ERR:             'TS_ARCH_RECON_ERR',        // last reported failure, dedupe
         RECON_LAST_RUN:        'TS_ARCH_RECON_LAST_RUN',   // ISO, end of the reconciler's run
+        RECON_ARC_CHANGE:      'TS_ARCH_RECON_ARC_CHANGE', // ms, the cache gate saw an ARC transaction change
         TTL_SUMMARY:           TTL_SUMMARY,
         TTL_DETAIL:            TTL_DETAIL,
         MAX_CACHE_VALUE_BYTES: MAX_CACHE_VALUE_BYTES,

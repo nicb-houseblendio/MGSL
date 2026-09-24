@@ -178,6 +178,26 @@ define([], () => {
         return { go: 'skip' };
     };
 
+    /**
+     * Did the TRANSACTIONS or the DELETIONS move between two signatures?
+     *
+     * The part the reservation reconciler cares about (2026-09-24): a sales order
+     * voided, a line removed, a line given another bundle, a PO received. The
+     * other parts are claims, holds, captures and the lot mirror, and the
+     * reconciler WRITES the claims and the mirror itself, so counting them would
+     * have it restart itself after every run. Its one transaction write, a
+     * hand-off onto an SO line, costs at most one extra quiet run.
+     *
+     * False when either side is missing: a seeded or stale signature is not
+     * evidence of a change here, and the 15-minute backstop still covers it.
+     */
+    const txnPartsChanged = (prevSig, nextSig) => {
+        if (!prevSig || !nextSig) return false;
+        // Split only before a label: the parts' own timestamps contain spaces.
+        const pick = (sig) => String(sig).split(/ (?=[a-z_]+:)/).filter((p) => /^(t|d):/.test(p)).join(' ');
+        return pick(prevSig) !== pick(nextSig);
+    };
+
     const startsInLastHour = (st, now) =>
         ((st && Array.isArray(st.starts)) ? st.starts : [])
             .map(Number).filter((t) => t > now - 3600 * 1000 && t <= now);
@@ -201,6 +221,6 @@ define([], () => {
     return {
         FLOOR_MS, BACKSTOP_MS, DETECT_MS, HOURLY_CAP, ANCHOR_MARGIN_MIN, BACKOFF_MIN,
         TXN_SQL, SEED_SQL, TABLES, tableSql, DELETED_SQL, MIRROR_SQL,
-        minusMinutes, readSignature, decide, onSignature, startsInLastHour, startedState, finishedState,
+        minusMinutes, readSignature, decide, onSignature, txnPartsChanged, startsInLastHour, startedState, finishedState,
     };
 });

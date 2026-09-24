@@ -294,3 +294,38 @@ test('M10 a shrink-guard refusal backs early reruns off like a failure (review M
   assert.ok(r.audits.length >= 0);
   assert.equal(r.gate.fails, 1, 'refused 20 -> 1 row, counted');
 });
+
+test('txnPartsChanged: only transactions and deletions count, never the writes of the reconciler itself (2026-09-24)', () => {
+  const G = Gate;
+  const base = 't:3|2026-09-24 10:00:00|99 arch_res:2|5|x mgsl_inventory_hold:0||x msl_plc_capture:2|402| mirror:4|1|3|9 d:2026-09-24 09:00:00';
+  const withTxn = base.replace('t:3|2026-09-24 10:00:00|99', 't:4|2026-09-24 10:05:00|123');
+  const withDel = base.replace('d:2026-09-24 09:00:00', 'd:2026-09-24 10:06:00');
+  const withClaims = base.replace('arch_res:2|5|x', 'arch_res:1|3|x');
+  const withMirror = base.replace('mirror:4|1|3|9', 'mirror:3|1|2|6');
+  assert.equal(G.txnPartsChanged(base, withTxn), true, 'an ARC transaction moved');
+  assert.equal(G.txnPartsChanged(base, base.replace('10:00:00|99', '10:00:07|99')), true, 'a time-only change on the same day (the parts hold spaces)');
+  assert.equal(G.txnPartsChanged(base, base.replace('d:2026-09-24 09:00:00', 'd:2026-09-24 09:00:30')), true, 'a deletion the same day');
+  assert.equal(G.txnPartsChanged(base, withDel), true, 'a deletion (SO deleted)');
+  assert.equal(G.txnPartsChanged(base, withClaims), false, 'a claim released by the reconciler itself');
+  assert.equal(G.txnPartsChanged(base, withMirror), false, 'the lot mirror written by the reconciler itself');
+  assert.equal(G.txnPartsChanged('', withTxn), false, 'no previous signature is not evidence');
+  assert.equal(G.txnPartsChanged(base, base), false);
+});
+
+test('the gate flags an ARC transaction change and the kick reads it', () => {
+  const mr = readFileSync(MR, 'utf8');
+  assert.match(mr, /arcTxn: ArchRebuildGate\.txnPartsChanged\(st\.sig, sig\.sig\)/);
+  assert.match(mr, /gateStarted\(gate\);\s*if \(gate\.arcTxn\) markArcChange\(\);/);
+  assert.match(mr, /arcChangeAt: Number\(c\.get\(\{ key: CacheKeys\.RECON_ARC_CHANGE \}\) \|\| 0\),/);
+});
+
+test('txnPartsChanged on REAL signatures from readSignature', () => {
+  const sig = (o) => Gate.readSignature(fakeDb(o).run, '2026-09-23 11:00:11').sig;
+  const base = sig({});
+  assert.equal(Gate.txnPartsChanged(base, sig({ txn: { n: 11, mx: '2026-09-23 11:05:40', h: 5518440172 } })), true, 'an SO saved again, same count');
+  assert.equal(Gate.txnPartsChanged(base, sig({ txn: { n: 11, mx: '2026-09-23 11:05:11', h: 7 } })), true, 'a second edit inside the same second');
+  assert.equal(Gate.txnPartsChanged(base, sig({ deleted: { mx: '2026-09-23 08:30:00' } })), true, 'an SO deleted');
+  assert.equal(Gate.txnPartsChanged(base, sig({ arch_res: { n: 1, s: 22, mx: '2026-09-23 11:20:00' } })), false, 'a claim, written by the reconciler');
+  assert.equal(Gate.txnPartsChanged(base, sig({ mirror: { n: 1, s: 53089, e: 3, l: 0 } })), false, 'the lot mirror, written by the reconciler');
+  assert.equal(Gate.txnPartsChanged(base, sig({ hold: { n: 1, s: 5, mx: '2026-09-23 11:20:00' } })), false, 'a hold does not concern it');
+});

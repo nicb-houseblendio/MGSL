@@ -328,6 +328,11 @@ define([], () => {
      *
      *   RECON_CHECK_MS     the chain evaluates at most once a minute
      *   an ARC receipt     claims held and a new ARC item receipt: go now
+     *   an ARC change      claims held and the cache gate saw an ARC transaction
+     *                      change after the last run (2026-09-24): go now. A
+     *                      trader who swaps the bundle on the line, or voids the
+     *                      SO, sees the report clear and the bundle freed in one
+     *                      or two minutes rather than on the 15-minute backstop
      *   RECON_BACKSTOP_MS  claims held: at least every 15 min (void SO, deleted
      *                      line, closed PO line, pending sweep)
      *   RECON_IDLE_MS      no claims: hourly, to clear a mirror left by a claim
@@ -353,6 +358,10 @@ define([], () => {
         if (s.claims == null) return no('claims unreadable');
         const held = Number(s.claims) > 0;
         if (held && s.newArcReceipt) return go('an ARC item receipt was saved');
+        const changedAt = Number(s.arcChangeAt);
+        if (held && changedAt > 0 && changedAt <= now && (!(at > 0 && at <= now) || changedAt > at)) {
+            return go('an ARC transaction changed');
+        }
         if (held && since >= RECON_BACKSTOP_MS) return go('backstop, ' + Number(s.claims) + ' claim(s) held');
         if (since >= RECON_IDLE_MS) return go('hourly sweep');
         return no('nothing to do');

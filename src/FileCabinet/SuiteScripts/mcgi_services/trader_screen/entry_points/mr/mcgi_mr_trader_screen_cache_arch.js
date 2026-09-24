@@ -799,7 +799,10 @@ define([
             }
             const sig = ArchRebuildGate.readSignature(gateSql, st.anchor);
             const o = ArchRebuildGate.onSignature(st, sig.sig);
-            if (o.go === 'run') return { run: true, reason: o.reason, state: next, detected: sig };
+            if (o.go === 'run') {
+                return { run: true, reason: o.reason, state: next, detected: sig,
+                         arcTxn: ArchRebuildGate.txnPartsChanged(st.sig, sig.sig) };
+            }
             if (o.reason === 'seeded' || st.errMsg) writeGate(c, Object.assign({}, next, { sig: sig.sig, errMsg: '' }));
             return { run: false };
         } catch (e) {
@@ -956,6 +959,14 @@ define([
     const RECON_SCRIPT = 'customscript_mcgi_mr_arch_reservation';
     const RECON_DEPLOY = 'customdeploy_mcgi_mr_arch_reservation';
 
+    /** The gate saw an ARC transaction change: the reconciler should look now,
+     *  not on its backstop (2026-09-24). Silent; a lost flag only waits. */
+    const markArcChange = () => {
+        try {
+            CacheClient.getCache().put({ key: CacheKeys.RECON_ARC_CHANGE, value: String(Date.now()), ttl: 3600 });
+        } catch (ignore) { /* the backstop still covers it */ }
+    };
+
     const kickReconciler = () => {
         let c = null;
         try {
@@ -1013,6 +1024,7 @@ define([
                 submitAt: Math.max(Number(c.get({ key: CacheKeys.RECON_SUBMIT_AT }) || 0), lastRunMs),
                 claims: claims,
                 newArcReceipt: newArcReceipt,
+                arcChangeAt: Number(c.get({ key: CacheKeys.RECON_ARC_CHANGE }) || 0),
             });
             if (!d.submit) {
                 // Non-ARC receipts only: move past them so they are not re-counted.
@@ -3752,6 +3764,7 @@ define([
             // may now fail freely without costing us the interval.
             stampPaceStart();
             gateStarted(gate);
+            if (gate.arcTxn) markArcChange();
             // One line per REAL rebuild, saying why. If a week of these reads
             // "backstop" only, change detection is broken; see archRebuildGate.
             log.audit('ARCH cache rebuild', gate.reason || 'run');
